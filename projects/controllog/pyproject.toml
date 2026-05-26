@@ -24,6 +24,7 @@ dependencies = []
 
 [project.optional-dependencies]
 duckdb = ["duckdb>=1.0.0"]
+dev = ["pytest>=7.0", "duckdb>=1.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/motherduckdb/labs/tree/main/projects/controllog"
