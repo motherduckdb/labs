@@ -129,6 +129,13 @@ def upload(
     try:
         _ensure_schema(md, schema)
 
+        # Local JSONL can carry duplicate event_id / posting_id rows when an
+        # idempotent operation is retried (deterministic IDs collapse onto
+        # the same value). The remote dedupe ``NOT IN`` only filters IDs
+        # already in the table — if the duplicate is new remotely, both
+        # local rows pass the filter and the PRIMARY KEY rejects the batch.
+        # ``QUALIFY ROW_NUMBER() ... = 1`` keeps one row per ID inside the
+        # batch before we add the remote-dedupe filter on top.
         events_inserted = 0
         for ef in event_files:
             before = md.execute(f"SELECT COUNT(*) FROM {schema}.events").fetchone()[0]
@@ -150,7 +157,11 @@ def upload(
                     actor_agent_id,
                     actor_task_id
                 FROM read_json_auto('{ef}') AS src
-                WHERE CAST(src.event_id AS VARCHAR)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY CAST(src.event_id AS VARCHAR)
+                    ORDER BY src.ingest_time DESC
+                ) = 1
+                AND CAST(src.event_id AS VARCHAR)
                     NOT IN (SELECT event_id FROM {schema}.events)
             """)
             after = md.execute(f"SELECT COUNT(*) FROM {schema}.events").fetchone()[0]
@@ -173,7 +184,10 @@ def upload(
                     delta_numeric,
                     dims_json
                 FROM read_json_auto('{pf}') AS src
-                WHERE CAST(src.posting_id AS VARCHAR)
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY CAST(src.posting_id AS VARCHAR)
+                ) = 1
+                AND CAST(src.posting_id AS VARCHAR)
                     NOT IN (SELECT posting_id FROM {schema}.postings)
             """)
             after = md.execute(f"SELECT COUNT(*) FROM {schema}.postings").fetchone()[0]
