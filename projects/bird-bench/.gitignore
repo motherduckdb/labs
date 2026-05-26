@@ -1,0 +1,66 @@
+# Environment
+.env
+.env.local
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Data files (large, downloaded or generated)
+mini_dev_data/
+*.sqlite
+*.db
+
+# Generated data - run data_prep.py to recreate
+data/bird_*.json
+data/results/
+data/optimization_results/
+data/gold_sql_audit.json
+data/eval_analysis_*.md
+data/review_tracking.json
+
+# Eval data - run `uv run bird-eval sample` to regenerate
+data/eval/
+
+# Keep platinum answers (human-curated)
+!data/platinum_answers.json
+
+# Controllog output
+controllog/
+*.jsonl
+
+# Lock files
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temporary/generated files
+*.backup
+data/test_*.json
+error_feedback_*.json
+
+# specs
+logging_spec.md
+repomix-output-matsonj-based-eval.md
+data/eval_results/

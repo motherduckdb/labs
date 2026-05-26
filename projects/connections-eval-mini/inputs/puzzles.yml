@@ -1,0 +1,172 @@
+# 5 NYT Connections puzzles from March 2026
+# Source: https://word.tips/todays-nyt-connections-answers/
+puzzles:
+  - id: 1020
+    date: 2026-03-27
+    difficulty: 4.3
+    words:
+      - BASIC FACTS
+      - BOTTOM LINE
+      - BRASS TACKS
+      - NITTY-GRITTY
+      - BAGGAGE CLAIM
+      - DUTY-FREE
+      - FOOD COURT
+      - TICKET COUNTER
+      - GOLDFISH CRACKER
+      - MONARCH BUTTERFLY
+      - THE LORAX
+      - TRAFFIC CONE
+      - LIP SERVICE
+      - MONKEY BARS
+      - TURN SIGNAL
+      - WEDDING RECEPTION
+    groups:
+      - name: What it all boils down to
+        color: yellow
+        words: [BASIC FACTS, BOTTOM LINE, BRASS TACKS, NITTY-GRITTY]
+      - name: Features of an airport terminal
+        color: green
+        words: [BAGGAGE CLAIM, DUTY-FREE, FOOD COURT, TICKET COUNTER]
+      - name: Things that are orange
+        color: blue
+        words: [GOLDFISH CRACKER, MONARCH BUTTERFLY, THE LORAX, TRAFFIC CONE]
+      - name: Ending in words for cellular connectivity
+        color: purple
+        words: [LIP SERVICE, MONKEY BARS, TURN SIGNAL, WEDDING RECEPTION]
+
+  - id: 1021
+    date: 2026-03-28
+    difficulty: 4.0
+    words:
+      - BOARD
+      - EMBARK
+      - ENTER
+      - MOUNT
+      - ACCELERATION
+      - FORCE
+      - MASS
+      - MOMENTUM
+      - FIGURE
+      - ILLUSTRATION
+      - PICTURE
+      - PLATE
+      - FACE
+      - PITCHER
+      - POWER
+      - ROBERT
+    groups:
+      - name: Step onto, as a vehicle
+        color: yellow
+        words: [BOARD, EMBARK, ENTER, MOUNT]
+      - name: Quantities in mechanics
+        color: green
+        words: [ACCELERATION, FORCE, MASS, MOMENTUM]
+      - name: Textbook images
+        color: blue
+        words: [FIGURE, ILLUSTRATION, PICTURE, PLATE]
+      - name: ___ plant
+        color: purple
+        words: [FACE, PITCHER, POWER, ROBERT]
+
+  - id: 1022
+    date: 2026-03-29
+    difficulty: 4.2
+    words:
+      - GRAFFITI
+      - MURAL
+      - POSTER
+      - STENCIL
+      - HUSTLE
+      - MASHED POTATO
+      - ROBOT
+      - TWIST
+      - CORPS
+      - COUP
+      - PSYCHO
+      - RECEIPT
+      - BEAUTY
+      - CHECK
+      - QUESTION
+      - STRETCH
+    groups:
+      - name: Images seen on the street
+        color: yellow
+        words: [GRAFFITI, MURAL, POSTER, STENCIL]
+      - name: Retro dance crazes
+        color: green
+        words: [HUSTLE, MASHED POTATO, ROBOT, TWIST]
+      - name: 'Silent "P"'
+        color: blue
+        words: [CORPS, COUP, PSYCHO, RECEIPT]
+      - name: ___ mark
+        color: purple
+        words: [BEAUTY, CHECK, QUESTION, STRETCH]
+
+  - id: 1023
+    date: 2026-03-30
+    difficulty: 4.4
+    words:
+      - DUMMY
+      - ERSATZ
+      - FAUX
+      - MOCK
+      - FUTZ
+      - MESS
+      - TINKER
+      - TOY
+      - AVIS
+      - BUDGET
+      - DOLLAR
+      - HERTZ
+      - FRITZ
+      - PLAYS
+      - TRUFFLES
+      - YUTZ
+    groups:
+      - name: Imitation
+        color: yellow
+        words: [DUMMY, ERSATZ, FAUX, MOCK]
+      - name: Play around (with)
+        color: green
+        words: [FUTZ, MESS, TINKER, TOY]
+      - name: Car rental companies
+        color: blue
+        words: [AVIS, BUDGET, DOLLAR, HERTZ]
+      - name: Snack brands plus starting letter
+        color: purple
+        words: [FRITZ, PLAYS, TRUFFLES, YUTZ]
+
+  - id: 1024
+    date: 2026-03-31
+    difficulty: 4.1
+    words:
+      - ABSENCE
+      - CRUNCH
+      - DEFICIT
+      - PINCH
+      - CANNON
+      - "CROW'S NEST"
+      - JOLLY ROGER
+      - PLANK
+      - PLUNGE
+      - PUSH-UP
+      - SPORTS
+      - WIRELESS
+      - CALF RAISE
+      - CHICK FLICK
+      - FRY COOK
+      - KIT KAT
+    groups:
+      - name: Shortage
+        color: yellow
+        words: [ABSENCE, CRUNCH, DEFICIT, PINCH]
+      - name: Parts of a pirate ship
+        color: green
+        words: [CANNON, "CROW'S NEST", JOLLY ROGER, PLANK]
+      - name: Kinds of bras
+        color: blue
+        words: [PLUNGE, PUSH-UP, SPORTS, WIRELESS]
+      - name: Starting with baby animals
+        color: purple
+        words: [CALF RAISE, CHICK FLICK, FRY COOK, KIT KAT]

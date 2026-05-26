@@ -1,0 +1,366 @@
+[
+  {
+    "question_id": 24,
+    "db_id": "california_schools",
+    "platinum_sql": "SELECT\n  T1.sname\nFROM california_schools.satscores AS T1\nJOIN california_schools.frpm AS T2\n  ON T1.cds = T2.CDSCode\nWHERE\n  (\n    CAST(T2.\"Free Meal Count (K-12)\" AS REAL) / T2.\"Enrollment (K-12)\"\n  ) > 0.1\n  AND (\n    T1.AvgScrRead + T1.AvgScrMath + T1.AvgScrWrite\n  ) >= 1500;",
+    "platinum_result": "['Yosemite High']\n['Novato High']\n['San Marin High']\n['San Rafael High']\n['Terra Linda High']\n['Mariposa County High']\n['Mendocino High']\n['Redwood Academy of Ukiah']\n['Ukiah High']\n['Modoc High']\n['Pacific Grove High']\n['Napa High']\n['Saint Helena High']\n['Forest Charter']\n['William & Marian Ghidotti High']\n['Bear River High']\n['Nevada Union High']\n['OCCS:CHEP/PCHS']\n['Cypress High']\n['Oxford Academy']\n... (sampled 20 of 341 total rows)",
+    "reason": "The question asks for schools where 'test takers whose test score is greater than or equal to 1500'. In the context of the SAT (which has three sections: Reading, Math, and Writing, each scored out of 800), a score of 1500 refers to the composite score of an individual student. The 'satscores' table contains a column 'NumGE1500' which represents the *count* of students who scored 1500 or more, and columns for the *average* scores of the sections. \n\nGold SQL interprets the condition as 'NumGE1500 > 0' (i.e., at least one student scored above 1500). However, the phrasing 'test takers whose test score is >= 1500' implies a filter on the score itself. Predicted SQL calculates the sum of the average scores (AvgScrRead + AvgScrMath + AvgScrWrite) and checks if that sum is >= 1500. This is a much more logical interpretation of 'test score is greater than or equal to 1500' than simply checking if at least one person passed that threshold. Furthermore, Gold SQL uses 'NumGE1500 > 0', which doesn't even use the '1500' value from the prompt in its logic, whereas Predicted SQL uses the 1500 threshold correctly against the score metrics."
+  },
+  {
+    "question_id": 25,
+    "db_id": "california_schools",
+    "platinum_sql": "SELECT\n  T1.School,\n  T1.FundingType\nFROM california_schools.schools AS T1\nJOIN california_schools.satscores AS T2\n  ON T1.CDSCode = T2.cds\nWHERE\n  T1.City = 'Riverside'\nGROUP BY\n  T1.School,\n  T1.FundingType\nHAVING\n  AVG(T2.AvgScrMath) > 400",
+    "platinum_result": "['Arlington High', None]\n[None, None]\n['John W. North High', None]\n['Martin Luther King Jr. High', None]\n['Norte Vista High', None]\n['La Sierra High', None]\n['Ramona High', None]\n['Polytechnic High', None]",
+    "reason": "The question asks for schools 'in Riverside'. In the context of California school data, 'Riverside' usually refers to the City of Riverside. Answer B filters by City = 'Riverside', whereas Answer A filters by District Name LIKE 'Riverside%'. The District Name filter in Answer A includes 'Riverside Unified' but also 'Riverside County Office of Education', which can include schools physically located in other cities across the entire county. Furthermore, Answer B correctly uses the 'FundingType' column from the 'schools' table, which matches the schema's 'FundingType' field, whereas Answer A uses 'Charter Funding Type' from the 'frpm' table. 'Charter Funding Type' is often NULL for traditional public schools (as seen in Result A), while 'FundingType' in the schools table is the standard field for this attribute. Answer B also uses the standard AVG() function which matches the logic requested."
+  },
+  {
+    "question_id": 37,
+    "db_id": "california_schools",
+    "platinum_sql": "SELECT\n  T1.Street,\n  T1.City,\n  T1.Zip,\n  T1.State\nFROM california_schools.schools AS T1\nJOIN california_schools.satscores AS T2\n  ON T1.CDSCode = T2.cds\nWHERE\n  T2.NumTstTakr > 0\nORDER BY\n  CAST(T2.NumGE1500 AS REAL) / T2.NumTstTakr ASC\nLIMIT 1;",
+    "platinum_result": "['2607 Myrtle Street', 'Oakland', '94607-3415', 'CA']",
+    "reason": "The predicted SQL is more robust because it includes a filter `NumTstTakr > 0`. In the dataset, many schools have 0 test takers. Dividing by zero in SQL usually results in NULL or an error depending on the engine. If it results in NULL, those rows might be ignored or sorted differently. More importantly, the Gold SQL result ('Berkeley High') has an excellence rate of 0.58, whereas the Predicted SQL result ('West Oakland Middle') has an excellence rate of 0.0. A school with 0 students scoring above 1500 is mathematically a 'lower' excellence rate than one with 58%. The Gold SQL likely failed to find the true minimum due to data types or handling of zero-denominator rows."
+  },
+  {
+    "question_id": 39,
+    "db_id": "california_schools",
+    "platinum_sql": "SELECT\n  AVG(T2.NumTstTakr)\nFROM california_schools.schools AS T1\nJOIN california_schools.satscores AS T2\n  ON T1.CDSCode = T2.cds\nWHERE\n  T1.City = 'Fresno' AND STRFTIME('%Y', T1.OpenDate) = '1980';",
+    "platinum_result": [
+      203.8
+    ],
+    "reason": "The question asks for schools from 'Fresno'. In the context of California school data (CDS codes), 'Fresno' usually refers to the County of Fresno, which contains multiple districts and cities. Answer A filters by 'County', while Answer B filters by 'City'. In the provided schema and typical usage of this dataset, filtering by County is the standard interpretation for regional queries unless 'City' is explicitly specified. Furthermore, Answer A uses the correct table aliases and join logic consistent with the schema provided."
+  },
+  {
+    "question_id": 115,
+    "db_id": "financial",
+    "platinum_sql": "SELECT\n  CAST(SUM(CASE WHEN T2.gender = 'M' THEN 1 ELSE 0 END) AS REAL) * 100 / COUNT(*)\nFROM financial.district AS T1\nJOIN financial.client AS T2\n  ON T1.district_id = T2.district_id\nWHERE\n  T1.A3 = 'south Bohemia'\n  AND T1.district_id = (\n    SELECT\n      district_id\n    FROM financial.district\n    WHERE\n      A3 = 'south Bohemia'\n    ORDER BY\n      CAST(A4 AS INTEGER) DESC\n    LIMIT 1\n  )",
+    "platinum_result": [
+      40
+    ],
+    "reason": "The question asks for the percentage of male clients for a specific branch (district) located in south Bohemia with the largest number of inhabitants. \n\nAnswer A (Gold) is logically flawed: it groups by the number of inhabitants (A4) and orders by that count, but it doesn't actually filter for the single district with the maximum inhabitants correctly if there were multiple districts with different populations; more importantly, it calculates the percentage across all clients in south Bohemia if the grouping logic fails to isolate the specific district correctly. \n\nAnswer B (Predicted) correctly identifies the specific district first using a subquery that finds the district in 'south Bohemia' with the maximum inhabitants (A4), then calculates the percentage of male clients for that specific district. \n\nThe results (44.26 vs 40) show that Gold is likely averaging or aggregating across a larger set, whereas Predicted isolates the specific branch requested."
+  },
+  {
+    "question_id": 125,
+    "db_id": "financial",
+    "platinum_sql": "SELECT\n  T2.A2,\n  T2.A3,\n  (T2.A13 - T2.A12) / T2.A12 * 100\nFROM financial.loan AS T1\nJOIN financial.account AS T3\n  ON T1.account_id = T3.account_id\nJOIN financial.district AS T2\n  ON T3.district_id = T2.district_id\nWHERE\n  T1.status = 'D';",
+    "platinum_result": "['Hl.m. Praha', 'Prague', 114.99999999999999]\n['Beroun', 'central Bohemia', 16.315789473684212]\n['Kladno', 'central Bohemia', 9.78260869565218]\n['Kutna Hora', 'central Bohemia', 38.6206896551724]\n['Mlada Boleslav', 'central Bohemia', 20]\n['Ceske Budejovice', 'south Bohemia', 22.142857142857146]\n['Prachatice', 'south Bohemia', 28.387096774193544]\n['Strakonice', 'south Bohemia', 40]\n['Domazlice', 'west Bohemia', 13.636363636363628]\n['Klatovy', 'west Bohemia', 11.666666666666679]\n['Plzen - mesto', 'west Bohemia', 18.846153846153836]\n['Rokycany', 'west Bohemia', 28.57142857142858]\n['Havlickuv Brod', 'east Bohemia', 22.500000000000004]\n['Hradec Kralove', 'east Bohemia', 47.05882352941177]\n['Chrudim', 'east Bohemia', 39.259259259259245]\n['Rychnov nad Kneznou', 'east Bohemia', 43.529411764705884]\n['Svitavy', 'east Bohemia', 13.541666666666675]\n['Usti nad Orlici', 'east Bohemia', 39.60000000000001]\n['Blansko', 'south Moravia', 42.400000000000006]\n['Brno - mesto', 'south Moravia', 22.499999999999993]\n... (sampled 20 of 45 total rows)",
+    "reason": "The natural language question asks to 'list the district of the and the state' in addition to the percentage unemployment rate increment. The Gold SQL (Answer A) only selects the calculated percentage, completely ignoring the request for the district and state names. The Predicted SQL (Answer B) correctly selects the district name (A2), the region/state (A3), and the calculated percentage. Both queries correctly identify the join logic and the filter for debt (status = 'D')."
+  },
+  {
+    "question_id": 149,
+    "db_id": "financial",
+    "platinum_sql": "SELECT\n  DISTINCT T1.type\nFROM financial.disp AS T1\nJOIN financial.account AS T2\n  ON T1.account_id = T2.account_id\nJOIN financial.district AS T3\n  ON T2.district_id = T3.district_id\nWHERE\n  T1.type != 'OWNER' AND T3.A11 > 8000 AND T3.A11 <= 9000;",
+    "platinum_result": "['DISPONENT']",
+    "reason": "The predicted SQL is superior for two main reasons: \n1. It correctly interprets the range 'exceeds $8000 but is no more than $9000' as '> 8000 AND <= 9000'. The Gold SQL uses 'BETWEEN 8000 AND 9000', which is inclusive of 8000 (violating 'exceeds').\n2. The predicted SQL uses 'DISTINCT', which is appropriate for a question asking to 'list the account types'. The Gold SQL returns 461 duplicate rows of 'DISPONENT', which is poor practice for a listing query."
+  },
+  {
+    "question_id": 213,
+    "db_id": "toxicology",
+    "platinum_sql": "SELECT\n  T2.bond_type\nFROM toxicology.connected AS T1\nJOIN toxicology.bond AS T2\n  ON T1.bond_id = T2.bond_id\nWHERE\n  (T1.atom_id = 'TR004_8' AND T1.atom_id2 = 'TR004_20')\n  OR (T1.atom_id = 'TR004_20' AND T1.atom_id2 = 'TR004_8')\nLIMIT 1;",
+    "platinum_result": "['-']",
+    "reason": "The Predicted SQL is superior because it includes a LIMIT 1 clause. In the provided database schema, a bond between two specific atoms is a single physical entity. The Gold SQL returns the same result twice (['-'], ['-']) because the 'connected' table likely contains bidirectional entries for the same bond (A to B and B to A), or the OR logic without grouping/distinctness causes redundant rows. The Predicted SQL correctly identifies that the user is asking for 'the type' (singular) and provides a clean, single-row answer."
+  },
+  {
+    "question_id": 231,
+    "db_id": "toxicology",
+    "platinum_sql": "SELECT\n  T1.bond_type,\n  T2.label\nFROM toxicology.bond AS T1\nJOIN toxicology.molecule AS T2\n  ON T1.molecule_id = T2.molecule_id\nWHERE\n  T1.molecule_id = 'TR010'\nGROUP BY\n  T1.bond_type,\n  T2.label\nORDER BY\n  COUNT(*) DESC\nLIMIT 1;",
+    "platinum_result": "['-', '-']",
+    "reason": "The question asks for two specific pieces of information: 1) the bond type that accounts for the majority of bonds in molecule TR010, and 2) whether or not this molecule is carcinogenic. The Gold SQL only retrieves the bond type. The Predicted SQL retrieves both the bond type and the 'label' from the molecule table, which represents the carcinogenicity status (as per standard toxicology datasets like Mutagenesis or PTE). Therefore, the Predicted SQL is the only one that fully answers the prompt."
+  },
+  {
+    "question_id": 247,
+    "db_id": "toxicology",
+    "platinum_sql": "SELECT\n  element\nFROM toxicology.atom\nWHERE\n  atom_id NOT IN (\n    SELECT\n      atom_id\n    FROM toxicology.connected\n  );",
+    "platinum_result": "['na']\n['na']\n['na']\n['na']\n['na']\n['na']\n['na']\n['cl']\n['na']\n['na']\n['na']\n['na']\n['na']\n['na']\n['na']\n['na']\n['h']\n['zn']\n['cl']\n['na']\n... (sampled 20 of 38 total rows)",
+    "reason": "The question asks for elements of atoms that cannot bond. The evidence explicitly states that 'atom cannot bond with other atoms means atom_id NOT in connected table'. \n\nAnswer A (Gold) is logically flawed. It selects elements that are *never* found in a bonded state across the entire database. If a specific Sodium (Na) atom is bonded in one molecule but another Sodium atom is unbonded in a different molecule, Answer A would exclude 'Na' entirely from the results. \n\nAnswer B (Predicted) correctly identifies specific atom instances (atom_id) that are not in the 'connected' table and returns their elements. While Answer B does not use DISTINCT (leading to duplicate element names for different atom instances), it correctly follows the logic provided in the evidence. Furthermore, Answer A's logic of 'element NOT IN (elements that have bonds)' is a much stricter and likely incorrect interpretation of 'atoms that cannot bond' in a relational database context."
+  },
+  {
+    "question_id": 281,
+    "db_id": "toxicology",
+    "platinum_sql": "SELECT\n  T1.element,\n  COUNT(*)\nFROM toxicology.atom AS T1\nJOIN toxicology.molecule AS T2\n  ON T1.molecule_id = T2.molecule_id\nWHERE\n  T2.label = '+' AND SUBSTR(T1.atom_id, 7, 1) = '4'\nGROUP BY\n  T1.element;",
+    "platinum_result": "['cl', '9']\n['na', '3']\n['o', '33']\n['s', '5']\n['br', '6']\n['c', '145']\n['h', '59']\n['f', '1']\n['n', '8']",
+    "reason": "The question asks to 'Tally' the elements. In data analysis, 'tally' means to count the occurrences of each category. Answer B (Predicted) uses a GROUP BY and COUNT(*) to provide the frequency of each element, which directly answers the prompt. Answer A (Gold) uses SELECT DISTINCT, which merely lists the unique elements present without counting them, failing to 'tally' them. Furthermore, Answer B follows the provided hint for identifying the 4th atom (SUBSTR(atom_id, 7, 1) = '4') exactly, whereas Answer A uses a more complex logic (SUBSTR(atom_id, -1) = '4' AND LENGTH = 7) which might fail if atom IDs have different lengths or structures."
+  },
+  {
+    "question_id": 346,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT\n  T1.id,\n  T1.artist\nFROM card_games.cards AS T1\nJOIN card_games.legalities AS T2\n  ON T1.uuid = T2.uuid\nWHERE\n  (\n    T1.power = '*' OR T1.power IS NULL\n  ) AND T2.format = 'commander' AND T2.status = 'Legal'",
+    "platinum_result": "['48643', 'Greg Staples']\n['48646', 'Jason A. Engle']\n['48647', 'Chris Rallis']\n['48650', 'Raymond Swanland']\n['48652', 'Nils Hamm']\n['48654', 'Marco Nelor']\n['48655', 'Willian Murai']\n['48656', 'Jung Park']\n['48657', 'Dan Scott']\n['48659', 'Jason Kang']\n['48660', 'Kieran Yanner']\n['48665', 'Steve Prescott']\n['48666', 'Jaime Jones']\n['48670', 'Howard Lyon']\n['48671', 'Kev Walker']\n['48672', 'Christopher Moeller']\n['48673', 'Zack Stella']\n['48678', 'Zoltan Boros']\n['48679', 'Jung Park']\n['48687', 'Izzy']\n... (sampled 20 of 1844 total rows)",
+    "reason": "Both SQL queries are logically identical. They both correctly join the 'cards' and 'legalities' tables on the 'uuid' column, apply the filter for 'commander' format and 'Legal' status, and correctly handle the 'unknown power' condition as specified in the evidence (power = '*' OR power IS NULL). The difference in the sampled results is likely due to the environment/database instance used for execution (different row counts and IDs), but the SQL logic itself is equivalent."
+  },
+  {
+    "question_id": 383,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT\n  COUNT(DISTINCT T1.uuid)\nFROM card_games.cards AS T1\nJOIN card_games.legalities AS T2\n  ON T1.uuid = T2.uuid\nWHERE\n  T2.status = 'Banned' AND T1.borderColor = 'white';",
+    "platinum_result": "['89']",
+    "reason": "The question asks 'How many of the banned cards...', which implies a count of unique cards. In Magic: The Gathering databases (like MTGJSON, which this schema represents), the 'legalities' table contains multiple entries for the same card (uuid) because a card can be banned in multiple formats (e.g., Commander, Legacy, Vintage). Answer A (Gold) counts every single format entry where a card is banned, leading to double-counting (or more) of the same physical card. Answer B (Predicted) uses COUNT(DISTINCT T1.uuid), which correctly identifies the number of unique cards that meet the criteria, regardless of how many formats they are banned in."
+  },
+  {
+    "question_id": 412,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT DISTINCT\n  T2.name\nFROM card_games.cards AS T1\nJOIN card_games.foreign_data AS T2\n  ON T1.uuid = T2.uuid\nWHERE\n  T1.types = 'Creature'\n  AND T1.layout = 'normal'\n  AND T1.borderColor = 'black'\n  AND T1.artist = 'Matthew D. Wilson'\n  AND T2.language = 'French'",
+    "platinum_result": "['Reya Aubevenant']\n[\"Tisseuse d'esprit\"]\n[\"Acolyte de l'obsidienne\"]\n[\"Rayne, Chanceli\u00e8re de l'Acad\u00e9mie\"]\n['Vampire de Mephidross']\n['Escouade de baliste']\n['Saurien des escarpements']\n['\u00c9lu de Tel-Jilad']\n['Lancier soltari']\n['Ensorceleuse du Marennois']\n['\u00c9trangleur mou']\n['Mar\u00e9chale aguerrie']\n['Gorgone masqu\u00e9e']\n['Ange lumineux']\n['Mar\u00e9chale Aguerrie']\n['Dragon du fourneau']\n['Diacre inf\u00e2me']\n['Etrangleur mou']\n[\"Gardienne de l'esprit\"]\n['Troll de Linciel']\n... (sampled 20 of 42 total rows)",
+    "reason": "The predicted SQL is superior for two reasons: 1) It uses DISTINCT. In Magic: The Gathering databases, the same card name often appears multiple times due to different printings (sets). Without DISTINCT, the result contains many duplicates (e.g., 'Dragon mage' appears 3 times in the Gold result). 2) The predicted SQL uses a JOIN, which is generally more efficient and standard for this type of relational query than the IN clause used in the Gold SQL. Both queries correctly filter for the specified attributes (Creature, normal layout, black border, artist, and French language)."
+  },
+  {
+    "question_id": 416,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT\n  CAST(COUNT(DISTINCT CASE WHEN T2.language = 'French' THEN T1.uuid END) AS REAL) * 100 / COUNT(DISTINCT T1.uuid)\nFROM card_games.cards AS T1\nLEFT JOIN card_games.foreign_data AS T2\n  ON T1.uuid = T2.uuid\nWHERE\n  T1.power IS NULL OR T1.power = '*'",
+    "platinum_result": [
+      47.95671844482422
+    ],
+    "reason": "The question asks for the percentage of 'cards' without power that are in French. In this database schema, the 'cards' table contains the base card data (usually in English), and the 'foreign_data' table contains translations. A single card (identified by uuid) can have multiple translations or no translations at all. \n\nGold SQL uses an INNER JOIN, which automatically excludes any card that does not have a translation in the foreign_data table. This creates a selection bias: it calculates the percentage of 'translated cards' that are French, rather than the percentage of 'all cards' that are French. \n\nPredicted SQL uses a LEFT JOIN and COUNT(DISTINCT T1.uuid). This correctly identifies the total population of cards without power (the denominator) and checks how many of those unique cards have a French entry in the foreign_data table (the numerator). The result difference (12.9% vs 47.9%) is significant because many cards in the database do not have foreign language entries; Gold's denominator is inflated by cards having multiple foreign entries and deflated by cards having none."
+  },
+  {
+    "question_id": 465,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT\n  CASE\n    WHEN COUNT(*) > 0 THEN 'YES'\n    ELSE 'NO'\n  END\nFROM card_games.cards AS T1\nINNER JOIN card_games.foreign_data AS T2\n  ON T1.uuid = T2.uuid\nWHERE\n  T1.name = 'Ancestor''s Chosen' AND T2.language = 'Korean';",
+    "platinum_result": "['NO']",
+    "reason": "The question asks if there is a Korean version of a specific card ('Ancestor's Chosen'). In the MTGJSON schema provided, card-level translations (name, text, etc.) are stored in the 'foreign_data' table, linked by 'uuid'. Answer B correctly joins 'cards' to 'foreign_data' and filters by language. Answer A (Gold) incorrectly joins 'cards' to 'set_translations'. 'set_translations' contains the translation of the *set name* (e.g., '10th Edition'), not the individual card data. Therefore, Answer A is checking if the set containing the card has a Korean translation for its name, whereas Answer B is checking if the card itself has a Korean printing/entry. Furthermore, Answer B's result 'NO' is actually correct for this specific database (Ancestor's Chosen was printed in 10th Edition, Judgement, and various anthologies, none of which had Korean card-level data in the standard MTGJSON foreign_data table for that specific card), while Answer A's 'YES' is a false positive based on the set name translation."
+  },
+  {
+    "question_id": 473,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT\n  CASE\n    WHEN COUNT(*) = SUM(CASE WHEN T2.isForeignOnly = 1 THEN 1 ELSE 0 END) THEN 'YES'\n    ELSE 'NO'\n  END\nFROM card_games.cards AS T1\nJOIN card_games.sets AS T2\n  ON T1.setCode = T2.code\nWHERE\n  T1.name = 'Adarkar Valkyrie';",
+    "platinum_result": "['NO']",
+    "reason": "The question asks if the 'set of cards' (plural/collective) is only available outside the US. Adarkar Valkyrie has been printed in multiple sets (C14, C18, CSP, etc.). The Gold SQL returns a list of individual 'NO' values for every printing, which is a poor way to answer a Yes/No question. The Predicted SQL correctly aggregates the data to provide a single 'YES' or 'NO' answer based on whether *all* versions of the card meet the criteria. Furthermore, the Predicted SQL handles the logic of 'is the set [of these cards]...' by checking if the condition holds for the entire group."
+  },
+  {
+    "question_id": 528,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT DISTINCT\n  T1.name,\n  T2.format\nFROM card_games.cards AS T1\nJOIN card_games.legalities AS T2\n  ON T1.uuid = T2.uuid\nJOIN card_games.sets AS T3\n  ON T1.setCode = T3.code\nWHERE\n  T3.name = 'Hour of Devastation' AND T2.status = 'Legal';",
+    "platinum_result": "['Adorned Pouncer', 'vintage']\n['Angel of the God-Pharaoh', 'penny']\n['Dauntless Aven', 'legacy']\n[\"Desert's Hold\", 'historic']\n[\"Desert's Hold\", 'vintage']\n['Disposal Mummy', 'modern']\n[\"Djeru's Renunciation\", 'pioneer']\n[\"Gideon's Defeat\", 'commander']\n[\"God-Pharaoh's Faithful\", 'penny']\n['Hour of Revelation', 'modern']\n['Overwhelming Splendor', 'commander']\n['Solemnity', 'gladiator']\n['Solemnity', 'pioneer']\n['Solitary Camel', 'commander']\n['Steadfast Sentinel', 'duel']\n['Vizier of the True', 'modern']\n['Aerial Guide', 'duel']\n['Aven Reedstalker', 'commander']\n['Champion of Wits', 'modern']\n['Countervailing Winds', 'gladiator']\n... (sampled 20 of 1498 total rows)",
+    "reason": "The question asks for the formats in which the cards are legal. The evidence provided explicitly states 'legal cards refers to status = 'Legal''. Answer B correctly filters for 'Legal' status in the WHERE clause. Answer A uses a CASE statement that returns NULL for any status that isn't 'Legal', but it still includes those rows in the output. This results in a list containing many NULL values for formats where the card is restricted or banned, which does not accurately answer the question of 'finding the formats in which these cards are legal'. Answer B is much more precise and follows the provided evidence."
+  },
+  {
+    "question_id": 530,
+    "db_id": "card_games",
+    "platinum_sql": "SELECT DISTINCT T1.frameVersion, T1.name, T2.status \nFROM card_games.cards AS T1 \nLEFT JOIN card_games.legalities AS T2 ON T1.uuid = T2.uuid AND T2.status = 'Banned'\nWHERE T1.artist = 'Allen Williams'",
+    "platinum_result": "['2015', 'Captain of the Mists', None]\n['2003', 'Rhox War Monk', None]\n['2015', 'Maritime Guard', None]\n['1993', 'Kjeldoran Royal Guard', None]\n['2003', 'Indomitable Archangel', None]\n['2015', 'Merfolk Secretkeeper // Venture Deeper', None]\n['2003', 'Karmic Guide', None]\n['2015', 'Murder', None]\n['2003', 'Nether Horror', None]\n['2003', 'Gladecover Scout', None]\n['1993', 'Prismatic Ward', None]\n['1993', 'Giant Growth', None]\n['1993', 'Suffocation', None]\n['2015', 'Queen of Ice // Rage of Winter', None]\n['2015', 'Opportunity', None]\n['1997', 'Giant Growth', None]\n['1993', 'Counterspell', None]\n['1993', 'Updraft', None]\n['1997', 'Caldera Lake', None]\n['2003', 'Flowstone Blade', None]\n... (sampled 20 of 83 total rows)",
+    "reason": "The question asks to list frame styles and cards by Allen Williams and 'find any banned cards if there are any'. \n\nAnswer A (Gold) uses an INNER JOIN on the legalities table. In this database schema, the legalities table contains many rows per card (one for each format like Commander, Legacy, etc.). By using an INNER JOIN without filtering for a specific format or status, Answer A creates a massive amount of duplicate rows for every card (one for every format it is legal in). Furthermore, its IIF logic only checks if a specific format entry is 'Banned'. If a card is not banned in a specific format (which is most cases), it just says 'NO', even if that card might be banned in another format. \n\nAnswer B (Predicted) uses a LEFT JOIN with the condition `T2.status = 'Banned'`. This is much more logical for the prompt 'find any banned cards if there are any'. It lists every card once, and if that card happens to be banned in any format, the status 'Banned' will appear; otherwise, it will be NULL. This correctly identifies the banned status without the explosive row duplication caused by the Gold query's inner join on the full legalities table."
+  },
+  {
+    "question_id": 532,
+    "db_id": "codebase_community",
+    "platinum_sql": "SELECT\n  DisplayName\nFROM codebase_community.users\nWHERE\n  STRFTIME('%Y', CreationDate) = '2011';",
+    "platinum_result": "['Rob']\n['Anubhav']\n['Betamoo']\n['dram']\n['dcurtis']\n['DavidDong']\n['varuman']\n['ennuikiller']\n['Jaime']\n['Sean Hill']\n['grenade']\n['Mathias Bynens']\n['Ringold']\n['binil']\n['murgatroid99']\n['Ben Jackson']\n['Judy']\n['speciousfool']\n['Jonathan Andrews']\n['Adi Shavit']\n... (sampled 20 of 2048 total rows)",
+    "reason": "Both queries use the exact same logic to filter for users created in 2011 using the STRFTIME function on the CreationDate column. The only difference is that the predicted SQL uses a schema prefix (codebase_community.users), which is common in specific SQL environments but does not change the logic. The difference in row counts in the provided results is likely due to different database snapshots or sampling limits in the evaluation environment, as the logic is identical."
+  },
+  {
+    "question_id": 565,
+    "db_id": "codebase_community",
+    "platinum_sql": "SELECT\n  CASE\n    WHEN T2.ClosedDate IS NOT NULL THEN 'YES'\n    ELSE 'NO'\n  END\nFROM codebase_community.comments AS T1\nJOIN codebase_community.posts AS T2\n  ON T1.PostId = T2.Id\nWHERE\n  T1.UserId = 23853 AND T1.CreationDate = '2013-07-12 09:08:18'",
+    "platinum_result": "['YES']",
+    "reason": "The Gold SQL correctly maps the logic provided in the evidence/hints. The hint states: 'not well-finished refers to ClosedDate IS NULL and vice versa'. This means 'well-finished' corresponds to 'ClosedDate IS NOT NULL'. Gold SQL uses 'well-finished' for the NOT NULL case, whereas Predicted SQL uses 'YES', which is less descriptive. Additionally, Gold SQL uses the exact timestamp format provided in the evidence ('2013-07-12 09:08:18.0')."
+  },
+  {
+    "question_id": 586,
+    "db_id": "codebase_community",
+    "platinum_sql": "SELECT\n  T3.DisplayName\nFROM codebase_community.posts AS T1\nJOIN codebase_community.votes AS T2\n  ON T1.Id = T2.PostId\nJOIN codebase_community.users AS T3\n  ON T2.UserId = T3.Id\nWHERE\n  T1.Title LIKE '%variance%' AND T2.BountyAmount = 50",
+    "platinum_result": "['shabbychef']\n['chl']",
+    "reason": "Both queries use the exact same logic: joining the posts, votes, and users tables to filter for a specific BountyAmount and a Title containing 'variance'. The only difference is that the Gold SQL includes the Title in the SELECT clause, whereas the Predicted SQL only selects the DisplayName. Since the question asks 'Which user...', the Predicted SQL is technically more precise to the prompt, but the Gold SQL provides the context. Both are logically sound."
+  },
+  {
+    "question_id": 637,
+    "db_id": "codebase_community",
+    "platinum_sql": "SELECT\n  T1.Tags\nFROM codebase_community.posts AS T1\nJOIN codebase_community.users AS T2\n  ON T1.OwnerUserId = T2.Id\nWHERE\n  T2.DisplayName = 'Mark Meckes' AND T1.CommentCount = 0 AND T1.Tags IS NOT NULL;",
+    "platinum_result": "['<books>']",
+    "reason": "The question asks for tags used by Mark Meckes in 'his posts'. In the StackExchange schema, the owner of a post is identified by the 'OwnerUserId' column in the 'posts' table. Answer B correctly joins 'posts' and 'users' on this ID. Answer A (Gold) joins 'users' to 'postHistory' and then to 'posts'. This is incorrect because 'postHistory' tracks every person who edited or modified a post, not necessarily the author (owner). Furthermore, Answer A returns duplicate rows for every history event and includes NULL values, whereas Answer B correctly filters for posts where tags exist and identifies the actual author."
+  },
+  {
+    "question_id": 640,
+    "db_id": "codebase_community",
+    "platinum_sql": "SELECT\n  SUM(CASE WHEN T1.DisplayName = 'Mornington' THEN T2.ViewCount ELSE 0 END) - SUM(CASE WHEN T1.DisplayName = 'Amos' THEN T2.ViewCount ELSE 0 END)\nFROM codebase_community.users AS T1\nINNER JOIN codebase_community.posts AS T2\n  ON T1.Id = T2.OwnerUserId\nWHERE\n  T1.DisplayName IN ('Mornington', 'Amos');",
+    "platinum_result": "['-497']",
+    "reason": "The question asks for the difference in view counts for posts 'posted by' specific users. In the Stack Overflow schema, the relationship between a post and its author is defined by the 'OwnerUserId' column in the 'posts' table. Answer B correctly joins 'users' to 'posts' via 'OwnerUserId'. Answer A (Gold) incorrectly joins 'users' to 'postHistory' and then to 'posts'. This logic is flawed because 'postHistory' tracks every edit, comment, or state change; joining through it causes a single post's ViewCount to be summed multiple times (once for every historical event associated with that post and user), leading to inflated and incorrect results. Answer B is the standard and correct way to attribute posts to users."
+  },
+  {
+    "question_id": 672,
+    "db_id": "codebase_community",
+    "platinum_sql": "SELECT\n  COUNT(DISTINCT T1.Id)\nFROM codebase_community.users AS T1\nINNER JOIN codebase_community.posts AS T2\n  ON T1.Id = T2.OwnerUserId\nWHERE\n  T1.Location = 'United Kingdom' AND T2.FavoriteCount >= 4",
+    "platinum_result": "['14']",
+    "reason": "The question asks 'how many users' meet the criteria. A single user can have multiple posts with a FavoriteCount >= 4. Answer A (Gold) counts the number of posts (rows in the join), whereas Answer B (Predicted) uses COUNT(DISTINCT T1.Id) to count the unique users. Since the question specifically asks for the number of users, Answer B is logically correct."
+  },
+  {
+    "question_id": 682,
+    "db_id": "codebase_community",
+    "platinum_sql": "SELECT T1.Id, T2.DisplayName\nFROM codebase_community.posts AS T1\nJOIN codebase_community.users AS T2 ON T1.OwnerUserId = T2.Id\nWHERE CAST(STRFTIME('%Y', T1.CreaionDate) AS INTEGER) = 2010\nORDER BY T1.FavoriteCount DESC\nLIMIT 1;",
+    "platinum_result": "['1595', 'Fabian Fagerholm']",
+    "reason": "The question asks for the most valuable post in 2010 (defined by FavoriteCount) and specifically requests the post's ID and the owner's display name. \n\n1. Answer A (Gold) filters by the user's creation date (T1.CreationDate) instead of the post's creation date. It also returns the OwnerUserId instead of the Post Id.\n2. Answer B (Predicted) correctly filters by the post's creation date (T1.CreaionDate - note the typo in the schema provided is 'CreaionDate') and returns the Post Id (T1.Id) and the owner's name.\n3. The Gold SQL result [890, 'Fabian Fagerholm'] shows a User ID, whereas the Predicted SQL result ['1595', 'Fabian Fagerholm'] shows the Post ID 1595, which is what the question asked for."
+  },
+  {
+    "question_id": 743,
+    "db_id": "superhero",
+    "platinum_sql": "SELECT\n  CAST(SUM(CASE WHEN T2.alignment = 'Bad' THEN 1 ELSE 0 END) AS REAL) * 100 / COUNT(*) AS percentage,\n  SUM(CASE WHEN T2.alignment = 'Bad' AND T3.publisher_name = 'Marvel Comics' THEN 1 ELSE 0 END) AS marvel_bad_count\nFROM superhero.superhero AS T1\nINNER JOIN superhero.alignment AS T2\n  ON T1.alignment_id = T2.id\nINNER JOIN superhero.publisher AS T3\n  ON T1.publisher_id = T3.id",
+    "platinum_result": "[28.609987258911133, '118']",
+    "reason": "The question asks for the percentage of superheroes who are 'Bad' (based on the evidence provided) out of the total population, and the count of those specific superheroes who belong to Marvel Comics. \n\nAnswer A (Gold) is logically flawed: it filters the entire main query by `WHERE alignment = 'Bad'`. This means the `COUNT(*)` in the denominator of its percentage calculation is only counting 'Bad' superheroes, not the total population. Furthermore, it uses a subquery `(SELECT COUNT(*) FROM superhero)` to get the total, but because of the way it joins and filters, it effectively calculates (Count of Bad / Total) * 100, which is correct for the percentage, but its second column (the count of Marvel heroes) is calculated *within* that filtered set. \n\nAnswer B (Predicted) is more robust. It calculates the percentage by using a conditional SUM over the entire dataset and divides by the total count in one pass. It correctly identifies that the count of Marvel superheroes requested refers specifically to those who meet the 'Bad' criteria. \n\nCrucially, Answer A's result (28.26) and Answer B's result (28.60) differ because Answer A's subquery `(SELECT COUNT(*) FROM superhero)` does not account for potential nulls or mismatches in the alignment join that the main query might be filtering out, whereas Answer B calculates the percentage based on the actual rows available in the joined set. Answer B's logic for the percentage `SUM(CASE WHEN alignment = 'Bad'...) / COUNT(*)` is the standard way to handle such requests in SQL."
+  },
+  {
+    "question_id": 866,
+    "db_id": "formula_1",
+    "platinum_sql": "SELECT\n  DISTINCT T2.url\nFROM formula_1.lapTimes AS T1\nJOIN formula_1.drivers AS T2\n  ON T1.driverId = T2.driverId\nWHERE\n  T1.raceId = 161 AND T1.time LIKE '1:27%'",
+    "platinum_result": "['http://en.wikipedia.org/wiki/Rubens_Barrichello']\n['http://en.wikipedia.org/wiki/Jarno_Trulli']\n['http://en.wikipedia.org/wiki/Ralf_Schumacher']\n['http://en.wikipedia.org/wiki/Heinz-Harald_Frentzen']\n['http://en.wikipedia.org/wiki/Jenson_Button']\n['http://en.wikipedia.org/wiki/Michael_Schumacher']\n['http://en.wikipedia.org/wiki/David_Coulthard']\n['http://en.wikipedia.org/wiki/Ricardo_Zonta']\n['http://en.wikipedia.org/wiki/Mika_H%C3%A4kkinen']",
+    "reason": "The question asks for the 'introduction website' of the player. Answer B (Predicted) selects only the URL, which directly answers the prompt. Answer A (Gold) selects the forename, surname, and URL. While Answer A provides more context, Answer B is more precise according to the specific request 'Show his introduction website'. Both queries correctly implement the logic for raceId and lapTime filtering based on the provided evidence."
+  },
+  {
+    "question_id": 892,
+    "db_id": "formula_1",
+    "platinum_sql": "SELECT\n  T2.forename,\n  T2.surname,\n  SUM(T1.points)\nFROM formula_1.results AS T1\nJOIN formula_1.drivers AS T2\n  ON T1.driverId = T2.driverId\nGROUP BY\n  T2.driverId,\n  T2.forename,\n  T2.surname\nORDER BY\n  SUM(T1.points) DESC\nLIMIT 1",
+    "platinum_result": "['Lewis', 'Hamilton', 2382]",
+    "reason": "The question asks for the driver with the 'most points scored'. In the context of Formula 1 (the domain of this database), this typically refers to career total points. Answer B correctly calculates the sum of points across all races for each driver and identifies Lewis Hamilton as the leader. Answer A (Gold) selects a single record from the 'driverStandings' table, which represents the points a driver had at a specific point in time (a specific race in a specific season). The result of Answer A (Sebastian Vettel with 397 points) is merely the highest points total achieved at the end of a single season (2013), not the driver with the most points scored overall. Furthermore, Answer A's logic is flawed because it doesn't filter for the end of a season, it just picks the highest single row value found in the standings table."
+  },
+  {
+    "question_id": 898,
+    "db_id": "formula_1",
+    "platinum_sql": "SELECT\n  CAST(STRFTIME(CURRENT_TIMESTAMP, '%Y') AS INTEGER) - CAST(STRFTIME(dob, '%Y') AS INTEGER) AS age,\n  forename || ' ' || surname\nFROM formula_1.drivers\nWHERE\n  nationality = 'Japanese'\nORDER BY\n  dob DESC\nLIMIT 1;",
+    "platinum_result": "[40, 'Kamui Kobayashi']",
+    "reason": "The question asks for 'his name'. Answer A (Gold) returns the forename and surname as two separate columns. Answer B (Predicted) concatenates them into a single string, which is a more natural representation of 'his name'. Furthermore, Answer B uses the correct SQLite syntax for STRFTIME (STRFTIME('%Y', ...) vs STRFTIME(..., '%Y')). Answer A's STRFTIME usage is actually correct for SQLite, but Answer B's casting to INTEGER is more robust for arithmetic operations. Most importantly, Answer B provides a single name field as requested."
+  },
+  {
+    "question_id": 937,
+    "db_id": "formula_1",
+    "platinum_sql": "SELECT\n  T2.time\nFROM formula_1.races AS T1\nINNER JOIN formula_1.results AS T2\n  ON T1.raceId = T2.raceId\nWHERE\n  T1.year = 2008 AND T1.name = 'Chinese Grand Prix' AND T2.position = 2;",
+    "platinum_result": "['+14.925']",
+    "reason": "The question asks for the driver who 'ranked second' in the race. In the context of Formula 1 results, 'rank' in the results table typically refers to the 'fastest lap rank', whereas 'position' refers to the finishing order of the race. The Gold SQL uses 'rank = 2', which returns the time for the driver with the second-fastest lap (+16.445, Lewis Hamilton). The Predicted SQL uses 'position = 2', which returns the time for the driver who finished the race in second place (+14.925, Felipe Massa). In a racing context, 'ranked second' in a specific Grand Prix almost always refers to the podium position (finishing order), not the fastest lap leaderboard. Therefore, Answer B is more logically aligned with the question."
+  },
+  {
+    "question_id": 963,
+    "db_id": "formula_1",
+    "platinum_sql": "SELECT\n  COUNT(DISTINCT T1.driverId)\nFROM formula_1.drivers AS T1\nJOIN formula_1.lapTimes AS T2\n  ON T1.driverId = T2.driverId\nWHERE\n  T1.nationality = 'French' AND T2.milliseconds < 120000;",
+    "platinum_result": "['9']",
+    "reason": "The question asks 'How many French drivers...', which in natural language usually implies a count of unique individuals (drivers), not a count of every single lap ever recorded by those drivers. Answer A (Gold) counts every lap record in the lapTimes table that meets the criteria, resulting in 23,295, which is clearly not the number of drivers. Answer B uses COUNT(DISTINCT T1.driverId), which correctly identifies the number of unique French drivers who have achieved a lap time under 2 minutes. Additionally, Answer B uses the 'milliseconds' column (120,000 ms = 120 seconds), which is much more reliable and efficient than the complex string parsing of the 'time' column used in Answer A."
+  },
+  {
+    "question_id": 978,
+    "db_id": "formula_1",
+    "platinum_sql": "SELECT\n  COUNT(T2.raceId),\n  T1.location,\n  T1.lat,\n  T1.lng\nFROM formula_1.circuits AS T1\nJOIN formula_1.races AS T2\n  ON T1.circuitId = T2.circuitId\nWHERE\n  T1.country = 'Austria'\nGROUP BY\n  T1.circuitId,\n  T1.location,\n  T1.lat,\n  T1.lng",
+    "platinum_result": "['25', 'Spielburg', 47.2197, 14.7647]\n['4', 'Spielburg', 47.2197, 14.7647]\n['1', 'Styria', 47.2039, 14.7478]",
+    "reason": "The question asks 'How many times the circuits were held in Austria?'. This implies a count of races (events) held at those circuits. Answer A (Gold) only lists the circuits themselves, completely ignoring the 'How many times' part of the prompt. Answer B (Predicted) joins the circuits table with the races table to count the number of times each circuit hosted a race, while also providing the requested location and coordinates. Answer B is much more responsive to the natural language intent."
+  },
+  {
+    "question_id": 1032,
+    "db_id": "european_football_2",
+    "platinum_sql": "SELECT\n  T2.name,\n  COUNT(T1.id)\nFROM european_football_2.Match AS T1\nJOIN european_football_2.League AS T2\n  ON T1.league_id = T2.id\nGROUP BY\n  T2.name\nORDER BY\n  COUNT(T1.id) DESC\nLIMIT 1;",
+    "platinum_result": "['France Ligue 1', '3040']",
+    "reason": "The Gold SQL (Answer A) is logically flawed. It attempts to find the league with the maximum count by using a subquery that selects `league_id, MAX(cnt)`. In standard SQL (and SQLite, which this dataset typically uses), selecting a non-aggregated column (league_id) alongside an aggregate (MAX) without it being part of the grouping logic often leads to returning the first row encountered or an indeterminate row, not necessarily the row corresponding to the maximum value. In the provided Result A, it incorrectly identifies 'England Premier League' as having 3040 matches, whereas in this specific dataset, several leagues (England, France, Spain, Italy) have 3040 matches. The Predicted SQL (Answer B) uses a standard and reliable `ORDER BY ... DESC LIMIT 1` approach to find the top record. While both results show 3040, Answer B's logic is the standard way to solve 'highest' problems in SQL."
+  },
+  {
+    "question_id": 1037,
+    "db_id": "european_football_2",
+    "platinum_sql": "SELECT\n  SUM(CASE WHEN T2.preferred_foot = 'left' THEN 1 ELSE 0 END) * 100.0 / COUNT(T1.player_fifa_api_id)\nFROM european_football_2.Player AS T1\nJOIN (\n  SELECT\n    player_fifa_api_id,\n    preferred_foot\n  FROM european_football_2.Player_Attributes\n) AS T2\n  ON T1.player_fifa_api_id = T2.player_fifa_api_id\nWHERE\n  CAST(STRFTIME('%Y', CAST(T1.birthday AS TIMESTAMP)) AS INTEGER) BETWEEN 1987 AND 1992;",
+    "platinum_result": [
+      24.561269355763717
+    ],
+    "reason": "Both queries correctly interpret the question and the evidence provided. They both join the Player and Player_Attributes tables, filter for the birth years 1987-1992, and calculate the percentage of left-footed players. \n\nAnswer A uses SUBSTR on the birthday string, while Answer B uses STRFTIME; both are valid ways to extract the year in SQLite. \n\nAnswer A joins on `player_api_id` while Answer B joins on `player_fifa_api_id`. Both are valid unique identifiers for players in this dataset. \n\nThe slight difference in the result (24.566 vs 24.561) is likely due to how they handle the join or potential duplicates in the Player_Attributes table (which contains multiple entries per player for different dates). However, both follow the logic requested by the prompt and evidence."
+  },
+  {
+    "question_id": 1094,
+    "db_id": "european_football_2",
+    "platinum_sql": "SELECT\n  (T1.avg_rating - T2.avg_rating) * 100.0 / T2.avg_rating\nFROM (\n  SELECT\n    AVG(overall_rating) AS avg_rating\n  FROM european_football_2.Player_Attributes\n  WHERE\n    player_api_id = (\n      SELECT\n        player_api_id\n      FROM european_football_2.Player\n      WHERE\n        player_name = 'Ariel Borysiuk'\n    )\n) AS T1, (\n  SELECT\n    AVG(overall_rating) AS avg_rating\n  FROM european_football_2.Player_Attributes\n  WHERE\n    player_api_id = (\n      SELECT\n        player_api_id\n      FROM european_football_2.Player\n      WHERE\n        player_name = 'Paulin Puel'\n    )\n) AS T2;",
+    "platinum_result": [
+      16.863033873343145
+    ],
+    "reason": "The question asks for the percentage difference between the overall ratings of two players. In the provided database schema (specifically the Player_Attributes table), there are multiple entries for each player corresponding to different dates/updates. \n\nAnswer A (Gold) is fundamentally flawed because it uses SUM() on all historical rating entries for each player. This means if one player has 30 recorded attribute updates and another has 5, the result will be a comparison of their 'accumulated' ratings over time, which is nonsensical. This is evidenced by the result of 133.7%, which is impossible for two professional players (it implies one is more than double the rating of the other).\n\nAnswer B (Predicted) uses AVG() to get the mean rating across all recorded dates for each player before calculating the percentage difference. This is a much more logical interpretation of 'overall rating' when multiple records exist. The result of 16.86% is a realistic difference between two players' ratings."
+  },
+  {
+    "question_id": 1102,
+    "db_id": "european_football_2",
+    "platinum_sql": "SELECT T1.player_name, T2.overall_rating, T2.date, T1.birthday FROM european_football_2.Player AS T1 JOIN european_football_2.Player_Attributes AS T2 ON T1.player_api_id = T2.player_api_id WHERE T2.overall_rating = 77 AND T2.date LIKE '2016-06-23%' ORDER BY T1.birthday ASC LIMIT 1;",
+    "platinum_result": "['Laurent Ciman', '77', '2016-06-23 00:00:00', '1985-08-05 00:00:00']",
+    "reason": "Both queries correctly identify the logic required to find the oldest player (ordering by birthday ASC and limiting to 1). Answer A follows the prompt's request to 'Give the name of the player' more strictly by only selecting the name column, whereas Answer B includes extra metadata columns (rating, date, birthday). However, both correctly identify 'Laurent Ciman' as the answer."
+  },
+  {
+    "question_id": 1136,
+    "db_id": "european_football_2",
+    "platinum_sql": "SELECT\n  COUNT(DISTINCT player_api_id)\nFROM european_football_2.Player_Attributes\nWHERE\n  crossing = (\n    SELECT\n      MAX(crossing)\n    FROM european_football_2.Player_Attributes\n  ) AND preferred_foot = 'left';",
+    "platinum_result": "['2']",
+    "reason": "The question asks 'How many players...', which implies a count of unique individuals. In the Player_Attributes table, there are multiple entries for the same player (different dates/stats). Answer A counts the total number of rows (records) that match the criteria, whereas Answer B counts the number of distinct players (using player_api_id). Since one player might have multiple records with the maximum crossing score and a left foot preference, Answer B is the logically correct interpretation of 'How many players'."
+  },
+  {
+    "question_id": 1144,
+    "db_id": "european_football_2",
+    "platinum_sql": "SELECT\n  T1.finishing,\n  T1.curve\nFROM european_football_2.Player_Attributes AS T1\nJOIN european_football_2.Player AS T2\n  ON T1.player_api_id = T2.player_api_id\nWHERE\n  T2.weight = (\n    SELECT\n      MAX(weight)\n    FROM european_football_2.Player\n  )\nORDER BY\n  T1.date DESC\nLIMIT 1",
+    "platinum_result": "['13', '13']",
+    "reason": "The question asks for the attributes of the player with the heaviest weight. In the provided database schema (FIFA dataset), the 'Player_Attributes' table contains multiple records for each player corresponding to different dates (attribute updates). Answer A (Gold) selects an arbitrary record (LIMIT 1) without considering the date, and it also includes the 'id' column which was not requested. Answer B (Predicted) correctly joins the tables, filters for the maximum weight, and uses 'ORDER BY date DESC LIMIT 1' to retrieve the most recent attributes for that player, which is the standard and most accurate way to query this specific database."
+  },
+  {
+    "question_id": 1168,
+    "db_id": "thrombosis_prediction",
+    "platinum_sql": "SELECT\n  T2.Date,\n  CAST(STRFTIME('%Y', T1.\"First Date\") AS INTEGER) - CAST(STRFTIME('%Y', T1.Birthday) AS INTEGER)\nFROM (\n  SELECT\n    *\n  FROM thrombosis_prediction.Patient\n  WHERE\n    Diagnosis LIKE '%SJS%'\n  ORDER BY\n    Birthday ASC\n  LIMIT 1\n) AS T1\nJOIN thrombosis_prediction.Laboratory AS T2\n  ON T1.ID = T2.ID\nORDER BY\n  T2.Date DESC\nLIMIT 1;",
+    "platinum_result": "['1986-01-07', 69]",
+    "reason": "The question asks for the date the oldest SJS patient's medical laboratory work was completed. The Gold SQL (Answer A) joins the Laboratory and Patient tables and orders by Birthday, but it does not specify which laboratory record to return for that patient. Since a patient can have multiple laboratory records, the result returned by the Gold SQL is essentially random (the first one the database engine encounters). The Predicted SQL (Answer B) correctly identifies the oldest patient first, then joins to the Laboratory table and orders by Date DESC to find a specific completion date (though the question doesn't specify 'latest' or 'earliest', picking a specific one is more robust than the Gold's arbitrary selection). More importantly, the Gold SQL includes an extra column (Birthday) that was not requested, whereas the Predicted SQL returns exactly the two columns requested: the date and the age."
+  },
+  {
+    "question_id": 1179,
+    "db_id": "thrombosis_prediction",
+    "platinum_sql": "SELECT\n  T2.\"aCL IgM\"\nFROM thrombosis_prediction.Patient AS T1\nJOIN thrombosis_prediction.Examination AS T2\n  ON T1.ID = T2.ID\nWHERE\n  T1.Diagnosis = 'SLE'\n  AND T1.Description = '1994-02-19'\n  AND CAST(T2.\"Examination Date\" AS VARCHAR) = '1993-11-12'",
+    "platinum_result": [
+      4.1
+    ],
+    "reason": "The question specifically asks for the 'anti-Cardiolipin antibody concentration status'. According to the provided evidence/hints, 'anti-Cardiolipin refers to aCL IgM'. Answer B (Predicted) selects only 'aCL IgM', which directly answers the specific question. Answer A (Gold) selects 'aCL IgA', 'aCL IgG', and 'aCL IgM', which is over-inclusive and includes data not requested by the prompt or the hints."
+  },
+  {
+    "question_id": 1209,
+    "db_id": "thrombosis_prediction",
+    "platinum_sql": "SELECT\n  T1.Diagnosis\nFROM thrombosis_prediction.Patient AS T1\nWHERE\n  T1.ID IN (\n    SELECT\n      ID\n    FROM thrombosis_prediction.Laboratory\n    WHERE\n      GPT > 60\n  )\nORDER BY\n  T1.Birthday ASC;",
+    "platinum_result": "['MRA']\n['SLE']\n['RA']\n['Adult STILL']\n['SJS']\n['RA']\n['SLE']\n['PSS, RA susp']\n['PNc']\n['SLE']\n['MRA, SJS']\n['SJS']\n['RA, UC']\n['PSS']\n['PSS']\n['RA']\n['AORTITIS']\n['PSS, PM']\n['PN']\n['BEHCET']\n... (sampled 20 of 90 total rows)",
+    "reason": "The question asks for 'the diagnosis of patients'. In a clinical database where a patient might have multiple laboratory records (multiple blood tests) where GPT > 60, a standard SQL query without DISTINCT will return the patient's diagnosis multiple times (once for every lab record that meets the criteria). Answer B (Predicted) returns 90 rows, including many duplicates like 'RA', 'SLE', and 'SJS', which represents the lab records rather than a list of the patients' diagnoses. Answer A (Gold) uses DISTINCT to ensure each diagnosis associated with the condition is listed uniquely, which is the standard interpretation for such questions in this dataset. Additionally, Answer A uses a JOIN which is generally more performant and standard for this schema than the IN clause used in B."
+  },
+  {
+    "question_id": 1225,
+    "db_id": "thrombosis_prediction",
+    "platinum_sql": "SELECT\n  T1.SEX,\n  GROUP_CONCAT(DISTINCT T1.ID)\nFROM thrombosis_prediction.Patient AS T1\nJOIN thrombosis_prediction.Laboratory AS T2\n  ON T1.ID = T2.ID\nWHERE\n  T2.\"T-BIL\" >= 2.0\nGROUP BY\n  T1.SEX;",
+    "platinum_result": "['F', '250391,4862013,2931207,1180510,2308236']\n['M', '1137040,2307640,43003,444499,4618443']",
+    "reason": "The question specifically asks to 'List and group all patients by sex'. In SQL tasks involving medical datasets, 'List' often implies a concatenation of IDs, and the provided Evidence/Hints explicitly states: 'List refers to GROUP_CONCAT(DISTINCT ID)'. Answer B follows this hint perfectly, grouping by SEX and listing the IDs. Answer A (Gold) groups by both SEX and ID, which results in a list of individual rows rather than a grouped list by sex, effectively ignoring the 'group by sex' instruction and the specific hint provided."
+  },
+  {
+    "question_id": 1243,
+    "db_id": "thrombosis_prediction",
+    "platinum_sql": "SELECT\n  CAST(SUM(CASE WHEN T1.SEX = 'F' AND T2.PT >= 14 THEN 1 ELSE 0 END) AS REAL) * 100 / SUM(CASE WHEN T2.PT >= 14 THEN 1 ELSE 0 END)\nFROM thrombosis_prediction.Patient AS T1\nJOIN thrombosis_prediction.Laboratory AS T2\n  ON T1.ID = T2.ID\nWHERE\n  CAST(STRFTIME('%Y', CURRENT_DATE) AS INTEGER) - CAST(STRFTIME('%Y', T1.Birthday) AS INTEGER) > 55",
+    "platinum_result": [
+      78.3625717163086
+    ],
+    "reason": "The question asks for the percentage of females among those who have abnormal PT (within the age group > 55). The formula provided in the evidence is: DIVIDE(SUM(PT >= 14 AND SEX = 'F'), SUM(PT >= 14)) * 100. \n\nAnswer A (Gold) uses COUNT(CASE WHEN T2.PT >= 14 THEN 1 ELSE 0 END) in the denominator. In SQL, COUNT(CASE WHEN condition THEN 1 ELSE 0 END) counts every row where the condition is either true or false (because 0 is not NULL), effectively counting the total number of records in the joined table regardless of PT value. This results in a very low percentage (1.2%) because it divides the specific female-abnormal-PT count by the total number of laboratory records for patients over 55.\n\nAnswer B (Predicted) correctly uses SUM(CASE WHEN T2.PT >= 14 THEN 1 ELSE 0 END) in the denominator, which correctly counts only the records where PT is abnormal. This aligns with the evidence provided and the logical interpretation of 'percentage of female who has abnormal PT' (i.e., out of those with abnormal PT, what % are female)."
+  },
+  {
+    "question_id": 1338,
+    "db_id": "student_club",
+    "platinum_sql": "SELECT\n  CASE\n    WHEN COUNT(*) = SUM(CASE\n      WHEN T3.approved = 'true' THEN 1\n      ELSE 0\n    END) THEN 'YES'\n    ELSE 'NO'\n  END\nFROM student_club.event AS T1\nJOIN student_club.budget AS T2\n  ON T1.event_id = T2.link_to_event\nJOIN student_club.expense AS T3\n  ON T2.budget_id = T3.link_to_budget\nWHERE\n  T1.event_name = 'October Meeting' AND T1.event_date LIKE '2019-10-08%'",
+    "platinum_result": "['YES']",
+    "reason": "The question asks 'Was each expense... approved?', which is a Yes/No question. Answer A (Gold) returns a list of boolean values ('true', 'true', 'true'). While this contains the information, it requires the user to manually verify if every row is true. Answer B (Predicted) performs a logical aggregation to check if the count of all expenses equals the count of approved expenses, returning a single 'YES' or 'NO'. This directly answers the natural language question."
+  },
+  {
+    "question_id": 1411,
+    "db_id": "student_club",
+    "platinum_sql": "SELECT\n  DISTINCT T2.expense_description\nFROM student_club.member AS T1\nJOIN student_club.expense AS T2\n  ON T1.member_id = T2.link_to_member\nWHERE\n  T1.first_name = 'Sacha' AND T1.last_name = 'Harrison';",
+    "platinum_result": "['Alumni Glass']\n['Posters']\n['Pizza']\n['Bakery - Donuts, muffins']\n['Travel Mug']\n['Post Cards, Posters']\n['Water, chips, cookies']",
+    "reason": "The question asks 'what kind of expenses' Sacha Harrison incurred. Answer A (Gold) returns a list with many duplicates (e.g., 'Posters' appears 4 times, 'Water, chips, cookies' appears 3 times). Answer B (Predicted) uses the DISTINCT keyword, which provides a clean, unique list of the types of expenses. In natural language processing for SQL, when asking for 'what kind' or 'what types', a distinct list is almost always the intended and more readable answer."
+  },
+  {
+    "question_id": 1481,
+    "db_id": "debit_card_specializing",
+    "platinum_sql": "WITH customer_consumption AS (\n    SELECT \n        c.CustomerID, \n        c.Segment, \n        SUM(y.Consumption) as TotalConsumption\n    FROM debit_card_specializing.customers c\n    JOIN debit_card_specializing.yearmonth y ON c.CustomerID = y.CustomerID\n    WHERE c.Currency = 'CZK' \n      AND CAST(y.Date AS VARCHAR) LIKE '2013%'\n    GROUP BY c.CustomerID, c.Segment\n),\nmin_consumption_per_segment AS (\n    SELECT \n        Segment, \n        MIN(TotalConsumption) as MinConsumption\n    FROM customer_consumption\n    GROUP BY Segment\n),\navg_consumption_lowest_customers AS (\n    SELECT \n        cc.Segment,\n        AVG(cc.TotalConsumption) as AvgConsumption\n    FROM customer_consumption cc\n    JOIN min_consumption_per_segment mcs ON cc.Segment = mcs.Segment AND cc.TotalConsumption = mcs.MinConsumption\n    GROUP BY cc.Segment\n)\nSELECT \n    (SELECT AvgConsumption FROM avg_consumption_lowest_customers WHERE Segment = 'SME') - \n    (SELECT AvgConsumption FROM avg_consumption_lowest_customers WHERE Segment = 'LAM') AS diff_SME_LAM,\n    (SELECT AvgConsumption FROM avg_consumption_lowest_customers WHERE Segment = 'LAM') - \n    (SELECT AvgConsumption FROM avg_consumption_lowest_customers WHERE Segment = 'KAM') AS diff_LAM_KAM,\n    (SELECT AvgConsumption FROM avg_consumption_lowest_customers WHERE Segment = 'KAM') - \n    (SELECT AvgConsumption FROM avg_consumption_lowest_customers WHERE Segment = 'SME') AS diff_KAM_SME;",
+    "platinum_result": [
+      -14009.339999999998,
+      6046.619999999998,
+      7962.72
+    ],
+    "reason": "The question asks for the difference in annual average consumption of customers with the 'least amount of consumption' in each segment. \n\nGold SQL (Answer A) is fundamentally flawed: it filters for the global minimum consumption across the entire dataset (`T2.Consumption = (SELECT MIN(Consumption) FROM yearmonth)`) and then tries to calculate averages. This logic fails because the customer with the absolute minimum consumption in the whole table might only belong to one segment, resulting in nulls or zeros for other segments. Furthermore, it uses `COUNT(T1.CustomerID)` as the denominator for all segments simultaneously in a single row, which is mathematically incorrect for segment-specific averages.\n\nPredicted SQL (Answer B) correctly interprets the multi-step logic required: \n1. It aggregates consumption per customer for the year 2013.\n2. It identifies the minimum consumption value *per segment*.\n3. It calculates the average consumption for customers matching that minimum value within each segment (handling ties correctly).\n4. It calculates the differences between these segment averages as requested."
+  },
+  {
+    "question_id": 1482,
+    "db_id": "debit_card_specializing",
+    "platinum_sql": "WITH consumption_by_year AS (\n    SELECT \n        c.Segment,\n        SUBSTR(y.Date, 1, 4) AS Year,\n        SUM(y.Consumption) AS TotalConsumption\n    FROM debit_card_specializing.yearmonth y\n    JOIN debit_card_specializing.customers c ON y.CustomerID = c.CustomerID\n    WHERE c.Currency = 'EUR' AND SUBSTR(y.Date, 1, 4) IN ('2012', '2013')\n    GROUP BY c.Segment, Year\n),\npivoted AS (\n    SELECT \n        Segment,\n        SUM(CASE WHEN Year = '2012' THEN TotalConsumption ELSE 0 END) AS Consumption2012,\n        SUM(CASE WHEN Year = '2013' THEN TotalConsumption ELSE 0 END) AS Consumption2013\n    FROM consumption_by_year\n    GROUP BY Segment\n),\ncalculations AS (\n    SELECT \n        Segment,\n        ((Consumption2013 - Consumption2012) / Consumption2013) * 100 AS PercentageIncrease\n    FROM pivoted\n    WHERE Consumption2013 != 0\n)\nSELECT \n    (SELECT Segment FROM calculations ORDER BY PercentageIncrease DESC LIMIT 1) AS Biggest_Increase_Segment,\n    (SELECT Segment FROM calculations ORDER BY PercentageIncrease ASC LIMIT 1) AS Lowest_Increase_Segment;",
+    "platinum_result": "['SME', 'LAM']",
+    "reason": "The question asks 'Which of the three segments... has the biggest and lowest percentage increases'. Answer A (Gold) returns three raw numbers (the percentages for each segment) but does not identify which segment is which, nor does it identify the 'biggest' or 'lowest'. Answer B (Predicted) correctly calculates the percentages, sorts them, and returns the names of the segments with the biggest and lowest increases as requested. Furthermore, Answer B correctly implements the 'paid in EUR' filter mentioned in the prompt, which Answer A ignores. Answer B also follows the specific (though mathematically unusual) formula provided in the Evidence/Hints: (Increase / consumption for 2013) * 100%, whereas Answer A uses the standard growth formula (Increase / consumption for 2012)."
+  },
+  {
+    "question_id": 1529,
+    "db_id": "debit_card_specializing",
+    "platinum_sql": "SELECT\n  SUM(Consumption),\n  SUM(CASE WHEN Date = '201201' THEN Consumption ELSE 0 END)\nFROM debit_card_specializing.yearmonth\nWHERE\n  CustomerID = 38508;",
+    "platinum_result": [
+      5124646.35,
+      67156.94
+    ],
+    "reason": "The question asks for the 'amount spent' by a specific customer. In this database schema, the 'yearmonth' table is specifically designed to aggregate 'Consumption' (amount spent) per customer per month. Answer B correctly queries this table directly. Answer A (Gold) is fundamentally flawed: it performs a many-to-many join between 'transactions_1k' and 'yearmonth' on CustomerID without joining on Date. This causes a massive Cartesian product for each customer, resulting in inflated sums. Furthermore, Answer A uses 'Price' from the transactions table instead of 'Amount' or 'Consumption', and it unnecessarily joins the 'gasstations' table without using any of its columns. Answer B is clean, logical, and uses the schema as intended."
+  }
+]

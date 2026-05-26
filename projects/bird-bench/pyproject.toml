@@ -1,0 +1,44 @@
+[project]
+name = "bird-eval"
+version = "0.1.0"
+description = "BIRD-Bench Multi-Model Evaluation with MotherDuck"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.50.0",        # OpenRouter uses OpenAI-compatible API
+    "duckdb>=1.0.0",
+    "datasets>=2.14.0",
+    "python-dotenv>=1.0.0",
+    "tenacity>=8.2.0",       # Retry logic
+    "jinja2>=3.1.0",         # HTML report generation
+    "dspy>=2.4.0",           # DSPy for prompt optimization
+    "optuna>=3.5.0",         # Hyperparameter optimization
+    "pandas>=2.0.0",         # Data manipulation for optimization
+    "sentence-transformers>=2.2.0",  # Schema linking embeddings
+    "sqlglot>=20.0.0",       # SQL dialect translation (SQLite→DuckDB)
+    "metadata-generator",
+]
+
+[project.scripts]
+bird-eval = "eval.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "eval*"]
+
+[tool.uv.sources]
+metadata-generator = { git = "https://github.com/motherduckdb/labs", subdirectory = "projects/metadata_generator" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

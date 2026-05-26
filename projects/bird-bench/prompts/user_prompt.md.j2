@@ -1,0 +1,44 @@
+**Question:** {{ question }}
+
+**Hints:** {{ evidence }}
+
+Hints define expected columns and calculations. But verify filter values (e.g., `IN('A','B')`) exist in actual data before using them.
+
+## Schema: {{ schema }}
+
+{% if foreign_keys %}
+### Foreign Keys
+{% for fk in foreign_keys %}
+- {{ fk.from_table }}.{{ fk.from_column }} → {{ fk.to_table }}.{{ fk.to_column }}
+{% endfor %}
+{% endif %}
+
+{% if minhash_similarities %}
+### Likely Join Columns (by value similarity)
+{% for m in minhash_similarities[:15] %}
+- {{ m.left_table }}.{{ m.left_column }} ↔ {{ m.right_table }}.{{ m.right_column }} ({{ (m.similarity * 100)|int }}%)
+{% endfor %}
+{% endif %}
+
+{% if discovered_joins %}
+### Common Join Patterns
+{% for j in discovered_joins %}
+- {{ j.left_table }}.{{ j.left_column }} = {{ j.right_table }}.{{ j.right_column }} (used {{ j.count }}x)
+{% endfor %}
+{% endif %}
+
+### Tables
+{% for table in tables %}
+**{{ table.name }}** ({{ "{:,}".format(table.row_count) }} rows)
+{% for col in table.columns %}
+- `{{ col.name }}`: {{ col.type }}{% if col.approx_unique > 0 and col.approx_unique <= 20 %} (~{{ col.approx_unique }} values){% elif col.approx_unique > 0 %} (~{{ "{:,}".format(col.approx_unique) }} unique){% endif %}{% if col.null_pct > 0 %} [{{ col.null_pct|int }}% null]{% endif %}
+
+{% endfor %}
+{% endfor %}
+
+Explore data, Write SQL, validate the SQL runs, then output:
+```
+FINAL_SQL: ```sql
+YOUR QUERY
+```
+```
