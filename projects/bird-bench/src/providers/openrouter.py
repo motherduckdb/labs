@@ -15,10 +15,7 @@ from tenacity import (
 
 from .base import BaseProvider, ModelConfig
 from src.mcp_client import MCP_TOOL_DEFINITIONS
-from src.constants import MAX_TOOL_ITERATIONS, CHARS_PER_TOKEN_ESTIMATE
-import src.controllog as cl
-
-
+from src.constants import MAX_TOOL_ITERATIONS
 class OpenRouterProvider(BaseProvider):
     """Provider using OpenRouter's OpenAI-compatible API with MCP tools."""
 
@@ -101,9 +98,6 @@ class OpenRouterProvider(BaseProvider):
         raw_messages = []
         thinking_content = []  # Collect thinking/reasoning from models that support it
 
-        # Generate exchange_id for two-phase logging
-        exchange_id = cl.new_id()
-
         system_content = self.build_system_prompt(db_id, motherduck_db)
         user_content = self.build_user_prompt(question, evidence, db_id, relevant_tables)
 
@@ -119,19 +113,8 @@ class OpenRouterProvider(BaseProvider):
         # Use all MCP tool definitions
         tools = MCP_TOOL_DEFINITIONS
 
-        # Estimate prompt tokens for initial logging
-        prompt_text = json.dumps(messages)
-        estimated_prompt_tokens = len(prompt_text) // CHARS_PER_TOKEN_ESTIMATE
-
-        # Log prompt phase (if controllog is initialized)
-        if cl._state.initialized:
-            cl.model_prompt(
-                exchange_id=exchange_id,
-                prompt_tokens=estimated_prompt_tokens,
-                model=self.config.model_id,
-                provider="openrouter",
-                payload={"db_id": db_id, "question": question[:200]}
-            )
+        # controllog logging happens at the runner level (eval/runner.py) per
+        # evaluated question — no duplicate logging here.
 
         hit_iteration_limit = False
         already_nudged_for_final = False  # Track if we've already asked for FINAL_SQL
@@ -297,37 +280,6 @@ class OpenRouterProvider(BaseProvider):
         # Use upstream cost for BYOK, or OpenRouter cost otherwise
         # For BYOK mode, actual_cost is 0 and actual_upstream_cost has the real cost
         cost_usd = actual_upstream_cost if actual_upstream_cost > 0 else actual_cost
-
-        # Log completion phase (if controllog is initialized)
-        if cl._state.initialized:
-            # Extract reasoning chain (tool calls and their results)
-            reasoning_chain = [
-                msg for msg in raw_messages
-                if msg.get("role") == "tool" or (msg.get("role") == "assistant" and msg.get("tool_calls"))
-            ]
-
-            cl.model_completion(
-                exchange_id=exchange_id,
-                completion_tokens=total_output_tokens,
-                cost_usd=cost_usd,
-                duration_ms=duration_ms,
-                model=self.config.model_id,
-                provider="openrouter",
-                success=error is None,
-                error=error,
-                payload={
-                    "db_id": db_id,
-                    "tool_calls": tool_calls_count,
-                    "input_tokens": total_input_tokens,
-                    "has_sql": predicted_sql is not None,
-                    "actual_cost_source": "openrouter" if actual_cost > 0 else "calculated",
-                    # COT trace fields
-                    "response": raw_messages,  # Full conversation trace
-                    "thinking": thinking_content if thinking_content else None,  # Extended thinking (if available)
-                    "reasoning": reasoning_chain if reasoning_chain else None,  # Tool calls and results
-                },
-                upstream_cost_usd=actual_upstream_cost if actual_upstream_cost > 0 else None
-            )
 
         return predicted_sql, {
             "input_tokens": total_input_tokens,

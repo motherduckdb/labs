@@ -16,6 +16,7 @@ dependencies = [
     "sentence-transformers>=2.2.0",  # Schema linking embeddings
     "sqlglot>=20.0.0",       # SQL dialect translation (SQLite→DuckDB)
     "metadata-generator",
+    "controllog[duckdb]",
 ]
 
 [project.scripts]
@@ -37,6 +38,7 @@ include = ["src*", "eval*"]
 
 [tool.uv.sources]
 metadata-generator = { git = "https://github.com/motherduckdb/labs", subdirectory = "projects/metadata_generator" }
+controllog = { git = "https://github.com/motherduckdb/labs", subdirectory = "projects/controllog" }
 
 [dependency-groups]
 dev = [

@@ -297,10 +297,10 @@ def cmd_sample(args):
 def _handle_post_run_operations(args, events_file: Path) -> None:
     """Handle post-run operations (upload to MotherDuck, open error report, introspection summary)."""
     if getattr(args, 'upload', False):
-        from src import controllog
+        from controllog import motherduck
         print("\nUploading controllog to MotherDuck...")
         try:
-            counts = controllog.upload_to_motherduck(log_dir=events_file.parent.parent)
+            counts = motherduck.upload(motherduck_db="bird_bench", log_dir=events_file.parent.parent)
             print(f"Uploaded {counts.get('events', 0)} events, {counts.get('postings', 0)} postings")
         except Exception as e:
             print(f"Upload failed: {e}")
@@ -343,7 +343,7 @@ def _run_phase(phase: str, questions: list, args) -> tuple[list, Path]:
     """
     from eval.runner import PhaseRunner
     from eval.config import DATABASE_CONFIGS, MODELS, CONFIG_ALIASES, RESULTS_DIR
-    from src import controllog
+    import controllog
 
     # Apply limit with random sampling if specified
     if args.limit:
@@ -369,11 +369,16 @@ def _run_phase(phase: str, questions: list, args) -> tuple[list, Path]:
         config_types = [CONFIG_ALIASES[c.lower()] for c in args.configs.split(",")]
         db_configs = [DATABASE_CONFIGS[ct] for ct in config_types]
 
-    # Initialize controllog
+    # Per-eval run_id. Threaded into default_dims so every controllog row
+    # carries it, and into the runner so its idempotency keys vary per run
+    # — otherwise re-running the same phase/model/db/question produces the
+    # same deterministic event_id as the prior run and motherduck.upload
+    # silently dedupes the fresh data away.
+    run_id = controllog.new_id()
     controllog.init(
         project_id="bird-bench",
         log_dir=RESULTS_DIR,
-        default_dims={"phase": phase},
+        default_dims={"phase": phase, "run_id": run_id},
     )
 
     # Track events file path for post-run operations
@@ -382,7 +387,7 @@ def _run_phase(phase: str, questions: list, args) -> tuple[list, Path]:
     # Initialize runner with introspection and judge if requested
     introspect = getattr(args, 'introspect', False)
     judge = getattr(args, 'judge', False)
-    runner = PhaseRunner(log_dir=RESULTS_DIR, introspect=introspect, judge=judge)
+    runner = PhaseRunner(log_dir=RESULTS_DIR, introspect=introspect, judge=judge, run_id=run_id)
 
     async def run():
         return await runner.run_phase(
@@ -407,7 +412,6 @@ def _run_phase(phase: str, questions: list, args) -> tuple[list, Path]:
         return results, events_file
     finally:
         runner.close()  # Clean up shared MCP client and investigator
-        controllog.close()
 
 
 def cmd_train(args):
@@ -431,7 +435,7 @@ def cmd_full(args):
     from eval.runner import PhaseRunner
     from eval.sampler import load_split, DatasetSplit
     from eval.config import MODELS, RESULTS_DIR
-    from src import controllog
+    import controllog
 
     split = load_split()
 
@@ -460,17 +464,18 @@ def cmd_full(args):
         model_names = args.models.split(",")
         models = [m for m in MODELS if m.name in model_names]
 
-    # Initialize controllog
+    # Per-eval run_id; see _run_phase for why this matters.
+    run_id = controllog.new_id()
     controllog.init(
         project_id="bird-bench",
         log_dir=RESULTS_DIR,
-        default_dims={"phase": "full"},
+        default_dims={"phase": "full", "run_id": run_id},
     )
 
     # Track events file path for post-run operations
     events_file = RESULTS_DIR / "controllog" / "events.jsonl"
 
-    runner = PhaseRunner()
+    runner = PhaseRunner(run_id=run_id)
 
     async def run():
         return await runner.run_full_evaluation(split=split, models=models)
@@ -482,7 +487,6 @@ def cmd_full(args):
         print(f"Test results: {len(eval_run.test_results)}")
     finally:
         runner.close()  # Clean up shared MCP client (may already be closed by run_full_evaluation)
-        controllog.close()
 
     _handle_post_run_operations(args, events_file)
 
@@ -524,24 +528,30 @@ def cmd_errors(args):
 
 def cmd_cleanup(args):
     """Clean up local log files after uploading to MotherDuck."""
-    from src import controllog
+    from src import uploads
+    from eval.config import RESULTS_DIR
 
     try:
-        result = controllog.cleanup_local_logs(
+        result = uploads.cleanup_local(
+            log_dir=RESULTS_DIR,
+            motherduck_db=getattr(args, "db", None) or "bird_bench",
             verify_uploaded=not args.no_verify,
             delete_html=args.include_html,
             dry_run=args.dry_run,
         )
         if args.dry_run:
             print("\nRun without --dry-run to actually delete files.")
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
+        # controllog.motherduck.cleanup_local raises ValueError when
+        # MOTHERDUCK_TOKEN is missing, RuntimeError on verification mismatch.
         print(f"\nError: {e}")
         sys.exit(1)
 
 
 def cmd_upload(args):
     """Upload controllog and analysis files to MotherDuck, then clean up."""
-    from src import controllog
+    from controllog import motherduck
+    from src import uploads
     from eval.config import RESULTS_DIR
 
     db = args.db or "my_db"
@@ -550,16 +560,16 @@ def cmd_upload(args):
         # Upload controllog (events + postings)
         print(f"Uploading to MotherDuck ({db})...")
         print("\n1. Controllog (events + postings)...")
-        result = controllog.upload_to_motherduck(motherduck_db=db, log_dir=RESULTS_DIR)
+        result = motherduck.upload(motherduck_db=db, log_dir=RESULTS_DIR)
         print(f"   Events: {result.get('events', 0)}, Postings: {result.get('postings', 0)}")
 
         # Upload truth_seeking analysis
         print("\n2. Truth-seeking analysis...")
-        ts_count = controllog.upload_truth_seeking(motherduck_db=db, log_dir=RESULTS_DIR)
+        ts_count = uploads.upload_truth_seeking(motherduck_db=db, log_dir=RESULTS_DIR)
 
         # Upload error investigations (introspect results)
         print("\n3. Error investigations...")
-        ei_count = controllog.upload_error_investigations(motherduck_db=db, log_dir=RESULTS_DIR)
+        ei_count = uploads.upload_error_investigations(motherduck_db=db, log_dir=RESULTS_DIR)
 
         print(f"\nUpload complete.")
 
@@ -594,7 +604,9 @@ def cmd_upload(args):
         else:
             print("\nKeeping local files (--keep-local specified)")
 
-    except RuntimeError as e:
+    except (RuntimeError, FileNotFoundError, ValueError) as e:
+        # motherduck.upload raises FileNotFoundError when there's nothing to
+        # upload, ValueError when MOTHERDUCK_TOKEN is missing.
         print(f"\nError: {e}")
         sys.exit(1)
 
