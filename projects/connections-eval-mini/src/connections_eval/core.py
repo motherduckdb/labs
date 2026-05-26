@@ -289,7 +289,7 @@ class ConnectionsGame:
         run_token = _new_run_token()
         self.run_id = f"{run_token}_{model_name}"
         self.log = JsonLog(self.log_path, log_id=run_token)
-        cl.init(project_id=self.PROJECT_ID, log_dir=self.log_path)
+        cl.init(project_id=self.PROJECT_ID, log_dir=self.log_path, partition_by_date=True)
 
         puzzles_to_run = self.puzzles.copy()
         self.rng.shuffle(puzzles_to_run)
