@@ -4,5 +4,6 @@ __pycache__/
 .env
 results/*.jsonl
 results/_*.log
+results/controllog/
 *.db
 .DS_Store

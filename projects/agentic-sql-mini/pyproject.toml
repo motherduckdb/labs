@@ -10,6 +10,7 @@ dependencies = [
     "openai-agents>=0.12.5",
     "python-dotenv>=1.2.2",
     "rich>=13.0",
+    "controllog",
 ]
 
 [project.scripts]
@@ -21,6 +22,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[tool.uv.sources]
+controllog = { git = "https://github.com/motherduckdb/labs", subdirectory = "projects/controllog" }
 
 [tool.ruff]
 target-version = "py311"
