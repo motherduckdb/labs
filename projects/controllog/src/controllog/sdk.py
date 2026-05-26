@@ -3,7 +3,6 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,7 +19,6 @@ class SDKConfig:
     log_dir: Path
     default_dims: Dict[str, Any] = field(default_factory=dict)
     partition_by_date: bool = False
-    pii_scrub: bool = False  # keep raw payloads (user requested)
 
 
 _config: Optional[SDKConfig] = None
@@ -53,7 +51,6 @@ def init(
         log_dir=log_dir,
         default_dims=default_dims or {},
         partition_by_date=partition_by_date,
-        pii_scrub=False,
     )
 
 
@@ -172,16 +169,13 @@ def post(
 
     Returns a plain dict; the caller passes the collection to event().
     """
-    posting = {
-        "posting_id": _uuid7_str(),
-        "event_id": None,  # filled during event()
+    return {
         "account_type": account_type,
         "account_id": account_id,
         "unit": unit,
         "delta_numeric": float(delta),
         "dims_json": dims or {},
     }
-    return posting
 
 
 def _check_invariants(kind: str, postings: List[Dict[str, Any]]) -> None:
@@ -282,6 +276,3 @@ def event(
         _write_jsonl(_postings_file(), p_out)
 
     return event_row
-
-
-

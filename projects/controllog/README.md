@@ -88,7 +88,6 @@ exchange_id = controllog.model_prompt(...)          # returns exchange_id
 controllog.model_completion(exchange_id=..., ...)   # pass the paired id
 controllog.state_move(task_id, from_, to, ...)
 controllog.utility(task_id, project_id, metric, value, ...)
-controllog.agent_run(task_id, agent_id, run_id=None)  # contextmanager
 
 # Optional, requires controllog[duckdb]
 from controllog import motherduck

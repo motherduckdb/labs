@@ -8,20 +8,9 @@ Account names follow ``docs/spec-v1.1.md`` § 7:
   - ``truth.state``      (task lifecycle, unit ``tasks``)
   - ``truth.utility``    (task ↔ project, unit ``points``)
 """
-from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Optional
 
 from .sdk import event, post, new_id
-
-
-@contextmanager
-def agent_run(*, task_id: str, agent_id: str, run_id: Optional[str] = None) -> Iterator[Dict[str, Any]]:
-    """Context manager capturing a logical agent run."""
-    run_info = {"task_id": task_id, "agent_id": agent_id, "run_id": run_id}
-    try:
-        yield run_info
-    finally:
-        ...
 
 
 def model_prompt(

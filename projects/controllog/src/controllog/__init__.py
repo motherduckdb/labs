@@ -6,7 +6,6 @@ See docs/spec-v1.1.md for the full design.
 
 from .sdk import event, init, is_initialized, new_id, post
 from .builders import (
-    agent_run,
     model_completion,
     model_prompt,
     state_move,
@@ -19,7 +18,6 @@ __all__ = [
     "event",
     "post",
     "new_id",
-    "agent_run",
     "model_prompt",
     "model_completion",
     "state_move",
