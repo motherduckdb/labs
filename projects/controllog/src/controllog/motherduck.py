@@ -10,6 +10,7 @@ Requires the ``[duckdb]`` extra::
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,34 @@ def _connect(motherduck_db: str, motherduck_token: str | None) -> "duckdb.DuckDB
     if not token:
         raise ValueError("MOTHERDUCK_TOKEN not set")
     return duckdb.connect(f"md:{motherduck_db}?motherduck_token={token}")
+
+
+def _missing_ids(
+    md: "duckdb.DuckDBPyConnection",
+    schema: str,
+    table: str,
+    id_column: str,
+    local_ids: set[str],
+) -> set[str]:
+    """Return the subset of ``local_ids`` not present in ``schema.table``.
+
+    Queries in chunks to keep the IN clause manageable on large local sets.
+    """
+    if not local_ids:
+        return set()
+    missing = set(local_ids)
+    chunk_size = 5000
+    ids_list = list(local_ids)
+    for start in range(0, len(ids_list), chunk_size):
+        chunk = ids_list[start : start + chunk_size]
+        placeholders = ", ".join(["?"] * len(chunk))
+        rows = md.execute(
+            f"SELECT {id_column} FROM {schema}.{table} WHERE {id_column} IN ({placeholders})",
+            chunk,
+        ).fetchall()
+        for (rid,) in rows:
+            missing.discard(str(rid))
+    return missing
 
 
 def _iter_jsonl_files(log_dir: Path, name: str) -> list[Path]:
@@ -208,32 +237,54 @@ def cleanup_local(
 ) -> dict[str, Any]:
     """Delete local controllog JSONL files after confirming MotherDuck has them.
 
-    Set ``verify_uploaded=False`` to skip the row-count check (e.g., if you
-    are running offline or trust an earlier upload).
+    Verifies the specific local ``event_id`` and ``posting_id`` values are
+    actually present in the remote tables — comparing row counts alone
+    would pass spuriously if the table already had unrelated rows from
+    another project or run.
+
+    Set ``verify_uploaded=False`` to skip verification (e.g., when running
+    offline or when you trust an earlier upload).
     """
     log_dir = Path(log_dir)
     event_files = _iter_jsonl_files(log_dir, "events")
     posting_files = _iter_jsonl_files(log_dir, "postings")
 
-    local_events = sum(1 for ef in event_files for line in open(ef) if line.strip())
-    local_postings = sum(1 for pf in posting_files for line in open(pf) if line.strip())
+    local_event_ids: set[str] = set()
+    for ef in event_files:
+        with open(ef) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                local_event_ids.add(str(json.loads(line)["event_id"]))
+
+    local_posting_ids: set[str] = set()
+    for pf in posting_files:
+        with open(pf) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                local_posting_ids.add(str(json.loads(line)["posting_id"]))
 
     if verify_uploaded:
         md = _connect(motherduck_db, motherduck_token)
         try:
-            remote_events = md.execute(f"SELECT COUNT(*) FROM {schema}.events").fetchone()[0]
-            remote_postings = md.execute(f"SELECT COUNT(*) FROM {schema}.postings").fetchone()[0]
+            missing_events = _missing_ids(md, schema, "events", "event_id", local_event_ids)
+            missing_postings = _missing_ids(md, schema, "postings", "posting_id", local_posting_ids)
         finally:
             md.close()
-        if remote_events < local_events:
+        if missing_events:
+            sample = ", ".join(sorted(missing_events)[:5])
             raise RuntimeError(
-                f"Verification failed: local has {local_events} events, "
-                f"MotherDuck has {remote_events}. Run upload() first or pass verify_uploaded=False."
+                f"Verification failed: {len(missing_events)} local event_id(s) "
+                f"not present in {schema}.events. Sample: [{sample}]. "
+                f"Run upload() first or pass verify_uploaded=False."
             )
-        if remote_postings < local_postings:
+        if missing_postings:
+            sample = ", ".join(sorted(missing_postings)[:5])
             raise RuntimeError(
-                f"Verification failed: local has {local_postings} postings, "
-                f"MotherDuck has {remote_postings}. Run upload() first or pass verify_uploaded=False."
+                f"Verification failed: {len(missing_postings)} local posting_id(s) "
+                f"not present in {schema}.postings. Sample: [{sample}]. "
+                f"Run upload() first or pass verify_uploaded=False."
             )
 
     to_delete = event_files + posting_files
@@ -247,6 +298,6 @@ def cleanup_local(
         "files": [str(f) for f in to_delete],
         "bytes_freed": bytes_freed,
         "dry_run": dry_run,
-        "local_events": local_events,
-        "local_postings": local_postings,
+        "local_events": len(local_event_ids),
+        "local_postings": len(local_posting_ids),
     }

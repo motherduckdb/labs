@@ -136,6 +136,31 @@ def is_initialized() -> bool:
     return _config is not None
 
 
+# Fixed namespace UUID for deriving stable v5 IDs from idempotency keys.
+# Anchors the controllog id-space; any UUID is fine here as long as it's stable.
+_CONTROLLOG_NAMESPACE = uuid.UUID("8ba6b5dc-1c1c-5d29-9b0e-43c4d2c3a9f1")
+
+
+def _deterministic_event_id(project_id: str, idempotency_key: str) -> str:
+    """Derive a stable event_id from (project_id, idempotency_key).
+
+    Per spec § 11, idempotency_key dedupes emission. To actually enforce that
+    on retries we anchor event_id to the key — so the MotherDuck PRIMARY KEY
+    on event_id rejects duplicates instead of letting them accumulate.
+    """
+    return str(uuid.uuid5(_CONTROLLOG_NAMESPACE, f"{project_id}\0{idempotency_key}"))
+
+
+def _deterministic_posting_id(event_id: str, index: int) -> str:
+    """Derive a stable posting_id from (event_id, position).
+
+    Postings within an event are unordered for accounting purposes, but the
+    list order is stable for a given builder call. Pinning posting_id to
+    position keeps retries idempotent at upload.
+    """
+    return str(uuid.uuid5(_CONTROLLOG_NAMESPACE, f"{event_id}\0posting:{index}"))
+
+
 def post(
     account_type: str,
     account_id: str,
@@ -160,12 +185,13 @@ def post(
 
 
 def _check_invariants(kind: str, postings: List[Dict[str, Any]]) -> None:
-    """Enforce minimal double-entry invariants at write-time.
+    """Enforce per-event double-entry invariant (spec § 8.1).
 
-    Per spec § 8.1, for the spec's minimum account set
-    (``truth.money``, ``truth.time``, ``truth.state``, ``truth.utility``)
-    and any ``resource.*`` extension accounts, sum(delta_numeric) per
-    (account_type, unit) must be zero within a reasonable epsilon.
+    For every (account_type, unit) pair within a single event,
+    sum(delta_numeric) must be zero within a reasonable epsilon. This
+    applies to all account types — the spec's minimum set
+    (``truth.money`` / ``truth.time`` / ``truth.state`` / ``truth.utility``)
+    and any extension namespaces (``resource.*``, custom domains) alike.
     """
     if not postings:
         return
@@ -177,11 +203,11 @@ def _check_invariants(kind: str, postings: List[Dict[str, Any]]) -> None:
 
     epsilon = 1e-9
     for (acct, unit), total in sums.items():
-        if acct.startswith("resource.") or acct.startswith("truth."):
-            if abs(total) > epsilon:
-                raise ValueError(
-                    f"UNBALANCED_POSTINGS: account_type={acct}, unit={unit}, net={total} for event kind={kind}"
-                )
+        if abs(total) > epsilon:
+            raise ValueError(
+                f"UNBALANCED_POSTINGS: account_type={acct}, unit={unit}, "
+                f"net={total} for event kind={kind}"
+            )
 
 
 def event(
@@ -201,9 +227,6 @@ def event(
     """
     assert _config is not None, "controllog.init() must be called before use"
 
-    event_id = _uuid7_str()
-    event_time = _now_iso()
-
     # Fill defaults
     actor = actor or {}
     payload = payload or {}
@@ -212,6 +235,19 @@ def event(
 
     # Invariant checks
     _check_invariants(kind, postings)
+
+    # When the caller provides an idempotency_key, derive event_id and
+    # posting_ids deterministically from it so retries collapse to the same
+    # row at MotherDuck (PRIMARY KEY on event_id / posting_id). Without
+    # this, retries write fresh random IDs and upload accumulates duplicate
+    # postings, defeating the spec § 11 dedupe contract.
+    if idempotency_key is not None:
+        event_id = _deterministic_event_id(project, idempotency_key)
+    else:
+        event_id = _uuid7_str()
+        idempotency_key = event_id  # event_id IS the key in this case
+
+    event_time = _now_iso()
 
     # default_dims merge into payload_json (events) and dims_json (postings)
     # rather than spreading top-level — top-level fields aren't carried into
@@ -231,16 +267,17 @@ def event(
         "project_id": project,
         "run_id": run_id,
         "source": source,
-        "idempotency_key": idempotency_key or event_id,
+        "idempotency_key": idempotency_key,
         "payload_json": {**defaults, **payload},
     }
 
     _write_jsonl(_events_file(), event_row)
 
-    # Persist postings (attach event_id, merge defaults into dims_json)
-    for p in postings:
+    # Persist postings (attach event_id and deterministic posting_id, merge defaults into dims_json)
+    for i, p in enumerate(postings):
         p_out = dict(p)
         p_out["event_id"] = event_id
+        p_out["posting_id"] = _deterministic_posting_id(event_id, i)
         p_out["dims_json"] = {**defaults, **(p_out.get("dims_json") or {})}
         _write_jsonl(_postings_file(), p_out)
 
