@@ -27,9 +27,9 @@ import controllog
 
 controllog.init(project_id="my-eval", log_dir=Path("logs"))
 
-exchange_id = controllog.new_id()
-
-controllog.model_prompt(
+# model_prompt returns the exchange_id; pass it to the paired completion.
+# Spec § 5/§ 8.3 require both events to share one exchange_id.
+exchange_id = controllog.model_prompt(
     task_id="q42",
     agent_id="solver",
     run_id="run-2026-05-26",
@@ -38,10 +38,10 @@ controllog.model_prompt(
     model="gpt-5",
     prompt_tokens=812,
     request_text="What is the capital of France?",
-    exchange_id=exchange_id,
 )
 
 controllog.model_completion(
+    exchange_id=exchange_id,
     task_id="q42",
     agent_id="solver",
     run_id="run-2026-05-26",
@@ -52,11 +52,13 @@ controllog.model_completion(
     wall_ms=1380,
     response_text="Paris.",
     cost_money=0.0024,
-    exchange_id=exchange_id,
 )
 ```
 
-Writes append-only JSONL to `logs/controllog/YYYY-MM-DD/{events,postings}.jsonl`.
+Writes append-only JSONL to `logs/controllog/{events,postings}.jsonl` (the
+default flat layout). Pass `partition_by_date=True` to `init()` for
+`logs/controllog/YYYY-MM-DD/{events,postings}.jsonl` instead. The uploader
+handles both layouts.
 
 ## Upload to MotherDuck
 
@@ -75,15 +77,15 @@ Creates `controllog.events` and `controllog.postings` tables and appends new row
 
 ```python
 # Core
-controllog.init(project_id, log_dir, default_dims=None)
+controllog.init(project_id, log_dir, default_dims=None, partition_by_date=False)
 controllog.event(*, kind, actor=None, run_id=None, payload=None, postings=None, ...)
 controllog.post(account_type, account_id, unit, delta, dims=None)
-controllog.new_id()  # UUIDv7
+controllog.new_id()              # UUIDv7
+controllog.is_initialized()
 
 # Generic builders (preferred over raw event/post)
-controllog.model_prompt(...)
-controllog.model_completion(...)
-controllog.model_response(...)       # single-event variant
+exchange_id = controllog.model_prompt(...)          # returns exchange_id
+controllog.model_completion(exchange_id=..., ...)   # pass the paired id
 controllog.state_move(task_id, from_, to, ...)
 controllog.utility(task_id, project_id, metric, value, ...)
 controllog.agent_run(task_id, agent_id, run_id=None)  # contextmanager

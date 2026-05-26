@@ -162,9 +162,10 @@ def post(
 def _check_invariants(kind: str, postings: List[Dict[str, Any]]) -> None:
     """Enforce minimal double-entry invariants at write-time.
 
-    Rules implemented (per event):
-      - For account_types in {resource.tokens, resource.money, resource.time_ms, value.utility, truth.state},
-        sum(delta_numeric) per (account_type, unit) must be zero within reasonable epsilon.
+    Per spec § 8.1, for the spec's minimum account set
+    (``truth.money``, ``truth.time``, ``truth.state``, ``truth.utility``)
+    and any ``resource.*`` extension accounts, sum(delta_numeric) per
+    (account_type, unit) must be zero within a reasonable epsilon.
     """
     if not postings:
         return
@@ -176,7 +177,7 @@ def _check_invariants(kind: str, postings: List[Dict[str, Any]]) -> None:
 
     epsilon = 1e-9
     for (acct, unit), total in sums.items():
-        if acct.startswith("resource.") or acct in ("value.utility", "truth.state"):
+        if acct.startswith("resource.") or acct.startswith("truth."):
             if abs(total) > epsilon:
                 raise ValueError(
                     f"UNBALANCED_POSTINGS: account_type={acct}, unit={unit}, net={total} for event kind={kind}"

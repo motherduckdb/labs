@@ -201,6 +201,27 @@ Tracks lifecycle transitions (conserved)
 
 Tracks reward/score
 
+### 7.5 Extension namespaces
+
+Implementations MAY add account types outside the `truth.*` namespace. The
+convention is:
+
+* `truth.*` — accounts whose unit is comparable across models, runs, and
+  vendors (USD, wall-clock ms, lifecycle state, normalized utility).
+  Always meaningful to sum, average, or compare cross-run.
+* `resource.*` — accounts whose unit is system-specific and **not**
+  comparable across implementations. Tokens are the canonical example:
+  1000 GPT tokens ≠ 1000 Claude tokens ≠ 1000 Gemini tokens because
+  tokenizers differ.
+
+Extension accounts MUST still balance per event (§ 8.1) and across slices
+(§ 8.2). The invariant checker treats `truth.*` and `resource.*` identically;
+the distinction is semantic, not enforcement.
+
+Reference implementation uses `resource.tokens` (unit `+tokens`) to track
+prompt and completion token flow between `provider:{name}` and
+`project:{id}`.
+
 ---
 
 ## 8. Invariants

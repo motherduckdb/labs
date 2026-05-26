@@ -9,7 +9,6 @@ from .builders import (
     agent_run,
     model_completion,
     model_prompt,
-    model_response,
     state_move,
     utility,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "agent_run",
     "model_prompt",
     "model_completion",
-    "model_response",
     "state_move",
     "utility",
 ]
