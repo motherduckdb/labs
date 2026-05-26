@@ -75,7 +75,7 @@ Two files to understand:
 
 **`src/connections_eval/core.py`** is the eval engine. OpenRouter API calls, JSONL logging, game loop, guess processing. All in one file, top to bottom.
 
-**`src/controllog/__init__.py`** is the telemetry library. Every API call is recorded as balanced double-entry postings. Tokens, time, and money all net to zero -- verifiable with the trial balance.
+**Telemetry** comes from the [`controllog`](../controllog/) sibling library. Every API call is recorded as balanced double-entry postings. Tokens, time, and money all net to zero -- verifiable with the trial balance.
 
 The game rules are split between the **prompt** and the **engine**:
 
@@ -101,8 +101,8 @@ eval-connections-mini/
 │   │   ├── __init__.py         # package version
 │   │   ├── core.py             # API + logging + game engine
 │   │   └── cli.py              # CLI (run, list-models, list-puzzles)
-│   └── controllog/
-│       └── __init__.py         # telemetry: events + balanced postings
+│   └── eval_shared/
+│       └── __init__.py         # cross-process file lock for OpenRouter rate limit
 ├── inputs/
 │   ├── puzzles.yml             # 5 puzzles
 │   ├── models.yml              # model configs
@@ -167,7 +167,7 @@ Add more by editing `inputs/models.yml` with any [OpenRouter model ID](https://o
 
 ### Log format
 
-Eval logs are written to `logs/` as JSONL. Each file contains `exchange` records (per-guess detail) and a `summary` record (run totals). Controllog telemetry is written to `logs/controllog/YYYY-MM-DD/` as balanced events and postings.
+Eval logs are written to `logs/` as JSONL. Each file contains `exchange` records (per-guess detail) and a `summary` record (run totals). Controllog telemetry is written to `logs/controllog/{events,postings}.jsonl` as balanced events and postings.
 
 All log data is queryable with DuckDB:
 

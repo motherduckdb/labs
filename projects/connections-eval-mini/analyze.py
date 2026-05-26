@@ -63,17 +63,17 @@ def build_eval_views(conn: duckdb.DuckDBPyConnection, log_dir: Path = LOGS) -> N
         JOIN completed_runs r USING (run_id)
     """)
 
-    # Controllog views (optional - may not exist yet)
-    cl_events_glob = str(log_dir / "controllog" / "*" / "events.jsonl")
-    cl_postings_glob = str(log_dir / "controllog" / "*" / "postings.jsonl")
-    if list(log_dir.glob("controllog/*/events.jsonl")):
+    # Controllog views (optional — flat layout per spec § 3.2).
+    cl_events = log_dir / "controllog" / "events.jsonl"
+    cl_postings = log_dir / "controllog" / "postings.jsonl"
+    if cl_events.exists() and cl_postings.exists():
         conn.execute(f"""
             CREATE VIEW cl_events AS
-            SELECT * FROM read_json_auto('{cl_events_glob}')
+            SELECT * FROM read_json_auto('{cl_events}')
         """)
         conn.execute(f"""
             CREATE VIEW cl_postings AS
-            SELECT * FROM read_json_auto('{cl_postings_glob}')
+            SELECT * FROM read_json_auto('{cl_postings}')
         """)
 
 
@@ -324,7 +324,7 @@ def show_controllog(conn: duckdb.DuckDBPyConnection) -> None:
             dims_json->>'model' AS model,
             ROUND(SUM(delta_numeric), 4) AS total_cost
         FROM cl_postings
-        WHERE account_type = 'resource.money'
+        WHERE account_type = 'truth.money'
             AND account_id LIKE 'project:%'
         GROUP BY model
         ORDER BY total_cost DESC

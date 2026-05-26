@@ -39,7 +39,7 @@ JOIN (SELECT run_id FROM completed_summaries) r USING (run_id);
 
 -- Load controllog (if present)
 CREATE OR REPLACE VIEW cl_postings AS
-SELECT * FROM read_json_auto('logs/controllog/*/postings.jsonl');
+SELECT * FROM read_json_auto('logs/controllog/postings.jsonl');
 
 
 -- ==========================================================================
