@@ -37,7 +37,7 @@ from eval.scoring import (
 from src.providers import create_provider, ModelConfig as ProviderModelConfig, EvalResult
 from src.comparison import CorrectnessLevel
 from src.mcp_client import MotherDuckMCPClient
-from src import controllog
+import controllog
 # Schema helper imports removed - models now discover schema via tools
 from src.schema_linker import link_tables
 from src.sql_executor import execute_sql_returning_error_string
@@ -114,6 +114,7 @@ class PhaseRunner:
         log_dir: Path | None = None,
         introspect: bool = False,
         judge: bool = False,
+        run_id: str | None = None,
     ):
         """
         Initialize the phase runner.
@@ -124,12 +125,16 @@ class PhaseRunner:
             log_dir: Directory for logs (used by error investigator)
             introspect: Whether to run error investigation on incorrect answers
             judge: Whether to use LLM judge for non-exact matches
+            run_id: Unique identifier for this eval run. Threaded into every
+                controllog idempotency key so retries within the run dedupe
+                but separate runs don't collide on deterministic event_ids.
         """
         self.config = eval_config or EvalConfig()
         self.motherduck_token = motherduck_token
         self.log_dir = log_dir
         self.introspect = introspect
         self.judge = judge
+        self.run_id = run_id
 
         import os
         if not self.motherduck_token:
@@ -351,8 +356,9 @@ class PhaseRunner:
                 if controllog.is_initialized():
                     controllog.event(
                         kind="llm_judge",
+                        run_id=self.run_id,
                         postings=[],  # No accounting for judge calls
-                        idempotency_key=f"judge:{question_id}:{db_id}:{model_name}",
+                        idempotency_key=f"judge:{self.run_id}:{question_id}:{db_id}:{model_name}",
                         payload={
                             "question_id": question_id,
                             "db_id": db_id,
@@ -466,9 +472,14 @@ class PhaseRunner:
 
                         # Log to controllog if initialized
                         if controllog.is_initialized():
-                            exchange_id = f"{phase}:{model.name}:{db_config.database_name}:q{q['question_id']}"
+                            task_id = str(q["question_id"])
+                            agent_id = "bird-eval"
+                            exchange_id = f"{self.run_id}:{phase}:{model.name}:{db_config.database_name}:q{q['question_id']}"
                             controllog.model_prompt(
                                 exchange_id=exchange_id,
+                                task_id=task_id,
+                                agent_id=agent_id,
+                                run_id=self.run_id,
                                 prompt_tokens=result.input_tokens,
                                 model=model.provider_id,
                                 provider=DEFAULT_PROVIDER,
@@ -484,14 +495,17 @@ class PhaseRunner:
                             )
                             controllog.model_completion(
                                 exchange_id=exchange_id,
+                                task_id=task_id,
+                                agent_id=agent_id,
+                                run_id=self.run_id,
                                 completion_tokens=result.output_tokens,
-                                cost_usd=result.cost_usd,
-                                duration_ms=result.duration_ms,
+                                cost_money=result.cost_usd,
+                                wall_ms=result.duration_ms,
                                 model=model.provider_id,
                                 provider=DEFAULT_PROVIDER,
-                                success=result.error is None,
-                                error=result.error,
                                 payload={
+                                    "success": result.error is None,
+                                    "error": result.error,
                                     "question_id": q["question_id"],
                                     "db_id": q["db_id"],
                                     "question": q["question"],
@@ -535,8 +549,9 @@ class PhaseRunner:
                                 if controllog.is_initialized():
                                     controllog.event(
                                         kind="error_investigation",
+                                        run_id=self.run_id,
                                         postings=[],  # No accounting for investigations
-                                        idempotency_key=f"investigation:{q['question_id']}:{model.provider_id}:{db_config.database_name}",
+                                        idempotency_key=f"investigation:{self.run_id}:{q['question_id']}:{model.provider_id}:{db_config.database_name}",
                                         payload={
                                             "question_id": q["question_id"],
                                             "db_id": q["db_id"],
