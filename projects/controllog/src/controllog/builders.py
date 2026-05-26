@@ -146,8 +146,19 @@ def state_move(
     agent_id: Optional[str] = None,
     run_id: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
+    idempotency_key: Optional[str] = None,
 ) -> None:
-    """Emit a balanced ``truth.state`` transition for a task."""
+    """Emit a balanced ``truth.state`` transition for a task.
+
+    Per spec § 6, ``NEW → WIP`` happens exactly once and terminal transitions
+    are unique. Without a deterministic idempotency key, retries would emit
+    duplicate events with fresh ``event_id`` s — each duplicate is locally
+    balanced, so trial balance can't catch the drift.
+
+    Defaults to ``f"{task_id}:{from_}:{to}"``; pass an explicit
+    ``idempotency_key`` if you need a different correlation (e.g., when the
+    same transition is legitimately recorded by multiple actors).
+    """
     postings = [
         post("truth.state", f"task:{task_id}", "tasks", -1, {"from": from_}),
         post("truth.state", f"task:{task_id}", "tasks", +1, {"to": to}),
@@ -160,6 +171,7 @@ def state_move(
         postings=postings,
         project_id=project_id,
         source="runtime",
+        idempotency_key=idempotency_key or f"{task_id}:{from_}:{to}",
     )
 
 

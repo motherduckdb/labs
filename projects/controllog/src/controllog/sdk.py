@@ -213,6 +213,13 @@ def event(
     # Invariant checks
     _check_invariants(kind, postings)
 
+    # default_dims merge into payload_json (events) and dims_json (postings)
+    # rather than spreading top-level — top-level fields aren't carried into
+    # MotherDuck (the upload only selects the fixed event columns and the
+    # postings.dims_json field), so spreading top-level would silently drop
+    # them after upload and leave them unqueryable.
+    defaults = _config.default_dims or {}
+
     # Persist event
     event_row = {
         "event_id": event_id,
@@ -225,17 +232,17 @@ def event(
         "run_id": run_id,
         "source": source,
         "idempotency_key": idempotency_key or event_id,
-        "payload_json": {**payload},
+        "payload_json": {**defaults, **payload},
     }
 
-    # Write event
-    _write_jsonl(_events_file(), {**_config.default_dims, **event_row})
+    _write_jsonl(_events_file(), event_row)
 
-    # Persist postings (attach event_id)
+    # Persist postings (attach event_id, merge defaults into dims_json)
     for p in postings:
         p_out = dict(p)
         p_out["event_id"] = event_id
-        _write_jsonl(_postings_file(), {**_config.default_dims, **p_out})
+        p_out["dims_json"] = {**defaults, **(p_out.get("dims_json") or {})}
+        _write_jsonl(_postings_file(), p_out)
 
     return event_row
 

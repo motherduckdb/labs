@@ -358,7 +358,7 @@ The learn command emits three event kinds tracking the knowledge extraction life
 | `learn_complete` | End of a learn run | total_questions, total_fragments, total_comments, total_schema_comments, guide_updates, view_candidates, errors, total_cost_usd, duration_ms |
 
 Postings:
-- `learn_question`: optional `resource.money` (vendor:openrouter <-> project) when cost_usd is present
+- `learn_question`: optional `truth.money` (vendor:openrouter <-> project) when cost_usd is present
 - `learn_start` / `learn_complete`: no postings (lifecycle markers)
 
 Idempotency keys:
@@ -377,7 +377,7 @@ The maintain command emits three event kinds tracking the maintenance pipeline l
 | `maintain_complete` | End of a maintain run | plan_summary, applied, errors, llm_calls, estimated_cost_usd, transaction_id, duration_ms |
 
 Postings:
-- `maintain_complete`: optional `resource.money` (vendor:openrouter <-> project) when estimated_cost_usd > 0
+- `maintain_complete`: optional `truth.money` (vendor:openrouter <-> project) when estimated_cost_usd > 0
 - `maintain_start` / `maintain_action`: no postings (lifecycle markers)
 
 Idempotency keys:
