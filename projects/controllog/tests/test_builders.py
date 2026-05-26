@@ -131,3 +131,81 @@ def test_utility_balances(log_dir, read_postings):
     assert len(p) == 2
     assert all(row["account_type"] == "truth.utility" for row in p)
     assert sum(row["delta_numeric"] for row in p) == pytest.approx(0.0)
+
+
+# -------------------------
+# vendor account uses provider (not hardcoded openrouter)
+# -------------------------
+
+
+def test_cost_posting_uses_provider_argument(log_dir, read_postings):
+    """truth.money should land on vendor:{provider}, not vendor:openrouter."""
+    xid = controllog.model_prompt(
+        task_id="t1", agent_id="a", project_id="test",
+        provider="anthropic", model="claude-sonnet", prompt_tokens=100,
+    )
+    controllog.model_completion(
+        exchange_id=xid,
+        task_id="t1", agent_id="a", project_id="test",
+        provider="anthropic", model="claude-sonnet",
+        completion_tokens=10, wall_ms=500, cost_money=0.005,
+    )
+    money_postings = [p for p in read_postings() if p["account_type"] == "truth.money"]
+    vendors = {p["account_id"] for p in money_postings if p["account_id"].startswith("vendor:")}
+    assert vendors == {"vendor:anthropic"}, f"unexpected vendors: {vendors}"
+
+
+def test_upstream_cost_lands_on_vendor_upstream(log_dir, read_postings):
+    xid = controllog.model_prompt(
+        task_id="t1", agent_id="a", project_id="test",
+        provider="openrouter", model="gpt-5", prompt_tokens=100,
+    )
+    controllog.model_completion(
+        exchange_id=xid,
+        task_id="t1", agent_id="a", project_id="test",
+        provider="openrouter", model="gpt-5",
+        completion_tokens=10, wall_ms=500,
+        cost_money=0.001, upstream_cost_money=0.0008,
+    )
+    money_postings = [p for p in read_postings() if p["account_type"] == "truth.money"]
+    vendors = {p["account_id"] for p in money_postings if p["account_id"].startswith("vendor:")}
+    assert vendors == {"vendor:openrouter", "vendor:upstream"}
+
+
+# -------------------------
+# Required project_id (no None placeholder)
+# -------------------------
+
+
+def test_builders_reject_missing_project_id(log_dir):
+    """Without project_id, postings would record account_id='project:None'."""
+    with pytest.raises(TypeError):
+        controllog.model_prompt(  # type: ignore[call-arg]
+            task_id="t1", agent_id="a",
+            provider="openai", model="gpt-5", prompt_tokens=100,
+        )
+    with pytest.raises(TypeError):
+        controllog.state_move(  # type: ignore[call-arg]
+            task_id="t1", from_="NEW", to="WIP",
+        )
+
+
+# -------------------------
+# No placeholder payloads
+# -------------------------
+
+
+def test_state_move_omits_payload_when_none(log_dir, read_events):
+    """Spec § 6 transitions shouldn't carry a placeholder reason=null."""
+    controllog.state_move(task_id="t1", from_="NEW", to="WIP", project_id="test")
+    e = read_events()[0]
+    assert "reason" not in e["payload_json"]
+    assert e["payload_json"] == {}
+
+
+def test_state_move_preserves_caller_payload(log_dir, read_events):
+    controllog.state_move(
+        task_id="t1", from_="NEW", to="WIP", project_id="test",
+        payload={"reason": "operator-resumed"},
+    )
+    assert read_events()[0]["payload_json"]["reason"] == "operator-resumed"

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,33 @@ except ImportError as e:
         "controllog.motherduck requires the [duckdb] extra. "
         "Install with: pip install 'controllog[duckdb]'"
     ) from e
+
+
+# DuckDB identifier rule (we don't need full SQL; we just need to be safe to
+# interpolate without quoting). Permits letters, digits, and underscore;
+# rejects dots, dashes, spaces, quotes, etc. Single rule, applied everywhere
+# schema/table/column names are interpolated below.
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _ident(name: str) -> str:
+    """Validate ``name`` as a safe SQL identifier and return it unchanged."""
+    if not isinstance(name, str) or not _IDENT_RE.fullmatch(name):
+        raise ValueError(
+            f"unsafe SQL identifier: {name!r} "
+            "(must match [A-Za-z_][A-Za-z0-9_]*)"
+        )
+    return name
+
+
+def _path_literal(path: Path) -> str:
+    """Return ``path`` as a single-quoted SQL string literal.
+
+    DuckDB's ``read_json_auto`` takes a string literal; we only ever
+    interpolate paths the SDK wrote, but doubling single quotes is the
+    standard belt-and-suspenders here.
+    """
+    return "'" + str(path).replace("'", "''") + "'"
 
 
 def _connect(motherduck_db: str, motherduck_token: str | None) -> "duckdb.DuckDBPyConnection":
@@ -44,6 +72,9 @@ def _missing_ids(
     """
     if not local_ids:
         return set()
+    schema = _ident(schema)
+    table = _ident(table)
+    id_column = _ident(id_column)
     missing = set(local_ids)
     chunk_size = 5000
     ids_list = list(local_ids)
@@ -60,10 +91,12 @@ def _missing_ids(
 
 
 def _iter_jsonl_files(log_dir: Path, name: str) -> list[Path]:
-    """Find all ``{name}.jsonl`` files under date-partitioned controllog dirs.
+    """Find all ``{name}.jsonl`` files written by the SDK.
 
-    Looks under both ``log_dir/controllog/{name}.jsonl`` (legacy flat layout)
-    and ``log_dir/controllog/YYYY-MM-DD/{name}.jsonl`` (current layout).
+    Picks up both the flat ``log_dir/controllog/{name}.jsonl`` layout and
+    the date-partitioned ``log_dir/controllog/YYYY-MM-DD/{name}.jsonl``
+    layout. The SDK chooses one based on ``partition_by_date``; the
+    uploader handles whichever it finds.
     """
     base = log_dir / "controllog"
     if not base.exists():
@@ -77,6 +110,7 @@ def _iter_jsonl_files(log_dir: Path, name: str) -> list[Path]:
 
 
 def _ensure_schema(md: "duckdb.DuckDBPyConnection", schema: str) -> None:
+    schema = _ident(schema)
     md.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
     md.execute(f"""
         CREATE TABLE IF NOT EXISTS {schema}.events (
@@ -120,6 +154,7 @@ def upload(
     Returns a dict with the number of rows inserted (not total rows in table).
     """
     log_dir = Path(log_dir)
+    schema = _ident(schema)
     event_files = _iter_jsonl_files(log_dir, "events")
     posting_files = _iter_jsonl_files(log_dir, "postings")
     if not event_files and not posting_files:
@@ -156,7 +191,7 @@ def upload(
                     run_id,
                     actor_agent_id,
                     actor_task_id
-                FROM read_json_auto('{ef}') AS src
+                FROM read_json_auto({_path_literal(ef)}) AS src
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY CAST(src.event_id AS VARCHAR)
                     ORDER BY src.ingest_time DESC
@@ -183,7 +218,7 @@ def upload(
                     unit,
                     delta_numeric,
                     dims_json
-                FROM read_json_auto('{pf}') AS src
+                FROM read_json_auto({_path_literal(pf)}) AS src
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY CAST(src.posting_id AS VARCHAR)
                 ) = 1
@@ -209,6 +244,7 @@ def verify(
     Returns row counts, any (account_type, unit) slices that fail the
     trial-balance invariant, and a histogram of event kinds.
     """
+    schema = _ident(schema)
     md = _connect(motherduck_db, motherduck_token)
     try:
         events = md.execute(f"SELECT COUNT(*) FROM {schema}.events").fetchone()[0]
@@ -260,8 +296,21 @@ def cleanup_local(
     offline or when you trust an earlier upload).
     """
     log_dir = Path(log_dir)
+    schema = _ident(schema)
     event_files = _iter_jsonl_files(log_dir, "events")
     posting_files = _iter_jsonl_files(log_dir, "postings")
+
+    # Nothing to clean up — no credentials or network needed for an empty
+    # directory. Return the same shape so callers don't have to special-case it.
+    if not event_files and not posting_files:
+        return {
+            "files_deleted": 0,
+            "files": [],
+            "bytes_freed": 0,
+            "dry_run": dry_run,
+            "local_events": 0,
+            "local_postings": 0,
+        }
 
     local_event_ids: set[str] = set()
     for ef in event_files:

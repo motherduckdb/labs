@@ -59,13 +59,25 @@ def init(
 # -------------------------
 
 
+def _require_config() -> SDKConfig:
+    """Return the active SDKConfig or raise if init() was never called.
+
+    Plain ``assert`` would be stripped under ``python -O``, turning the
+    helpful error into a later AttributeError when callers touch
+    ``_config.something``.
+    """
+    if _config is None:
+        raise RuntimeError("controllog.init() must be called before use")
+    return _config
+
+
 def _events_dir() -> Path:
-    assert _config is not None, "controllog.init() must be called before use"
-    if _config.partition_by_date:
+    cfg = _require_config()
+    if cfg.partition_by_date:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        part = _config.log_dir / "controllog" / today
+        part = cfg.log_dir / "controllog" / today
     else:
-        part = _config.log_dir / "controllog"
+        part = cfg.log_dir / "controllog"
     part.mkdir(parents=True, exist_ok=True)
     return part
 
@@ -219,13 +231,13 @@ def event(
 
     Returns the persisted event dict.
     """
-    assert _config is not None, "controllog.init() must be called before use"
+    cfg = _require_config()
 
     # Fill defaults
     actor = actor or {}
     payload = payload or {}
     postings = postings or []
-    project = project_id or _config.project_id
+    project = project_id or cfg.project_id
 
     # Invariant checks
     _check_invariants(kind, postings)
@@ -248,7 +260,7 @@ def event(
     # MotherDuck (the upload only selects the fixed event columns and the
     # postings.dims_json field), so spreading top-level would silently drop
     # them after upload and leave them unqueryable.
-    defaults = _config.default_dims or {}
+    defaults = cfg.default_dims or {}
 
     # Persist event
     event_row = {

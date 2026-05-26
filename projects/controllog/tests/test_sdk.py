@@ -14,7 +14,8 @@ import controllog
 
 
 def test_init_required_before_use(tmp_path):
-    with pytest.raises(AssertionError, match="init"):
+    """Use RuntimeError (not assert) so the check survives python -O."""
+    with pytest.raises(RuntimeError, match="init"):
         controllog.event(kind="x", postings=[])
 
 

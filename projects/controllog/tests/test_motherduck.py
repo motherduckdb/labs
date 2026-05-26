@@ -208,3 +208,50 @@ def test_cleanup_local_skip_verification(log_dir, md_conn):
         log_dir=log_dir, motherduck_db="x", verify_uploaded=False
     )
     assert result["files_deleted"] == 2
+
+
+def test_cleanup_local_empty_dir_is_true_no_op(tmp_path, monkeypatch):
+    """No JSONL → no MotherDuck connection should be opened at all."""
+    calls = []
+    monkeypatch.setattr(
+        motherduck, "_connect",
+        lambda *a, **k: calls.append((a, k)) or (_ for _ in ()).throw(
+            AssertionError("should not connect on empty dir")
+        ),
+    )
+    # No init(), no files written — dir is bare.
+    result = motherduck.cleanup_local(log_dir=tmp_path, motherduck_db="x")
+    assert calls == []
+    assert result["files_deleted"] == 0
+    assert result["local_events"] == 0
+
+
+# -------------------------
+# SQL identifier safety
+# -------------------------
+
+
+def test_upload_rejects_unsafe_schema_name(log_dir, md_conn):
+    """Schema names get interpolated into DDL — must be validated."""
+    _emit_sample()
+    with pytest.raises(ValueError, match="unsafe SQL identifier"):
+        motherduck.upload(motherduck_db="x", log_dir=log_dir, schema="bad; DROP TABLE")
+
+
+def test_verify_rejects_unsafe_schema_name(md_conn):
+    with pytest.raises(ValueError, match="unsafe SQL identifier"):
+        motherduck.verify(motherduck_db="x", schema='"; DROP TABLE events; --')
+
+
+def test_cleanup_local_rejects_unsafe_schema_name(log_dir, md_conn):
+    _emit_sample()
+    with pytest.raises(ValueError, match="unsafe SQL identifier"):
+        motherduck.cleanup_local(log_dir=log_dir, motherduck_db="x", schema="x.y")
+
+
+def test_safe_schema_names_pass(log_dir, md_conn):
+    """Underscored / alpha names are fine."""
+    _emit_sample()
+    motherduck.upload(motherduck_db="x", log_dir=log_dir, schema="my_eval_2")
+    out = motherduck.verify(motherduck_db="x", schema="my_eval_2")
+    assert out["events"] == 2

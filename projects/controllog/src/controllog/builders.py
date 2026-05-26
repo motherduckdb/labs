@@ -17,11 +17,11 @@ def model_prompt(
     *,
     task_id: str,
     agent_id: str,
-    run_id: Optional[str],
-    project_id: Optional[str],
+    project_id: str,
     provider: str,
     model: str,
     prompt_tokens: int,
+    run_id: Optional[str] = None,
     exchange_id: Optional[str] = None,
     request_text: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
@@ -67,12 +67,12 @@ def model_completion(
     exchange_id: str,
     task_id: str,
     agent_id: str,
-    run_id: Optional[str],
-    project_id: Optional[str],
+    project_id: str,
     provider: str,
     model: str,
     completion_tokens: int,
     wall_ms: int,
+    run_id: Optional[str] = None,
     response_text: Optional[str] = None,
     cost_money: Optional[float] = None,
     upstream_cost_money: Optional[float] = None,
@@ -82,6 +82,10 @@ def model_completion(
 
     ``exchange_id`` is required (per spec § 5.2 / § 8.3 — exchange
     completeness). Pass the value returned by :func:`model_prompt`.
+
+    ``cost_money`` postings record ``vendor:{provider}``. For aggregator
+    setups where the direct vendor differs from the upstream provider,
+    pass ``upstream_cost_money`` separately — it lands on ``vendor:upstream``.
     """
     postings = [
         post("resource.tokens", f"provider:{provider}", "+tokens", -int(completion_tokens or 0), {"model": model, "phase": "completion"}),
@@ -92,7 +96,7 @@ def model_completion(
     if cost_money is not None:
         postings.extend(
             [
-                post("truth.money", f"vendor:openrouter", "$", -float(cost_money), {"model": model}),
+                post("truth.money", f"vendor:{provider}", "$", -float(cost_money), {"model": model}),
                 post("truth.money", f"project:{project_id}", "$", +float(cost_money), {"model": model}),
             ]
         )
@@ -131,7 +135,7 @@ def state_move(
     task_id: str,
     from_: str,
     to: str,
-    project_id: Optional[str],
+    project_id: str,
     agent_id: Optional[str] = None,
     run_id: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
@@ -156,7 +160,7 @@ def state_move(
         kind="state_move",
         actor={"agent_id": agent_id, "task_id": task_id} if agent_id else {"task_id": task_id},
         run_id=run_id,
-        payload=payload or {"reason": None},
+        payload=payload,
         postings=postings,
         project_id=project_id,
         source="runtime",
