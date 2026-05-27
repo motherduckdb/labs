@@ -186,6 +186,9 @@ class MDConnectionManager {
   }
 
   private async provisionAttachShare(mdToken: string, database: string, shareUrls: string[]): Promise<void> {
+    if (shareUrls.length === 0) {
+      throw new Error(`attach-share provisioning for '${database}' has no candidate share URLs`);
+    }
     const conn = MDConnection.create({
       mdToken,
       attachMode: 'workspace',
@@ -210,7 +213,9 @@ class MDConnectionManager {
           lastErr = err;
         }
       }
-      if (lastErr) throw lastErr;
+      // The loop only reaches here if every ATTACH failed. `lastErr` is
+      // always set in that case (the empty-array path was rejected up top).
+      throw lastErr ?? new Error(`Failed to attach '${database}' from any share URL`);
     } finally {
       if (typeof conn.close === 'function') {
         try {
