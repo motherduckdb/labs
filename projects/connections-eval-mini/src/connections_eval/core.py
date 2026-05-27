@@ -358,7 +358,7 @@ class ConnectionsGame:
         start_time = time.time()
         cl.state_move(
             task_id=task_id, from_="NEW", to="WIP",
-            project_id=self.PROJECT_ID, agent_id="agent:connections_eval",
+            agent_id="agent:connections_eval",
             run_id=self.run_id, payload={"puzzle_id": puzzle.id},
         )
 
@@ -403,7 +403,7 @@ class ConnectionsGame:
                 exchange_id = cl.new_id()
                 cl.model_prompt(
                     task_id=task_id, agent_id="agent:connections_eval",
-                    run_id=self.run_id, project_id=self.PROJECT_ID,
+                    run_id=self.run_id,
                     provider="openrouter", model=model_id,
                     prompt_tokens=prompt_tokens or 0,
                     request_text=messages[-1]["content"],
@@ -412,7 +412,7 @@ class ConnectionsGame:
                 )
                 cl.model_completion(
                     task_id=task_id, agent_id="agent:connections_eval",
-                    run_id=self.run_id, project_id=self.PROJECT_ID,
+                    run_id=self.run_id,
                     provider="openrouter", model=model_id,
                     completion_tokens=completion_tokens or 0, wall_ms=elapsed_ms,
                     response_text=content, cost_money=cost,
@@ -436,7 +436,7 @@ class ConnectionsGame:
             })
             cl.state_move(
                 task_id=task_id, from_="WIP", to="FAILED",
-                project_id=self.PROJECT_ID, agent_id="agent:connections_eval",
+                agent_id="agent:connections_eval",
                 run_id=self.run_id,
                 payload={"puzzle_id": puzzle.id, **{
                     key: value for key, value in error_context.items()
@@ -449,7 +449,7 @@ class ConnectionsGame:
 
         cl.state_move(
             task_id=task_id, from_="WIP", to="DONE" if state.won else "FAILED",
-            project_id=self.PROJECT_ID, agent_id="agent:connections_eval",
+            agent_id="agent:connections_eval",
             run_id=self.run_id, payload={"puzzle_id": puzzle.id},
         )
 
