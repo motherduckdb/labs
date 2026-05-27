@@ -133,6 +133,14 @@ def test_utility_balances(log_dir, read_postings):
     assert sum(row["delta_numeric"] for row in p) == pytest.approx(0.0)
 
 
+def test_utility_omits_payload_when_none(log_dir, read_events):
+    """metric and value are already on the postings — no need for a payload placeholder."""
+    controllog.utility(task_id="t1", project_id="test", metric="reward", value=1.0)
+    e = read_events()[0]
+    # No {"metric": ..., "value": ...} placeholder when caller passes no payload
+    assert e["payload_json"] == {}
+
+
 # -------------------------
 # vendor account uses provider (not hardcoded openrouter)
 # -------------------------
@@ -153,23 +161,6 @@ def test_cost_posting_uses_provider_argument(log_dir, read_postings):
     money_postings = [p for p in read_postings() if p["account_type"] == "truth.money"]
     vendors = {p["account_id"] for p in money_postings if p["account_id"].startswith("vendor:")}
     assert vendors == {"vendor:anthropic"}, f"unexpected vendors: {vendors}"
-
-
-def test_upstream_cost_lands_on_vendor_upstream(log_dir, read_postings):
-    xid = controllog.model_prompt(
-        task_id="t1", agent_id="a", project_id="test",
-        provider="openrouter", model="gpt-5", prompt_tokens=100,
-    )
-    controllog.model_completion(
-        exchange_id=xid,
-        task_id="t1", agent_id="a", project_id="test",
-        provider="openrouter", model="gpt-5",
-        completion_tokens=10, wall_ms=500,
-        cost_money=0.001, upstream_cost_money=0.0008,
-    )
-    money_postings = [p for p in read_postings() if p["account_type"] == "truth.money"]
-    vendors = {p["account_id"] for p in money_postings if p["account_id"].startswith("vendor:")}
-    assert vendors == {"vendor:openrouter", "vendor:upstream"}
 
 
 # -------------------------

@@ -25,17 +25,11 @@ def test_is_initialized_round_trip(tmp_path):
     assert controllog.is_initialized() is True
 
 
-def test_flat_layout_is_default(log_dir):
+def test_flat_layout_is_spec(log_dir):
+    """Spec §3.2 — flat layout, no partitioning options."""
     controllog.state_move(task_id="t1", from_="NEW", to="WIP", project_id="test")
     assert (log_dir / "controllog" / "events.jsonl").exists()
-    assert not list((log_dir / "controllog").glob("20*/events.jsonl"))
-
-
-def test_partition_by_date(tmp_path):
-    controllog.init(project_id="t", log_dir=tmp_path, partition_by_date=True)
-    controllog.state_move(task_id="t1", from_="NEW", to="WIP", project_id="t")
-    found = list((tmp_path / "controllog").glob("*/events.jsonl"))
-    assert len(found) == 1, found
+    assert (log_dir / "controllog" / "postings.jsonl").exists()
 
 
 # -------------------------

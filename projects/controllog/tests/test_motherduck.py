@@ -106,13 +106,6 @@ def test_upload_raises_on_missing_files(log_dir, md_conn):
         motherduck.upload(motherduck_db="x", log_dir=log_dir)
 
 
-def test_upload_finds_partitioned_files(tmp_path, md_conn):
-    controllog.init(project_id="t", log_dir=tmp_path, partition_by_date=True)
-    _emit_sample(project="t")
-    result = motherduck.upload(motherduck_db="x", log_dir=tmp_path)
-    assert result["events"] == 2
-
-
 # -------------------------
 # verify()
 # -------------------------
@@ -227,31 +220,16 @@ def test_cleanup_local_empty_dir_is_true_no_op(tmp_path, monkeypatch):
 
 
 # -------------------------
-# SQL identifier safety
+# Schema is hardcoded per spec §10.1
 # -------------------------
 
 
-def test_upload_rejects_unsafe_schema_name(log_dir, md_conn):
-    """Schema names get interpolated into DDL — must be validated."""
+def test_schema_is_hardcoded(log_dir, md_conn):
+    """The library writes to controllog.events / controllog.postings — no override."""
     _emit_sample()
-    with pytest.raises(ValueError, match="unsafe SQL identifier"):
-        motherduck.upload(motherduck_db="x", log_dir=log_dir, schema="bad; DROP TABLE")
-
-
-def test_verify_rejects_unsafe_schema_name(md_conn):
-    with pytest.raises(ValueError, match="unsafe SQL identifier"):
-        motherduck.verify(motherduck_db="x", schema='"; DROP TABLE events; --')
-
-
-def test_cleanup_local_rejects_unsafe_schema_name(log_dir, md_conn):
-    _emit_sample()
-    with pytest.raises(ValueError, match="unsafe SQL identifier"):
-        motherduck.cleanup_local(log_dir=log_dir, motherduck_db="x", schema="x.y")
-
-
-def test_safe_schema_names_pass(log_dir, md_conn):
-    """Underscored / alpha names are fine."""
-    _emit_sample()
-    motherduck.upload(motherduck_db="x", log_dir=log_dir, schema="my_eval_2")
-    out = motherduck.verify(motherduck_db="x", schema="my_eval_2")
-    assert out["events"] == 2
+    motherduck.upload(motherduck_db="x", log_dir=log_dir)
+    n = md_conn.execute("SELECT COUNT(*) FROM controllog.events").fetchone()[0]
+    assert n == 2
+    # No schema= kwarg accepted on any public function
+    with pytest.raises(TypeError):
+        motherduck.upload(motherduck_db="x", log_dir=log_dir, schema="other")  # type: ignore[call-arg]

@@ -1,8 +1,7 @@
 """MotherDuck transport for controllog.
 
 Uploads append-only JSONL into ``controllog.events`` and ``controllog.postings``
-(default schema per spec v1.1 section 10.1). Idempotent on ``event_id`` and
-``posting_id`` — re-running is safe.
+(spec § 10.1). Idempotent on ``event_id`` and ``posting_id`` — re-running is safe.
 
 Requires the ``[duckdb]`` extra::
 
@@ -12,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -25,30 +23,12 @@ except ImportError as e:
     ) from e
 
 
-# DuckDB identifier rule (we don't need full SQL; we just need to be safe to
-# interpolate without quoting). Permits letters, digits, and underscore;
-# rejects dots, dashes, spaces, quotes, etc. Single rule, applied everywhere
-# schema/table/column names are interpolated below.
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _ident(name: str) -> str:
-    """Validate ``name`` as a safe SQL identifier and return it unchanged."""
-    if not isinstance(name, str) or not _IDENT_RE.fullmatch(name):
-        raise ValueError(
-            f"unsafe SQL identifier: {name!r} "
-            "(must match [A-Za-z_][A-Za-z0-9_]*)"
-        )
-    return name
+# Schema is fixed by spec § 10.1.
+_SCHEMA = "controllog"
 
 
 def _path_literal(path: Path) -> str:
-    """Return ``path`` as a single-quoted SQL string literal.
-
-    DuckDB's ``read_json_auto`` takes a string literal; we only ever
-    interpolate paths the SDK wrote, but doubling single quotes is the
-    standard belt-and-suspenders here.
-    """
+    """Return ``path`` as a single-quoted SQL string literal for ``read_json_auto``."""
     return "'" + str(path).replace("'", "''") + "'"
 
 
@@ -61,20 +41,16 @@ def _connect(motherduck_db: str, motherduck_token: str | None) -> "duckdb.DuckDB
 
 def _missing_ids(
     md: "duckdb.DuckDBPyConnection",
-    schema: str,
     table: str,
     id_column: str,
     local_ids: set[str],
 ) -> set[str]:
-    """Return the subset of ``local_ids`` not present in ``schema.table``.
+    """Return the subset of ``local_ids`` not present in ``controllog.{table}``.
 
     Queries in chunks to keep the IN clause manageable on large local sets.
     """
     if not local_ids:
         return set()
-    schema = _ident(schema)
-    table = _ident(table)
-    id_column = _ident(id_column)
     missing = set(local_ids)
     chunk_size = 5000
     ids_list = list(local_ids)
@@ -82,7 +58,7 @@ def _missing_ids(
         chunk = ids_list[start : start + chunk_size]
         placeholders = ", ".join(["?"] * len(chunk))
         rows = md.execute(
-            f"SELECT {id_column} FROM {schema}.{table} WHERE {id_column} IN ({placeholders})",
+            f"SELECT {id_column} FROM {_SCHEMA}.{table} WHERE {id_column} IN ({placeholders})",
             chunk,
         ).fetchall()
         for (rid,) in rows:
@@ -91,29 +67,15 @@ def _missing_ids(
 
 
 def _iter_jsonl_files(log_dir: Path, name: str) -> list[Path]:
-    """Find all ``{name}.jsonl`` files written by the SDK.
-
-    Picks up both the flat ``log_dir/controllog/{name}.jsonl`` layout and
-    the date-partitioned ``log_dir/controllog/YYYY-MM-DD/{name}.jsonl``
-    layout. The SDK chooses one based on ``partition_by_date``; the
-    uploader handles whichever it finds.
-    """
-    base = log_dir / "controllog"
-    if not base.exists():
-        return []
-    files = []
-    flat = base / f"{name}.jsonl"
-    if flat.exists():
-        files.append(flat)
-    files.extend(sorted(base.glob(f"*/{name}.jsonl")))
-    return files
+    """Find ``log_dir/controllog/{name}.jsonl`` written by the SDK."""
+    flat = log_dir / "controllog" / f"{name}.jsonl"
+    return [flat] if flat.exists() else []
 
 
-def _ensure_schema(md: "duckdb.DuckDBPyConnection", schema: str) -> None:
-    schema = _ident(schema)
-    md.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+def _ensure_schema(md: "duckdb.DuckDBPyConnection") -> None:
+    md.execute(f"CREATE SCHEMA IF NOT EXISTS {_SCHEMA}")
     md.execute(f"""
-        CREATE TABLE IF NOT EXISTS {schema}.events (
+        CREATE TABLE IF NOT EXISTS {_SCHEMA}.events (
             event_id VARCHAR PRIMARY KEY,
             event_time TIMESTAMP WITH TIME ZONE,
             ingest_time TIMESTAMP WITH TIME ZONE,
@@ -128,7 +90,7 @@ def _ensure_schema(md: "duckdb.DuckDBPyConnection", schema: str) -> None:
         )
     """)
     md.execute(f"""
-        CREATE TABLE IF NOT EXISTS {schema}.postings (
+        CREATE TABLE IF NOT EXISTS {_SCHEMA}.postings (
             posting_id VARCHAR PRIMARY KEY,
             event_id VARCHAR NOT NULL,
             account_type VARCHAR NOT NULL,
@@ -144,17 +106,14 @@ def upload(
     *,
     motherduck_db: str,
     log_dir: Path | str,
-    schema: str = "controllog",
     motherduck_token: str | None = None,
 ) -> dict[str, int]:
-    """Upload all local JSONL logs under ``log_dir`` into MotherDuck.
+    """Upload local controllog JSONL into ``controllog.events`` and ``controllog.postings``.
 
     Idempotent: existing ``event_id`` / ``posting_id`` rows are skipped.
-
-    Returns a dict with the number of rows inserted (not total rows in table).
+    Returns the number of rows inserted (not total rows in table).
     """
     log_dir = Path(log_dir)
-    schema = _ident(schema)
     event_files = _iter_jsonl_files(log_dir, "events")
     posting_files = _iter_jsonl_files(log_dir, "postings")
     if not event_files and not posting_files:
@@ -162,7 +121,7 @@ def upload(
 
     md = _connect(motherduck_db, motherduck_token)
     try:
-        _ensure_schema(md, schema)
+        _ensure_schema(md)
 
         # Local JSONL can carry duplicate event_id / posting_id rows when an
         # idempotent operation is retried (deterministic IDs collapse onto
@@ -173,9 +132,9 @@ def upload(
         # batch before we add the remote-dedupe filter on top.
         events_inserted = 0
         for ef in event_files:
-            before = md.execute(f"SELECT COUNT(*) FROM {schema}.events").fetchone()[0]
+            before = md.execute(f"SELECT COUNT(*) FROM {_SCHEMA}.events").fetchone()[0]
             md.execute(f"""
-                INSERT INTO {schema}.events (
+                INSERT INTO {_SCHEMA}.events (
                     event_id, event_time, ingest_time, kind, project_id, source,
                     idempotency_key, payload_json, run_id, actor_agent_id, actor_task_id
                 )
@@ -197,16 +156,16 @@ def upload(
                     ORDER BY src.ingest_time DESC
                 ) = 1
                 AND CAST(src.event_id AS VARCHAR)
-                    NOT IN (SELECT event_id FROM {schema}.events)
+                    NOT IN (SELECT event_id FROM {_SCHEMA}.events)
             """)
-            after = md.execute(f"SELECT COUNT(*) FROM {schema}.events").fetchone()[0]
+            after = md.execute(f"SELECT COUNT(*) FROM {_SCHEMA}.events").fetchone()[0]
             events_inserted += after - before
 
         postings_inserted = 0
         for pf in posting_files:
-            before = md.execute(f"SELECT COUNT(*) FROM {schema}.postings").fetchone()[0]
+            before = md.execute(f"SELECT COUNT(*) FROM {_SCHEMA}.postings").fetchone()[0]
             md.execute(f"""
-                INSERT INTO {schema}.postings (
+                INSERT INTO {_SCHEMA}.postings (
                     posting_id, event_id, account_type, account_id,
                     unit, delta_numeric, dims_json
                 )
@@ -223,9 +182,9 @@ def upload(
                     PARTITION BY CAST(src.posting_id AS VARCHAR)
                 ) = 1
                 AND CAST(src.posting_id AS VARCHAR)
-                    NOT IN (SELECT posting_id FROM {schema}.postings)
+                    NOT IN (SELECT posting_id FROM {_SCHEMA}.postings)
             """)
-            after = md.execute(f"SELECT COUNT(*) FROM {schema}.postings").fetchone()[0]
+            after = md.execute(f"SELECT COUNT(*) FROM {_SCHEMA}.postings").fetchone()[0]
             postings_inserted += after - before
 
         return {"events": events_inserted, "postings": postings_inserted}
@@ -236,7 +195,6 @@ def upload(
 def verify(
     *,
     motherduck_db: str,
-    schema: str = "controllog",
     motherduck_token: str | None = None,
 ) -> dict[str, Any]:
     """Run trial-balance checks against the uploaded controllog data.
@@ -244,22 +202,21 @@ def verify(
     Returns row counts, any (account_type, unit) slices that fail the
     trial-balance invariant, and a histogram of event kinds.
     """
-    schema = _ident(schema)
     md = _connect(motherduck_db, motherduck_token)
     try:
-        events = md.execute(f"SELECT COUNT(*) FROM {schema}.events").fetchone()[0]
-        postings = md.execute(f"SELECT COUNT(*) FROM {schema}.postings").fetchone()[0]
+        events = md.execute(f"SELECT COUNT(*) FROM {_SCHEMA}.events").fetchone()[0]
+        postings = md.execute(f"SELECT COUNT(*) FROM {_SCHEMA}.postings").fetchone()[0]
 
         violations = md.execute(f"""
             SELECT account_type, unit, SUM(delta_numeric) AS net
-            FROM {schema}.postings
+            FROM {_SCHEMA}.postings
             GROUP BY account_type, unit
             HAVING ABS(SUM(delta_numeric)) > 0.0001
         """).fetchall()
 
         event_kinds = md.execute(f"""
             SELECT kind, COUNT(*) AS count
-            FROM {schema}.events
+            FROM {_SCHEMA}.events
             GROUP BY kind
             ORDER BY count DESC
         """).fetchall()
@@ -280,7 +237,6 @@ def cleanup_local(
     *,
     log_dir: Path | str,
     motherduck_db: str,
-    schema: str = "controllog",
     motherduck_token: str | None = None,
     verify_uploaded: bool = True,
     dry_run: bool = False,
@@ -296,7 +252,6 @@ def cleanup_local(
     offline or when you trust an earlier upload).
     """
     log_dir = Path(log_dir)
-    schema = _ident(schema)
     event_files = _iter_jsonl_files(log_dir, "events")
     posting_files = _iter_jsonl_files(log_dir, "postings")
 
@@ -331,22 +286,22 @@ def cleanup_local(
     if verify_uploaded:
         md = _connect(motherduck_db, motherduck_token)
         try:
-            missing_events = _missing_ids(md, schema, "events", "event_id", local_event_ids)
-            missing_postings = _missing_ids(md, schema, "postings", "posting_id", local_posting_ids)
+            missing_events = _missing_ids(md, "events", "event_id", local_event_ids)
+            missing_postings = _missing_ids(md, "postings", "posting_id", local_posting_ids)
         finally:
             md.close()
         if missing_events:
             sample = ", ".join(sorted(missing_events)[:5])
             raise RuntimeError(
                 f"Verification failed: {len(missing_events)} local event_id(s) "
-                f"not present in {schema}.events. Sample: [{sample}]. "
+                f"not present in {_SCHEMA}.events. Sample: [{sample}]. "
                 f"Run upload() first or pass verify_uploaded=False."
             )
         if missing_postings:
             sample = ", ".join(sorted(missing_postings)[:5])
             raise RuntimeError(
                 f"Verification failed: {len(missing_postings)} local posting_id(s) "
-                f"not present in {schema}.postings. Sample: [{sample}]. "
+                f"not present in {_SCHEMA}.postings. Sample: [{sample}]. "
                 f"Run upload() first or pass verify_uploaded=False."
             )
 

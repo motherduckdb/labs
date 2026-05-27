@@ -8,17 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-# -------------------------
-# Configuration and globals
-# -------------------------
-
-
 @dataclass
 class SDKConfig:
     project_id: str
     log_dir: Path
     default_dims: Dict[str, Any] = field(default_factory=dict)
-    partition_by_date: bool = False
 
 
 _config: Optional[SDKConfig] = None
@@ -28,19 +22,17 @@ def init(
     project_id: str,
     log_dir: Path,
     default_dims: Optional[Dict[str, Any]] = None,
-    partition_by_date: bool = False,
 ) -> None:
     """Initialize controllog SDK for JSONL transport.
+
+    Writes append-only JSONL to ``log_dir/controllog/{events,postings}.jsonl``
+    (spec § 3.2).
 
     Args:
         project_id: Logical project identifier.
         log_dir: Base directory where JSONL logs will be written.
-        default_dims: Default dimensions to add to every event/posting.
-        partition_by_date: If True, logs are written under
-            ``log_dir/controllog/YYYY-MM-DD/{events,postings}.jsonl``.
-            If False (default), flat layout:
-            ``log_dir/controllog/{events,postings}.jsonl``.
-            Both layouts are accepted by ``controllog.motherduck.upload``.
+        default_dims: Default dimensions merged into every event's
+            ``payload_json`` and every posting's ``dims_json``.
     """
     global _config
 
@@ -50,13 +42,7 @@ def init(
         project_id=project_id,
         log_dir=log_dir,
         default_dims=default_dims or {},
-        partition_by_date=partition_by_date,
     )
-
-
-# -------------------------
-# JSONL transport helpers
-# -------------------------
 
 
 def _require_config() -> SDKConfig:
@@ -73,11 +59,7 @@ def _require_config() -> SDKConfig:
 
 def _events_dir() -> Path:
     cfg = _require_config()
-    if cfg.partition_by_date:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        part = cfg.log_dir / "controllog" / today
-    else:
-        part = cfg.log_dir / "controllog"
+    part = cfg.log_dir / "controllog"
     part.mkdir(parents=True, exist_ok=True)
     return part
 
@@ -93,11 +75,6 @@ def _postings_file() -> Path:
 def _write_jsonl(path: Path, obj: Dict[str, Any]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-
-
-# -------------------------
-# Core data constructors
-# -------------------------
 
 
 def _now_iso() -> str:
@@ -233,13 +210,11 @@ def event(
     """
     cfg = _require_config()
 
-    # Fill defaults
     actor = actor or {}
     payload = payload or {}
     postings = postings or []
     project = project_id or cfg.project_id
 
-    # Invariant checks
     _check_invariants(kind, postings)
 
     # When the caller provides an idempotency_key, derive event_id and
@@ -262,7 +237,6 @@ def event(
     # them after upload and leave them unqueryable.
     defaults = cfg.default_dims or {}
 
-    # Persist event
     event_row = {
         "event_id": event_id,
         "event_time": event_time,
@@ -276,10 +250,8 @@ def event(
         "idempotency_key": idempotency_key,
         "payload_json": {**defaults, **payload},
     }
-
     _write_jsonl(_events_file(), event_row)
 
-    # Persist postings (attach event_id and deterministic posting_id, merge defaults into dims_json)
     for i, p in enumerate(postings):
         p_out = dict(p)
         p_out["event_id"] = event_id

@@ -55,10 +55,7 @@ controllog.model_completion(
 )
 ```
 
-Writes append-only JSONL to `logs/controllog/{events,postings}.jsonl` (the
-default flat layout). Pass `partition_by_date=True` to `init()` for
-`logs/controllog/YYYY-MM-DD/{events,postings}.jsonl` instead. The uploader
-handles both layouts.
+Writes append-only JSONL to `logs/controllog/{events,postings}.jsonl` (spec § 3.2).
 
 ## Upload to MotherDuck
 
@@ -77,7 +74,7 @@ Creates `controllog.events` and `controllog.postings` tables and appends new row
 
 ```python
 # Core
-controllog.init(project_id, log_dir, default_dims=None, partition_by_date=False)
+controllog.init(project_id, log_dir, default_dims=None)
 controllog.event(*, kind, actor=None, run_id=None, payload=None, postings=None, ...)
 controllog.post(account_type, account_id, unit, delta, dims=None)
 controllog.new_id()              # UUIDv7
