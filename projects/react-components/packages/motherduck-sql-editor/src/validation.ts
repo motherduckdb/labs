@@ -38,43 +38,38 @@ export function validateQuerySecurity(query: string, allowedDatabase: string): S
     }
   }
 
-  if (normalizedQuery.includes('DROP DATABASE') || normalizedQuery.includes('DROP SCHEMA')) {
-    const dropMatch = normalizedQuery.match(/DROP\s+(DATABASE|SCHEMA)\s+(?:IF\s+EXISTS\s+)?([^\s;]+)/);
-    if (dropMatch) {
-      const targetDb = dropMatch[2].toLowerCase().replace(/['"]/g, '');
-      if (targetDb !== allowedDatabase.toLowerCase()) {
-        return createValidationError('DROP DATABASE');
-      }
+  // All keyword-pair guards use \s+ rather than substring includes() so
+  // whitespace forms (`DROP\nDATABASE other`, `DELETE\tFROM other.s.t`) are
+  // still caught — otherwise the early-exit would skip the regex entirely.
+  const dropDbRe = /\bDROP\s+(DATABASE|SCHEMA)\s+(?:IF\s+EXISTS\s+)?([^\s;]+)/g;
+  for (const m of normalizedQuery.matchAll(dropDbRe)) {
+    const targetDb = m[2].replace(/['"]/g, '');
+    if (targetDb !== allowedUpper) {
+      return createValidationError('DROP DATABASE');
     }
   }
 
-  if (normalizedQuery.includes('DELETE FROM')) {
-    const deleteMatch = normalizedQuery.match(/DELETE\s+FROM\s+([^\s.]+\.)?([^\s.]+)\.([^\s;]+)/);
-    if (deleteMatch) {
-      const dbName = deleteMatch[2]?.toLowerCase();
-      if (dbName && dbName !== allowedDatabase.toLowerCase()) {
-        return { isValid: false, error: `DELETE on '${dbName}' is not allowed` };
-      }
+  const deleteRe = /\bDELETE\s+FROM\s+(?:[^\s.]+\.)?([^\s.]+)\.[^\s;]+/g;
+  for (const m of normalizedQuery.matchAll(deleteRe)) {
+    const dbName = m[1];
+    if (dbName && dbName !== allowedUpper) {
+      return { isValid: false, error: `DELETE on '${dbName.toLowerCase()}' is not allowed` };
     }
   }
 
-  if (normalizedQuery.includes('DROP TABLE')) {
-    const m = normalizedQuery.match(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([^\s.]+\.)?([^\s.]+)\.([^\s;]+)/);
-    if (m) {
-      const dbName = m[2]?.toLowerCase();
-      if (dbName && dbName !== allowedDatabase.toLowerCase()) {
-        return { isValid: false, error: `DROP TABLE on '${dbName}' is not allowed` };
-      }
+  const dropTableRe = /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:[^\s.]+\.)?([^\s.]+)\.[^\s;]+/g;
+  for (const m of normalizedQuery.matchAll(dropTableRe)) {
+    const dbName = m[1];
+    if (dbName && dbName !== allowedUpper) {
+      return { isValid: false, error: `DROP TABLE on '${dbName.toLowerCase()}' is not allowed` };
     }
   }
 
-  if (normalizedQuery.includes('COPY')) {
-    const m = normalizedQuery.match(/COPY\s+([^\s.]+\.)?([^\s.]+)\.([^\s;]+)/);
-    if (m) {
-      const dbName = m[2]?.toLowerCase();
-      if (dbName && dbName !== allowedDatabase.toLowerCase()) {
-        return { isValid: false, error: `COPY on '${dbName}' is not allowed` };
-      }
+  const copyRe = /\bCOPY\s+(?:[^\s.]+\.)?([^\s.]+)\.[^\s;]+/g;
+  for (const m of normalizedQuery.matchAll(copyRe)) {
+    const dbName = m[1];
+    if (dbName && dbName !== allowedUpper) {
+      return { isValid: false, error: `COPY on '${dbName.toLowerCase()}' is not allowed` };
     }
   }
 
