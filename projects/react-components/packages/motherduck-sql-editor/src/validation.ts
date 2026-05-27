@@ -26,11 +26,16 @@ export function validateQuerySecurity(query: string, allowedDatabase: string): S
   }
 
   // Scan EVERY three-part reference, not just the first — otherwise a query
-  // like `FROM allowed.s.t JOIN other.s.secret ...` slips through.
-  const crossDbRe = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)/g;
+  // like `FROM allowed.s.t JOIN other.s.secret ...` slips through. Each
+  // identifier may also be double-quoted (e.g. `"other".main.secret`), so the
+  // pattern accepts either bare or quoted forms and the comparison uses the
+  // unquoted name.
+  const ident = '(?:"([^"]+)"|([a-zA-Z_][a-zA-Z0-9_]*))';
+  const crossDbRe = new RegExp(`${ident}\\s*\\.\\s*${ident}\\s*\\.\\s*${ident}`, 'g');
   for (const m of normalizedQuery.matchAll(crossDbRe)) {
-    const referencedDb = m[1];
-    if (referencedDb !== allowedUpper) {
+    // Groups: 1=quoted-db, 2=bare-db, 3=quoted-schema, 4=bare-schema, ...
+    const referencedDb = m[1] ?? m[2];
+    if (referencedDb && referencedDb !== allowedUpper) {
       return {
         isValid: false,
         error: `Cross-database reference to '${referencedDb.toLowerCase()}' is not allowed`,
