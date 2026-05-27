@@ -6,12 +6,19 @@ For private dives that require an authenticated session, see [`dive-embed-privat
 
 ## Install
 
-This package ships TypeScript source. Easiest paths:
+Not published to npm. The package ships TypeScript source; the recommended path is to vendor it into your app:
 
-- Copy `src/` into your project.
-- Or add via git: `npm install github:motherduckdb/labs#main --workspace=projects/react-components/packages/dive-embed-public` (your bundler handles `.tsx`).
+```sh
+# from your app root
+mkdir -p src/vendor
+curl -L https://github.com/motherduckdb/labs/archive/refs/heads/main.tar.gz \
+  | tar -xz --strip-components=4 -C src/vendor \
+    labs-main/projects/react-components/packages/dive-embed-public/src
+```
 
-Peer deps: `react >= 18`.
+Then `import { DiveEmbedPublic } from './vendor/src';` and let your bundler handle `.tsx` + `.module.css`.
+
+Peer deps your app must provide: `react >= 18 <20`, `react-dom >= 18 <20`.
 
 ## Usage
 
