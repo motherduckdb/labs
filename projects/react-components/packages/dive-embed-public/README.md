@@ -10,13 +10,13 @@ Not published to npm. The package ships TypeScript source; the recommended path 
 
 ```sh
 # from your app root
-mkdir -p src/vendor
+mkdir -p src/vendor/dive-embed-public
 curl -L https://github.com/motherduckdb/labs/archive/refs/heads/main.tar.gz \
-  | tar -xz --strip-components=4 -C src/vendor \
+  | tar -xz --strip-components=6 -C src/vendor/dive-embed-public \
     labs-main/projects/react-components/packages/dive-embed-public/src
 ```
 
-Then `import { DiveEmbedPublic } from './vendor/src';` and let your bundler handle `.tsx` + `.module.css`.
+Then `import { DiveEmbedPublic } from './vendor/dive-embed-public';` and let your bundler handle `.tsx` + `.module.css`.
 
 Peer deps your app must provide: `react >= 18 <20`, `react-dom >= 18 <20`.
 

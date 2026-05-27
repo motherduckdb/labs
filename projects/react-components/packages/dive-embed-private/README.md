@@ -17,13 +17,13 @@ Not published to npm. Vendor the source into your app:
 
 ```sh
 # from your app root
-mkdir -p src/vendor
+mkdir -p src/vendor/dive-embed-private
 curl -L https://github.com/motherduckdb/labs/archive/refs/heads/main.tar.gz \
-  | tar -xz --strip-components=4 -C src/vendor \
+  | tar -xz --strip-components=6 -C src/vendor/dive-embed-private \
     labs-main/projects/react-components/packages/dive-embed-private/src
 ```
 
-Then `import { DiveEmbedPrivate } from './vendor/src';` and let your bundler handle `.tsx` + `.module.css`.
+Then `import { DiveEmbedPrivate } from './vendor/dive-embed-private';` and let your bundler handle `.tsx` + `.module.css`.
 
 Peer deps your app must provide: `react >= 18 <20`, `react-dom >= 18 <20`.
 
