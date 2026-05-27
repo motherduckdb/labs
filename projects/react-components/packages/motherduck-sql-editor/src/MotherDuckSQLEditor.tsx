@@ -333,7 +333,10 @@ const MotherDuckSQLEditor: FC<MotherDuckSQLEditorProps> = ({
   const connectWithToken = useCallback(
     async (mdToken: string) => {
       if (!canUseDOM || !MDConnection) return;
-      if (connection && token) return;
+      // No early-return on `connection && token` — the singleton's
+      // getConnection() already short-circuits when token/database/provisioning
+      // match, and gating here would swallow legitimate prop changes
+      // (database switch, new provisioning config).
 
       setLoading(true);
       setError('');
