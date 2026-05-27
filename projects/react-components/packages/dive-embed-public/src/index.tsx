@@ -50,8 +50,8 @@ export const DiveEmbedPublic: FC<DiveEmbedPublicProps> = ({
   skeletonDelayMs = 2000,
 }) => {
   const [showSkeleton, setShowSkeleton] = useState(true);
-  const embedUrl = `${baseUrl}/api/embed/${snippetId}`;
-  const galleryUrl = `${baseUrl}/snippets/${snippetId}`;
+  const embedUrl = `${baseUrl}/embed/${snippetId}`;
+  const galleryUrl = `${baseUrl}/dives/${snippetId}`;
   const innerSkeletonHeight = Math.max(height - 100, 100);
 
   useEffect(() => {
