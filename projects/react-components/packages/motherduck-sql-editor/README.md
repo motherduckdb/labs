@@ -27,7 +27,7 @@ react-dom@>=18 <20
 @auth0/auth0-spa-js@^2
 @motherduck/wasm-client@^0.8
 @tanstack/react-table@^8
-react-syntax-highlighter@^15
+react-syntax-highlighter@^16
 sql-formatter@^15
 ```
 
