@@ -46,6 +46,18 @@ export default function Page() {
 | `baseUrl` | `string` | `https://motherduck.com/dive-gallery` | Override for staging or self-hosted gallery. |
 | `skeletonDelayMs` | `number` | `2000` | How long to show the skeleton loader before revealing the iframe. |
 
+## ⚠️ CSP / `frame-ancestors`
+
+The `motherduck.com/dive-gallery/embed/<id>` page sets `Content-Security-Policy: frame-ancestors 'self' https://motherduck.com`. That means the iframe will only render inside a page served from `motherduck.com` — browsers will block the embed on any other origin (including `localhost`), and the iframe will appear blank.
+
+To actually use this component outside motherduck.com you need one of:
+
+- Host the dive gallery embed app yourself (the source lives in `packages/dive-snippets/` of the website repo) and configure your instance to allow your origin in `frame-ancestors`.
+- Convince someone with infra access to loosen the CSP on the shared embed host.
+- Use this as a starting point and rewrite the iframe path to point at your own snippet renderer.
+
+In short: the component shape and gallery linking are correct, but the *default* `baseUrl` only works inside motherduck.com itself.
+
 ## Origin
 
 Ported from `packages/mkt/components/common/dive-embed.tsx` in the MotherDuck website. Replaced `styled-components` + `@motherduck/ui` with a single CSS module so the component is dependency-free.
