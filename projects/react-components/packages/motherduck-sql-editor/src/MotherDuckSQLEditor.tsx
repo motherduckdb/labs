@@ -145,8 +145,6 @@ class MDConnectionManager {
     try {
       await promise;
       this.provisionedDatabases.add(database);
-    } catch (err) {
-      console.warn(`Provisioning ${database} failed:`, err);
     } finally {
       this.provisioningPromises.delete(database);
       if (this.provisioningPromises.size === 0) {
