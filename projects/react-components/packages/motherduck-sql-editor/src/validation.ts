@@ -11,24 +11,29 @@ const createValidationError = (operation: string): SecurityValidationResult => (
  */
 export function validateQuerySecurity(query: string, allowedDatabase: string): SecurityValidationResult {
   const normalizedQuery = query.trim().toUpperCase();
+  const allowedUpper = allowedDatabase.toUpperCase();
 
-  if (normalizedQuery.includes('USE ') && normalizedQuery.match(/\bUSE\s+[^\s;]+/)) {
+  // Use \b...\s+ rather than substring checks so whitespace forms like
+  // `USE\nother`, `ATTACH\tfoo`, `DETACH\nbar` are caught.
+  if (/\bUSE\s+[^\s;]+/.test(normalizedQuery)) {
     return createValidationError('USE');
   }
-  if (normalizedQuery.includes('ATTACH')) {
+  if (/\bATTACH\b/.test(normalizedQuery)) {
     return createValidationError('ATTACH');
   }
-  if (normalizedQuery.includes('DETACH')) {
+  if (/\bDETACH\b/.test(normalizedQuery)) {
     return createValidationError('DETACH');
   }
 
-  const crossDbMatch = normalizedQuery.match(/\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)/);
-  if (crossDbMatch) {
-    const referencedDb = crossDbMatch[1].toLowerCase();
-    if (referencedDb !== allowedDatabase.toLowerCase()) {
+  // Scan EVERY three-part reference, not just the first — otherwise a query
+  // like `FROM allowed.s.t JOIN other.s.secret ...` slips through.
+  const crossDbRe = /\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)/g;
+  for (const m of normalizedQuery.matchAll(crossDbRe)) {
+    const referencedDb = m[1];
+    if (referencedDb !== allowedUpper) {
       return {
         isValid: false,
-        error: `Cross-database reference to '${referencedDb}' is not allowed`,
+        error: `Cross-database reference to '${referencedDb.toLowerCase()}' is not allowed`,
       };
     }
   }
