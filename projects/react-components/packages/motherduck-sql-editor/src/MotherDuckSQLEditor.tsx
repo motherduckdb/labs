@@ -31,15 +31,22 @@ if (canUseDOM) {
   MDConnection = wasmClient.MDConnection;
 }
 
+const provisioningKey = (p: MotherDuckSQLEditorProps['provisioning']): string =>
+  p ? JSON.stringify(p) : '';
+
 class MDConnectionManager {
   private static instance: MDConnectionManager;
   private connection: any = null;
   private token: string | null = null;
   private database: string | null = null;
+  private provisioningKey: string = '';
   private initPromise: Promise<void> | null = null;
   private listeners: Set<() => void> = new Set();
   private isProvisioning = false;
   private provisioningPromises: Map<string, Promise<void>> = new Map();
+  // Keyed by `${database}|${provisioningKey}` so changing the provisioning
+  // config for the same db (e.g. undefined → attach-share, or different
+  // shareUrls) re-runs provisioning instead of trusting cached state.
   private provisionedDatabases: Set<string> = new Set();
 
   static getInstance(): MDConnectionManager {
@@ -54,14 +61,27 @@ class MDConnectionManager {
     database: string,
     provisioning: MotherDuckSQLEditorProps['provisioning'],
   ): Promise<any> {
-    // Reset on ANY change including token — otherwise a second user logging in
-    // with the same database would re-use the prior user's connection via the
-    // awaited `initPromise` (which lingers across the fast-path skip).
-    if (this.connection && (this.database !== database || this.token !== mdToken)) {
+    const provKey = provisioningKey(provisioning);
+
+    // Reset on ANY change in the cache contract — token, database, OR
+    // provisioning. Without provisioning in the key, switching from
+    // undefined → attach-share (or changing shareUrls) would silently reuse
+    // the prior connection without re-running provisioning.
+    if (
+      this.connection &&
+      (this.database !== database ||
+        this.token !== mdToken ||
+        this.provisioningKey !== provKey)
+    ) {
       await this.resetConnectionState();
     }
 
-    if (this.connection && this.token === mdToken && this.database === database) {
+    if (
+      this.connection &&
+      this.token === mdToken &&
+      this.database === database &&
+      this.provisioningKey === provKey
+    ) {
       return this.connection;
     }
 
@@ -108,6 +128,7 @@ class MDConnectionManager {
     await this.connection.isInitialized();
     this.token = mdToken;
     this.database = database;
+    this.provisioningKey = provisioningKey(provisioning);
     this.notifyListeners();
   }
 
@@ -125,8 +146,11 @@ class MDConnectionManager {
     database: string,
     provisioning: NonNullable<MotherDuckSQLEditorProps['provisioning']>,
   ): Promise<void> {
-    if (this.provisionedDatabases.has(database)) return;
-    const existing = this.provisioningPromises.get(database);
+    // Composite key so changing provisioning config for the same database
+    // re-runs provisioning rather than trusting a stale entry.
+    const cacheKey = `${database}|${provisioningKey(provisioning)}`;
+    if (this.provisionedDatabases.has(cacheKey)) return;
+    const existing = this.provisioningPromises.get(cacheKey);
     if (existing) {
       await existing;
       return;
@@ -137,15 +161,15 @@ class MDConnectionManager {
         ? this.provisionCreateEmpty(mdToken, database)
         : this.provisionAttachShare(mdToken, database, provisioning.shareUrls);
 
-    this.provisioningPromises.set(database, promise);
+    this.provisioningPromises.set(cacheKey, promise);
     this.isProvisioning = true;
     this.notifyListeners();
 
     try {
       await promise;
-      this.provisionedDatabases.add(database);
+      this.provisionedDatabases.add(cacheKey);
     } finally {
-      this.provisioningPromises.delete(database);
+      this.provisioningPromises.delete(cacheKey);
       if (this.provisioningPromises.size === 0) {
         this.isProvisioning = false;
         this.notifyListeners();
@@ -239,6 +263,7 @@ class MDConnectionManager {
     this.connection = null;
     this.token = null;
     this.database = null;
+    this.provisioningKey = '';
     this.initPromise = null;
     this.provisioningPromises.clear();
     this.provisionedDatabases.clear();
