@@ -92,7 +92,7 @@ export const DiveEmbedPublic: FC<DiveEmbedPublicProps> = ({
           src={embedUrl}
           width='100%'
           height={height}
-          sandbox='allow-scripts'
+          sandbox='allow-scripts allow-same-origin'
           allow='clipboard-write'
         />
       </div>
