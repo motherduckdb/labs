@@ -41,7 +41,7 @@ import {
   MotherDuckSQLEditor,
   configureAuth,
   setAuth0ReactContext,
-} from '@motherduck-labs/motherduck-sql-editor';
+} from './vendor/motherduck-sql-editor';
 
 // 1. Tell the editor where to exchange Auth0 tokens for MotherDuck tokens.
 configureAuth({

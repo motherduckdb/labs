@@ -23,7 +23,7 @@ Peer deps your app must provide: `react >= 18 <20`, `react-dom >= 18 <20`.
 ## Usage
 
 ```tsx
-import { DiveEmbedPublic } from '@motherduck-labs/dive-embed-public';
+import { DiveEmbedPublic } from './vendor/dive-embed-public';
 
 export default function Page() {
   return (
