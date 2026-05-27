@@ -74,7 +74,13 @@ class MDConnectionManager {
     if (ongoing.length > 0) await Promise.all(ongoing);
 
     if (!this.initPromise) {
-      this.initPromise = this.initializeConnection(mdToken, database, workspace, provisioning);
+      // Clear initPromise if initialization rejects, otherwise every later
+      // call would await the same cached rejection forever — even after the
+      // user corrects props or a transient failure clears.
+      this.initPromise = this.initializeConnection(mdToken, database, workspace, provisioning).catch((err) => {
+        this.initPromise = null;
+        throw err;
+      });
     }
 
     await this.initPromise;
