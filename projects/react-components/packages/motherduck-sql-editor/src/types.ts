@@ -9,8 +9,6 @@ export interface MotherDuckSQLEditorProps {
   formatOnLoad?: boolean;
   /** Database the editor should connect to (e.g. 'sample_data', 'my_db'). */
   database: string;
-  /** Optional workspace scope. */
-  workspace?: string;
   /**
    * Light/dark theme for the syntax highlighter. If omitted, follows
    * `prefers-color-scheme`.

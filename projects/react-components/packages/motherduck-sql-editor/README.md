@@ -71,7 +71,6 @@ export default function App() {
 | `database` | `string` | — | Required. Database the editor scopes queries to. |
 | `query` | `string` | `'SELECT 1 AS hello;'` | Initial SQL shown in the editor. |
 | `formatOnLoad` | `boolean` | `true` | Run `sql-formatter` on the initial query. |
-| `workspace` | `string` | — | Optional workspace scope. |
 | `colorMode` | `'light' \| 'dark'` | follows `prefers-color-scheme` | Syntax-highlighter theme. |
 | `provisioning` | `{ mode: 'create-empty' } \| { mode: 'attach-share'; shareUrls: string[] }` | — | Optional pre-flight: create the database if missing, or attach a shared one. |
 

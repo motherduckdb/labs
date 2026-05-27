@@ -36,7 +36,6 @@ class MDConnectionManager {
   private connection: any = null;
   private token: string | null = null;
   private database: string | null = null;
-  private workspace: string | null = null;
   private initPromise: Promise<void> | null = null;
   private listeners: Set<() => void> = new Set();
   private isProvisioning = false;
@@ -53,20 +52,16 @@ class MDConnectionManager {
   async getConnection(
     mdToken: string,
     database: string,
-    workspace: string | undefined,
     provisioning: MotherDuckSQLEditorProps['provisioning'],
   ): Promise<any> {
     // Reset on ANY change including token — otherwise a second user logging in
-    // with the same db/workspace would re-use the prior user's connection via
-    // the awaited `initPromise` (which lingers across the fast-path skip).
-    if (
-      this.connection &&
-      (this.database !== database || this.workspace !== workspace || this.token !== mdToken)
-    ) {
+    // with the same database would re-use the prior user's connection via the
+    // awaited `initPromise` (which lingers across the fast-path skip).
+    if (this.connection && (this.database !== database || this.token !== mdToken)) {
       await this.resetConnectionState();
     }
 
-    if (this.connection && this.token === mdToken && this.database === database && this.workspace === workspace) {
+    if (this.connection && this.token === mdToken && this.database === database) {
       return this.connection;
     }
 
@@ -77,7 +72,7 @@ class MDConnectionManager {
       // Clear initPromise if initialization rejects, otherwise every later
       // call would await the same cached rejection forever — even after the
       // user corrects props or a transient failure clears.
-      this.initPromise = this.initializeConnection(mdToken, database, workspace, provisioning).catch((err) => {
+      this.initPromise = this.initializeConnection(mdToken, database, provisioning).catch((err) => {
         this.initPromise = null;
         throw err;
       });
@@ -94,7 +89,6 @@ class MDConnectionManager {
   private async initializeConnection(
     mdToken: string,
     database: string,
-    workspace: string | undefined,
     provisioning: MotherDuckSQLEditorProps['provisioning'],
   ): Promise<void> {
     if (!canUseDOM || !MDConnection) {
@@ -114,7 +108,6 @@ class MDConnectionManager {
     await this.connection.isInitialized();
     this.token = mdToken;
     this.database = database;
-    this.workspace = workspace ?? null;
     this.notifyListeners();
   }
 
@@ -241,7 +234,6 @@ class MDConnectionManager {
     this.connection = null;
     this.token = null;
     this.database = null;
-    this.workspace = null;
     this.initPromise = null;
     this.provisioningPromises.clear();
     this.provisionedDatabases.clear();
@@ -301,7 +293,6 @@ const MotherDuckSQLEditor: FC<MotherDuckSQLEditorProps> = ({
   query = DEFAULT_QUERY,
   formatOnLoad = true,
   database,
-  workspace,
   colorMode: colorModeProp,
   provisioning,
 }) => {
@@ -348,7 +339,7 @@ const MotherDuckSQLEditor: FC<MotherDuckSQLEditorProps> = ({
       setError('');
       try {
         const manager = MDConnectionManager.getInstance();
-        const conn = await manager.getConnection(mdToken, database, workspace, provisioning);
+        const conn = await manager.getConnection(mdToken, database, provisioning);
         setConnection(conn);
         setToken(mdToken);
 
@@ -364,7 +355,7 @@ const MotherDuckSQLEditor: FC<MotherDuckSQLEditorProps> = ({
         setLoading(false);
       }
     },
-    [connection, token, database, workspace, provisioning],
+    [connection, token, database, provisioning],
   );
 
   useEffect(() => {
