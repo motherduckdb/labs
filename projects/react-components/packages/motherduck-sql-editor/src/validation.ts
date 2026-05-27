@@ -54,25 +54,31 @@ export function validateQuerySecurity(query: string, allowedDatabase: string): S
     }
   }
 
-  const deleteRe = /\bDELETE\s+FROM\s+(?:[^\s.]+\.)?([^\s.]+)\.[^\s;]+/g;
+  // For DELETE/DROP TABLE/COPY only the three-part form `db.schema.table`
+  // references a database — `schema.table` is in the active (allowed)
+  // database and must NOT be treated as cross-database. The earlier scans
+  // only triggered for unbalanced clauses; require all three parts here.
+  const threePart = `${ident}\\s*\\.\\s*${ident}\\s*\\.\\s*${ident}`;
+
+  const deleteRe = new RegExp(`\\bDELETE\\s+FROM\\s+${threePart}`, 'g');
   for (const m of normalizedQuery.matchAll(deleteRe)) {
-    const dbName = m[1];
+    const dbName = m[1] ?? m[2];
     if (dbName && dbName !== allowedUpper) {
       return { isValid: false, error: `DELETE on '${dbName.toLowerCase()}' is not allowed` };
     }
   }
 
-  const dropTableRe = /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:[^\s.]+\.)?([^\s.]+)\.[^\s;]+/g;
+  const dropTableRe = new RegExp(`\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${threePart}`, 'g');
   for (const m of normalizedQuery.matchAll(dropTableRe)) {
-    const dbName = m[1];
+    const dbName = m[1] ?? m[2];
     if (dbName && dbName !== allowedUpper) {
       return { isValid: false, error: `DROP TABLE on '${dbName.toLowerCase()}' is not allowed` };
     }
   }
 
-  const copyRe = /\bCOPY\s+(?:[^\s.]+\.)?([^\s.]+)\.[^\s;]+/g;
+  const copyRe = new RegExp(`\\bCOPY\\s+${threePart}`, 'g');
   for (const m of normalizedQuery.matchAll(copyRe)) {
-    const dbName = m[1];
+    const dbName = m[1] ?? m[2];
     if (dbName && dbName !== allowedUpper) {
       return { isValid: false, error: `COPY on '${dbName.toLowerCase()}' is not allowed` };
     }
