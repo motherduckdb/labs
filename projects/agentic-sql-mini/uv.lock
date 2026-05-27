@@ -8,6 +8,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "controllog" },
     { name = "duckdb" },
     { name = "openai-agents" },
     { name = "python-dotenv" },
@@ -17,6 +18,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
+    { name = "controllog", git = "https://github.com/motherduckdb/labs?subdirectory=projects%2Fcontrollog" },
     { name = "duckdb", specifier = ">=1.4.4,<1.5" },
     { name = "openai-agents", specifier = ">=0.12.5" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
@@ -242,6 +244,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
 ]
+
+[[package]]
+name = "controllog"
+version = "0.1.0"
+source = { git = "https://github.com/motherduckdb/labs?subdirectory=projects%2Fcontrollog#a985febe252a956e3bbfb9451d01909c452f62d1" }
 
 [[package]]
 name = "cryptography"

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+import controllog
 import duckdb
 from dotenv import load_dotenv
 from rich.console import Console
@@ -267,6 +268,20 @@ async def _evaluate_loop(
     f = out.open("w")
     wall_t0 = time.time()
 
+    # Fresh per-invocation run_id (uuid7, sortable by time). out.stem is just
+    # a human-readable label — relying on it for run_id breaks when --out is
+    # reused, because deterministic controllog event_ids would collapse the
+    # new run's rows into the prior run at upload time.
+    run_id = controllog.new_id()
+    controllog.init(
+        project_id="agentic-sql-mini",
+        log_dir=RESULTS_DIR,
+        default_dims={
+            "arm": arm, "split": split, "model": model,
+            "run_id": run_id, "run_label": out.stem,
+        },
+    )
+
     async def run_one(q: dict) -> None:
         nonlocal correct, total_cost, total_elapsed, total_turns, n_hit_limit, completed
         tid = str(q["task_id"])
@@ -290,6 +305,16 @@ async def _evaluate_loop(
                 gold_text.append("gold: ", style="dim")
                 gold_text.append(str(q.get("answer")), style="green")
                 console.print(Padding(gold_text, (0, 0, 0, 4)))
+
+            # Spec § 6 lifecycle: NEW -> WIP before terminal transition.
+            # Idempotency key scoped to run_id so re-running the same arm/split
+            # gets a fresh event_id; without it the deterministic uuid5 would
+            # collapse across runs.
+            controllog.state_move(
+                task_id=tid, from_="NEW", to="WIP",
+                agent_id="asm-sql", run_id=run_id,
+                idempotency_key=f"{run_id}:{tid}:NEW:WIP",
+            )
 
             conn = duckdb.connect(str(db), read_only=True)
             t0 = time.time()
@@ -364,6 +389,43 @@ async def _evaluate_loop(
                 "error": err,
                 "ts": datetime.now(timezone.utc).isoformat(),
             }
+
+            # One balanced task_complete event covering all the accounting for
+            # this question. Built directly with event() + post() since the lib's
+            # generic builders are per-model-call, not per-task-aggregate.
+            project_id = "agentic-sql-mini"
+            total_tokens = (run.prompt_tokens + run.completion_tokens) if run else 0
+            wall_ms = int(elapsed * 1000)
+            reward = 1.0 if result.is_correct else 0.0
+            terminal_state = "DONE" if run is not None else "FAILED"
+            postings = [
+                controllog.post("resource.tokens", "provider:openrouter", "+tokens", -total_tokens, {"model": model}),
+                controllog.post("resource.tokens", f"project:{project_id}", "+tokens", +total_tokens, {"model": model}),
+                controllog.post("truth.time", "agent:asm-sql", "ms", -wall_ms, {"kind": "wall"}),
+                controllog.post("truth.time", f"project:{project_id}", "ms", +wall_ms, {"kind": "wall"}),
+                controllog.post("truth.money", "vendor:openrouter", "$", -float(cost), {"model": model}),
+                controllog.post("truth.money", f"project:{project_id}", "$", +float(cost), {"model": model}),
+                controllog.post("truth.state", f"task:{tid}", "tasks", -1, {"from": "WIP"}),
+                controllog.post("truth.state", f"task:{tid}", "tasks", +1, {"to": terminal_state}),
+                controllog.post("truth.utility", f"task:{tid}", "points", +reward, {"metric": "reward"}),
+                controllog.post("truth.utility", f"project:{project_id}", "points", -reward, {"metric": "reward"}),
+            ]
+            controllog.event(
+                kind="task_complete",
+                actor={"agent_id": "asm-sql", "task_id": tid},
+                run_id=run_id,
+                payload={
+                    "question_id": tid,
+                    "level": q.get("level"),
+                    "correctness": result.correctness.value,
+                    "hit_limit": run.hit_limit if run else False,
+                    "n_tool_calls": n_turns,
+                    "cached_tokens": run.cached_tokens if run else 0,
+                    "error": err,
+                },
+                postings=postings,
+                idempotency_key=f"{run_id}:task:{tid}",
+            )
 
             async with write_lock:
                 if result.is_correct:
