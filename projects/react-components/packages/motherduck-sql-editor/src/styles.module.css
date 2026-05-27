@@ -1,0 +1,243 @@
+/* All colors are concrete hex values so the component works in any host app.
+   Wrap `.container` in a parent that sets CSS custom properties if you want
+   to theme it (see README). */
+
+.container {
+  border: 1px solid #d7d7d7;
+  padding: 16px;
+  border-radius: 8px;
+  margin: 1em 0;
+  background-color: #ffffff;
+  color: #1c1e21;
+}
+
+.databaseDisplay {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: #f0f0f0;
+  border: 1px solid #d7d7d7;
+  border-radius: 4px;
+}
+
+.databaseLabel {
+  font-weight: 500;
+  color: #1c1e21;
+  font-size: 0.9em;
+}
+
+.databaseCode {
+  padding: 2px 6px;
+  background-color: #e6e6e6;
+  border: 1px solid #d7d7d7;
+  border-radius: 3px;
+  color: #1c1e21;
+  font-size: 0.9em;
+  font-family: monospace;
+}
+
+.sqlEditor {
+  position: relative;
+}
+
+.editorContainer {
+  position: relative;
+  border-radius: 4px;
+  border: 1px solid #d7d7d7;
+  overflow: hidden;
+}
+
+.textarea {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: transparent;
+  caret-color: #1c1e21;
+  resize: none;
+  z-index: 2;
+  overflow: auto;
+  tab-size: 2;
+}
+
+.buttonContainer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.button {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid #1c1e21;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: #f8f7f4;
+  color: #1c1e21;
+  transition: background-color 0.2s ease;
+}
+
+.button:hover {
+  background-color: #ece9e2;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  background-color: #e6e6e6;
+  color: #6a6a6a;
+  border-color: #d7d7d7;
+}
+
+.runButton {
+  composes: button;
+}
+
+.authButton {
+  composes: button;
+  background-color: #fff3c4;
+}
+
+.authButton:hover {
+  background-color: #ffe680;
+}
+
+.logoutButton {
+  composes: button;
+  padding: 4px 8px;
+  background-color: #f44336;
+  color: white;
+  font-size: 0.8em;
+  border-color: #c62828;
+}
+
+.logoutButton:hover {
+  background-color: #d32f2f;
+}
+
+.iconButton {
+  position: absolute;
+  top: 5px;
+  background: none;
+  border: none;
+  padding: 5px;
+  display: flex;
+  align-items: center;
+  color: #6a6a6a;
+  z-index: 3;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.iconButton:hover {
+  color: #1c1e21;
+}
+
+.iconButtonSuccess {
+  color: #4caf50;
+}
+
+.copyButton {
+  composes: iconButton;
+  right: 5px;
+}
+
+.formatButton {
+  composes: iconButton;
+  right: 35px;
+}
+
+.loadingContainer {
+  padding: 12px;
+  background-color: #f0f0f0;
+  border: 1px solid #2e8555;
+  border-radius: 4px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #1c1e21;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e6e6e6;
+  border-top: 2px solid #2e8555;
+  border-radius: 50%;
+  animation: mdsql-spin 1s linear infinite;
+}
+
+.tokenNotice {
+  padding: 8px;
+  background-color: #f0f0f0;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  color: #1c1e21;
+}
+
+.placeholder {
+  composes: container;
+}
+
+.placeholderContent {
+  margin-top: 8px;
+}
+
+.placeholderText {
+  padding: 8px 16px;
+  background: #f0f0f0;
+  border-radius: 2px;
+  display: inline-block;
+  color: #1c1e21;
+}
+
+.results {
+  margin-top: 16px;
+  font-size: 0.9em;
+  overflow-x: auto;
+  color: #1c1e21;
+}
+
+.noResults {
+  color: #6a6a6a;
+  margin-top: 16px;
+}
+
+.error {
+  color: #d32f2f;
+  margin-top: 8px;
+  white-space: pre-wrap;
+}
+
+.successText {
+  font-size: 0.7em;
+  margin-left: 4px;
+}
+
+.playIcon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 4px;
+}
+
+.duckFeetLogo {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+}
+
+@keyframes mdsql-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
