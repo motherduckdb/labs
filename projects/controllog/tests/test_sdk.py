@@ -27,7 +27,7 @@ def test_is_initialized_round_trip(tmp_path):
 
 def test_flat_layout_is_spec(log_dir):
     """Spec §3.2 — flat layout, no partitioning options."""
-    controllog.state_move(task_id="t1", from_="NEW", to="WIP", project_id="test")
+    controllog.state_move(task_id="t1", from_="NEW", to="WIP")
     assert (log_dir / "controllog" / "events.jsonl").exists()
     assert (log_dir / "controllog" / "postings.jsonl").exists()
 
@@ -126,6 +126,12 @@ def test_empty_postings_no_invariant(log_dir, read_events):
     """Events with no postings are valid (lifecycle markers per spec § 15)."""
     controllog.event(kind="marker", postings=[], idempotency_key="m1")
     assert len(read_events()) == 1
+
+
+def test_event_default_source_matches_builders(log_dir, read_events):
+    """Raw event() defaults to source='runtime' to match builder output."""
+    controllog.event(kind="custom", postings=[])
+    assert read_events()[0]["source"] == "runtime"
 
 
 # -------------------------

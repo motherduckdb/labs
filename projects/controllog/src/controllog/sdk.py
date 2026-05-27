@@ -200,11 +200,14 @@ def event(
     run_id: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
     postings: Optional[List[Dict[str, Any]]] = None,
-    project_id: Optional[str] = None,
-    source: str = "sdk",
+    source: str = "runtime",
     idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Emit a structured event and balanced postings to JSONL.
+
+    ``project_id`` is taken from :func:`init` — one project per SDK instance,
+    per spec § 3.1. ``source`` matches what builders pass so mixed raw/builder
+    logs stay readable.
 
     Returns the persisted event dict.
     """
@@ -213,7 +216,7 @@ def event(
     actor = actor or {}
     payload = payload or {}
     postings = postings or []
-    project = project_id or cfg.project_id
+    project = cfg.project_id
 
     _check_invariants(kind, postings)
 

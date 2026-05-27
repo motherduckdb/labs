@@ -23,5 +23,3 @@ __all__ = [
     "state_move",
     "utility",
 ]
-
-__version__ = "0.1.0"

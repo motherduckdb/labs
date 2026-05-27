@@ -33,7 +33,6 @@ exchange_id = controllog.model_prompt(
     task_id="q42",
     agent_id="solver",
     run_id="run-2026-05-26",
-    project_id="my-eval",
     provider="openai",
     model="gpt-5",
     prompt_tokens=812,
@@ -45,7 +44,6 @@ controllog.model_completion(
     task_id="q42",
     agent_id="solver",
     run_id="run-2026-05-26",
-    project_id="my-eval",
     provider="openai",
     model="gpt-5",
     completion_tokens=4,
@@ -80,11 +78,12 @@ controllog.post(account_type, account_id, unit, delta, dims=None)
 controllog.new_id()              # UUIDv7
 controllog.is_initialized()
 
-# Generic builders (preferred over raw event/post)
-exchange_id = controllog.model_prompt(...)          # returns exchange_id
-controllog.model_completion(exchange_id=..., ...)   # pass the paired id
-controllog.state_move(task_id, from_, to, ...)
-controllog.utility(task_id, project_id, metric, value, ...)
+# Generic builders (preferred over raw event/post) — all keyword-only.
+# project_id is taken from init(); not a per-call argument.
+exchange_id = controllog.model_prompt(*, task_id, agent_id, provider, model, prompt_tokens, ...)
+controllog.model_completion(*, exchange_id, task_id, agent_id, provider, model, completion_tokens, wall_ms, ...)
+controllog.state_move(*, task_id, from_, to, ...)
+controllog.utility(*, task_id, metric, value, ...)
 
 # Optional, requires controllog[duckdb]
 from controllog import motherduck

@@ -7,17 +7,19 @@ Account names follow ``docs/spec-v1.1.md`` § 7:
   - ``truth.time``       (agent ↔ project, unit ``ms``)
   - ``truth.state``      (task lifecycle, unit ``tasks``)
   - ``truth.utility``    (task ↔ project, unit ``points``)
+
+``project_id`` is resolved from ``init()``'s config — builders don't accept
+it per call. One configured project per SDK instance per spec § 3.1.
 """
 from typing import Any, Dict, Optional
 
-from .sdk import event, post, new_id
+from .sdk import _require_config, event, new_id, post
 
 
 def model_prompt(
     *,
     task_id: str,
     agent_id: str,
-    project_id: str,
     provider: str,
     model: str,
     prompt_tokens: int,
@@ -32,7 +34,13 @@ def model_prompt(
     If ``exchange_id`` is omitted, one is generated here and **returned** so
     the caller can pass the same value to :func:`model_completion`. Pairing
     the two is required for the spec's exchange-completeness invariant.
+
+    Caller-supplied ``payload`` keys are overridden by the canonical builder
+    fields (``provider``, ``model``, ``phase``, ``prompt_tokens``,
+    ``exchange_id``) — otherwise a stray ``payload={"phase": "completion"}``
+    could disagree with the postings.
     """
+    project_id = _require_config().project_id
     if exchange_id is None:
         exchange_id = new_id()
 
@@ -40,23 +48,23 @@ def model_prompt(
         post("resource.tokens", f"provider:{provider}", "+tokens", -int(prompt_tokens), {"model": model, "phase": "prompt"}),
         post("resource.tokens", f"project:{project_id}", "+tokens", +int(prompt_tokens), {"model": model, "phase": "prompt"}),
     ]
-    payload_base: Dict[str, Any] = {
+    canonical: Dict[str, Any] = {
         "provider": provider,
         "model": model,
         "prompt_tokens": prompt_tokens,
         "phase": "prompt",
+        "exchange_id": exchange_id,
     }
     if request_text is not None:
-        payload_base["request_text"] = request_text
+        canonical["request_text"] = request_text
 
     event(
         kind="model_prompt",
         actor={"agent_id": agent_id, "task_id": task_id},
         run_id=run_id,
-        payload={**payload_base, **(payload or {}), "exchange_id": exchange_id},
+        # Caller payload first, canonical fields override.
+        payload={**(payload or {}), **canonical},
         postings=postings,
-        project_id=project_id,
-        source="runtime",
         idempotency_key=f"{exchange_id}:prompt",
     )
     return exchange_id
@@ -67,7 +75,6 @@ def model_completion(
     exchange_id: str,
     task_id: str,
     agent_id: str,
-    project_id: str,
     provider: str,
     model: str,
     completion_tokens: int,
@@ -86,6 +93,7 @@ def model_completion(
     aggregator-vs-upstream accounting can emit additional ``truth.money``
     postings via raw :func:`event` / :func:`post`.
     """
+    project_id = _require_config().project_id
     postings = [
         post("resource.tokens", f"provider:{provider}", "+tokens", -int(completion_tokens), {"model": model, "phase": "completion"}),
         post("resource.tokens", f"project:{project_id}", "+tokens", +int(completion_tokens), {"model": model, "phase": "completion"}),
@@ -100,24 +108,23 @@ def model_completion(
             ]
         )
 
-    payload_base: Dict[str, Any] = {
+    canonical: Dict[str, Any] = {
         "provider": provider,
         "model": model,
         "completion_tokens": completion_tokens,
         "wall_ms": wall_ms,
         "phase": "completion",
+        "exchange_id": exchange_id,
     }
     if response_text is not None:
-        payload_base["response_text"] = response_text
+        canonical["response_text"] = response_text
 
     event(
         kind="model_completion",
         actor={"agent_id": agent_id, "task_id": task_id},
         run_id=run_id,
-        payload={**payload_base, **(payload or {}), "exchange_id": exchange_id},
+        payload={**(payload or {}), **canonical},
         postings=postings,
-        project_id=project_id,
-        source="runtime",
         idempotency_key=f"{exchange_id}:completion",
     )
 
@@ -127,7 +134,6 @@ def state_move(
     task_id: str,
     from_: str,
     to: str,
-    project_id: str,
     agent_id: Optional[str] = None,
     run_id: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
@@ -144,6 +150,7 @@ def state_move(
     ``idempotency_key`` if you need a different correlation (e.g., when the
     same transition is legitimately recorded by multiple actors).
     """
+    _require_config()  # surface missing init() now, not inside event()
     postings = [
         post("truth.state", f"task:{task_id}", "tasks", -1, {"from": from_}),
         post("truth.state", f"task:{task_id}", "tasks", +1, {"to": to}),
@@ -154,8 +161,6 @@ def state_move(
         run_id=run_id,
         payload=payload,
         postings=postings,
-        project_id=project_id,
-        source="runtime",
         idempotency_key=idempotency_key or f"{task_id}:{from_}:{to}",
     )
 
@@ -163,7 +168,6 @@ def state_move(
 def utility(
     *,
     task_id: str,
-    project_id: str,
     metric: str,
     value: float,
     agent_id: Optional[str] = None,
@@ -175,6 +179,7 @@ def utility(
     ``metric`` and ``value`` are already recorded on the postings' dims_json
     and delta_numeric; the event payload only carries what the caller passes.
     """
+    project_id = _require_config().project_id
     postings = [
         post("truth.utility", f"task:{task_id}", "points", +float(value), {"metric": metric}),
         post("truth.utility", f"project:{project_id}", "points", -float(value), {"metric": metric}),
@@ -185,6 +190,4 @@ def utility(
         run_id=run_id,
         payload=payload,
         postings=postings,
-        project_id=project_id,
-        source="runtime",
     )

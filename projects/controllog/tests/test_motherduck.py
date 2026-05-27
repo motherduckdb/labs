@@ -47,12 +47,12 @@ def md_conn(monkeypatch):
 def _emit_sample(project: str = "test") -> str:
     """Emit one paired model call. Returns the exchange_id."""
     xid = controllog.model_prompt(
-        task_id="t1", agent_id="a", run_id="r", project_id=project,
+        task_id="t1", agent_id="a", run_id="r",
         provider="openai", model="gpt-5", prompt_tokens=100,
     )
     controllog.model_completion(
         exchange_id=xid,
-        task_id="t1", agent_id="a", run_id="r", project_id=project,
+        task_id="t1", agent_id="a", run_id="r",
         provider="openai", model="gpt-5",
         completion_tokens=10, wall_ms=500, cost_money=0.002,
     )
@@ -90,8 +90,8 @@ def test_upload_handles_duplicate_local_rows(log_dir, md_conn, read_events):
     """Retries write duplicate event_ids locally — QUALIFY ROW_NUMBER dedupes
     inside the batch so the PRIMARY KEY constraint doesn't reject the INSERT."""
     # Two retries of the same state transition → same event_id on disk
-    controllog.state_move(task_id="t1", from_="NEW", to="WIP", project_id="test")
-    controllog.state_move(task_id="t1", from_="NEW", to="WIP", project_id="test")
+    controllog.state_move(task_id="t1", from_="NEW", to="WIP")
+    controllog.state_move(task_id="t1", from_="NEW", to="WIP")
     events = read_events()
     assert len(events) == 2
     assert events[0]["event_id"] == events[1]["event_id"]

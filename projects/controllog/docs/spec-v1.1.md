@@ -71,7 +71,7 @@ Logical fields:
 - posting_id
 - event_id (FK)
 - account_type (e.g. truth.money)
-- account_id (e.g. project, provider, task:<id>)
+- account_id, namespaced by role (e.g. `project:<project_id>`, `provider:<name>`, `vendor:<name>`, `agent:<agent_id>`, `task:<task_id>`)
 - unit (e.g. usd, ms, task_status)
 - delta_numeric (signed)
 - dims_json (dimensions)
@@ -260,8 +260,8 @@ Example:
 
 ```sql
 cost = -SUM(delta_numeric)
-WHERE account_type='truth.money'
-AND account_id='project'
+WHERE account_type = 'truth.money'
+  AND account_id LIKE 'project:%'
 ```
 
 ### 9.2 Ops Latency
