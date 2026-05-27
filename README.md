@@ -16,6 +16,7 @@ Each experiment lives in its own directory under [`projects/`](./projects/). Bro
 | [`connections-eval-mini`](./projects/connections-eval-mini/) | Evaluate AI models on NYT Connections puzzles. Built for the Seattle Startup Summit evals workshop. |
 | [`controllog`](./projects/controllog/) | Controllable logging library for AI/agentic systems — events + balanced postings, JSONL transport, optional MotherDuck upload. Shared dep of `agentic-sql-mini`, `bird-bench`, and `connections-eval-mini`. |
 | [`metadata_generator`](./projects/metadata_generator/) | Generate rich metadata for MotherDuck databases — profile statistics, LLM-generated descriptions, and SQL `COMMENT` statements. Used as a dep by `bird-bench`. |
+| [`react-components`](./projects/react-components/) | Open-source React components extracted from MotherDuck's website and docs — embed a public Dive, embed a private Dive, and an in-browser MotherDuck SQL editor. |
 <!-- END PROJECT LIST -->
 
 ## Structure

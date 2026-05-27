@@ -1,0 +1,6 @@
+# These packages aren't published; install only happens locally for
+# typecheck/test. Lockfiles add review noise without benefiting consumers
+# (who vendor the source).
+package-lock.json
+yarn.lock
+pnpm-lock.yaml

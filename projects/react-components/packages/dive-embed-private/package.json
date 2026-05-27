@@ -1,0 +1,19 @@
+{
+  "name": "@motherduck-labs/dive-embed-private",
+  "version": "0.1.0",
+  "description": "Embed a private MotherDuck Dive in a React app via an authenticated session endpoint.",
+  "license": "MIT",
+  "main": "./src/index.tsx",
+  "types": "./src/index.tsx",
+  "files": ["src"],
+  "peerDependencies": {
+    "react": ">=18 <20",
+    "react-dom": ">=18 <20"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}

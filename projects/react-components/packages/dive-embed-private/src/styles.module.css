@@ -1,0 +1,127 @@
+.wrapper {
+  position: relative;
+  margin: 1rem 0;
+  min-height: calc(var(--dive-height, 720px) + 2.75rem);
+}
+
+.bare {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 1rem 0;
+}
+
+.contentBox {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #d7d7d7;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.contentBoxInline {
+  width: 100%;
+  height: calc(var(--dive-height, 720px) + 2.75rem);
+}
+
+.contentBoxModal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(96vw, 1600px);
+  height: min(92vh, 1000px);
+  z-index: 10001;
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e6e6e6;
+  background: #f7f7f7;
+  flex-shrink: 0;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #1c1e21;
+}
+
+.expandButton,
+.closeButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #d7d7d7;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1c1e21;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.expandButton:hover:not(:disabled),
+.closeButton:hover {
+  background: #f0f0f0;
+}
+
+.expandButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.closeButton {
+  padding: 0.3rem;
+}
+
+.frame {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #ffffff;
+}
+
+.message {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  color: #525860;
+  text-align: center;
+}
+
+.message p {
+  margin: 0;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+@media (max-width: 768px) {
+  .contentBoxModal {
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    transform: none;
+    border-radius: 0;
+  }
+}
