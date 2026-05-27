@@ -14,6 +14,7 @@ Each experiment lives in its own directory under [`projects/`](./projects/). Bro
 | [`agentic-sql-mini`](./projects/agentic-sql-mini/) | Minimal A/B harness for the catalog-context-for-agents experiment — can descriptive column names alone replace prose docs as an agent's information source? |
 | [`bird-bench`](./projects/bird-bench/) | Text-to-SQL evaluation framework using the BIRD Mini-Dev benchmark with MotherDuck as the execution backend. |
 | [`connections-eval-mini`](./projects/connections-eval-mini/) | Evaluate AI models on NYT Connections puzzles. Built for the Seattle Startup Summit evals workshop. |
+| [`controllog`](./projects/controllog/) | Controllable logging library for AI/agentic systems — events + balanced postings, JSONL transport, optional MotherDuck upload. Shared dep of `bird-bench` and `connections-eval-mini`. |
 | [`metadata_generator`](./projects/metadata_generator/) | Generate rich metadata for MotherDuck databases — profile statistics, LLM-generated descriptions, and SQL `COMMENT` statements. Used as a dep by `bird-bench`. |
 <!-- END PROJECT LIST -->
 
