@@ -56,7 +56,13 @@ class MDConnectionManager {
     workspace: string | undefined,
     provisioning: MotherDuckSQLEditorProps['provisioning'],
   ): Promise<any> {
-    if (this.connection && (this.database !== database || this.workspace !== workspace)) {
+    // Reset on ANY change including token — otherwise a second user logging in
+    // with the same db/workspace would re-use the prior user's connection via
+    // the awaited `initPromise` (which lingers across the fast-path skip).
+    if (
+      this.connection &&
+      (this.database !== database || this.workspace !== workspace || this.token !== mdToken)
+    ) {
       await this.resetConnectionState();
     }
 
@@ -73,6 +79,10 @@ class MDConnectionManager {
 
     await this.initPromise;
     return this.connection;
+  }
+
+  async reset(): Promise<void> {
+    await this.resetConnectionState();
   }
 
   private async initializeConnection(
@@ -440,6 +450,9 @@ const MotherDuckSQLEditor: FC<MotherDuckSQLEditorProps> = ({
   const handleLogout = useCallback(async () => {
     setConnection(null);
     setToken(null);
+    // Drop the singleton's cached connection too — otherwise the next login
+    // (potentially as a different user) would reuse this token's connection.
+    await MDConnectionManager.getInstance().reset();
     await authLogout();
   }, []);
 
