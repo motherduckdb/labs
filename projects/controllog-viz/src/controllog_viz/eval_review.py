@@ -471,9 +471,13 @@ def _render_chat_completions_trace(messages: list, card: ErrorCard) -> str:
                 response_number += 1
             total_in_response = len(tool_calls)
             for position, tc in enumerate(tool_calls):
-                func_name = tc.get("name", "unknown")
+                # Chat Completions nests name/arguments under "function";
+                # fall back to the flat shape for already-normalized traces.
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else None
+                src = fn if fn is not None else tc
+                func_name = src.get("name", "unknown")
                 tc_id = tc.get("id", str(len(pending_tool_calls_order)))
-                args = tc.get("arguments", "{}")
+                args = src.get("arguments", "{}")
                 if isinstance(args, str):
                     with contextlib.suppress(json.JSONDecodeError, ValueError):
                         args = json.loads(args)

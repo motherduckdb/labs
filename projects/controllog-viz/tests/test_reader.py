@@ -64,6 +64,35 @@ def test_missing_source_raises():
         reader.connect(str(FIXTURE_DIR / "does-not-exist"))
 
 
+def test_jsonl_dedupes_by_id(tmp_path):
+    # Idempotent retries repeat the same event_id / posting_id locally; the reader must
+    # collapse them (one row per id), matching MotherDuck's primary-key dedupe, so a
+    # source renders the same before and after upload.
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    ev = (
+        '{"event_id":"d1","event_time":"2026-05-26T10:00:00+00:00",'
+        '"ingest_time":"2026-05-26T10:00:00+00:00","kind":"k","project_id":"p",'
+        '"source":"sdk","idempotency_key":"d1","payload_json":{},"run_id":"r",'
+        '"actor_agent_id":null,"actor_task_id":null}\n'
+    )
+    # second copy with a later ingest_time (the retry)
+    ev2 = ev.replace("10:00:00+00:00\",\"ingest_time\":\"2026-05-26T10:00:00",
+                     "10:00:00+00:00\",\"ingest_time\":\"2026-05-26T10:00:05")
+    (cl / "events.jsonl").write_text(ev + ev2)
+    po = (
+        '{"posting_id":"pp","event_id":"d1","account_type":"truth.money","account_id":"x",'
+        '"unit":"$","delta_numeric":0.01,"dims_json":{}}\n'
+    )
+    (cl / "postings.jsonl").write_text(po + po)  # exact duplicate posting
+    con = reader.connect(str(tmp_path))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM postings").fetchone()[0] == 1
+    finally:
+        con.close()
+
+
 def test_missing_postings_yields_empty_view(tmp_path):
     # Events only, no postings.jsonl — postings view should exist and be empty.
     cl = tmp_path / "controllog"

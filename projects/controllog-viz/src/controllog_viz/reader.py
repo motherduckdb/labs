@@ -116,16 +116,24 @@ def _attach_jsonl(con: duckdb.DuckDBPyConnection, source: str) -> None:
             f"No controllog events found for source {source!r} "
             f"(looked for {events_glob!r})"
         )
+    # Dedupe by id, matching the MotherDuck primary-key collapse: idempotent retries
+    # write repeated rows with the same deterministic event_id / posting_id locally, so
+    # reading raw would double-count events, cost, latency, matrix cells, etc. Keep the
+    # latest row per id (by ingest_time) so a source renders the same before/after upload.
     con.execute(
         f"CREATE TEMP VIEW events AS SELECT {_EVENT_SELECT} "
-        f"FROM read_json_auto({_sql_str_list(event_files)}, union_by_name=true)"
+        f"FROM read_json_auto({_sql_str_list(event_files)}, union_by_name=true) "
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(event_id AS VARCHAR) "
+        "ORDER BY ingest_time DESC) = 1"
     )
 
     posting_files = _glob.glob(postings_glob, recursive=True)
     if posting_files:
         con.execute(
             f"CREATE TEMP VIEW postings AS SELECT {_POSTING_SELECT} "
-            f"FROM read_json_auto({_sql_str_list(posting_files)}, union_by_name=true)"
+            f"FROM read_json_auto({_sql_str_list(posting_files)}, union_by_name=true) "
+            "QUALIFY ROW_NUMBER() OVER (PARTITION BY CAST(posting_id AS VARCHAR) "
+            "ORDER BY posting_id) = 1"
         )
     else:
         con.execute(f"CREATE TEMP VIEW postings AS SELECT {_EMPTY_POSTINGS} WHERE 1=0")

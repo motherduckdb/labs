@@ -9,7 +9,7 @@ def test_run_review_renders(con):
     # kinds present in the timeline
     assert "model_completion" in html
     # postings rollup surfaced
-    assert "resource.money" in html
+    assert "truth.money" in html
     # run-a is balanced
     assert "invariants balanced" in html
 
@@ -18,7 +18,7 @@ def test_run_review_flags_unbalanced_run(con):
     html = render.render_run_review(con, "run-b")
     assert "invariant violation" in html
     # the violating net value is shown
-    assert "resource.money" in html
+    assert "truth.money" in html
 
 
 def test_run_review_escapes_payload(con):

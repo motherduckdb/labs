@@ -4,12 +4,16 @@ Each function takes a connection from :func:`controllog_viz.reader.connect` and 
 ``list[dict]`` rows. Renderers consume these rows and never write SQL themselves.
 
 Conventions:
-- A posting slice is "balanced" (must net to zero, spec § 8) when
-  ``account_type LIKE 'resource.%'`` OR it is ``value.utility`` / ``truth.state`` —
-  mirroring ``controllog.sdk._check_invariants``.
+- Every ``(account_type, unit)`` slice must net to zero — the conservation invariant
+  applies to *all* accounts (``controllog.sdk._check_invariants`` balances every slice;
+  ``controllog.motherduck.verify`` checks every slice with no type filter). So the
+  trial-balance / drift checks here do not special-case any account type.
 - "Flow" for a totals column is the sum of *positive* deltas on an account/unit. This is
   source-side-agnostic and always non-negative, the universal stand-in for "how much
   moved" without needing to know which ``account_id`` is the project side (spec § 9.1).
+- Totals recognize both the canonical ``truth.*`` accounts emitted by ``projects/controllog``
+  and the legacy ``resource.money`` / ``resource.time_ms`` / ``value.utility`` names used by
+  older datasets (e.g. agentic-sql), so either source produces non-zero cost/latency/utility.
 """
 from __future__ import annotations
 
@@ -17,23 +21,22 @@ from typing import Any
 
 import duckdb
 
-# SQL fragment: 1 when a slice is subject to the trial-balance invariant, else 0.
-_IS_BALANCED = (
-    "(account_type LIKE 'resource.%' OR account_type IN ('value.utility', 'truth.state'))"
-)
 _EPS = 1e-4
 
-# Account types surfaced as scalar totals on the runs table / stats bars.
-COST_ACCOUNT = "resource.money"
-LATENCY_ACCOUNT = "resource.time_ms"
-UTILITY_ACCOUNT = "value.utility"
+# SQL IN-lists: account types that map to each headline total (canonical + legacy names).
+_COST_IN = "('truth.money', 'resource.money')"
+_LATENCY_IN = "('truth.time', 'resource.time_ms')"
+_UTILITY_IN = "('truth.utility', 'value.utility')"
 
 # Friendly labels for known SDK accounts; unknown accounts fall back to the raw name.
 ACCOUNT_LABELS = {
+    "truth.money": "Cost",
     "resource.money": "Cost",
+    "truth.time": "Latency",
     "resource.time_ms": "Latency",
-    "resource.tokens": "Tokens",
+    "truth.utility": "Utility",
     "value.utility": "Utility",
+    "resource.tokens": "Tokens",
     "truth.state": "State",
 }
 
@@ -98,13 +101,13 @@ def runs(
             SELECT
                 e.run_id,
                 p.account_type,
+                p.unit,
                 SUM(p.delta_numeric)                                   AS net,
-                SUM(CASE WHEN p.delta_numeric > 0 THEN p.delta_numeric ELSE 0 END) AS flow,
-                {_IS_BALANCED} AS is_balanced
+                SUM(CASE WHEN p.delta_numeric > 0 THEN p.delta_numeric ELSE 0 END) AS flow
             FROM postings p
             JOIN events e ON p.event_id = e.event_id
             {po_where}
-            GROUP BY e.run_id, p.account_type
+            GROUP BY e.run_id, p.account_type, p.unit
         )
         SELECT
             ev.run_id,
@@ -113,10 +116,10 @@ def runs(
             ev.event_count,
             ev.kind_count,
             ev.project,
-            COALESCE(SUM(CASE WHEN po.account_type = '{COST_ACCOUNT}'    THEN po.flow END), 0) AS cost,
-            COALESCE(SUM(CASE WHEN po.account_type = '{LATENCY_ACCOUNT}' THEN po.flow END), 0) AS latency_ms,
-            COALESCE(SUM(CASE WHEN po.account_type = '{UTILITY_ACCOUNT}' THEN po.flow END), 0) AS utility,
-            COALESCE(BOOL_AND(NOT (po.is_balanced AND ABS(po.net) > {_EPS})), TRUE) AS invariant_ok
+            COALESCE(SUM(CASE WHEN po.account_type IN {_COST_IN}    THEN po.flow END), 0) AS cost,
+            COALESCE(SUM(CASE WHEN po.account_type IN {_LATENCY_IN} THEN po.flow END), 0) AS latency_ms,
+            COALESCE(SUM(CASE WHEN po.account_type IN {_UTILITY_IN} THEN po.flow END), 0) AS utility,
+            COALESCE(BOOL_AND(ABS(po.net) <= {_EPS}), TRUE) AS invariant_ok
         FROM ev
         LEFT JOIN po ON ev.run_id = po.run_id
         GROUP BY ev.run_id, ev.first_time, ev.last_time, ev.event_count, ev.kind_count, ev.project
@@ -200,14 +203,15 @@ def postings_rollup(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -
 
 
 def trial_balance(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> list[dict]:
-    """Balanced slices whose net deviates from zero — the invariant/drift check.
+    """``(account_type, unit)`` slices whose net deviates from zero — the drift check.
 
-    Empty result == healthy. Each row is a ``(account_type, unit, net)`` violation.
+    Every slice must conserve (spec § 8), so no account type is exempt. Empty result ==
+    healthy. Each row is a ``(account_type, unit, net)`` violation.
     """
-    join, run_filter, params = "", "", []
+    join, where, params = "", "", []
     if run_id is not None:
         join = "JOIN events e ON p.event_id = e.event_id"
-        run_filter = "AND e.run_id IS NOT DISTINCT FROM ?"
+        where = "WHERE e.run_id IS NOT DISTINCT FROM ?"
         params = [run_id]
     return _rows(
         con,
@@ -218,8 +222,7 @@ def trial_balance(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> 
             SUM(p.delta_numeric) AS net
         FROM postings p
         {join}
-        WHERE {_IS_BALANCED.replace("account_type", "p.account_type")}
-        {run_filter}
+        {where}
         GROUP BY p.account_type, p.unit
         HAVING ABS(SUM(p.delta_numeric)) > {_EPS}
         ORDER BY p.account_type, p.unit

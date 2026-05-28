@@ -1,4 +1,5 @@
 """Feature-parity tests for the rich evaluation review (eval_review.py)."""
+import json
 from pathlib import Path
 
 import pytest
@@ -117,3 +118,37 @@ def test_investigation_and_partial_reason(econ):
     assert "Error Investigation" in html
     assert "division by zero" in html
     assert "Partial reason: off by one" in html
+
+
+def test_nested_chat_completions_tool_call(tmp_path):
+    # Chat Completions nests tool call name/arguments under "function" — must not render
+    # as "unknown" / "{}".
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    payload = {
+        "question_id": "1", "db_id": "d", "question_text": "q", "model": "m",
+        "config_type": "v3", "database": "d", "predicted_sql": None, "gold_sql": None,
+        "gold_result": "x", "predicted_result": "x", "is_correct": True,
+        "correctness_level": "correct", "duration_ms": 1, "cost_usd": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "tool_calls": 1,
+        "raw_response": {"messages": [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "run_sql", "arguments": json.dumps({"sql": "SELECT 1"})}}]},
+            {"role": "tool", "tool_call_id": "t1", "content": "[[1]]"},
+        ]},
+    }
+    ev = {"event_id": "e1", "event_time": "2026-05-26T10:00:00+00:00",
+          "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "evaluation_result",
+          "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+          "payload_json": payload, "run_id": "r", "actor_agent_id": None, "actor_task_id": None}
+    (cl / "events.jsonl").write_text(json.dumps(ev) + "\n")
+    con = reader.connect(str(tmp_path))
+    try:
+        html = eval_review.generate_eval_review(con, "r")
+        assert "TOOL CALL #1 - run_sql" in html
+        assert "unknown" not in html
+        assert "SELECT 1" in html  # nested arguments rendered
+    finally:
+        con.close()
