@@ -88,6 +88,29 @@ class ReportData:
 # ---------------------------------------------------------------------------
 
 
+def _to_float(value, default: float = 0.0) -> float:
+    """Coerce a payload value to float, falling back to ``default`` for malformed input.
+
+    cost_usd / duration_ms are formatted with ``:.4f`` / ``:.0f`` in the card header, so a
+    non-numeric value (e.g. a string in a malformed event) would otherwise raise and break
+    the whole review render.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float_or_none(value) -> float | None:
+    """Like :func:`_to_float` but preserves None (renders 'n/a') and maps junk to None."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def has_eval_results(con: duckdb.DuckDBPyConnection, run_id: str | None) -> bool:
     """True if the run has any ``evaluation_result`` events (→ use the rich review)."""
     n = con.execute(
@@ -132,9 +155,9 @@ def build_report_data(con: duckdb.DuckDBPyConnection, run_id: str | None, title:
                 tool_calls=payload.get("tool_calls", 0),
                 sql_errors=payload.get("sql_errors", 0),
                 query_count=payload.get("query_count", 0),
-                total_sql_time_ms=payload.get("total_sql_time_ms", 0.0),
-                duration_ms=payload.get("duration_ms", 0.0),
-                cost_usd=payload.get("cost_usd"),
+                total_sql_time_ms=_to_float(payload.get("total_sql_time_ms", 0.0)),
+                duration_ms=_to_float(payload.get("duration_ms", 0.0)),
+                cost_usd=_to_float_or_none(payload.get("cost_usd")),
                 input_tokens=payload.get("input_tokens", 0),
                 output_tokens=payload.get("output_tokens", 0),
                 raw_response=payload.get("raw_response"),

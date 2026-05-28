@@ -209,6 +209,34 @@ def test_metadata_fallback_fields_escaped(tmp_path):
         con.close()
 
 
+def test_malformed_numeric_fields_do_not_break_render(tmp_path):
+    # cost_usd / duration_ms are formatted with :.4f / :.0f; a malformed string value must
+    # not raise ValueError and take down the whole review (and must not inject markup).
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    payload = {
+        "question_id": "1", "db_id": "d", "question_text": "q", "model": "m",
+        "config_type": "v3", "database": "d", "predicted_sql": None, "gold_sql": None,
+        "gold_result": "x", "predicted_result": "y", "is_correct": False,
+        "correctness_level": "error", "tool_calls": 0,
+        "duration_ms": "<script>alert(8)</script>", "cost_usd": "<script>alert(9)</script>",
+        "input_tokens": 0, "output_tokens": 0, "raw_response": None,
+    }
+    ev = {"event_id": "e1", "event_time": "2026-05-26T10:00:00+00:00",
+          "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "evaluation_result",
+          "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+          "payload_json": payload, "run_id": "r", "actor_agent_id": None, "actor_task_id": None}
+    (cl / "events.jsonl").write_text(json.dumps(ev) + "\n")
+    con = reader.connect(str(tmp_path))
+    try:
+        html = eval_review.generate_eval_review(con, "r")  # must not raise
+        assert "RUN" not in html or "question-card" in html  # rendered a card
+        assert "alert(8)" not in html and "alert(9)" not in html  # coerced away, no injection
+        assert "n/a" in html  # cost_usd → None → "n/a"
+    finally:
+        con.close()
+
+
 def test_unmatched_chat_completions_tool_call_flushed(tmp_path):
     # Trace ends after an assistant tool call with no tool result (truncated/crashed run);
     # the attempted call must still render, not fall back to metadata.
