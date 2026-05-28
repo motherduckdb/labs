@@ -120,3 +120,40 @@ def build_config(argv: list[str] | None = None, *, env: dict[str, str] | None = 
         verbose=args.verbose,
         motherduck_token=token,
     )
+
+
+def build_config_from_env(env: dict[str, str] | None = None) -> PipelineConfig:
+    """Build a PipelineConfig from env vars only.
+
+    Used inside Flights, where there's no argv. Defaults to ingesting
+    the current season's Regular Season + Playoffs in one invocation —
+    same coverage as the legacy nightly-sync.yml workflow.
+
+    Recognized env vars:
+      MOTHERDUCK_TOKEN — required, injected by Flight runtime
+      NBA_INGEST_SEASON — season-start year (default: current)
+      NBA_INGEST_DELAY_MS, NBA_INGEST_MIN_DELAY_MS, NBA_INGEST_MAX_DELAY_MS
+      NBA_INGEST_FORCE, NBA_INGEST_FILL_RAW, NBA_INGEST_DRY_RUN — '1' enables
+    """
+    environ = env if env is not None else os.environ
+    token = environ.get("MOTHERDUCK_TOKEN")
+    if not token:
+        raise RuntimeError("MOTHERDUCK_TOKEN is required")
+
+    year = int(environ.get("NBA_INGEST_SEASON") or current_season_year())
+    seasons = tuple(Season(year=year, type=st) for st in SEASON_TYPES)
+
+    def _bool(name: str) -> bool:
+        return environ.get(name, "").strip() == "1"
+
+    return PipelineConfig(
+        seasons=seasons,
+        delay_ms=int(environ.get("NBA_INGEST_DELAY_MS") or 500),
+        min_delay_ms=int(environ.get("NBA_INGEST_MIN_DELAY_MS") or 200),
+        max_delay_ms=int(environ.get("NBA_INGEST_MAX_DELAY_MS") or 10_000),
+        force=_bool("NBA_INGEST_FORCE"),
+        fill_raw=_bool("NBA_INGEST_FILL_RAW"),
+        dry_run=_bool("NBA_INGEST_DRY_RUN"),
+        verbose=_bool("NBA_INGEST_VERBOSE"),
+        motherduck_token=token,
+    )
