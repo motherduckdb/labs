@@ -194,7 +194,21 @@ def _stacked_bar(by_run: dict[str, dict[str, int]], title: str) -> str:
 # --------------------------------------------------------------------------- run review
 
 def render_run_review(con: duckdb.DuckDBPyConnection, run_id: str) -> str:
-    """Render the per-run review page."""
+    """Render the per-run review page.
+
+    If the run carries ``evaluation_result`` events, render the rich evaluation review
+    (question-by-question cards, conversation explorer, filters — full parity with
+    agentic-sql's review). Otherwise fall back to the universal per-run review.
+    """
+    from controllog_viz import eval_review
+
+    if eval_review.has_eval_results(con, run_id):
+        return eval_review.generate_eval_review(con, run_id)
+    return _render_universal_run_review(con, run_id)
+
+
+def _render_universal_run_review(con: duckdb.DuckDBPyConnection, run_id: str) -> str:
+    """Render the universal per-run review (any controllog data, payload-agnostic)."""
     events = q.events_for_run(con, run_id)
     rollup = q.postings_rollup(con, run_id)
     kinds = q.kind_counts(con, run_id)
