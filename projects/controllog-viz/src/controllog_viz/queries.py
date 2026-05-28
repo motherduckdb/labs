@@ -287,9 +287,18 @@ def eval_matrix(con: duckdb.DuckDBPyConnection, run_ids: list[str] | None = None
     )
 
 
-def latest_run_id(con: duckdb.DuckDBPyConnection) -> str | None:
-    """Run with the most recent event, for ``--latest``."""
+# latest_run_id() sentinel: the source has no events at all. Distinct from None, which is
+# a valid run id (the null run), so callers can tell "no runs" apart from "the null run".
+NO_RUNS = object()
+
+
+def latest_run_id(con: duckdb.DuckDBPyConnection):
+    """Run with the most recent event, for ``--latest``.
+
+    Returns the run_id (possibly ``None`` for the null run), or :data:`NO_RUNS` when the
+    source has no events.
+    """
     row = con.execute(
         "SELECT run_id FROM events GROUP BY run_id ORDER BY MAX(event_time) DESC LIMIT 1"
     ).fetchone()
-    return row[0] if row else None
+    return row[0] if row else NO_RUNS

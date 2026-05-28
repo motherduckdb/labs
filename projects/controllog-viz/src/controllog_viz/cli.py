@@ -53,8 +53,9 @@ def review(source: str, run_id: str | None, latest: bool, output: str, open_brow
     try:
         if latest:
             run_id = q.latest_run_id(con)
-            if run_id is None:
+            if run_id is q.NO_RUNS:
                 raise click.ClickException(f"No runs found in source {source!r}.")
+            # run_id may legitimately be None here (the null run) — let it flow through.
         html = render.render_run_review(con, run_id)
     finally:
         con.close()

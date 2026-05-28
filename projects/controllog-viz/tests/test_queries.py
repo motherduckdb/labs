@@ -18,7 +18,8 @@ def _source(tmp_path, events, postings):
     cl = tmp_path / "controllog"
     cl.mkdir(parents=True)
     (cl / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-    (cl / "postings.jsonl").write_text("".join(json.dumps(p) + "\n" for p in postings))
+    if postings:  # skip the file entirely when empty (read_json_auto can't infer a 0-byte file)
+        (cl / "postings.jsonl").write_text("".join(json.dumps(p) + "\n" for p in postings))
     return reader.connect(str(tmp_path))
 
 
@@ -166,6 +167,29 @@ def test_null_run_support_and_all_vs_null(tmp_path):
 
 def test_latest_run_id(con):
     assert q.latest_run_id(con) == "run-b"
+
+
+def test_latest_run_id_null_run_is_not_no_runs(tmp_path):
+    # the newest run being the null run must yield None (a real selectable run), not NO_RUNS
+    con = _source(tmp_path, [_ev("e1", run=None)], [])
+    try:
+        assert q.latest_run_id(con) is None
+        assert q.latest_run_id(con) is not q.NO_RUNS
+    finally:
+        con.close()
+
+
+def test_latest_run_id_no_runs_sentinel():
+    import duckdb
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TEMP VIEW events AS "
+        "SELECT NULL::VARCHAR AS run_id, NULL::TIMESTAMP AS event_time WHERE 1=0"
+    )
+    try:
+        assert q.latest_run_id(con) is q.NO_RUNS
+    finally:
+        con.close()
 
 
 def test_kind_counts_by_run(con):

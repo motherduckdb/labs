@@ -557,12 +557,14 @@ def _render_chat_completions_trace(messages: list, card: ErrorCard) -> str:
 
 
 def _render_metadata_fallback(card: ErrorCard) -> str:
+    # Every field here comes from payload_json and may be malformed (e.g. a string with
+    # markup), so escape all of them — not just card.model.
     return (
         f'<pre class="trace">'
         f"Model: {_escape(card.model)}\n"
-        f"Tokens: {card.input_tokens} in / {card.output_tokens} out\n"
-        f"Tool calls: {card.tool_calls}\n"
-        f"Duration: {card.duration_ms}ms"
+        f"Tokens: {_escape(card.input_tokens)} in / {_escape(card.output_tokens)} out\n"
+        f"Tool calls: {_escape(card.tool_calls)}\n"
+        f"Duration: {_escape(card.duration_ms)}ms"
         f"</pre>"
     )
 
