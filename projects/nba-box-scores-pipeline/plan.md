@@ -78,11 +78,23 @@ Driven by two workflows in `.github/workflows/`:
 
 Run these once, before any code lands. None require the labs project to exist yet.
 
-1. **Clone v2 into v3.** From a DuckDB CLI authenticated to your MotherDuck account:
+1. **Clone v2's raw data into v3.** The goal is to skip re-ingesting from the NBA/NHL APIs while giving the new Python pipeline a real dataset to test transformations against. Two approaches:
+
+   **A — Full clone, hydrated kept as baseline** (recommended for validation):
    ```sql
    CREATE DATABASE nba_box_scores_v3 FROM nba_box_scores_v2;
    ```
-   Confirms parity row counts, then we never touch v2 from this project again. v2 keeps serving the old Vercel app.
+   v2's hydrated tables stay in v3 as a comparison target. The new pipeline writes hydrated output to differently-named tables (e.g. `nba_box_scores_v3.hydrated_v3.*` or with a `_new` suffix), and we diff against the legacy hydrated before promoting. Drop the baseline once we're confident.
+
+   **B — Raw-only clone**:
+   ```sql
+   CREATE DATABASE nba_box_scores_v3;
+   INSERT INTO nba_box_scores_v3.raw.<table> SELECT * FROM nba_box_scores_v2.raw.<table>;
+   -- repeat for each raw table
+   ```
+   Cleaner v3 schema from day one, but no built-in validation baseline.
+
+   Next session picks A or B after inspecting v2's actual schema (raw vs hydrated table layout). v2 keeps serving the legacy Vercel app regardless.
 
 2. **Provision the access token.** In the MotherDuck UI, create a token named `labs_ingest_token` (or whatever; capture the name) with read+write on `nba_box_scores_v3`. Confirm it's visible via `SELECT * FROM md_access_tokens()`. Every Flight will reference it by name in `MD_CREATE_FLIGHT(access_token_name := ...)`.
 
