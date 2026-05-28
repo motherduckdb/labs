@@ -23,6 +23,11 @@ import duckdb
 
 _EPS = 1e-4
 
+# Sentinel separating "no run filter (all runs)" from "filter to this run_id" — which is
+# needed because run_id is nullable, so None is a real run, not "all". Passing a run_id
+# (including None) scopes to that run via ``IS NOT DISTINCT FROM``; omitting it means all.
+_ALL = object()
+
 # SQL IN-lists: account types that map to each headline total (canonical + legacy names).
 _COST_IN = "('truth.money', 'resource.money')"
 _LATENCY_IN = "('truth.time', 'resource.time_ms')"
@@ -131,7 +136,7 @@ def runs(
             COALESCE(SUM(CASE WHEN po.account_type IN {_UTILITY_IN} THEN po.flow END), 0) AS utility,
             COALESCE(BOOL_AND(ABS(po.net) <= {_EPS}), TRUE) AS invariant_ok
         FROM ev
-        LEFT JOIN po ON ev.run_id = po.run_id
+        LEFT JOIN po ON ev.run_id IS NOT DISTINCT FROM po.run_id
         GROUP BY ev.run_id, ev.first_time, ev.last_time, ev.event_count, ev.kind_count, ev.project
         ORDER BY ev.first_time DESC
         {limit_clause}
@@ -160,9 +165,9 @@ def events_for_run(con: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
     )
 
 
-def kind_counts(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> list[dict]:
-    """Histogram of event kinds, optionally scoped to one run."""
-    where, params = ("WHERE run_id IS NOT DISTINCT FROM ?", [run_id]) if run_id is not None else ("", [])
+def kind_counts(con: duckdb.DuckDBPyConnection, run_id=_ALL) -> list[dict]:
+    """Histogram of event kinds. Omit ``run_id`` for all runs; pass one (incl. None) to scope."""
+    where, params = ("WHERE run_id IS NOT DISTINCT FROM ?", [run_id]) if run_id is not _ALL else ("", [])
     return _rows(
         con,
         f"SELECT kind, COUNT(*) AS count FROM events {where} GROUP BY kind ORDER BY count DESC, kind",
@@ -186,10 +191,13 @@ def kind_counts_by_run(con: duckdb.DuckDBPyConnection, run_ids: list[str] | None
     )
 
 
-def postings_rollup(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> list[dict]:
-    """Per ``(account_type, unit)``: net, positive flow, and posting count."""
+def postings_rollup(con: duckdb.DuckDBPyConnection, run_id=_ALL) -> list[dict]:
+    """Per ``(account_type, unit)``: net, positive flow, and posting count.
+
+    Omit ``run_id`` for all runs; pass one (incl. None for the null run) to scope.
+    """
     join, where, params = "", "", []
-    if run_id is not None:
+    if run_id is not _ALL:
         join = "JOIN events e ON p.event_id = e.event_id"
         where = "WHERE e.run_id IS NOT DISTINCT FROM ?"
         params = [run_id]
@@ -212,14 +220,15 @@ def postings_rollup(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -
     )
 
 
-def trial_balance(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> list[dict]:
+def trial_balance(con: duckdb.DuckDBPyConnection, run_id=_ALL) -> list[dict]:
     """``(account_type, unit)`` slices whose net deviates from zero — the drift check.
 
-    Every slice must conserve (spec § 8), so no account type is exempt. Empty result ==
+    Every slice must conserve (spec § 8), so no account type is exempt. Omit ``run_id`` for
+    a dataset-wide check; pass one (incl. None for the null run) to scope. Empty result ==
     healthy. Each row is a ``(account_type, unit, net)`` violation.
     """
     join, where, params = "", "", []
-    if run_id is not None:
+    if run_id is not _ALL:
         join = "JOIN events e ON p.event_id = e.event_id"
         where = "WHERE e.run_id IS NOT DISTINCT FROM ?"
         params = [run_id]

@@ -1059,7 +1059,7 @@ def _render_card(card: ErrorCard) -> str:
                     <span class="metric"><span class="value">{cost_str}</span></span>
                     <span class="metric"><span class="value">{card.duration_ms:.0f}</span>ms</span>
                 </div>
-                <span class="q-level {_escape(level)}">{level_display}</span>{category_badge}
+                <span class="q-level {_escape(level)}">{_escape(level_display)}</span>{category_badge}
             </div>
             <div class="card-body collapsed">
                 {panel1}
@@ -1170,16 +1170,17 @@ def _render_sql_panel(card: ErrorCard) -> str:
     if card.answer_source and card.answer_source != "official":
         gold_label = f"{gold_label} — {card.answer_source}"
 
+    # gold_label may include answer_source straight from the payload — escape at the boundary
     parts.append('<div class="result-compare">')
     parts.append(
         f'<div class="result-box gold">'
-        f'<div class="result-label">{gold_label}</div>'
+        f'<div class="result-label">{_escape(gold_label)}</div>'
         f'<pre class="result">{gold_formatted}</pre>'
         f"</div>"
     )
     parts.append(
         f'<div class="result-box pred">'
-        f'<div class="result-label">{pred_label}</div>'
+        f'<div class="result-label">{_escape(pred_label)}</div>'
         f'<pre class="result">{pred_formatted}</pre>'
         f"</div>"
     )

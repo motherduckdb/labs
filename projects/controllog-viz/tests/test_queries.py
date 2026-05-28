@@ -143,6 +143,27 @@ def test_invariant_is_per_account_type_and_unit(tmp_path):
         con.close()
 
 
+def test_null_run_support_and_all_vs_null(tmp_path):
+    # run_id is nullable. The null-run postings must attach (null-safe join), and the
+    # per-run helpers must treat "omitted" (all runs) differently from "None" (the null run).
+    ev = [_ev("e1", run=None, kind="ping"), _ev("e2", run="r", kind="pong")]
+    po = [_po("a", "e1", "truth.money", "$", 0.01), _po("b", "e1", "truth.money", "$", -0.01)]
+    con = _source(tmp_path, ev, po)
+    try:
+        null_row = next(r for r in q.runs(con) if r["run_id"] is None)
+        assert math.isclose(null_row["cost"], 0.01, abs_tol=1e-9)  # postings attached
+        assert null_row["invariant_ok"] is True
+        # omitted run_id = all runs; explicit None = only the null run
+        assert {r["kind"] for r in q.kind_counts(con)} == {"ping", "pong"}
+        assert {r["kind"] for r in q.kind_counts(con, None)} == {"ping"}
+        assert {r["kind"] for r in q.kind_counts(con, "r")} == {"pong"}
+        assert q.postings_rollup(con, None)[0]["account_type"] == "truth.money"
+        assert q.postings_rollup(con, "r") == []          # named run has no postings
+        assert q.trial_balance(con, None) == []           # null run is balanced
+    finally:
+        con.close()
+
+
 def test_latest_run_id(con):
     assert q.latest_run_id(con) == "run-b"
 

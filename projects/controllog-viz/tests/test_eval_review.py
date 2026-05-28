@@ -154,6 +154,34 @@ def test_nested_chat_completions_tool_call(tmp_path):
         con.close()
 
 
+def test_payload_labels_are_escaped(tmp_path):
+    # answer_source and correctness_level come from the payload and must be escaped at the
+    # HTML boundary, not just the larger text blocks (XSS).
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    payload = {
+        "question_id": "1", "db_id": "d", "question_text": "q", "model": "m",
+        "config_type": "v3", "database": "d", "predicted_sql": None, "gold_sql": None,
+        "gold_result": "x", "predicted_result": "y", "is_correct": False,
+        "correctness_level": "<img src=x onerror=alert(1)>", "duration_ms": 1, "cost_usd": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "tool_calls": 0,
+        "answer_source": "<script>alert(1)</script>", "raw_response": None,
+    }
+    ev = {"event_id": "e1", "event_time": "2026-05-26T10:00:00+00:00",
+          "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "evaluation_result",
+          "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+          "payload_json": payload, "run_id": "r", "actor_agent_id": None, "actor_task_id": None}
+    (cl / "events.jsonl").write_text(json.dumps(ev) + "\n")
+    con = reader.connect(str(tmp_path))
+    try:
+        html = eval_review.generate_eval_review(con, "r")
+        assert "<script>alert(1)</script>" not in html      # answer_source escaped
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+        assert "<img src=x onerror=alert(1)>" not in html    # level_display escaped
+    finally:
+        con.close()
+
+
 def test_unmatched_chat_completions_tool_call_flushed(tmp_path):
     # Trace ends after an assistant tool call with no tool result (truncated/crashed run);
     # the attempted call must still render, not fall back to metadata.
