@@ -93,6 +93,25 @@ def test_jsonl_dedupes_by_id(tmp_path):
         con.close()
 
 
+def test_empty_postings_file_treated_as_no_postings(tmp_path):
+    # A zero-byte postings.jsonl must not be sent to read_json_auto (can't infer columns).
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    (cl / "events.jsonl").write_text(
+        '{"event_id":"x1","event_time":"2026-05-26T10:00:00+00:00",'
+        '"ingest_time":"2026-05-26T10:00:00+00:00","kind":"ping","project_id":"d",'
+        '"source":"sdk","idempotency_key":"x1","payload_json":{},"run_id":"r",'
+        '"actor_agent_id":null,"actor_task_id":null}\n'
+    )
+    (cl / "postings.jsonl").write_text("")  # empty file present
+    con = reader.connect(str(tmp_path))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM postings").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
 def test_missing_postings_yields_empty_view(tmp_path):
     # Events only, no postings.jsonl — postings view should exist and be empty.
     cl = tmp_path / "controllog"

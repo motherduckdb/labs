@@ -54,7 +54,7 @@ so it works with both flat (`logs/controllog/events.jsonl`) and date-partitioned
 | Reader | `reader.py` | `connect(source)` → in-memory DuckDB with `events`/`postings` temp views, normalized identically for JSONL and MotherDuck. |
 | Queries | `queries.py` | Derived SQL (runs, timeline, kind counts, postings rollup, trial balance) returning `list[dict]`. The semantics layer. |
 | Render | `render.py` | Presentation only — consumes rows, emits self-contained HTML. Dispatches the review to the rich or universal renderer. |
-| Eval review | `eval_review.py` | Rich evaluation review built from `evaluation_result` payloads (cards, conversation explorer, filters). |
+| Eval review | `eval_review/` | Rich evaluation review built from `evaluation_result` payloads. Split by concern: `model` (data + extraction + text helpers), `trace` (conversation-trace parsing), `assets` (inline CSS/JS), `page` (HTML assembly). |
 | CLI | `cli.py` | `review` / `dashboard` commands. |
 
 ## Develop
