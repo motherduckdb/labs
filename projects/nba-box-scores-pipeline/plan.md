@@ -198,7 +198,15 @@ Naming note: the live Flights SQL function and MCP tool use `md_token_name`. The
 
 ### 1.4 Deploy pattern (lifted from blessed-dives, retargeted at Flights SQL)
 
-`deploy.py` is the analog of `deploy.ts`. It uses **only the SQL functions from the [Flights docs PR](https://github.com/motherduckdb/motherduck-docs/pull/1633)** — no private APIs.
+`deploy.py` is the analog of `deploy.ts`. The plan was to use **only the SQL functions from the [Flights docs PR](https://github.com/motherduckdb/motherduck-docs/pull/1633)** — no private APIs.
+
+**Update (2026-05-27 smoketest):** `MD_CREATE_FLIGHT` is **not yet available as a SQL function** on the MotherDuck workspace we tested against — `Catalog Error: Table Function with name md_create_flight does not exist`. The MCP `create_flight` tool works (smoketest succeeded with token `dives-loader-nba`), so the API exists but isn't exposed via SQL on this workspace yet. Three options before `deploy.py` lands:
+
+1. Wait for the SQL functions to ship (preview rollout still in progress)
+2. Find a public Python SDK that wraps the same API the MCP uses
+3. Shell out to the MCP from GH Actions (rejected — fragile, blocks CI)
+
+Default: revisit when porting starts. If SQL is still missing then, escalate option 2 with the Flights team.
 
 | blessed-dives call | Flights equivalent |
 |---|---|
@@ -481,6 +489,8 @@ Until then v2 stays alive and the legacy app keeps serving traffic from it; v3 i
 | Risk | Mitigation |
 |---|---|
 | Flights is preview — could change | Pin a working `MD_CREATE_FLIGHT` signature; document the version. Plan accepts breaking changes during preview. |
+| `MD_CREATE_FLIGHT` SQL not yet on all workspaces | Confirmed 2026-05-27: the MCP `create_flight` tool works, but `MD_CREATE_FLIGHT()` SQL throws "function does not exist". Until SQL ships everywhere, `deploy.py` needs an alternative — see §1.4 update. |
+| Flight ownership vs token ownership | The Flight is owned by whichever account creates it. `md_token_name` is resolved against *that account's* token list. Cross-account token references don't work. Confirmed by the smoketest. |
 | `requirements_txt` referencing a git subpath may not be supported | Fallback A: `build.py` concatenates the package modules into the `source_code` string (single-file inline). Fallback B: publish the package to PyPI. Confirm git-URL support by reading the `MD_CREATE_FLIGHT` examples in the docs PR before committing to the architecture. |
 | Two-token split assumes a separate dev MotherDuck workspace | If only one account is available, point both secrets at the same token and use the `__pr_<branch>` name prefix to keep preview Flights distinguishable. Preview Flights still skip `schedule_cron` so they don't fire on their own. |
 | Backfill speed regressions | Mooted by Phase 0 — v3 starts as a clone of v2, so no full re-ingest. Future on-demand backfills are single-process; fan out via multiple `MD_RUN_FLIGHT` calls only if a specific run is too slow. |
