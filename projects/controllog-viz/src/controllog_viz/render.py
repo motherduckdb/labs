@@ -280,15 +280,21 @@ def _invariant_panel(violations: list[dict]) -> str:
 
 # --------------------------------------------------------------------------- dashboard
 
-def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "") -> str:
-    """Render the cross-run dashboard page."""
-    run_rows = q.runs(con)
+def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", limit: int | None = None) -> str:
+    """Render the cross-run dashboard page.
+
+    ``limit`` shows only the most recent N runs in the table/charts; the invariant
+    panel always reports across the whole dataset.
+    """
+    run_rows = q.runs(con, limit=limit)
     global_violations = q.trial_balance(con)
 
-    by_run_raw = q.kind_counts_by_run(con)
+    shown_ids = {str(r["run_id"]) for r in run_rows}
     by_run: dict[str, dict[str, int]] = defaultdict(dict)
-    for row in by_run_raw:
-        by_run[str(row["run_id"])][row["kind"]] = row["count"]
+    for row in q.kind_counts_by_run(con):
+        rid = str(row["run_id"])
+        if rid in shown_ids:
+            by_run[rid][row["kind"]] = row["count"]
 
     total_events = sum(r["event_count"] for r in run_rows)
     stats_html = '<div class="stats">' + "".join([
@@ -336,12 +342,13 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "") -> 
         runs_table = '<div class="empty">no runs found</div>'
 
     sub = f"{_esc(source_label)} · " if source_label else ""
+    scope = f" (most recent {len(run_rows)})" if limit and len(run_rows) >= limit else ""
     body = (
         "<h1>CONTROLLOG DASHBOARD</h1>"
         f'<p class="sub">{sub}generated {datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")}</p>'
         f"{stats_html}"
         f"{charts}"
-        f"<h2>Runs</h2>{runs_table}"
+        f"<h2>Runs{scope}</h2>{runs_table}"
         f"<h2>Global invariants</h2>{_invariant_panel(global_violations)}"
     )
     return _doc("Controllog dashboard", body)

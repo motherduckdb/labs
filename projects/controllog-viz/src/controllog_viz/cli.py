@@ -65,12 +65,14 @@ def review(source: str, run_id: str | None, latest: bool, output: str, open_brow
 @cli.command()
 @_source_option
 @click.option("-o", "--output", default="out/dashboard.html", type=click.Path(), help="Output HTML path.")
+@click.option("--limit", default=50, show_default=True,
+              help="Show only the most recent N runs in the table/charts (0 = all).")
 @_open_option
-def dashboard(source: str, output: str, open_browser: bool) -> None:
+def dashboard(source: str, output: str, limit: int, open_browser: bool) -> None:
     """Render the cross-run dashboard page."""
     con = reader.connect(source)
     try:
-        html = render.render_dashboard(con, reader.source_label(source))
+        html = render.render_dashboard(con, reader.source_label(source), limit=limit or None)
     finally:
         con.close()
 

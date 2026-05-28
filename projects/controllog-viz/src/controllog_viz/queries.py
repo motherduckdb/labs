@@ -44,9 +44,15 @@ def _rows(con: duckdb.DuckDBPyConnection, sql: str, params: list[Any] | None = N
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def runs(con: duckdb.DuckDBPyConnection) -> list[dict]:
-    """One row per run: time range, event/kind counts, headline totals, invariant flag."""
-    return _rows(
+def runs(con: duckdb.DuckDBPyConnection, limit: int | None = None) -> list[dict]:
+    """One row per run: time range, event/kind counts, headline totals, invariant flag.
+
+    Always returned oldest-first. ``limit`` keeps only the most recent N runs (then
+    re-sorts them oldest-first) — for datasets with thousands of runs.
+    """
+    order = "ORDER BY ev.first_time DESC" if limit else "ORDER BY ev.first_time"
+    limit_clause = f"LIMIT {int(limit)}" if limit else ""
+    rows = _rows(
         con,
         f"""
         WITH ev AS (
@@ -83,9 +89,13 @@ def runs(con: duckdb.DuckDBPyConnection) -> list[dict]:
         FROM ev
         LEFT JOIN po ON ev.run_id = po.run_id
         GROUP BY ev.run_id, ev.first_time, ev.last_time, ev.event_count, ev.kind_count
-        ORDER BY ev.first_time
+        {order}
+        {limit_clause}
         """,
     )
+    if limit:
+        rows.reverse()
+    return rows
 
 
 def events_for_run(con: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:

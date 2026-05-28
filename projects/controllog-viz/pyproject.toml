@@ -21,7 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
 ]
 dependencies = [
-    "duckdb>=1.0.0",
+    # Upper bound: MotherDuck does not yet support DuckDB 1.5.3 (latest supported 1.5.2).
+    "duckdb>=1.0.0,<=1.5.2",
     "click>=8.0",
 ]
 
