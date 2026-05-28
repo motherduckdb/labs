@@ -455,9 +455,11 @@ def _heatmap_matrix(run_ids: list[str], rows_data: list[tuple]) -> str:
             tkind = trans.get(ci)
             stroke = ""
             if tkind == "prog":
-                stroke = ' stroke="#22d3ee" stroke-width="2"'
+                # progression cells are always green; white reads clearly on green
+                stroke = ' stroke="#ffffff" stroke-width="2.5"'
             elif tkind == "regr":
-                stroke = ' stroke="#ffd23f" stroke-width="2"'
+                # regression cells are always red; amber reads clearly on red
+                stroke = ' stroke="#ffd23f" stroke-width="2.5"'
             status = "correct" if v is True else "incorrect" if v is False else "n/a"
             tip = f"{_esc(str(run_ids[ci]))} · Q{_esc(str(qid))}: {status}"
             if tkind:
@@ -473,23 +475,35 @@ def _heatmap_matrix(run_ids: list[str], rows_data: list[tuple]) -> str:
         '<span><i style="background:#36d399"></i>correct</span>'
         '<span><i style="background:#f87272"></i>incorrect</span>'
         '<span><i style="background:#2a2f3a"></i>missing</span>'
-        '<span><i class="b" style="border:2px solid #22d3ee"></i>progression (→correct)</span>'
-        '<span><i class="b" style="border:2px solid #ffd23f"></i>regression (→incorrect)</span>'
+        '<span><i style="background:#36d399;border:2px solid #ffffff"></i>progression (→correct)</span>'
+        '<span><i style="background:#f87272;border:2px solid #ffd23f"></i>regression (→incorrect)</span>'
         "</div>"
     )
     return "".join(parts) + legend
 
 
-def _build_matrix(con: duckdb.DuckDBPyConnection, run_rows: list[dict], cap: int = 100) -> list[tuple]:
-    """Build matrix rows from evaluation_result correctness, scoped to the shown runs."""
-    ordered = [str(r["run_id"]) for r in run_rows]
-    order_index = {rid: i for i, rid in enumerate(ordered)}
+def _build_matrix(
+    con: duckdb.DuckDBPyConnection,
+    run_rows: list[dict],
+    cap: int = 100,
+    run_ids: list[str] | None = None,
+) -> list[tuple]:
+    """Build matrix rows from evaluation_result correctness, scoped to the shown runs.
+
+    ``run_rows`` is newest-first (display order). Cells are emitted in that order, but
+    progression/regression is computed by walking the runs in true time order
+    (oldest→newest), so a marker lands on the cell whose correctness *changed* from the
+    chronologically previous run.
+    """
+    display_runs = [str(r["run_id"]) for r in run_rows]   # newest-first
+    chrono = list(reversed(display_runs))                 # oldest-first
+    disp_index = {rid: i for i, rid in enumerate(display_runs)}
 
     corr: dict[tuple, bool] = {}
     qids: set[str] = set()
-    for row in q.eval_matrix(con):
+    for row in q.eval_matrix(con, run_ids=run_ids):
         rid = str(row["run_id"])
-        if rid not in order_index:
+        if rid not in disp_index:
             continue
         qid = str(row["question_id"])
         corr[(rid, qid)] = bool(row["is_correct"])
@@ -497,18 +511,19 @@ def _build_matrix(con: duckdb.DuckDBPyConnection, run_rows: list[dict], cap: int
 
     rows_data: list[tuple] = []
     for qid in qids:
-        seq = [corr.get((rid, qid)) for rid in ordered]
+        seq = [corr.get((rid, qid)) for rid in display_runs]
         flips, trans, prev = 0, {}, None
-        for ci, v in enumerate(seq):
+        for rid in chrono:
+            v = corr.get((rid, qid))
             if v is None:
                 continue
             if prev is not None and v != prev:
                 flips += 1
-                trans[ci] = "prog" if v else "regr"
+                trans[disp_index[rid]] = "prog" if v else "regr"
             prev = v
         rows_data.append((qid, seq, flips, trans))
 
-    # Most-volatile questions first; then those with any data; cap for legibility.
+    # Most-volatile questions first; then by question id; cap for legibility.
     rows_data.sort(key=lambda t: (-t[2], _qsort(t[0])))
     return rows_data[:cap]
 
@@ -525,15 +540,15 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", lim
     panel always reports across the whole dataset. A run × question progression/regression
     Matrix tab appears when the dataset has ``evaluation_result`` events.
     """
-    run_rows = q.runs(con, limit=limit)
-    global_violations = q.trial_balance(con)
+    # Resolve the shown run_ids once (cheap), then scope every cross-run query to them
+    # so the engine prunes scans instead of aggregating the whole dataset.
+    shown = q.recent_run_ids(con, limit) if limit else None
+    run_rows = q.runs(con, limit=limit, run_ids=shown)
+    global_violations = q.trial_balance(con)  # intentionally dataset-wide
 
-    shown_ids = {str(r["run_id"]) for r in run_rows}
     by_run: dict[str, dict[str, int]] = defaultdict(dict)
-    for row in q.kind_counts_by_run(con):
-        rid = str(row["run_id"])
-        if rid in shown_ids:
-            by_run[rid][row["kind"]] = row["count"]
+    for row in q.kind_counts_by_run(con, run_ids=shown):
+        by_run[str(row["run_id"])][row["kind"]] = row["count"]
 
     total_events = sum(r["event_count"] for r in run_rows)
     stats_html = '<div class="stats">' + "".join([
@@ -611,10 +626,10 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", lim
     has_matrix = q.has_any_eval_results(con) and bool(run_rows)
     matrix_tab = ""
     if has_matrix:
-        rows_data = _build_matrix(con, run_rows)
+        rows_data = _build_matrix(con, run_rows, run_ids=shown)
         n_q = len(rows_data)
         matrix_tab = (
-            f'<p class="sub">{n_q} question(s), shown runs only, oldest → newest. '
+            f'<p class="sub">{n_q} question(s), shown runs only, newest → oldest (left → right). '
             "Sorted by volatility (flips ↕). Cells: green=correct, red=incorrect, gray=missing; "
             "borders mark progressions/regressions.</p>"
             f"{_heatmap_matrix(labels, rows_data)}"

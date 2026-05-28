@@ -65,9 +65,20 @@ def test_matrix_detects_progression_and_regression(mcon):
     # q1 went incorrect->correct (progression), q2 correct->incorrect (regression)
     assert "(progression)" in html
     assert "(regression)" in html
-    # progression border (cyan) and regression border (amber) both present
-    assert "#22d3ee" in html
-    assert "#ffd23f" in html
+    # progression border is white (high contrast on the green/correct cell);
+    # regression border is amber (on the red/incorrect cell)
+    assert 'stroke="#ffffff"' in html
+    assert 'stroke="#ffd23f"' in html
+
+
+def test_recent_run_ids_scoping(mcon):
+    assert q.recent_run_ids(mcon) == ["run-2", "run-1"]
+    assert q.recent_run_ids(mcon, limit=1) == ["run-2"]
+    # scoped queries return only the requested runs
+    scoped = q.runs(mcon, run_ids=["run-2"])
+    assert [r["run_id"] for r in scoped] == ["run-2"]
+    assert {r["run_id"] for r in q.kind_counts_by_run(mcon, run_ids=["run-1"])} == {"run-1"}
+    assert {r["run_id"] for r in q.eval_matrix(mcon, run_ids=["run-2"])} == {"run-2"}
 
 
 def test_build_matrix_flip_counts(mcon):
@@ -78,14 +89,15 @@ def test_build_matrix_flip_counts(mcon):
     assert by_q["1"][1] == 1
     assert by_q["2"][1] == 1
     assert by_q["3"][1] == 0
-    # q1's flip at the 2nd column is a progression; q2's is a regression
-    assert by_q["1"][2] == {1: "prog"}
-    assert by_q["2"][2] == {1: "regr"}
+    # Display is newest-first, so the changed cell is column 0 (run-2, the newer run).
+    # q1 went incorrect→correct in time → progression; q2 correct→incorrect → regression.
+    assert by_q["1"][2] == {0: "prog"}
+    assert by_q["2"][2] == {0: "regr"}
     # most-volatile-first ordering puts the flipping questions ahead of the stable one
     assert rows[-1][0] == "3"
 
 
-def test_matrix_runs_chronological(mcon):
-    # oldest run first in the column order
+def test_runs_newest_first(mcon):
+    # newest run first in the row/column order
     run_rows = q.runs(mcon)
-    assert [r["run_id"] for r in run_rows] == ["run-1", "run-2"]
+    assert [r["run_id"] for r in run_rows] == ["run-2", "run-1"]
