@@ -12,8 +12,12 @@ layer — and renders two self-contained pages:
   feature-for-feature parity with agentic-sql's review. Any other run falls back to a
   universal view (stats, invariant badge, event timeline with collapsible JSON payloads,
   postings detail).
-- **dashboard** — all runs: a runs table, cost/latency/utility trend charts, per-run
-  event-kind stacked bar, and a global trial-balance (invariant) panel.
+- **dashboard** — cross-run, tabbed: a sortable/filterable **Summary** table, **Trends**
+  (cost/latency/utility line charts), an **Event Kinds** stacked bar, an **Invariants**
+  (global trial-balance) panel, and — when the data has `evaluation_result` events — a
+  **Matrix** tab: a run × question grid that highlights progressions (incorrect→correct)
+  and regressions (correct→incorrect), sorted by volatility. Scope with `--limit`
+  (default 50 most-recent runs).
 
 There is **no domain-specific code**: payloads render generically and postings roll up
 dynamically by `(account_type, unit)`. Any controllog dataset works out of the box.

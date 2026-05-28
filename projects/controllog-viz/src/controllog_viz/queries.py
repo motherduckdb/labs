@@ -61,7 +61,8 @@ def runs(con: duckdb.DuckDBPyConnection, limit: int | None = None) -> list[dict]
                 CAST(MIN(event_time) AS VARCHAR) AS first_time,
                 CAST(MAX(event_time) AS VARCHAR) AS last_time,
                 COUNT(*)        AS event_count,
-                COUNT(DISTINCT kind) AS kind_count
+                COUNT(DISTINCT kind) AS kind_count,
+                ANY_VALUE(project_id) AS project
             FROM events
             GROUP BY run_id
         ),
@@ -82,13 +83,14 @@ def runs(con: duckdb.DuckDBPyConnection, limit: int | None = None) -> list[dict]
             ev.last_time,
             ev.event_count,
             ev.kind_count,
+            ev.project,
             COALESCE(SUM(CASE WHEN po.account_type = '{COST_ACCOUNT}'    THEN po.flow END), 0) AS cost,
             COALESCE(SUM(CASE WHEN po.account_type = '{LATENCY_ACCOUNT}' THEN po.flow END), 0) AS latency_ms,
             COALESCE(SUM(CASE WHEN po.account_type = '{UTILITY_ACCOUNT}' THEN po.flow END), 0) AS utility,
             COALESCE(BOOL_AND(NOT (po.is_balanced AND ABS(po.net) > {_EPS})), TRUE) AS invariant_ok
         FROM ev
         LEFT JOIN po ON ev.run_id = po.run_id
-        GROUP BY ev.run_id, ev.first_time, ev.last_time, ev.event_count, ev.kind_count
+        GROUP BY ev.run_id, ev.first_time, ev.last_time, ev.event_count, ev.kind_count, ev.project
         {order}
         {limit_clause}
         """,
@@ -193,6 +195,40 @@ def trial_balance(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> 
         ORDER BY p.account_type, p.unit
         """,
         params,
+    )
+
+
+def has_any_eval_results(con: duckdb.DuckDBPyConnection) -> bool:
+    """True if the dataset contains any ``evaluation_result`` events (enables the matrix tab)."""
+    return con.execute(
+        "SELECT COUNT(*) FROM events WHERE kind = 'evaluation_result'"
+    ).fetchone()[0] > 0
+
+
+def eval_matrix(con: duckdb.DuckDBPyConnection) -> list[dict]:
+    """Per (run_id, question_id) correctness from ``evaluation_result`` events.
+
+    For the run × question progression/regression matrix. If a question is evaluated
+    more than once in a run (retries), the latest event wins.
+    """
+    return _rows(
+        con,
+        """
+        SELECT run_id, question_id, is_correct
+        FROM (
+            SELECT
+                run_id,
+                payload_json->>'question_id'        AS question_id,
+                (payload_json->>'is_correct')::BOOLEAN AS is_correct,
+                ROW_NUMBER() OVER (
+                    PARTITION BY run_id, payload_json->>'question_id'
+                    ORDER BY event_time DESC
+                ) AS rn
+            FROM events
+            WHERE kind = 'evaluation_result'
+        )
+        WHERE rn = 1
+        """,
     )
 
 
