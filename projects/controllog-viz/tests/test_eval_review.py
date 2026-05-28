@@ -152,3 +152,36 @@ def test_nested_chat_completions_tool_call(tmp_path):
         assert "SELECT 1" in html  # nested arguments rendered
     finally:
         con.close()
+
+
+def test_unmatched_chat_completions_tool_call_flushed(tmp_path):
+    # Trace ends after an assistant tool call with no tool result (truncated/crashed run);
+    # the attempted call must still render, not fall back to metadata.
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    payload = {
+        "question_id": "1", "db_id": "d", "question_text": "q", "model": "m",
+        "config_type": "v3", "database": "d", "predicted_sql": None, "gold_sql": None,
+        "gold_result": "x", "predicted_result": "x", "is_correct": False,
+        "correctness_level": "hit_limit", "duration_ms": 1, "cost_usd": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "tool_calls": 1,
+        "raw_response": {"messages": [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "run_sql", "arguments": json.dumps({"sql": "SELECT 2"})}}]},
+            # no tool-result message follows
+        ]},
+    }
+    ev = {"event_id": "e1", "event_time": "2026-05-26T10:00:00+00:00",
+          "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "evaluation_result",
+          "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+          "payload_json": payload, "run_id": "r", "actor_agent_id": None, "actor_task_id": None}
+    (cl / "events.jsonl").write_text(json.dumps(ev) + "\n")
+    con = reader.connect(str(tmp_path))
+    try:
+        html = eval_review.generate_eval_review(con, "r")
+        assert "run_sql (no response)" in html
+        assert "SELECT 2" in html
+    finally:
+        con.close()

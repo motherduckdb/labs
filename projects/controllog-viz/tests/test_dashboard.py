@@ -1,4 +1,5 @@
 """Dashboard tabs, sortable/filterable table, and the run × question matrix."""
+import json
 from pathlib import Path
 
 import pytest
@@ -101,3 +102,33 @@ def test_runs_newest_first(mcon):
     # newest run first in the row/column order
     run_rows = q.runs(mcon)
     assert [r["run_id"] for r in run_rows] == ["run-2", "run-1"]
+
+
+def test_started_column_sorts_chronologically(ucon):
+    html = render.render_dashboard(ucon, "fixtures")
+    # the started cell carries the raw ISO timestamp as data-sort, so the JS sorts it
+    # lexically (chronologically) instead of mis-parsing it as the year 2026
+    assert 'data-sort="2026-05-26' in html
+    # and the comparator reads data-sort with a strict numeric test
+    assert "td.dataset.sort" in html
+    assert "Number(va)" in html
+
+
+def test_null_run_id_not_dropped(tmp_path):
+    # run_id is nullable; the default --limit path must not drop the null-run group.
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    (cl / "events.jsonl").write_text(json.dumps({
+        "event_id": "n1", "event_time": "2026-05-26T10:00:00+00:00",
+        "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "ping", "project_id": "p",
+        "source": "sdk", "idempotency_key": "n1", "payload_json": {}, "run_id": None,
+        "actor_agent_id": None, "actor_task_id": None,
+    }) + "\n")
+    con = reader.connect(str(tmp_path))
+    try:
+        assert q.recent_run_ids(con) == [None]
+        assert len(q.runs(con, run_ids=[None])) == 1            # scoped query keeps it
+        html = render.render_dashboard(con, "x", limit=50)      # default dashboard path
+        assert "no runs found" not in html
+    finally:
+        con.close()

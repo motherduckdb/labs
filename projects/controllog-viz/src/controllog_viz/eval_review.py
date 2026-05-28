@@ -536,6 +536,23 @@ def _render_chat_completions_trace(messages: list, card: ErrorCard) -> str:
                     f"</div></details>"
                 )
 
+    # Flush tool calls that never got a result (trace truncated, crash, or unlogged
+    # result) so an incomplete conversation still shows the attempted call — matching
+    # _render_responses_api_trace.
+    for tc_id in pending_tool_calls_order:
+        tc_info = pending_tool_calls.get(tc_id)
+        if not tc_info:
+            continue
+        parts.append(
+            f'<details class="cot-section tool">'
+            f'<summary>TOOL CALL #{tc_info.get("response_num", "?")} - '
+            f'{_escape(tc_info["name"])} (no response)</summary>'
+            f'<div class="cot-content">'
+            f'<div class="tool-args-label">Arguments:</div>'
+            f'<pre class="tool-args">{_escape(tc_info["args"])}</pre>'
+            f"</div></details>"
+        )
+
     return "\n".join(parts) if parts else _render_metadata_fallback(card)
 
 

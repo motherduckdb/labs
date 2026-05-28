@@ -382,12 +382,17 @@ document.querySelectorAll('#summaryTable th.sortable').forEach(th => {
         th.classList.add(sortAsc ? 'sorted-asc' : 'sorted-desc');
         const tbody = document.querySelector('#summaryTable tbody');
         const rows = Array.from(tbody.querySelectorAll('tr'));
+        const cellVal = (tr) => {
+            const td = tr.children[col];
+            return td.dataset.sort !== undefined ? td.dataset.sort : td.textContent.trim();
+        };
         rows.sort((a, b) => {
-            const va = a.children[col].textContent.trim();
-            const vb = b.children[col].textContent.trim();
-            const na = parseFloat(va.replace(/[%$,\\/]/g, ''));
-            const nb = parseFloat(vb.replace(/[%$,\\/]/g, ''));
-            if (!isNaN(na) && !isNaN(nb)) return sortAsc ? na - nb : nb - na;
+            const va = cellVal(a), vb = cellVal(b);
+            // Strict numeric: Number('') is 0 and Number('2026-05-26 ...') is NaN, so
+            // timestamps/ids fall through to a lexical (chronological for ISO) compare.
+            const na = Number(va), nb = Number(vb);
+            const numeric = va !== '' && vb !== '' && !isNaN(na) && !isNaN(nb);
+            if (numeric) return sortAsc ? na - nb : nb - na;
             return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
         });
         rows.forEach(r => tbody.appendChild(r));
@@ -585,14 +590,17 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", lim
         drift_cell = '<span class="bad">drift</span>'
         trs = "".join(
             f'<tr data-runid="{_esc(r["run_id"])}" data-project="{_esc(r.get("project") or "")}">'
-            f"<td>{_esc(r['run_id'])}</td>"
-            f"<td>{_esc(_fmt_time(r['first_time']))}</td>"
-            f'<td class="num">{r["event_count"]:,}</td>'
-            f'<td class="num">{r["kind_count"]}</td>'
-            f'<td class="num">{_fmt_num(r["cost"], 4)}</td>'
-            f'<td class="num">{_fmt_num(r["latency_ms"], 0)}</td>'
-            f'<td class="num">{_fmt_num(r["utility"], 2)}</td>'
-            f"<td>{ok_cell if r['invariant_ok'] else drift_cell}</td>"
+            f'<td data-sort="{_esc(r["run_id"])}">{_esc(r["run_id"])}</td>'
+            # data-sort keeps the raw ISO timestamp so the column sorts chronologically
+            # (lexically) instead of being mis-parsed as the year by the numeric path
+            f'<td data-sort="{_esc(r["first_time"])}">{_esc(_fmt_time(r["first_time"]))}</td>'
+            f'<td class="num" data-sort="{r["event_count"]}">{r["event_count"]:,}</td>'
+            f'<td class="num" data-sort="{r["kind_count"]}">{r["kind_count"]}</td>'
+            f'<td class="num" data-sort="{r["cost"]}">{_fmt_num(r["cost"], 4)}</td>'
+            f'<td class="num" data-sort="{r["latency_ms"]}">{_fmt_num(r["latency_ms"], 0)}</td>'
+            f'<td class="num" data-sort="{r["utility"]}">{_fmt_num(r["utility"], 2)}</td>'
+            f'<td data-sort="{1 if r["invariant_ok"] else 0}">'
+            f"{ok_cell if r['invariant_ok'] else drift_cell}</td>"
             "</tr>"
             for r in run_rows
         )

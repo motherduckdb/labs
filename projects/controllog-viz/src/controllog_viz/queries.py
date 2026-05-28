@@ -47,15 +47,24 @@ def _rows(con: duckdb.DuckDBPyConnection, sql: str, params: list[Any] | None = N
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def _in_list(run_ids: list[str] | None) -> str | None:
-    """Render run_ids as a safely-quoted SQL ``IN`` list, or None for no filter.
+def _run_filter(run_ids: list[str | None] | None, col: str = "run_id") -> str:
+    """SQL boolean restricting ``col`` to ``run_ids``, or '' for no filter.
 
-    Values come from our own catalog (run_ids), but are escaped regardless. Used to
-    scope cross-run queries to the shown runs so the engine prunes scans.
+    Handles a null run_id (which is valid in the controllog schema): a list containing
+    ``None`` yields ``col IS NULL`` so the null-run group is not silently dropped. Values
+    come from our own catalog but are escaped regardless. Used to scope cross-run queries
+    to the shown runs so the engine prunes scans.
     """
     if not run_ids:
-        return None
-    return "(" + ", ".join("'" + str(r).replace("'", "''") + "'" for r in run_ids) + ")"
+        return ""
+    reals = [r for r in run_ids if r is not None]
+    parts: list[str] = []
+    if reals:
+        inlist = ", ".join("'" + str(r).replace("'", "''") + "'" for r in reals)
+        parts.append(f"{col} IN ({inlist})")
+    if any(r is None for r in run_ids):
+        parts.append(f"{col} IS NULL")
+    return "(" + " OR ".join(parts) + ")"
 
 
 def recent_run_ids(con: duckdb.DuckDBPyConnection, limit: int | None = None) -> list[str]:
@@ -78,10 +87,11 @@ def runs(
     the engine prunes postings/events to those runs). ``limit`` keeps only the most recent
     N (used when no run_ids filter is given).
     """
-    inl = _in_list(run_ids)
-    ev_where = f"WHERE run_id IN {inl}" if inl else ""
-    po_where = f"WHERE e.run_id IN {inl}" if inl else ""
-    limit_clause = f"LIMIT {int(limit)}" if (limit and not inl) else ""
+    ev_pred = _run_filter(run_ids, "run_id")
+    po_pred = _run_filter(run_ids, "e.run_id")
+    ev_where = f"WHERE {ev_pred}" if ev_pred else ""
+    po_where = f"WHERE {po_pred}" if po_pred else ""
+    limit_clause = f"LIMIT {int(limit)}" if (limit and not ev_pred) else ""
     rows = _rows(
         con,
         f"""
@@ -162,8 +172,8 @@ def kind_counts(con: duckdb.DuckDBPyConnection, run_id: str | None = None) -> li
 
 def kind_counts_by_run(con: duckdb.DuckDBPyConnection, run_ids: list[str] | None = None) -> list[dict]:
     """Per-run event-kind counts, for the dashboard's stacked bar chart."""
-    inl = _in_list(run_ids)
-    where = f"WHERE run_id IN {inl}" if inl else ""
+    pred = _run_filter(run_ids, "run_id")
+    where = f"WHERE {pred}" if pred else ""
     return _rows(
         con,
         f"""
@@ -244,8 +254,8 @@ def eval_matrix(con: duckdb.DuckDBPyConnection, run_ids: list[str] | None = None
     For the run × question progression/regression matrix. If a question is evaluated
     more than once in a run (retries), the latest event wins.
     """
-    inl = _in_list(run_ids)
-    run_filter = f"AND run_id IN {inl}" if inl else ""
+    pred = _run_filter(run_ids, "run_id")
+    run_filter = f"AND {pred}" if pred else ""
     return _rows(
         con,
         f"""
