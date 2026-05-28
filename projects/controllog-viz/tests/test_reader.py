@@ -112,6 +112,25 @@ def test_empty_postings_file_treated_as_no_postings(tmp_path):
         con.close()
 
 
+def test_blank_line_postings_file_treated_as_no_postings(tmp_path):
+    # A non-zero-byte but record-less postings file (only blank lines) must also be skipped.
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    (cl / "events.jsonl").write_text(
+        '{"event_id":"x1","event_time":"2026-05-26T10:00:00+00:00",'
+        '"ingest_time":"2026-05-26T10:00:00+00:00","kind":"ping","project_id":"d",'
+        '"source":"sdk","idempotency_key":"x1","payload_json":{},"run_id":"r",'
+        '"actor_agent_id":null,"actor_task_id":null}\n'
+    )
+    (cl / "postings.jsonl").write_text("\n   \n\n")  # blank lines only — size > 0, no records
+    con = reader.connect(str(tmp_path))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM postings").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
 def test_missing_postings_yields_empty_view(tmp_path):
     # Events only, no postings.jsonl — postings view should exist and be empty.
     cl = tmp_path / "controllog"

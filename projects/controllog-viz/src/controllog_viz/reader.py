@@ -107,16 +107,26 @@ def _resolve_globs(source: str) -> tuple[str, str]:
     return f"{base}/**/events.jsonl", f"{base}/**/postings.jsonl"
 
 
-def _nonempty(paths: list[str]) -> list[str]:
-    """Drop zero-byte files — read_json_auto cannot infer the contract columns from an
-    empty JSONL file, which would otherwise fail with 'Referenced column ... not found'."""
-    return [p for p in paths if Path(p).stat().st_size > 0]
+def _with_records(paths: list[str]) -> list[str]:
+    """Keep only JSONL files that contain at least one non-whitespace byte.
+
+    read_json_auto cannot infer the contract columns from a file with no records — whether
+    zero-byte or blank-lines-only — which would otherwise fail an event-only run with
+    'Referenced column ... not found'. Reads minimally: stops at the first non-whitespace
+    byte, so a valid file costs ~one read.
+    """
+    kept: list[str] = []
+    for p in paths:
+        with open(p, "rb") as f:
+            if any(chunk.strip() for chunk in iter(lambda f=f: f.read(65536), b"")):
+                kept.append(p)
+    return kept
 
 
 def _attach_jsonl(con: duckdb.DuckDBPyConnection, source: str) -> None:
     events_glob, postings_glob = _resolve_globs(source)
 
-    event_files = _nonempty(_glob.glob(events_glob, recursive=True))
+    event_files = _with_records(_glob.glob(events_glob, recursive=True))
     if not event_files:
         raise FileNotFoundError(
             f"No controllog events found for source {source!r} "
@@ -133,7 +143,7 @@ def _attach_jsonl(con: duckdb.DuckDBPyConnection, source: str) -> None:
         "ORDER BY ingest_time DESC) = 1"
     )
 
-    posting_files = _nonempty(_glob.glob(postings_glob, recursive=True))
+    posting_files = _with_records(_glob.glob(postings_glob, recursive=True))
     if posting_files:
         con.execute(
             f"CREATE TEMP VIEW postings AS SELECT {_POSTING_SELECT} "
