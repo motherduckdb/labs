@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { getStoredTokens } from '@/lib/motherduck-oauth';
+import { requireUserAccessToken } from '@/lib/require-auth';
 import { listDives, type DiveSort, type SortDir, type DiveSummary } from '@/lib/dives';
 import { isAuthError } from '@/lib/api-helpers';
 import { DiveControls } from './dive-controls';
@@ -22,8 +22,7 @@ export default async function Home({
 }: {
   searchParams: Promise<{ sort?: string; dir?: string; q?: string; scope?: string }>;
 }) {
-  const tokens = await getStoredTokens();
-  if (!tokens) redirect('/login');
+  const accessToken = await requireUserAccessToken('/');
 
   const sp = await searchParams;
   const sort: DiveSort = VALID_SORTS.includes(sp.sort as DiveSort) ? (sp.sort as DiveSort) : 'modified';
@@ -34,7 +33,7 @@ export default async function Home({
   let dives: DiveSummary[] = [];
   let error: string | null = null;
   try {
-    dives = await listDives(tokens.access_token, {
+    dives = await listDives(accessToken, {
       sort,
       dir,
       search: q,

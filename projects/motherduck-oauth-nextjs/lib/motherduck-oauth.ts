@@ -80,6 +80,12 @@ export async function getStoredTokens(): Promise<StoredTokens | null> {
     return null;
   }
 
+  // Reject a cookie that doesn't carry a usable access token, so callers can
+  // never end up treating a malformed cookie as an authenticated session.
+  if (typeof tokens.access_token !== 'string' || tokens.access_token.length === 0) {
+    return null;
+  }
+
   // Check if token is expired (with 60s buffer).
   // If expires_at is missing (legacy cookie), attempt a refresh if we have a refresh_token,
   // since we can't know if the access token is still valid.
@@ -113,6 +119,46 @@ export async function getStoredTokens(): Promise<StoredTokens | null> {
   }
 
   return tokens;
+}
+
+export type TokenStatus =
+  | { status: 'valid'; accessToken: string }
+  | { status: 'refreshable' }
+  | { status: 'none' };
+
+/**
+ * Inspect the stored tokens WITHOUT attempting a refresh or writing cookies.
+ * Safe to call from Server Components (where cookie writes throw).
+ *
+ * - `valid`       — a non-expired access token is present; use it.
+ * - `refreshable` — the access token is expired but a refresh token exists;
+ *                   the caller should route through the refresh Route Handler
+ *                   (which CAN write the refreshed cookie) before proceeding.
+ * - `none`        — no usable session; the caller should send the user to login.
+ */
+export async function readTokenStatus(): Promise<TokenStatus> {
+  const cookieStore = await cookies();
+  const raw = cookieStore.get(TOKEN_COOKIE)?.value;
+  if (!raw) return { status: 'none' };
+
+  let tokens: StoredTokens;
+  try {
+    tokens = JSON.parse(raw);
+  } catch {
+    return { status: 'none' };
+  }
+  if (typeof tokens.access_token !== 'string' || tokens.access_token.length === 0) {
+    return { status: 'none' };
+  }
+
+  const isExpired = tokens.expires_at
+    ? Date.now() / 1000 > tokens.expires_at - 60
+    : false;
+
+  if (!isExpired) {
+    return { status: 'valid', accessToken: tokens.access_token };
+  }
+  return tokens.refresh_token ? { status: 'refreshable' } : { status: 'none' };
 }
 
 async function getStoredClient(): Promise<OAuthClientInformationFull | null> {

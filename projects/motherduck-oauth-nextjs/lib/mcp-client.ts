@@ -6,22 +6,20 @@ import { getMotherDuckMcpUrl } from './motherduck-env';
 /**
  * Create an MCP client authenticated as a specific user.
  *
- * Pass the user's OAuth access token (from `getStoredTokens`) so the MCP
- * call runs as that user — they see their own databases, dives, and
- * `CURRENT_USER`. Falls back to a `MOTHERDUCK_TOKEN` env var for local
- * dev / service-account use.
+ * The user's OAuth access token is REQUIRED — every MCP call in this app
+ * runs as the signed-in user. There is intentionally no service-account /
+ * env-var fallback: a request without a valid user token must fail rather
+ * than silently run under broader credentials.
  */
 export async function createMCPClient(
-  userToken?: string,
-  mcpUrlOverride?: string,
+  userToken: string,
   requestOptions?: RequestOptions,
 ): Promise<Client> {
-  const url = mcpUrlOverride || getMotherDuckMcpUrl();
-  const token = userToken || process.env.MOTHERDUCK_TOKEN;
-
-  if (!token) {
-    throw new Error('No MotherDuck token available.');
+  if (!userToken) {
+    throw new Error('createMCPClient requires a user access token');
   }
+
+  const url = getMotherDuckMcpUrl();
 
   const client = new Client({
     name: 'motherduck-oauth-nextjs',
@@ -31,7 +29,7 @@ export async function createMCPClient(
   const transport = new StreamableHTTPClientTransport(new URL(url), {
     requestInit: {
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${userToken}`,
       },
     },
   });

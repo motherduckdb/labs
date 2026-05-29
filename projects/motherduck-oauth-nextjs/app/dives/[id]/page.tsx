@@ -1,6 +1,6 @@
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
-import { getStoredTokens } from '@/lib/motherduck-oauth';
+import { requireUserAccessToken } from '@/lib/require-auth';
+import { DiveFrame } from './dive-frame';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,10 +11,9 @@ export default async function DivePage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ title?: string }>;
 }) {
-  const tokens = await getStoredTokens();
-  if (!tokens) redirect('/login');
-
   const { id } = await params;
+  await requireUserAccessToken(`/dives/${id}`);
+
   const sp = await searchParams;
   const title = typeof sp.title === 'string' && sp.title.length > 0 ? sp.title : 'Dive';
 
@@ -41,15 +40,7 @@ export default async function DivePage({
       {/* The dive renders in a same-origin iframe served by /api/dives/view,
           which runs the dive's queries in-browser via the MotherDuck WASM
           client (scoped to the signed-in user's short-lived token). */}
-      <div className="border-2 border-foreground rounded-sm shadow-[3px_3px_0_#171717] overflow-hidden bg-white">
-        <iframe
-          src={`/api/dives/view?id=${encodeURIComponent(id)}`}
-          title={title}
-          className="block w-full"
-          style={{ height: '760px', border: 0 }}
-          sandbox="allow-scripts allow-same-origin"
-        />
-      </div>
+      <DiveFrame src={`/api/dives/view?id=${encodeURIComponent(id)}`} title={title} />
     </main>
   );
 }
