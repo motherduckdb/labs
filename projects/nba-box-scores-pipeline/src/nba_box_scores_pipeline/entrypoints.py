@@ -48,10 +48,13 @@ def _run(config: PipelineConfig, *, box_scores_table: str, label: str) -> None:
     )
 
     con = connect(DATABASE)
-    ensure_schema(con, db=DATABASE)
-    if box_scores_table != "box_scores":
-        ensure_box_scores_table(con, box_scores_table)
-        log.info("ensured sandbox table main.%s exists", box_scores_table)
+    if config.dry_run:
+        log.info("dry_run: skipping schema bootstrap (no mutations)")
+    else:
+        ensure_schema(con, db=DATABASE)
+        if box_scores_table != "box_scores":
+            ensure_box_scores_table(con, box_scores_table)
+            log.info("ensured sandbox table main.%s exists", box_scores_table)
 
     loader = Loader(con, box_scores_table=box_scores_table)
     rate_limiter = RateLimiter(
