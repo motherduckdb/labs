@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { verifyCapability } from '@/lib/dive-query-capability';
 import { runDiveQuery } from '@/lib/motherduck-sql';
+import { isReadOnlySql } from '@/lib/sql-guard';
 import { isAuthError } from '@/lib/api-helpers';
 
 /**
@@ -24,15 +25,8 @@ import { isAuthError } from '@/lib/api-helpers';
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' };
 
-/** Allow only single read-only statements (no stacking, no mutations). */
-function isReadOnlySql(sql: string): boolean {
-  const s = sql.trim().replace(/;+\s*$/, '');
-  if (s.includes(';')) return false; // no statement stacking
-  return /^(with|select|from|pragma|describe|desc|show|summarize|explain|values|table)\b/i.test(s);
-}
-
 export async function POST(req: NextRequest) {
-  let body: { capability?: unknown; sql?: unknown; requiredDatabases?: unknown };
+  let body: { capability?: unknown; sql?: unknown; diveId?: unknown };
   try {
     body = JSON.parse(await req.text());
   } catch {
@@ -41,7 +35,7 @@ export async function POST(req: NextRequest) {
 
   const capability = typeof body.capability === 'string' ? body.capability : '';
   const sql = typeof body.sql === 'string' ? body.sql : '';
-  const requiredDatabases = Array.isArray(body.requiredDatabases) ? body.requiredDatabases : [];
+  const diveId = typeof body.diveId === 'string' ? body.diveId : '';
 
   if (!capability || !sql) {
     return Response.json({ error: 'capability and sql are required' }, { status: 400, headers: CORS });
@@ -52,12 +46,21 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: 'invalid or expired capability' }, { status: 401, headers: CORS });
   }
 
+  // Bind the capability to its dive: it can only be used for the dive it was
+  // minted for.
+  if (diveId && diveId !== verified.diveId) {
+    return Response.json({ error: 'capability/dive mismatch' }, { status: 401, headers: CORS });
+  }
+
   if (!isReadOnlySql(sql)) {
     return Response.json({ error: 'only read-only queries are allowed' }, { status: 400, headers: CORS });
   }
 
   try {
-    const rows = await runDiveQuery(verified.accessToken, sql, requiredDatabases);
+    // requiredDatabases come from the capability (server-parsed from the dive
+    // source), NOT from the iframe — a capability holder can't ATTACH arbitrary
+    // shares.
+    const rows = await runDiveQuery(verified.accessToken, sql, verified.requiredDatabases);
     return Response.json({ rows }, { headers: CORS });
   } catch (error) {
     if (isAuthError(error)) {

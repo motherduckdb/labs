@@ -14,7 +14,7 @@ import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:
  * grants at most brief read-only proxy access.
  */
 
-const TTL_MS = 30 * 60 * 1000; // 30 minutes
+const TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 function key(): Buffer {
   const secret = process.env.DIVE_QUERY_SECRET;
@@ -24,17 +24,37 @@ function key(): Buffer {
   return createHash('sha256').update(secret).digest(); // fixed 32 bytes
 }
 
-interface CapabilityPayload {
+export interface RequiredDatabase {
+  path: string;
+  alias: string;
+}
+
+export interface CapabilityClaims {
   accessToken: string;
   diveId: string;
+  /** The dive's REQUIRED_DATABASES, parsed server-side — NOT iframe-supplied. */
+  requiredDatabases: RequiredDatabase[];
+}
+
+interface CapabilityPayload extends CapabilityClaims {
   exp: number;
 }
 
-/** Encrypt {accessToken, diveId, exp} into a base64url capability token. */
-export function mintCapability(accessToken: string, diveId: string): string {
+/**
+ * Encrypt the user's token + dive id + the dive's server-parsed required
+ * databases into a base64url capability. Binding requiredDatabases here (rather
+ * than trusting the iframe) means a capability holder can't ATTACH arbitrary
+ * shares.
+ */
+export function mintCapability(
+  accessToken: string,
+  diveId: string,
+  requiredDatabases: RequiredDatabase[],
+): string {
   const payload: CapabilityPayload = {
     accessToken,
     diveId,
+    requiredDatabases,
     exp: Date.now() + TTL_MS,
   };
   const iv = randomBytes(12);
@@ -49,7 +69,7 @@ export function mintCapability(accessToken: string, diveId: string): string {
 }
 
 /** Decrypt + validate a capability. Returns null if invalid/tampered/expired. */
-export function verifyCapability(token: string): { accessToken: string; diveId: string } | null {
+export function verifyCapability(token: string): CapabilityClaims | null {
   try {
     const buf = Buffer.from(token, 'base64url');
     if (buf.length < 12 + 16 + 1) return null;
@@ -69,7 +89,13 @@ export function verifyCapability(token: string): { accessToken: string; diveId: 
       return null;
     }
     if (Date.now() > payload.exp) return null;
-    return { accessToken: payload.accessToken, diveId: payload.diveId };
+    const requiredDatabases = Array.isArray(payload.requiredDatabases)
+      ? payload.requiredDatabases.filter(
+          (d): d is RequiredDatabase =>
+            !!d && typeof d.path === 'string' && typeof d.alias === 'string',
+        )
+      : [];
+    return { accessToken: payload.accessToken, diveId: payload.diveId, requiredDatabases };
   } catch {
     return null;
   }

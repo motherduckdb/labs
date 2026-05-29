@@ -209,15 +209,14 @@ export function buildDiveViewerHtml(params: {
   capability: string;
   appOrigin: string;
 }): string {
-  const { source, title, capability, appOrigin } = params;
+  const { source, title, diveId, capability, appOrigin } = params;
 
   const sourceBase64 = Buffer.from(source, 'utf-8').toString('base64');
   const needsLucide = source.includes('lucide-react');
 
-  const requiredDatabases = extractRequiredDatabases(source)
-    .filter((db) => typeof db.path === 'string' && typeof db.alias === 'string')
-    .map((db) => ({ path: db.path!, alias: db.alias! }));
-  const requiredDatabasesJson = JSON.stringify(requiredDatabases).replace(/</g, '\\u003c');
+  // requiredDatabases are NOT sent from here — they're bound into the
+  // capability server-side (see the view route) so the proxy ATTACHes exactly
+  // the dive's declared shares, not iframe-supplied ones.
   const queryEndpoint = `${appOrigin}/api/dives/query`;
   const csp = buildDiveViewerCsp(appOrigin);
 
@@ -266,7 +265,7 @@ export function buildDiveViewerHtml(params: {
   <script>
     var __CAPABILITY = ${JSON.stringify(capability)};
     var __QUERY_ENDPOINT = ${JSON.stringify(queryEndpoint)};
-    var __REQUIRED_DATABASES = ${requiredDatabasesJson};
+    var __DIVE_ID = ${JSON.stringify(diveId)};
     var __NEEDS_LUCIDE = ${needsLucide};
 
     function __surfaceError(label, err, extra) {
@@ -306,7 +305,7 @@ export function buildDiveViewerHtml(params: {
       safeEvaluateQuery: function(sql) {
         return fetch(__QUERY_ENDPOINT, {
           method: 'POST',
-          body: JSON.stringify({ capability: __CAPABILITY, sql: sql, requiredDatabases: __REQUIRED_DATABASES })
+          body: JSON.stringify({ capability: __CAPABILITY, sql: sql, diveId: __DIVE_ID })
         }).then(function(res) {
           if (!res.ok) {
             return res.json().catch(function() { return {}; }).then(function(b) {

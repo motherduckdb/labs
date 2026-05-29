@@ -1,7 +1,7 @@
 import { getStoredTokens } from '@/lib/motherduck-oauth';
 import { mintCapability } from '@/lib/dive-query-capability';
 import { createMCPClient, executeToolWithStatus } from '@/lib/mcp-client';
-import { buildDiveViewerHtml, buildDiveViewerCsp } from '@/lib/dive-viewer';
+import { buildDiveViewerHtml, buildDiveViewerCsp, extractRequiredDatabases } from '@/lib/dive-viewer';
 import { NextRequest } from 'next/server';
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -43,7 +43,13 @@ export async function GET(request: NextRequest) {
     }
 
     const appOrigin = request.nextUrl.origin;
-    const capability = mintCapability(tokens.access_token, diveId);
+    // Parse the dive's required shares server-side and bind them into the
+    // capability, so the proxy ATTACHes exactly these (not iframe-supplied ones).
+    const requiredDatabases = extractRequiredDatabases(parsed.source)
+      .filter((d): d is { path: string; alias: string } =>
+        typeof d.path === 'string' && typeof d.alias === 'string')
+      .map((d) => ({ path: d.path, alias: d.alias }));
+    const capability = mintCapability(tokens.access_token, diveId, requiredDatabases);
     const html = buildDiveViewerHtml({
       source: parsed.source,
       title: parsed.title || 'Dive',
