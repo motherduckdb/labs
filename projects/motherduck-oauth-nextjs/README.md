@@ -50,15 +50,40 @@ server-side proxy.
 | Dive viewer (renderer) | `lib/dive-viewer.ts`, `app/dives/[id]/page.tsx`, `app/dives/[id]/dive-frame.tsx` |
 | Query proxy + capability | `app/api/dives/view/route.ts`, `app/api/dives/query/route.ts`, `lib/dive-query-capability.ts` |
 
-## Why a query proxy (and not the hosted embed flow)
+## This sample is generic by design — which forces the architecture
 
-MotherDuck's hosted embed (`embed-motherduck.com` + `/v1/dives/{id}/embed-session`)
-is the documented path, but it **requires a service-account token**, which
-belongs to one org — so it can't power a *generic, across-org* app where any
-MotherDuck user signs in and sees their own dives. The query proxy keeps each
-user's own token server-side and works across orgs, at the cost of rendering the
-Dive with our own (faithful) port of the dive SDK rather than MotherDuck's
-hosted renderer.
+This app is built to be **generic / multi-tenant**: *any* MotherDuck user, from
+*any* organization, signs in with their own account and sees their own Dives.
+That single requirement is what drives the query-proxy + capability design,
+because MotherDuck's normal embedding path can't do it:
+
+- **MotherDuck's documented embed flow** (`POST /v1/dives/{id}/embed-session` →
+  opaque session → iframe at `https://embed-motherduck.com`) **requires a
+  service-account (Admin) token**, and a service account belongs to **one
+  organization**. There's no delegated/per-user embed-session, and you can't
+  provision a service account from a signed-in user's session.
+- So a generic app **can't** use it: there's no single service account that
+  spans every signed-in user's org. Instead we keep each user's own token
+  **server-side**, run their Dive's SQL through a read-only proxy, and render
+  with our own (faithful) port of the dive SDK. Trade-off: we maintain that
+  renderer rather than using MotherDuck's hosted one.
+
+### If you're deploying for a *single* organization, don't copy this — use the embed flow
+
+For a single-org deployment the simpler, more robust choice is MotherDuck's
+**documented embed flow** ([Embedding Dives](https://motherduck.com/docs/key-tasks/ai-and-motherduck/dives/embedding-dives/)):
+
+1. Create a **service account (Admin)** in your org and give your backend its token.
+2. Server-side, call `POST /v1/dives/{id}/embed-session` (passing `username =`
+   the signed-in user so data scopes to them) to get an opaque `session`.
+3. Render it in an iframe pointed at **MotherDuck's own domain**,
+   `https://embed-motherduck.com/sandbox/#session=<session>` — i.e. the renderer
+   runs on a **different origin that MotherDuck hosts**, not yours.
+
+That gets you **MotherDuck's exact renderer** and **cross-origin isolation for
+free** (the token never leaves your backend; the Dive runs on MotherDuck's
+domain), with none of this repo's proxy/capability machinery. You only need the
+machinery here if you require the generic, across-org behavior.
 
 ## Run it
 
