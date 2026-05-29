@@ -259,17 +259,3 @@ class TestViewsRebind:
             "SELECT DISTINCT team_abbreviation FROM main.team_stats ORDER BY team_abbreviation"
         ).fetchall()
         assert [t[0] for t in teams] == ["BOS", "NYK"]
-
-
-class TestViewsRebind:
-    """Cloned databases inherit view DDL pointing at the source DB; ensure_views fixes that."""
-
-    def test_views_compile_against_active_db(self, con, regulation_rows, loader):
-        loader.load_box_scores(regulation_rows)
-        # In-memory DuckDB names the database "memory"
-        ensure_views(con, db="memory")
-        # team_stats should aggregate the box_scores we loaded
-        teams = con.execute(
-            "SELECT DISTINCT team_abbreviation FROM main.team_stats ORDER BY team_abbreviation"
-        ).fetchall()
-        assert [t[0] for t in teams] == ["BOS", "NYK"]
