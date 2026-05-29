@@ -4,8 +4,8 @@ import {
   ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { Loader2 } from "lucide-react";
-import { DB, Filters, seasonTypeWhere } from "../lib/query";
-import { N, seasonLabel, COLORS } from "../lib/format";
+import { DB, Filters, seasonTypeWhere, playerEntityIds } from "../lib/query";
+import { N, sqlStr, seasonLabel, COLORS } from "../lib/format";
 
 function PointTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
@@ -23,7 +23,16 @@ function PointTooltip({ active, payload }: any) {
 export default function TrendsScatter({ filters }: { filters: Filters }) {
   const [minGames, setMinGames] = useState(20);
 
-  // Exclude the -1 (sub-15-min) GQ sentinel; group by stable entity_id, latest name.
+  // Apply the same shared team/player filters as the leaderboard so the tab
+  // agrees with the filter bar. team isn't on the game_quality view → join
+  // box_scores. Exclude the -1 (sub-15-min) GQ sentinel; group by stable
+  // entity_id with the latest name.
+  const teamJoin = filters.team
+    ? `JOIN ${DB}."box_scores" bt ON bt.game_id = gq.game_id AND bt.entity_id = gq.entity_id
+        AND bt.period = 'FullGame' AND bt.team_abbreviation = ${sqlStr(filters.team)}`
+    : "";
+  const playerCond = filters.player ? `AND gq.entity_id IN ${playerEntityIds(filters.player)}` : "";
+
   const q = useSQLQuery(`
     SELECT gq.entity_id,
            arg_max(gq.player_name, s.game_date) AS player_name,
@@ -32,7 +41,8 @@ export default function TrendsScatter({ filters }: { filters: Filters }) {
            AVG(gq.game_quality) AS avg_gq
     FROM ${DB}."game_quality" gq
     JOIN ${DB}."schedule" s ON gq.game_id = s.game_id
-    WHERE ${seasonTypeWhere(filters)} AND gq.game_quality >= 0
+    ${teamJoin}
+    WHERE ${seasonTypeWhere(filters)} AND gq.game_quality >= 0 ${playerCond}
     GROUP BY gq.entity_id
     HAVING COUNT(*) >= ${Number(minGames)}
     LIMIT 800

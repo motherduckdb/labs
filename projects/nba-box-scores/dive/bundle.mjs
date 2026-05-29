@@ -2,16 +2,16 @@
 // save_dive accepts. Inlines our own ./components and ./lib imports; leaves the
 // runtime-provided libraries external (the dive runtime supplies them).
 //
-//   node bundle.mjs
+//   npm install && npm run build   (or: node bundle.mjs)
 //
-// Output: ../dist/dive.jsx  (the string to pass to save_dive)
+// Output: dist/dive.jsx  (the string to pass to save_dive / MD_CREATE_DIVE)
 import { build } from "esbuild";
 import { readFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const outfile = path.resolve(here, "../dist/dive.jsx");
+const outfile = path.resolve(here, "dist/dive.jsx");
 mkdirSync(path.dirname(outfile), { recursive: true });
 
 // These are externalized by the dive runtime — must NOT be inlined.

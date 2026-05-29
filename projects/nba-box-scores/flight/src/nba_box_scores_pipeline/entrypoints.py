@@ -103,10 +103,9 @@ def _run(config: PipelineConfig, *, suffix: str, label: str) -> None:
     )
 
 
-# Default table-set suffix per command. Nightly defaults to the `_new`
-# sandbox set during the validation phase (diff box_scores_new vs the frozen
-# box_scores baseline, then flip to "" to write production). Backfill targets
-# production directly. Either can be overridden with NBA_INGEST_TABLE_SUFFIX
+# Default table-set suffix per command. Both nightly and backfill default to
+# the production table set (empty suffix). Set NBA_INGEST_TABLE_SUFFIX to a
+# value like "_new" to write an isolated sandbox set for validation/diffing
 # ("" = production).
 def _suffix(default: str) -> str:
     return os.environ.get("NBA_INGEST_TABLE_SUFFIX", default)
@@ -115,12 +114,11 @@ def _suffix(default: str) -> str:
 def run_nightly() -> None:
     """Current-season ingest (Regular Season + Playoffs).
 
-    Writes the `_new` sandbox table set by default. Set
-    NBA_INGEST_TABLE_SUFFIX="" to write production once parity against the
-    cloned baseline is confirmed.
+    Writes the production table set by default. Set NBA_INGEST_TABLE_SUFFIX
+    (e.g. "_new") to write an isolated sandbox set for validation instead.
     """
     config = build_config_from_env()
-    _run(config, suffix=_suffix("_new"), label="nba_nightly")
+    _run(config, suffix=_suffix(""), label="nba_nightly")
 
 
 def run_backfill() -> None:

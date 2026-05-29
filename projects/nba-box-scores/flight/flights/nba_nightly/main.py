@@ -10,8 +10,7 @@ what lets us skip a deploy.py / CI step while the Flights SQL surface
 (MD_CREATE_FLIGHT etc.) is still rolling out.
 
 Env vars consumed here:
-  NBA_FLIGHT_REPO_BRANCH   branch to clone (default: nba-migration; flip
-                           to main once the migration branch merges)
+  NBA_FLIGHT_REPO_BRANCH   branch to clone (default: main)
 All other NBA_INGEST_* / MOTHERDUCK_TOKEN vars pass through to the
 subprocess and are read by entrypoints.run_nightly().
 """
@@ -25,9 +24,9 @@ import sys
 from pathlib import Path
 
 REPO_URL = "https://github.com/motherduckdb/labs"
-DEFAULT_BRANCH = "nba-migration"
+DEFAULT_BRANCH = "main"
 REPO_DIR = Path("/app/labs")
-PROJECT_SUBDIR = REPO_DIR / "projects" / "nba-box-scores-pipeline"
+PROJECT_SUBDIR = REPO_DIR / "projects" / "nba-box-scores" / "flight"
 ENTRYPOINT_COMMAND = "nightly"
 
 

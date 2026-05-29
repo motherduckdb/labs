@@ -5,7 +5,7 @@ rationale): clones the labs repo at a branch, `uv sync`s the pipeline
 package, and runs the backfill entrypoint from the synced venv.
 
 Env vars consumed here:
-  NBA_FLIGHT_REPO_BRANCH   branch to clone (default: nba-migration)
+  NBA_FLIGHT_REPO_BRANCH   branch to clone (default: main)
 Required by the entrypoint (pass through to the subprocess):
   NBA_BACKFILL_START_SEASON / NBA_BACKFILL_END_SEASON
 Plus the usual NBA_INGEST_* / MOTHERDUCK_TOKEN.
@@ -20,9 +20,9 @@ import sys
 from pathlib import Path
 
 REPO_URL = "https://github.com/motherduckdb/labs"
-DEFAULT_BRANCH = "nba-migration"
+DEFAULT_BRANCH = "main"
 REPO_DIR = Path("/app/labs")
-PROJECT_SUBDIR = REPO_DIR / "projects" / "nba-box-scores-pipeline"
+PROJECT_SUBDIR = REPO_DIR / "projects" / "nba-box-scores" / "flight"
 ENTRYPOINT_COMMAND = "backfill"
 
 
