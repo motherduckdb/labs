@@ -237,12 +237,17 @@ FROM cte_final;
 """
 
 
-TABLE_DDL = (
-    CREATE_SCHEDULE,
-    CREATE_BOX_SCORES,
-    CREATE_INGESTION_LOG,
-    CREATE_RAW_GAME_DATA_PBPSTATS,
-)
+# The four operational tables, keyed by their canonical name. Suffixed
+# variants (e.g. box_scores_new / ingestion_log_new) form an isolated
+# "table set" for sandbox/validation runs — see ensure_tables_suffixed.
+TABLE_DDL_BY_NAME = {
+    "schedule": CREATE_SCHEDULE,
+    "box_scores": CREATE_BOX_SCORES,
+    "ingestion_log": CREATE_INGESTION_LOG,
+    "raw_game_data_pbpstats": CREATE_RAW_GAME_DATA_PBPSTATS,
+}
+
+TABLE_DDL = tuple(TABLE_DDL_BY_NAME.values())
 
 VIEW_DDL = (
     CREATE_TEAM_STATS_VIEW,
@@ -252,20 +257,29 @@ VIEW_DDL = (
 
 
 def ensure_tables(con: duckdb.DuckDBPyConnection) -> None:
-    """Idempotent: creates any missing tables, leaves existing ones alone."""
+    """Idempotent: creates any missing canonical tables, leaves existing ones alone."""
     for ddl in TABLE_DDL:
         con.execute(ddl)
 
 
-def ensure_box_scores_table(con: duckdb.DuckDBPyConnection, table: str) -> None:
-    """Create a box_scores-shaped table under an alternate name.
+def ensure_tables_suffixed(con: duckdb.DuckDBPyConnection, suffix: str) -> None:
+    """Create the full operational table set under a name suffix.
 
-    Used for the validation sandbox (default `box_scores_new`). Reuses the
-    canonical CREATE_BOX_SCORES DDL so the sandbox gets the same
-    (game_id, entity_id, period) PK — without the PK the loader's
-    INSERT OR REPLACE has no conflict target.
+    A sandbox run (suffix e.g. ``_new``) must isolate ALL of its operational
+    state — not just box_scores. If a sandbox run wrote box scores to
+    box_scores_new but marked success in the canonical ingestion_log, a later
+    production run would skip-on-retry and never write those games to
+    box_scores. So box_scores, schedule, ingestion_log, and raw_game_data_pbpstats
+    are all suffixed together. Empty suffix is a no-op alias for ensure_tables.
+
+    Each table reuses its canonical DDL (so suffixed tables keep the same PKs,
+    which is what gives INSERT OR REPLACE its conflict target).
     """
-    con.execute(CREATE_BOX_SCORES.replace("main.box_scores", f"main.{table}", 1))
+    if not suffix:
+        ensure_tables(con)
+        return
+    for name, ddl in TABLE_DDL_BY_NAME.items():
+        con.execute(ddl.replace(f"main.{name}", f"main.{name}{suffix}", 1))
 
 
 def ensure_views(con: duckdb.DuckDBPyConnection, *, db: str) -> None:

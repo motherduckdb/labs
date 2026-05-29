@@ -26,12 +26,15 @@ PROJECT_SUBDIR = REPO_DIR / "projects" / "nba-box-scores-pipeline"
 ENTRYPOINT_COMMAND = "backfill"
 
 
-def sh(cmd, cwd=None, env=None, check=True):
-    print("$ " + cmd, flush=True)
+def sh(args, cwd=None, env=None, check=True):
+    # argv list, never shell=True — env-derived values (e.g. the branch) must
+    # not be interpolated into a shell string in a process that holds the
+    # MotherDuck token.
+    print("$ " + " ".join(args), flush=True)
     merged = dict(os.environ)
     merged.update(env or {})
     r = subprocess.run(
-        cmd, shell=True, cwd=str(cwd) if cwd else None,
+        args, cwd=str(cwd) if cwd else None,
         env=merged, capture_output=True, text=True,
     )
     if r.stdout:
@@ -39,15 +42,15 @@ def sh(cmd, cwd=None, env=None, check=True):
     if r.stderr:
         print("STDERR:", r.stderr, flush=True)
     if check and r.returncode != 0:
-        raise RuntimeError("command failed rc=" + str(r.returncode) + ": " + cmd)
+        raise RuntimeError("command failed rc=" + str(r.returncode) + ": " + " ".join(args))
     return r
 
 
 def ensure_git():
     if shutil.which("git"):
         return
-    sh("apt-get update -y", check=False)
-    sh("apt-get install -y --no-install-recommends git ca-certificates")
+    sh(["apt-get", "update", "-y"], check=False)
+    sh(["apt-get", "install", "-y", "--no-install-recommends", "git", "ca-certificates"])
 
 
 def main():
@@ -57,12 +60,14 @@ def main():
     ensure_git()
     if REPO_DIR.exists():
         shutil.rmtree(REPO_DIR)
-    sh(f"git clone --depth 1 --branch {branch} {REPO_URL} {REPO_DIR}")
-    sh("git log -1 --oneline", cwd=REPO_DIR)
+    sh(["git", "clone", "--depth", "1", "--branch", branch, REPO_URL, str(REPO_DIR)])
+    sh(["git", "log", "-1", "--oneline"], cwd=REPO_DIR)
 
-    sh("uv sync", cwd=PROJECT_SUBDIR, env={"UV_LINK_MODE": "copy"})
+    # --locked: fail rather than silently re-resolve if uv.lock is stale.
+    # --no-dev: runtime doesn't need pytest/pydantic.
+    sh(["uv", "sync", "--locked", "--no-dev"], cwd=PROJECT_SUBDIR, env={"UV_LINK_MODE": "copy"})
     sh(
-        f".venv/bin/python -m nba_box_scores_pipeline.entrypoints {ENTRYPOINT_COMMAND}",
+        [".venv/bin/python", "-m", "nba_box_scores_pipeline.entrypoints", ENTRYPOINT_COMMAND],
         cwd=PROJECT_SUBDIR,
     )
 

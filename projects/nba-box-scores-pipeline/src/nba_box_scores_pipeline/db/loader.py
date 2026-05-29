@@ -146,7 +146,19 @@ class Loader:
 
     # ── Reads (skip-on-retry) ───────────────────────────────────────
 
+    def _table_exists(self, table: str) -> bool:
+        row = self._con.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = ? LIMIT 1",
+            [table],
+        ).fetchone()
+        return row is not None
+
     def is_game_ingested(self, game_id: str) -> bool:
+        # A missing log table means nothing has been ingested yet (e.g. a
+        # dry run against a not-yet-created sandbox set). Treat as not-done.
+        if not self._table_exists(self._ingestion_log):
+            return False
         (cnt,) = self._con.execute(
             f"SELECT COUNT(*) FROM main.{self._ingestion_log} "
             "WHERE game_id = ? AND ingestion_status = 'success'",
@@ -155,6 +167,8 @@ class Loader:
         return cnt > 0
 
     def get_ingested_game_ids(self, season_year: int, season_type: str) -> set[str]:
+        if not self._table_exists(self._ingestion_log):
+            return set()
         rows = self._con.execute(
             f"SELECT game_id FROM main.{self._ingestion_log} "
             "WHERE season_year = ? AND season_type = ? AND ingestion_status = 'success'",
@@ -163,6 +177,8 @@ class Loader:
         return {r[0] for r in rows}
 
     def get_raw_game_ids(self, season_year: int, season_type: str) -> set[str]:
+        if not self._table_exists(self._raw_pbpstats):
+            return set()
         rows = self._con.execute(
             f"SELECT game_id FROM main.{self._raw_pbpstats} "
             "WHERE season_year = ? AND season_type = ?",

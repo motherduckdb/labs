@@ -30,7 +30,7 @@ from .config import (
 )
 from .db.connection import connect
 from .db.loader import Loader
-from .db.schema import ensure_box_scores_table, ensure_schema
+from .db.schema import ensure_tables_suffixed, ensure_views
 from .rate_limiter import RateLimiter
 from .workers.season_worker import process_season
 
@@ -38,25 +38,45 @@ from .workers.season_worker import process_season
 DATABASE = "nba_box_scores_v3"
 
 
-def _run(config: PipelineConfig, *, box_scores_table: str, label: str) -> None:
+def _loader_for(con, suffix: str) -> Loader:
+    """Build a Loader over a full table set sharing one name suffix.
+
+    The whole operational set is suffixed together (not just box_scores) so a
+    sandbox run's skip/log state stays isolated from production — see
+    schema.ensure_tables_suffixed for why this matters.
+    """
+    return Loader(
+        con,
+        box_scores_table=f"box_scores{suffix}",
+        schedule_table=f"schedule{suffix}",
+        ingestion_log_table=f"ingestion_log{suffix}",
+        raw_pbpstats_table=f"raw_game_data_pbpstats{suffix}",
+    )
+
+
+def _run(config: PipelineConfig, *, suffix: str, label: str) -> None:
     log = logging.getLogger(label)
+    table_set = "production" if not suffix else f"sandbox (suffix '{suffix}')"
     log.info(
-        "starting %s database=%s box_scores_table=%s seasons=%s force=%s fill_raw=%s dry_run=%s",
-        label, DATABASE, box_scores_table,
+        "starting %s database=%s table_set=%s seasons=%s force=%s fill_raw=%s dry_run=%s",
+        label, DATABASE, table_set,
         [(s.year, s.type) for s in config.seasons],
         config.force, config.fill_raw, config.dry_run,
     )
 
     con = connect(DATABASE)
     if config.dry_run:
-        log.info("dry_run: skipping schema bootstrap (no mutations)")
+        # No mutations at all. The loader's skip-reads tolerate missing tables,
+        # so the plan is reported even if the (sandbox) table set isn't created.
+        log.info("dry_run: no schema changes, no writes")
     else:
-        ensure_schema(con, db=DATABASE)
-        if box_scores_table != "box_scores":
-            ensure_box_scores_table(con, box_scores_table)
-            log.info("ensured sandbox table main.%s exists", box_scores_table)
+        ensure_tables_suffixed(con, suffix)
+        # Repoint the prod-facing views only on a real production run — they
+        # read the canonical box_scores, and a clone leaves them aimed at v2.
+        if not suffix:
+            ensure_views(con, db=DATABASE)
 
-    loader = Loader(con, box_scores_table=box_scores_table)
+    loader = _loader_for(con, suffix)
     rate_limiter = RateLimiter(
         base_delay_ms=config.delay_ms,
         min_delay_ms=config.min_delay_ms,
@@ -83,24 +103,31 @@ def _run(config: PipelineConfig, *, box_scores_table: str, label: str) -> None:
     )
 
 
+# Default table-set suffix per command. Nightly defaults to the `_new`
+# sandbox set during the validation phase (diff box_scores_new vs the frozen
+# box_scores baseline, then flip to "" to write production). Backfill targets
+# production directly. Either can be overridden with NBA_INGEST_TABLE_SUFFIX
+# ("" = production).
+def _suffix(default: str) -> str:
+    return os.environ.get("NBA_INGEST_TABLE_SUFFIX", default)
+
+
 def run_nightly() -> None:
     """Current-season ingest (Regular Season + Playoffs).
 
-    Defaults to writing the validation sandbox table `box_scores_new`;
-    set NBA_INGEST_BOX_SCORES_TABLE=box_scores to write production once
-    parity against the cloned baseline is confirmed.
+    Writes the `_new` sandbox table set by default. Set
+    NBA_INGEST_TABLE_SUFFIX="" to write production once parity against the
+    cloned baseline is confirmed.
     """
     config = build_config_from_env()
-    box_scores_table = os.environ.get("NBA_INGEST_BOX_SCORES_TABLE", "box_scores_new")
-    _run(config, box_scores_table=box_scores_table, label="nba_nightly")
+    _run(config, suffix=_suffix("_new"), label="nba_nightly")
 
 
 def run_backfill() -> None:
     """On-demand historical backfill across a season range.
 
     Requires NBA_BACKFILL_START_SEASON and NBA_BACKFILL_END_SEASON.
-    Defaults to writing the canonical `box_scores` table since backfills
-    are typically historical and target prod.
+    Targets the production table set by default.
     """
     start = os.environ.get("NBA_BACKFILL_START_SEASON")
     end = os.environ.get("NBA_BACKFILL_END_SEASON")
@@ -116,8 +143,7 @@ def run_backfill() -> None:
         for st in SEASON_TYPES
     )
     config = replace(build_config_from_env(), seasons=seasons)
-    box_scores_table = os.environ.get("NBA_INGEST_BOX_SCORES_TABLE", "box_scores")
-    _run(config, box_scores_table=box_scores_table, label="nba_backfill")
+    _run(config, suffix=_suffix(""), label="nba_backfill")
 
 
 _COMMANDS = {"nightly": run_nightly, "backfill": run_backfill}
