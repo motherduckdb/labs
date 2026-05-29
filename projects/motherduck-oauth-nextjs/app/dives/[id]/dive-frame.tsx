@@ -3,10 +3,12 @@
 import { useState } from 'react';
 
 /**
- * Renders the Dive viewer iframe with a loading overlay until the iframe's
- * document finishes loading. The viewer route (`/api/dives/view`) does
- * server-side work first (mint token, fetch source, build HTML), so without
- * this the iframe shows blank until that returns.
+ * Renders the MotherDuck Dive embed iframe (embed-motherduck.com) with a
+ * loading overlay until it finishes loading. `src` is the documented embed URL
+ * (`…/sandbox/#session=<session>`); the sandbox attributes are the documented
+ * `allow-scripts allow-same-origin` (same-origin here refers to
+ * embed-motherduck.com's own origin — cross-origin to this app, so it stays
+ * isolated from us).
  */
 export function DiveFrame({ src, title }: { src: string; title: string }) {
   const [loaded, setLoaded] = useState(false);
@@ -22,20 +24,13 @@ export function DiveFrame({ src, title }: { src: string; title: string }) {
           <span className="text-sm">Loading dive…</span>
         </div>
       )}
-      {/* Deliberately NO `allow-same-origin`: the iframe runs arbitrary Dive
-          source, so it gets an opaque origin. Combined with `allow-scripts`
-          that keeps the dive from reaching this app's origin — it can't read
-          the parent DOM or call our authenticated APIs with the user's
-          cookies (those requests become cross-site, so SameSite=Lax cookies
-          aren't sent and the CSRF guard holds). The viewer only needs to run
-          JS and talk to MotherDuck over the network. */}
       <iframe
         src={src}
         title={title}
         onLoad={() => setLoaded(true)}
         className="block w-full h-full"
         style={{ border: 0 }}
-        sandbox="allow-scripts"
+        sandbox="allow-scripts allow-same-origin"
       />
     </div>
   );
