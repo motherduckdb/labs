@@ -15,7 +15,7 @@ export function DiveFrame({ src, title }: { src: string; title: string }) {
   return (
     <div
       className="relative border-2 border-foreground rounded-sm shadow-[3px_3px_0_#171717] overflow-hidden bg-white"
-      style={{ height: '760px' }}
+      style={{ height: '82vh', minHeight: '640px' }}
     >
       {!loaded && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-white text-brutal-muted">

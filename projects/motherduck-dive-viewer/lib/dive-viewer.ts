@@ -238,7 +238,12 @@ export function buildDiveViewerHtml(params: {
   <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"><\/script>
   <script crossorigin="anonymous" src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"><\/script>
   <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"><\/script>
-  <script crossorigin="anonymous" src="https://unpkg.com/recharts@2.15.4/umd/Recharts.js"><\/script>
+  <!-- react-is is an external of the Recharts v3 UMD (it reads window.ReactIs);
+       must load before Recharts. -->
+  <script crossorigin="anonymous" src="https://unpkg.com/react-is@18.3.1/umd/react-is.production.min.js"><\/script>
+  <!-- Recharts v3 to match the version Dives are authored against (the
+       dive-preview harness pins ~3.7). v2 caused render mismatches. -->
+  <script crossorigin="anonymous" src="https://unpkg.com/recharts@3.7.0/umd/Recharts.js"><\/script>
 
   <!-- d3 (full v7 bundle: includes d3-geo/scale/shape/etc.). Some Dives import
        or use a global \`d3\` (e.g. d3.geoOrthographic). -->
