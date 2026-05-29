@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { DiveSort, SortDir } from '@/lib/dives';
 
 const SORT_LABELS: Record<DiveSort, string> = {
@@ -28,8 +28,15 @@ export function DiveControls({
   const [search, setSearch] = useState(q);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Keep the input in sync if the URL changes from elsewhere (e.g. back nav).
-  useEffect(() => { setSearch(q); }, [q]);
+  // Resync the controlled input when `q` changes from outside the component
+  // (e.g. back/forward navigation). Adjusting state during render with a
+  // previous-value guard is React's recommended alternative to a setState
+  // call inside an effect.
+  const [prevQ, setPrevQ] = useState(q);
+  if (q !== prevQ) {
+    setPrevQ(q);
+    setSearch(q);
+  }
 
   function push(next: Record<string, string | undefined>) {
     const sp = new URLSearchParams(params.toString());
