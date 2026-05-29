@@ -235,6 +235,10 @@ export function buildDiveViewerHtml(params: {
   <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"><\/script>
   <script crossorigin="anonymous" src="https://unpkg.com/recharts@2.15.4/umd/Recharts.js"><\/script>
 
+  <!-- d3 (full v7 bundle: includes d3-geo/scale/shape/etc.). Some Dives import
+       or use a global \`d3\` (e.g. d3.geoOrthographic). -->
+  <script crossorigin="anonymous" src="https://unpkg.com/d3@7/dist/d3.min.js"><\/script>
+
   <style>
     html, body, #root { height: 100%; }
     body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
@@ -263,6 +267,28 @@ export function buildDiveViewerHtml(params: {
   <\/script>
 
   <script>
+    // In a sandboxed (opaque-origin) iframe, reading window.localStorage /
+    // sessionStorage throws a SecurityError. Dives (or their libs) that touch
+    // storage would crash on load. Install in-memory shims BEFORE any dive code
+    // runs — per-session, not persisted, like the useDiveState preview stub.
+    (function () {
+      function makeStorage() {
+        var m = Object.create(null);
+        return {
+          getItem: function (k) { k = String(k); return k in m ? m[k] : null; },
+          setItem: function (k, v) { m[String(k)] = String(v); },
+          removeItem: function (k) { delete m[String(k)]; },
+          clear: function () { for (var k in m) delete m[k]; },
+          key: function (i) { var ks = Object.keys(m); return i >= 0 && i < ks.length ? ks[i] : null; },
+          get length() { return Object.keys(m).length; },
+        };
+      }
+      ['localStorage', 'sessionStorage'].forEach(function (name) {
+        try { Object.defineProperty(window, name, { value: makeStorage(), configurable: true }); }
+        catch (e) { /* leave native (throwing) accessor if it can't be shadowed */ }
+      });
+    })();
+
     var __CAPABILITY = ${JSON.stringify(capability)};
     var __QUERY_ENDPOINT = ${JSON.stringify(queryEndpoint)};
     var __DIVE_ID = ${JSON.stringify(diveId)};
@@ -309,7 +335,12 @@ export function buildDiveViewerHtml(params: {
         }).then(function(res) {
           if (!res.ok) {
             return res.json().catch(function() { return {}; }).then(function(b) {
-              return { status: 'error', err: new Error(b && b.error ? b.error : ('Query failed (' + res.status + ')')) };
+              // 401 means the capability/session expired — the actionable fix
+              // is reloading the page (which re-mints with a refreshed token).
+              var msg = res.status === 401
+                ? 'Session expired — reload this page to continue.'
+                : (b && b.error ? b.error : ('Query failed (' + res.status + ')'));
+              return { status: 'error', err: new Error(msg) };
             });
           }
           return res.json().then(function(j) {
@@ -468,6 +499,7 @@ export function buildDiveViewerHtml(params: {
         var Fragment = React.Fragment;
         var useSQLQuery = MDSDK.useSQLQuery;
         var Lucide = window.__Lucide || {};
+        var d3 = window.d3 || {};
 
         var rechartsPrelude = Object.keys(RechartsComponents)
           .filter(function(n) { return /^[A-Z][A-Za-z0-9_$]*$/.test(n); })
@@ -493,6 +525,7 @@ export function buildDiveViewerHtml(params: {
           'react/jsx-dev-runtime': React,
           'recharts': RechartsComponents,
           'lucide-react': Lucide,
+          'd3': d3,
           '@motherduck/react-sql-query': MDSDK,
         };
         var moduleCache = {};
