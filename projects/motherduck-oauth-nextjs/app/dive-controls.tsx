@@ -72,11 +72,26 @@ export function DiveControls({
       if (v === undefined || v === '') sp.delete(k);
       else sp.set(k, v);
     }
+    // Any navigation cancels a pending search debounce, so a stale debounced
+    // `push` can't fire afterward and clobber this navigation's params.
+    if (debounce.current) {
+      clearTimeout(debounce.current);
+      debounce.current = null;
+    }
     const qs = sp.toString();
     const path = pathnameRef.current;
     startTransition(() => {
       router.replace(qs ? `${path}?${qs}` : path, { scroll: false });
     });
+  }
+
+  /**
+   * Scope/sort/dir navigation. Folds in the current search-box value so a
+   * query the user typed but hasn't yet debounced rides along with the change
+   * (rather than being dropped when `push` cancels the pending debounce).
+   */
+  function pushControl(next: Record<string, string | undefined>) {
+    push({ ...next, q: search.trim() || undefined });
   }
 
   function onSearchChange(value: string) {
@@ -92,7 +107,7 @@ export function DiveControls({
           <button
             key={s}
             type="button"
-            onClick={() => push({ scope: s === 'mine' ? undefined : 'all' })}
+            onClick={() => pushControl({ scope: s === 'mine' ? undefined : 'all' })}
             aria-pressed={scope === s}
             className={`px-3 py-2 text-sm font-medium transition-colors ${
               scope === s
@@ -118,7 +133,7 @@ export function DiveControls({
         Sort
         <select
           value={sort}
-          onChange={(e) => push({ sort: e.target.value })}
+          onChange={(e) => pushControl({ sort: e.target.value })}
           className="px-2 py-2 text-sm text-foreground bg-white border-2 border-foreground rounded-sm shadow-[2px_2px_0_#171717] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           {(Object.keys(SORT_LABELS) as DiveSort[]).map((k) => (
@@ -129,7 +144,7 @@ export function DiveControls({
 
       <button
         type="button"
-        onClick={() => push({ dir: dir === 'asc' ? 'desc' : 'asc' })}
+        onClick={() => pushControl({ dir: dir === 'asc' ? 'desc' : 'asc' })}
         aria-label={`Sort ${dir === 'asc' ? 'ascending' : 'descending'} — click to toggle`}
         title={dir === 'asc' ? 'Ascending' : 'Descending'}
         className="px-3 py-2 text-sm font-medium text-foreground bg-white border-2 border-foreground rounded-sm shadow-[2px_2px_0_#171717] hover:bg-brutal-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
