@@ -34,9 +34,11 @@ server-side proxy.
   `useConnection`, `useDiveState`, `useExport`, `MotherDuckSDKProvider`) in a
   **sandboxed, opaque-origin** iframe (`/api/dives/view`). Its one swapped seam:
   the SDK's connection POSTs each query to `/api/dives/query` instead of using
-  an in-browser WASM connection. The proxy holds the user's token **server-side
-  only**, enforces read-only SQL, and returns rows as JSON. So the Dive never
-  touches a MotherDuck token, our app's cookies, or other APIs.
+  an in-browser WASM connection. The proxy runs each query server-side on a
+  per-user **read-scaling (read-only)** token — so writes are rejected by the
+  engine, not just a SQL check — and returns rows as JSON. The MotherDuck token
+  is only ever used server-side, so the Dive never touches a token, our app's
+  cookies, or other APIs.
   - The sandboxed iframe (no `allow-same-origin`) can't send our session
     cookie, so it authenticates to the proxy with a short-lived **AES-256-GCM
     capability** minted by the view route (`lib/dive-query-capability.ts`,
@@ -91,8 +93,8 @@ machinery here if you require the generic, across-org behavior.
 cd projects/motherduck-oauth-nextjs
 npm install
 cp .env.example .env.local
-# set DIVE_QUERY_SECRET, e.g.:
-echo "DIVE_QUERY_SECRET=$(openssl rand -base64 32)" >> .env.local
+# then edit .env.local and set DIVE_QUERY_SECRET to a random value:
+#   openssl rand -base64 32
 npm run dev                         # http://localhost:3000
 ```
 
