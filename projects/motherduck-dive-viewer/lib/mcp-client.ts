@@ -22,7 +22,7 @@ export async function createMCPClient(
   const url = getMotherDuckMcpUrl();
 
   const client = new Client({
-    name: 'motherduck-oauth-nextjs',
+    name: 'motherduck-dive-viewer',
     version: '1.0.0',
   });
 

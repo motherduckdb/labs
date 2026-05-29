@@ -83,7 +83,7 @@ async function mintReadScalingCreds(accessToken: string): Promise<PgCreds> {
   // we mint a fresh one each time a pool is (re)created. ttl makes them
   // self-expire so they don't accumulate. (A production app would DELETE the
   // token on pool eviction.)
-  const name = `md-oauth-nextjs-dive-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const name = `md-dive-viewer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const res = await fetch(`${getMotherDuckApiUrl()}/v1/users/${encodeURIComponent(username)}/tokens`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${rwToken}`, 'Content-Type': 'application/json' },

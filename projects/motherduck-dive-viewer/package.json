@@ -1,5 +1,5 @@
 {
-  "name": "motherduck-oauth-nextjs",
+  "name": "motherduck-dive-viewer",
   "version": "0.1.0",
   "private": true,
   "description": "Minimal MotherDuck BI app: OAuth sign-in, browse your Dives, view them embedded.",

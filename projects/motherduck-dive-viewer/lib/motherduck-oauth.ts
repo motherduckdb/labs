@@ -56,7 +56,7 @@ function getCallbackUrl(): string {
 function getClientMetadata() {
   return {
     redirect_uris: [getCallbackUrl()],
-    client_name: 'motherduck-oauth-nextjs',
+    client_name: 'motherduck-dive-viewer',
     grant_types: ['authorization_code', 'refresh_token'],
     response_types: ['code'],
     token_endpoint_auth_method: 'none' as const,

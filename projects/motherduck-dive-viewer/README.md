@@ -1,4 +1,4 @@
-# motherduck-oauth-nextjs
+# motherduck-dive-viewer
 
 A minimal **BI-style app** on top of MotherDuck: sign in with your MotherDuck
 account, browse the Dives you can access, and view any of them rendered inline —
@@ -90,7 +90,7 @@ machinery here if you require the generic, across-org behavior.
 ## Run it
 
 ```sh
-cd projects/motherduck-oauth-nextjs
+cd projects/motherduck-dive-viewer
 npm install
 cp .env.example .env.local
 # then edit .env.local and set DIVE_QUERY_SECRET to a random value:
