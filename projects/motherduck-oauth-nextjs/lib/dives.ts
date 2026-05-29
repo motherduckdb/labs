@@ -61,18 +61,19 @@ export async function listDives(
   const orgArg = opts.includeOrgShares ? 'include_org_shares = true' : '';
 
   // `column`/`dir`/`orgArg` come only from allowlisted constants above; the
-  // user-supplied search term is bound as a parameter ($q), never inlined.
+  // user-supplied search term is bound as a positional parameter ($1),
+  // never inlined.
   const sql = `
     SELECT id, title, owner_name, created_at, updated_at
     FROM MD_LIST_DIVES(${orgArg})
-    WHERE $q = ''
-       OR title ILIKE '%' || $q || '%'
-       OR owner_name ILIKE '%' || $q || '%'
-       OR description ILIKE '%' || $q || '%'
+    WHERE $1 = ''
+       OR title ILIKE '%' || $1 || '%'
+       OR owner_name ILIKE '%' || $1 || '%'
+       OR description ILIKE '%' || $1 || '%'
     ORDER BY ${column} ${dir} NULLS LAST, id ASC
   `;
 
-  const rows = await runUserQuery(accessToken, sql, { q: search });
+  const rows = await runUserQuery(accessToken, sql, [search]);
   return rows
     .map((r): DiveSummary => ({
       id: str(r.id) ?? '',
@@ -98,8 +99,8 @@ export async function deleteDive(accessToken: string, id: string): Promise<void>
   // id is validated as a UUID above and also bound as a parameter.
   const rows = await runUserQuery(
     accessToken,
-    'SELECT success FROM MD_DELETE_DIVE(id = $id::UUID)',
-    { id },
+    'SELECT success FROM MD_DELETE_DIVE(id = $1::UUID)',
+    [id],
   );
   if (rows[0]?.success !== true) {
     throw new Error('MD_DELETE_DIVE did not report success');

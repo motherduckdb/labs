@@ -1,29 +1,26 @@
-import { DuckDBInstance, type DuckDBConnection } from '@duckdb/node-api';
+import { Pool } from 'pg';
 import { createMCPClient, executeToolWithStatus } from './mcp-client';
-import { getMotherDuckApiUrl } from './motherduck-env';
 
 /**
- * Run actual SQL against MotherDuck server-side via a DuckDB connection —
- * no MCP `query` tool, so no ~50KB response cap.
+ * Run actual SQL against MotherDuck server-side via its Postgres wire-protocol
+ * endpoint, using the pure-JS `pg` client — no native module, so it runs fine
+ * in serverless (unlike the DuckDB native addon, whose `libduckdb.so` can't
+ * load in a Vercel function).
  *
- * Auth: the OAuth access token is NOT a MotherDuck connection token (the
- * MD REST API rejects it), so we mint a short-lived MotherDuck token via the
- * MCP `get_short_lived_token` tool and connect DuckDB with it (`md:` +
- * `motherduck_token`). The SLT lasts ~24h; we cache the live connection per
- * OAuth token for a short window so repeated page loads don't reconnect.
+ * Auth: the OAuth access token is NOT a MotherDuck connection token, so we
+ * mint a short-lived MotherDuck token via the MCP `get_short_lived_token`
+ * tool — whose response also tells us the regional `pgEndpoint` host. We
+ * connect `postgres@<pgEndpoint>:5432/md:` with the SLT as the password (TLS
+ * required) and write DuckDB SQL. The connection pool is cached per OAuth
+ * token for a short window so repeated page loads don't re-mint/reconnect.
  */
 
-interface CachedConnection {
-  instance: DuckDBInstance;
-  conn: DuckDBConnection;
-  createdAt: number;
+interface PgCreds {
+  token: string;
+  host: string;
 }
 
-const CONNECTION_TTL_MS = 20 * 60 * 1000;
-const connections = new Map<string, CachedConnection>();
-
-/** Mint a short-lived MotherDuck token from the user's OAuth session. */
-async function mintShortLivedToken(accessToken: string): Promise<string> {
+async function mintPgCreds(accessToken: string): Promise<PgCreds> {
   const client = await createMCPClient(accessToken);
   try {
     const { text, isError } = await executeToolWithStatus(client, 'get_short_lived_token', {});
@@ -31,58 +28,72 @@ async function mintShortLivedToken(accessToken: string): Promise<string> {
       throw new Error(`get_short_lived_token failed: ${text.slice(0, 200)}`);
     }
     const parsed = JSON.parse(text) as Record<string, unknown>;
-    const slt = parsed.shortLivedToken ?? parsed.short_lived_token ?? parsed.token ?? parsed.slt;
-    if (typeof slt !== 'string' || !slt) {
+    const token = parsed.shortLivedToken ?? parsed.short_lived_token ?? parsed.token ?? parsed.slt;
+    const host = parsed.pgEndpoint ?? parsed.pg_endpoint;
+    if (typeof token !== 'string' || !token) {
       throw new Error('No short-lived token in get_short_lived_token response');
     }
-    return slt;
+    if (typeof host !== 'string' || !host) {
+      throw new Error('No pgEndpoint in get_short_lived_token response');
+    }
+    return { token, host };
   } finally {
     try { await client.close(); } catch { /* ignore */ }
   }
 }
 
-/** Non-prod hosts (staging) need the MD extension pointed at the right API. */
-function mdConnectOptions(token: string): Record<string, string> {
-  const options: Record<string, string> = { motherduck_token: token };
-  try {
-    const host = new URL(getMotherDuckApiUrl()).host;
-    if (host && host !== 'api.motherduck.com') {
-      options.motherduck_host = host;
-    }
-  } catch { /* default prod */ }
-  return options;
+interface CachedPool {
+  pool: Pool;
+  createdAt: number;
 }
 
-async function getConnection(accessToken: string): Promise<DuckDBConnection> {
-  const cached = connections.get(accessToken);
-  if (cached && Date.now() - cached.createdAt < CONNECTION_TTL_MS) {
-    return cached.conn;
+const POOL_TTL_MS = 20 * 60 * 1000;
+const pools = new Map<string, CachedPool>();
+
+async function getPool(accessToken: string): Promise<Pool> {
+  const cached = pools.get(accessToken);
+  if (cached && Date.now() - cached.createdAt < POOL_TTL_MS) {
+    return cached.pool;
   }
   if (cached) {
-    try { cached.instance.closeSync(); } catch { /* ignore */ }
-    connections.delete(accessToken);
+    cached.pool.end().catch(() => { /* ignore */ });
+    pools.delete(accessToken);
   }
 
-  const slt = await mintShortLivedToken(accessToken);
-  const instance = await DuckDBInstance.create('md:', mdConnectOptions(slt));
-  const conn = await instance.connect();
-  connections.set(accessToken, { instance, conn, createdAt: Date.now() });
-  return conn;
+  const { token, host } = await mintPgCreds(accessToken);
+  const pool = new Pool({
+    host,
+    port: 5432,
+    user: 'postgres',
+    password: token,
+    database: 'md:',
+    // MotherDuck's pg endpoint requires TLS; verify against the system/Node
+    // CA bundle (equivalent to sslmode=verify-full).
+    ssl: { rejectUnauthorized: true },
+    max: 3,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 15_000,
+  });
+  // A pooled client erroring while idle must not crash the process.
+  pool.on('error', (err) => {
+    console.error('[motherduck-sql] idle pg client error:', err.message);
+  });
+
+  pools.set(accessToken, { pool, createdAt: Date.now() });
+  return pool;
 }
 
 /**
- * Run a read-only SQL query as the signed-in user and return JS-native row
- * objects. `params` binds values safely (e.g. a search term) — never
+ * Run a read-only SQL query (DuckDB syntax) as the signed-in user and return
+ * row objects. `params` are positional ($1, $2, …) bound values — never
  * string-concatenate user input into `sql`.
  */
 export async function runUserQuery(
   accessToken: string,
   sql: string,
-  params?: Record<string, string | number | boolean | null>,
+  params?: unknown[],
 ): Promise<Record<string, unknown>[]> {
-  const conn = await getConnection(accessToken);
-  const reader = params
-    ? await conn.runAndReadAll(sql, params)
-    : await conn.runAndReadAll(sql);
-  return reader.getRowObjectsJS() as Record<string, unknown>[];
+  const pool = await getPool(accessToken);
+  const result = await pool.query(sql, params);
+  return result.rows as Record<string, unknown>[];
 }
