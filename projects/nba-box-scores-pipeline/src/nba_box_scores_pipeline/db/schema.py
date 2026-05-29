@@ -257,6 +257,17 @@ def ensure_tables(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(ddl)
 
 
+def ensure_box_scores_table(con: duckdb.DuckDBPyConnection, table: str) -> None:
+    """Create a box_scores-shaped table under an alternate name.
+
+    Used for the validation sandbox (default `box_scores_new`). Reuses the
+    canonical CREATE_BOX_SCORES DDL so the sandbox gets the same
+    (game_id, entity_id, period) PK — without the PK the loader's
+    INSERT OR REPLACE has no conflict target.
+    """
+    con.execute(CREATE_BOX_SCORES.replace("main.box_scores", f"main.{table}", 1))
+
+
 def ensure_views(con: duckdb.DuckDBPyConnection, *, db: str) -> None:
     """Always issues CREATE OR REPLACE so the views point at `db`'s tables.
 

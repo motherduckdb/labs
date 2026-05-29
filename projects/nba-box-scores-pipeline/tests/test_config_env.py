@@ -69,28 +69,59 @@ class TestOverrides:
         assert cfg.max_delay_ms == 20_000
 
 
-class TestFlightMainsImportCleanly:
-    """Both flight entrypoints must import without raising — proves all
-    package-internal imports resolve from a fresh interpreter."""
+def _exec_flight_main(name: str):
+    import importlib.util
+    from pathlib import Path
 
-    def test_nba_nightly_imports(self):
-        import importlib.util
-        from pathlib import Path
+    path = Path(__file__).parent.parent / "flights" / name / "main.py"
+    spec = importlib.util.spec_from_file_location(f"{name}_main", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-        path = Path(__file__).parent.parent / "flights" / "nba_nightly" / "main.py"
-        spec = importlib.util.spec_from_file_location("nba_nightly_main", path)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        assert callable(module.main)
 
-    def test_nba_backfill_imports(self):
-        import importlib.util
-        from pathlib import Path
+class TestFlightBootstrappersParse:
+    """The flight bootstrappers are stdlib-only (clone + uv sync + subprocess);
+    they must parse and expose main()/ENTRYPOINT_COMMAND."""
 
-        path = Path(__file__).parent.parent / "flights" / "nba_backfill" / "main.py"
-        spec = importlib.util.spec_from_file_location("nba_backfill_main", path)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        assert callable(module.main)
+    def test_nba_nightly_bootstrapper(self):
+        m = _exec_flight_main("nba_nightly")
+        assert callable(m.main)
+        assert m.ENTRYPOINT_COMMAND == "nightly"
+
+    def test_nba_backfill_bootstrapper(self):
+        m = _exec_flight_main("nba_backfill")
+        assert callable(m.main)
+        assert m.ENTRYPOINT_COMMAND == "backfill"
+
+
+class TestEntrypointDispatch:
+    """The package entrypoint module resolves all internal imports and
+    routes nightly/backfill — this is what the bootstrapper invokes."""
+
+    def test_commands_registered(self):
+        from nba_box_scores_pipeline import entrypoints
+
+        assert set(entrypoints._COMMANDS) == {"nightly", "backfill"}
+
+    def test_unknown_command_exits(self):
+        from nba_box_scores_pipeline import entrypoints
+
+        with pytest.raises(SystemExit):
+            entrypoints.main(["bogus"])
+
+    def test_no_command_exits(self):
+        from nba_box_scores_pipeline import entrypoints
+
+        with pytest.raises(SystemExit):
+            entrypoints.main([])
+
+    def test_backfill_requires_season_range(self, monkeypatch):
+        from nba_box_scores_pipeline import entrypoints
+
+        monkeypatch.setenv("MOTHERDUCK_TOKEN", "t")
+        monkeypatch.delenv("NBA_BACKFILL_START_SEASON", raising=False)
+        monkeypatch.delenv("NBA_BACKFILL_END_SEASON", raising=False)
+        with pytest.raises(RuntimeError, match="NBA_BACKFILL_START_SEASON"):
+            entrypoints.run_backfill()
