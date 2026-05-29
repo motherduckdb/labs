@@ -8,6 +8,28 @@ Built on Next.js 16 (App Router). **No MotherDuck token ever reaches the
 browser** — Dives render in a sandboxed iframe whose queries run through a
 server-side proxy.
 
+> ## ⚠️ This is a *generic* sample with intentional tradeoffs — not a production blueprint
+>
+> To stay **generic** (any MotherDuck user, any org, signs in and sees their own
+> Dives) and **easy to run**, this app deliberately trades away fidelity and some
+> strictness. Don't copy these choices verbatim into production:
+>
+> - **Reimplemented renderer.** Dives render against our own port of the dive SDK
+>   + Tailwind, not MotherDuck's hosted renderer — so theming/components won't
+>   match exactly, and libraries are loaded ad-hoc (we patch them in as Dives
+>   need them). It's whack-a-mole by nature.
+> - **Looser CSP for fidelity.** The Dive iframe allows web fonts / remote styles
+>   / images (`https:`) so Dives look right. A shared Dive could therefore leak
+>   read-only query results through an image/font URL — accepted here.
+> - **Capability + read-scaling token** instead of a managed session.
+>
+> **For production, prefer the single-org path:** MotherDuck's hosted embed
+> (`embed-motherduck.com` + a service-account embed session) gives you the real
+> renderer, perfect fidelity, and the token + execution fully managed by
+> MotherDuck — no proxy, no reimplemented runtime. See *If you're deploying for a
+> single organization* below. This sample exists to demonstrate the generic
+> OAuth + query-proxy pattern, not to be a hardened production deployment.
+
 ## What it does
 
 ```
@@ -121,9 +143,11 @@ npm run test
   OAuth uses **PKCE** + a cookie-bound `state` verified with a timing-safe compare.
 - **No MotherDuck token in the browser** — list/delete run server-side over the
   pg endpoint; Dive queries run server-side via the proxy.
-- The Dive iframe is sandboxed to an **opaque origin** (no `allow-same-origin`)
-  and served with a tight CSP (`connect-src` = app origin + esm.sh). It can't
-  reach the app's cookies/DOM/APIs.
+- The Dive iframe is sandboxed to an **opaque origin** (no `allow-same-origin`),
+  so it can't reach the app's cookies/DOM/APIs. Its CSP locks **`connect-src`**
+  to the app origin (the proxy) + esm.sh — the hard data boundary — but
+  intentionally allows `https:` styles/fonts/images for render fidelity (see the
+  tradeoffs callout above).
 - The query proxy runs on a **read-scaling (read-only) token** minted per-user
   (`POST /v1/users/{username}/tokens`), so writes are rejected by the engine —
   not just by the SQL allowlist. It's also bound to the dive via the capability;
@@ -135,11 +159,15 @@ npm run test
   can briefly lag writes — a Dive querying a *just-created/just-modified* table
   may transiently not see it. Fine for established Dives; relevant if you expect
   to view data seconds after writing it.
-- **Render fidelity.** The viewer runs a faithful port of the dive SDK, not
-  MotherDuck's hosted renderer; Dives leaning on SDK features beyond the query
-  hooks may differ.
+- **Render fidelity.** The viewer runs a port of the dive SDK + Tailwind, not
+  MotherDuck's hosted renderer. Theming/components won't match exactly, and
+  libraries are loaded ad-hoc (react/recharts/lucide/d3 today, more patched in
+  as Dives need them). For pixel-perfect fidelity, use the single-org hosted
+  embed.
 - A shared Dive's code can still exfiltrate **read-only** query results it's
-  allowed to read (inherent to letting a shared Dive query your data).
+  allowed to read — now including via image/font URLs, since the CSP allows
+  `https:` for those (the fidelity tradeoff). `connect-src` is still locked, and
+  no MotherDuck token is in the page.
 
 ## Status
 

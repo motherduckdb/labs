@@ -11,9 +11,14 @@ function escapeHtml(s: string): string {
  *   1. `sandbox allow-scripts` (NO `allow-same-origin`) → opaque origin, so the
  *      Dive can't touch the app's cookies/storage or call our authenticated
  *      APIs with the session cookie, even if opened directly as a top page.
- *   2. `default-src 'none'` + tight allowlist limits where a Dive could
- *      exfiltrate query results (or its short-lived capability): `connect-src`
- *      is only the app origin (the proxy) + esm.sh (lucide module deps).
+ *   2. `default-src 'none'` + allowlist. The hard data boundary is `connect-src`
+ *      = app origin (the proxy) + esm.sh only, so a Dive can't `fetch`/XHR
+ *      results to an arbitrary host. We DO allow `https:` for styles, fonts, and
+ *      images so Dives render with their intended theming (web fonts, remote
+ *      stylesheets, logos) — a deliberate fidelity-over-strictness tradeoff for
+ *      this generic sample (see the README). The residual is that a shared Dive
+ *      could leak read-only query results through an image/font URL; that's an
+ *      accepted limitation here, and there is no MotherDuck token in the page.
  *
  * Because the iframe is opaque-origin, `connect-src 'self'` would NOT match the
  * app origin — so we pass the explicit `appOrigin`.
@@ -23,9 +28,9 @@ export function buildDiveViewerCsp(appOrigin: string): string {
     "default-src 'none'",
     "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://esm.sh",
     `connect-src ${appOrigin} https://esm.sh`,
-    "style-src 'unsafe-inline'",
-    'img-src data:',
-    'font-src data:',
+    "style-src 'unsafe-inline' https:",
+    'img-src https: data:',
+    'font-src https: data:',
     "form-action 'none'",
     "frame-src 'none'",
     "base-uri 'none'",
