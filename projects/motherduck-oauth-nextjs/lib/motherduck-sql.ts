@@ -51,7 +51,10 @@ async function mintPgCreds(accessToken: string): Promise<PgCreds> {
 }
 
 interface CachedPool {
-  pool: Pool;
+  // The in-flight (or settled) pool creation. Caching the PROMISE — not just a
+  // resolved Pool — dedupes concurrent first-time lookups (a dive fires many
+  // queries at once) so we mint exactly one token per pool, not one per query.
+  promise: Promise<Pool>;
   createdAt: number;
 }
 
@@ -76,10 +79,15 @@ async function mintReadScalingCreds(accessToken: string): Promise<PgCreds> {
   if (typeof username !== 'string' || !username) {
     throw new Error('Could not resolve current MotherDuck user for read-scaling token');
   }
+  // Unique name per mint: MotherDuck rejects duplicate token names (409), and
+  // we mint a fresh one each time a pool is (re)created. ttl makes them
+  // self-expire so they don't accumulate. (A production app would DELETE the
+  // token on pool eviction.)
+  const name = `md-oauth-nextjs-dive-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const res = await fetch(`${getMotherDuckApiUrl()}/v1/users/${encodeURIComponent(username)}/tokens`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${rwToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'motherduck-oauth-nextjs dive viewer', token_type: 'read_scaling', ttl: 1800 }),
+    body: JSON.stringify({ name, token_type: 'read_scaling', ttl: 1800 }),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -106,7 +114,7 @@ function sweepExpiredPools(): void {
   const now = Date.now();
   for (const [key, cached] of pools) {
     if (now - cached.createdAt >= POOL_TTL_MS) {
-      cached.pool.end().catch(() => { /* ignore */ });
+      cached.promise.then((p) => p.end()).catch(() => { /* ignore */ });
       pools.delete(key);
     }
   }
@@ -121,41 +129,50 @@ if (!sweepTimer) {
 }
 
 /** Get-or-create a cached pg pool for `key`, building creds via `mintCreds`. */
-async function getPoolFor(key: string, mintCreds: () => Promise<PgCreds>): Promise<Pool> {
+function getPoolFor(key: string, mintCreds: () => Promise<PgCreds>): Promise<Pool> {
   // Proactively evict expired pools (including ones whose rotated token will
   // never be requested again) before serving this lookup.
   sweepExpiredPools();
 
   const cached = pools.get(key);
   if (cached && Date.now() - cached.createdAt < POOL_TTL_MS) {
-    return cached.pool;
+    return cached.promise;
   }
   if (cached) {
-    cached.pool.end().catch(() => { /* ignore */ });
+    cached.promise.then((p) => p.end()).catch(() => { /* ignore */ });
     pools.delete(key);
   }
 
-  const { token, host } = await mintCreds();
-  const pool = new Pool({
-    host,
-    port: 5432,
-    user: 'postgres',
-    password: token,
-    database: 'md:',
-    // MotherDuck's pg endpoint requires TLS; verify against the system/Node
-    // CA bundle (equivalent to sslmode=verify-full).
-    ssl: { rejectUnauthorized: true },
-    max: 3,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 15_000,
-  });
-  // A pooled client erroring while idle must not crash the process.
-  pool.on('error', (err) => {
-    console.error('[motherduck-sql] idle pg client error:', err.message);
-  });
+  // Build synchronously into the cache BEFORE any await, so concurrent callers
+  // in this tick share this one promise (one token mint, not N).
+  const promise = (async () => {
+    const { token, host } = await mintCreds();
+    const pool = new Pool({
+      host,
+      port: 5432,
+      user: 'postgres',
+      password: token,
+      database: 'md:',
+      // MotherDuck's pg endpoint requires TLS; verify against the system/Node
+      // CA bundle (equivalent to sslmode=verify-full).
+      ssl: { rejectUnauthorized: true },
+      max: 3,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 15_000,
+    });
+    // A pooled client erroring while idle must not crash the process.
+    pool.on('error', (err) => {
+      console.error('[motherduck-sql] idle pg client error:', err.message);
+    });
+    return pool;
+  })();
 
-  pools.set(key, { pool, createdAt: Date.now() });
-  return pool;
+  pools.set(key, { promise, createdAt: Date.now() });
+  // Don't cache a failed creation — evict so the next request retries.
+  promise.catch(() => {
+    if (pools.get(key)?.promise === promise) pools.delete(key);
+  });
+  return promise;
 }
 
 /** Read/write pool (list, delete, resolving CURRENT_USER). */
