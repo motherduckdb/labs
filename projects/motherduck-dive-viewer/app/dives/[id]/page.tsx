@@ -19,7 +19,7 @@ export default async function DivePage({
   const title = typeof sp.title === 'string' && sp.title.length > 0 ? sp.title : 'Dive';
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 py-10">
+    <main className="mx-auto w-full max-w-[1600px] px-6 py-10">
       <header className="flex items-center justify-between mb-6">
         <Link
           href="/"
