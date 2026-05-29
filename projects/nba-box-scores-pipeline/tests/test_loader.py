@@ -23,7 +23,11 @@ from nba_box_scores_pipeline.db.loader import (
     Loader,
     ScheduleRow,
 )
-from nba_box_scores_pipeline.db.schema import ensure_tables, ensure_views
+from nba_box_scores_pipeline.db.schema import (
+    ensure_tables,
+    ensure_tables_suffixed,
+    ensure_views,
+)
 from nba_box_scores_pipeline.parsers.nba_box_score import parse_box_score
 
 
@@ -183,32 +187,64 @@ class TestRawPbpstats:
         assert loader.get_raw_game_ids(2024, "Playoffs") == set()
 
 
-class TestSandboxTables:
-    """Validation path: write to box_scores_new, leave production box_scores alone."""
+class TestSandboxTableSet:
+    """Validation path: a sandbox run writes an isolated `_new` table set and
+    leaves the entire production set untouched — box scores AND skip/log state.
+    This is the P1 fix: a sandbox run must not mark success in the production
+    ingestion_log (else a later prod flip skips those games)."""
 
-    def test_sandbox_loader_targets_alternate_table(self, con, regulation_rows):
-        # CTAS doesn't preserve PKs, so spell the sandbox table out explicitly.
-        # Same constraint applies in v3: anyone provisioning a `box_scores_new`
-        # has to create it with the (game_id, entity_id, period) PK or the
-        # loader's INSERT OR REPLACE has no conflict target.
-        con.execute(
-            """
-            CREATE TABLE main.box_scores_new (
-              game_id VARCHAR, team_abbreviation VARCHAR, entity_id VARCHAR,
-              player_name VARCHAR, period VARCHAR, minutes VARCHAR,
-              points INTEGER, rebounds INTEGER, assists INTEGER,
-              steals INTEGER, blocks INTEGER, turnovers INTEGER,
-              fg_made INTEGER, fg_attempted INTEGER,
-              fg3_made INTEGER, fg3_attempted INTEGER,
-              ft_made INTEGER, ft_attempted INTEGER, starter INTEGER,
-              PRIMARY KEY (game_id, entity_id, period)
-            )
-            """
-        )
+    def test_ensure_tables_suffixed_creates_full_set(self, con):
+        ensure_tables_suffixed(con, "_new")
+        for name in ("box_scores_new", "schedule_new", "ingestion_log_new", "raw_game_data_pbpstats_new"):
+            assert _count(con, name) == 0  # exists and empty
+
+    def test_suffixed_box_scores_keeps_primary_key(self, con, regulation_rows):
+        # Reusing canonical DDL means the sandbox table keeps the PK, so
+        # INSERT OR REPLACE has a conflict target (reload is idempotent).
+        ensure_tables_suffixed(con, "_new")
         sandbox = Loader(con, box_scores_table="box_scores_new")
         sandbox.load_box_scores(regulation_rows)
+        sandbox.load_box_scores(regulation_rows)
         assert _count(con, "box_scores_new") == len(regulation_rows)
-        assert _count(con, "box_scores") == 0  # production table untouched
+        assert _count(con, "box_scores") == 0
+
+    def test_sandbox_log_isolated_from_production(self, con):
+        ensure_tables_suffixed(con, "_new")
+        sandbox = Loader(
+            con,
+            box_scores_table="box_scores_new",
+            schedule_table="schedule_new",
+            ingestion_log_table="ingestion_log_new",
+            raw_pbpstats_table="raw_game_data_pbpstats_new",
+        )
+        sandbox.mark_ingested(IngestionLogEntry(
+            game_id="0099999999", season_year=2024, season_type="Regular Season",
+        ))
+        # Sandbox run recorded success in its own log...
+        assert sandbox.is_game_ingested("0099999999")
+        # ...but the production loader must NOT see it (else prod flip skips it).
+        prod = Loader(con)
+        assert not prod.is_game_ingested("0099999999")
+        assert _count(con, "ingestion_log") == 0
+
+
+class TestSkipReadsTolerateMissingTables:
+    """A dry run performs no schema bootstrap; skip-reads against a not-yet-
+    created (sandbox) table set must return empty rather than raising."""
+
+    def test_reads_on_absent_tables_return_empty(self):
+        bare = duckdb.connect(":memory:")  # no tables at all
+        try:
+            loader = Loader(
+                bare,
+                ingestion_log_table="ingestion_log_new",
+                raw_pbpstats_table="raw_game_data_pbpstats_new",
+            )
+            assert loader.get_ingested_game_ids(2024, "Regular Season") == set()
+            assert loader.get_raw_game_ids(2024, "Regular Season") == set()
+            assert loader.is_game_ingested("0022400061") is False
+        finally:
+            bare.close()
 
 
 class TestViewsRebind:

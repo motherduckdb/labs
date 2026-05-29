@@ -18,8 +18,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
 ]
+# duckdb is capped below 1.5.3: MotherDuck's server rejects newer client
+# versions ("latest supported version is v1.5.2"). The cap is what the
+# flight's `md:` connection needs — local tests use :memory: and don't care.
 dependencies = [
-    "duckdb>=1.3.0",
+    "duckdb>=1.3.0,<1.5.3",
     "httpx>=0.27.0",
     "controllog @ git+https://github.com/motherduckdb/labs#subdirectory=projects/controllog",
 ]

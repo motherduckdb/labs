@@ -1,100 +1,74 @@
-"""Entrypoint for the nba_backfill Flight.
+"""Bootstrapper for the nba_backfill Flight.
 
-On-demand historical-season backfill. Use when v3's raw or hydrated
-tables are missing seasons that the nightly didn't cover (Phase 0's
-clone preloaded everything through v2's coverage, so this is rarely
-needed at cutover).
+Thin, stable bootstrapper (see flights/nba_nightly/main.py for the full
+rationale): clones the labs repo at a branch, `uv sync`s the pipeline
+package, and runs the backfill entrypoint from the synced venv.
 
-Env vars (all optional unless noted):
-  MOTHERDUCK_TOKEN              required
-  NBA_BACKFILL_START_SEASON     required; first season-start year
-  NBA_BACKFILL_END_SEASON       required; last season-start year (inclusive)
-  NBA_INGEST_BOX_SCORES_TABLE   target box-score table (default
-                                box_scores — backfills target prod
-                                since they're typically historical)
-  NBA_INGEST_FORCE / NBA_INGEST_FILL_RAW / NBA_INGEST_DRY_RUN
-                                "1" enables; same semantics as nightly
+Env vars consumed here:
+  NBA_FLIGHT_REPO_BRANCH   branch to clone (default: nba-migration)
+Required by the entrypoint (pass through to the subprocess):
+  NBA_BACKFILL_START_SEASON / NBA_BACKFILL_END_SEASON
+Plus the usual NBA_INGEST_* / MOTHERDUCK_TOKEN.
 """
 
-import logging
+from __future__ import annotations
+
 import os
-from dataclasses import replace
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
-from nba_box_scores_pipeline.api.nba import PBPStatsClient
-from nba_box_scores_pipeline.config import (
-    PipelineConfig,
-    SEASON_TYPES,
-    Season,
-    build_config_from_env,
-)
-from nba_box_scores_pipeline.db.connection import connect
-from nba_box_scores_pipeline.db.loader import Loader
-from nba_box_scores_pipeline.db.schema import ensure_schema
-from nba_box_scores_pipeline.rate_limiter import RateLimiter
-from nba_box_scores_pipeline.workers.season_worker import process_season
+REPO_URL = "https://github.com/motherduckdb/labs"
+DEFAULT_BRANCH = "nba-migration"
+REPO_DIR = Path("/app/labs")
+PROJECT_SUBDIR = REPO_DIR / "projects" / "nba-box-scores-pipeline"
+ENTRYPOINT_COMMAND = "backfill"
 
 
-DATABASE = "nba_box_scores_v3"
-
-
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+def sh(args, cwd=None, env=None, check=True):
+    # argv list, never shell=True — env-derived values (e.g. the branch) must
+    # not be interpolated into a shell string in a process that holds the
+    # MotherDuck token.
+    print("$ " + " ".join(args), flush=True)
+    merged = dict(os.environ)
+    merged.update(env or {})
+    r = subprocess.run(
+        args, cwd=str(cwd) if cwd else None,
+        env=merged, capture_output=True, text=True,
     )
-    log = logging.getLogger("nba_backfill")
+    if r.stdout:
+        print(r.stdout, flush=True)
+    if r.stderr:
+        print("STDERR:", r.stderr, flush=True)
+    if check and r.returncode != 0:
+        raise RuntimeError("command failed rc=" + str(r.returncode) + ": " + " ".join(args))
+    return r
 
-    start = os.environ.get("NBA_BACKFILL_START_SEASON")
-    end = os.environ.get("NBA_BACKFILL_END_SEASON")
-    if not start or not end:
-        raise RuntimeError("NBA_BACKFILL_START_SEASON and NBA_BACKFILL_END_SEASON are required")
-    start_year, end_year = int(start), int(end)
-    if start_year > end_year:
-        raise RuntimeError(f"start ({start_year}) must be <= end ({end_year})")
 
-    seasons = tuple(
-        Season(year=y, type=st)
-        for y in range(start_year, end_year + 1)
-        for st in SEASON_TYPES
-    )
+def ensure_git():
+    if shutil.which("git"):
+        return
+    sh(["apt-get", "update", "-y"], check=False)
+    sh(["apt-get", "install", "-y", "--no-install-recommends", "git", "ca-certificates"])
 
-    base_config = build_config_from_env()
-    config: PipelineConfig = replace(base_config, seasons=seasons)
-    box_scores_table = os.environ.get("NBA_INGEST_BOX_SCORES_TABLE", "box_scores")
 
-    log.info(
-        "starting backfill database=%s box_scores_table=%s years=%d-%d force=%s fill_raw=%s dry_run=%s",
-        DATABASE, box_scores_table, start_year, end_year,
-        config.force, config.fill_raw, config.dry_run,
-    )
+def main():
+    print("python:", sys.version, flush=True)
+    branch = os.environ.get("NBA_FLIGHT_REPO_BRANCH", DEFAULT_BRANCH)
 
-    con = connect(DATABASE)
-    ensure_schema(con, db=DATABASE)
+    ensure_git()
+    if REPO_DIR.exists():
+        shutil.rmtree(REPO_DIR)
+    sh(["git", "clone", "--depth", "1", "--branch", branch, REPO_URL, str(REPO_DIR)])
+    sh(["git", "log", "-1", "--oneline"], cwd=REPO_DIR)
 
-    loader = Loader(con, box_scores_table=box_scores_table)
-    rate_limiter = RateLimiter(
-        base_delay_ms=config.delay_ms,
-        min_delay_ms=config.min_delay_ms,
-        max_delay_ms=config.max_delay_ms,
-    )
-
-    totals = {"completed": 0, "skipped": 0, "failed": 0}
-    with PBPStatsClient(rate_limiter) as client:
-        for season in config.seasons:
-            progress = process_season(
-                season_year=season.year,
-                season_type=season.type,
-                client=client,
-                loader=loader,
-                config=config,
-            )
-            totals["completed"] += progress.completed
-            totals["skipped"] += progress.skipped
-            totals["failed"] += progress.failed
-
-    log.info(
-        "backfill complete completed=%d skipped=%d failed=%d",
-        totals["completed"], totals["skipped"], totals["failed"],
+    # --locked: fail rather than silently re-resolve if uv.lock is stale.
+    # --no-dev: runtime doesn't need pytest/pydantic.
+    sh(["uv", "sync", "--locked", "--no-dev"], cwd=PROJECT_SUBDIR, env={"UV_LINK_MODE": "copy"})
+    sh(
+        [".venv/bin/python", "-m", "nba_box_scores_pipeline.entrypoints", ENTRYPOINT_COMMAND],
+        cwd=PROJECT_SUBDIR,
     )
 
 
