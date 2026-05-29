@@ -85,8 +85,13 @@ async function getPool(accessToken: string): Promise<Pool> {
 
 /**
  * Run a read-only SQL query (DuckDB syntax) as the signed-in user and return
- * row objects. `params` are positional ($1, $2, …) bound values — never
- * string-concatenate user input into `sql`.
+ * row objects.
+ *
+ * When `params` is omitted this uses the **simple query protocol** (no
+ * Parse/Bind): DuckDB's Postgres endpoint can't describe a prepared statement
+ * whose result comes from a table function (e.g. MD_LIST_DIVES), so callers
+ * that hit those inline their values instead. `params` (positional $1, $2…)
+ * remains available for plain queries.
  */
 export async function runUserQuery(
   accessToken: string,
@@ -94,6 +99,8 @@ export async function runUserQuery(
   params?: unknown[],
 ): Promise<Record<string, unknown>[]> {
   const pool = await getPool(accessToken);
-  const result = await pool.query(sql, params);
+  const result = params && params.length
+    ? await pool.query(sql, params)
+    : await pool.query(sql);
   return result.rows as Record<string, unknown>[];
 }

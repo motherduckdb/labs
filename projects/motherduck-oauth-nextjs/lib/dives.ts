@@ -38,6 +38,11 @@ function str(v: unknown): string | undefined {
   return String(v);
 }
 
+/** Wrap a value as a single-quoted SQL string literal, escaping quotes. */
+function sqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 /**
  * List Dives by running actual SQL against MotherDuck (via a DuckDB
  * connection — see `runUserQuery`), using the `MD_LIST_DIVES()` table
@@ -60,20 +65,23 @@ export async function listDives(
   const search = (opts.search ?? '').trim();
   const orgArg = opts.includeOrgShares ? 'include_org_shares = true' : '';
 
-  // `column`/`dir`/`orgArg` come only from allowlisted constants above; the
-  // user-supplied search term is bound as a positional parameter ($1),
-  // never inlined.
+  // DuckDB's Postgres endpoint can't describe a prepared statement whose
+  // result comes from a table function, so we use the simple query protocol
+  // and inline values instead of binding them. `column`/`dir`/`orgArg` are
+  // allowlisted constants; the search term is single-quote-escaped into a
+  // string literal (see sqlString).
+  const term = sqlString(search);
   const sql = `
     SELECT id, title, owner_name, created_at, updated_at
     FROM MD_LIST_DIVES(${orgArg})
-    WHERE $1 = ''
-       OR title ILIKE '%' || $1 || '%'
-       OR owner_name ILIKE '%' || $1 || '%'
-       OR description ILIKE '%' || $1 || '%'
+    WHERE ${term} = ''
+       OR title ILIKE '%' || ${term} || '%'
+       OR owner_name ILIKE '%' || ${term} || '%'
+       OR description ILIKE '%' || ${term} || '%'
     ORDER BY ${column} ${dir} NULLS LAST, id ASC
   `;
 
-  const rows = await runUserQuery(accessToken, sql, [search]);
+  const rows = await runUserQuery(accessToken, sql);
   return rows
     .map((r): DiveSummary => ({
       id: str(r.id) ?? '',
@@ -96,11 +104,12 @@ export async function deleteDive(accessToken: string, id: string): Promise<void>
   if (!UUID_RE.test(id)) {
     throw new Error('Invalid dive id');
   }
-  // id is validated as a UUID above and also bound as a parameter.
+  // id is validated as a UUID above, so it's safe to inline (required: the
+  // pg endpoint rejects bound params as table-function args). Simple query
+  // protocol — no bound params.
   const rows = await runUserQuery(
     accessToken,
-    'SELECT success FROM MD_DELETE_DIVE(id = $1::UUID)',
-    [id],
+    `SELECT success FROM MD_DELETE_DIVE(id = '${id}'::UUID)`,
   );
   if (rows[0]?.success !== true) {
     throw new Error('MD_DELETE_DIVE did not report success');
