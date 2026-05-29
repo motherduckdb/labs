@@ -196,7 +196,27 @@ Naming note: the live Flights SQL function and MCP tool use `md_token_name`. The
 
 `flight_schema.py` (pydantic) validates this on every build, mirroring the zod validation blessed-dives does for `package.json`.
 
-### 1.4 Deploy pattern (lifted from blessed-dives, retargeted at Flights SQL)
+### 1.4 Deploy pattern
+
+> **Superseded (2026-05-29) by the bootstrapper-flight pattern — see below.** The `deploy.py` / CI-deploy material that follows is shelved (not deleted): it's the path back to SHA-pinned, preview-per-PR deploys if/when the Flights SQL surface ships.
+
+#### Bootstrapper pattern (current approach)
+
+Each flight's registered `source_code` is a thin, stable bootstrapper (`flights/<name>/main.py`) that at run time:
+1. `apt-get install git` if needed
+2. shallow-clones `labs@<branch>` (`NBA_FLIGHT_REPO_BRANCH`, default `nba-migration` → flip to `main` post-merge)
+3. `uv sync` the pipeline package
+4. runs `python -m nba_box_scores_pipeline.entrypoints {nightly|backfill}` from the synced venv
+
+Because code is fetched at run time, **pushing to the branch updates the next run** — no re-registration, no `MD_CREATE_FLIGHT` SQL, no CI deploy step. Each flight is registered **once** via the MCP `create_flight`. The real `run_nightly()`/`run_backfill()` logic lives in the importable `entrypoints.py` (unit-tested); the bootstrappers are stdlib-only (`apt-get`/`git`/`uv`/`subprocess`).
+
+Validated end-to-end on the live runtime 2026-05-29 (throwaway flights, deleted after): a read-only harness (clone → `uv sync` → import → `md:` connect → row count = 3,049,526) and a dry-run of the real bootstrapper (real `get-games` API for RS + Playoffs, skip logic matched all 1314 cloned 2024-25 games). Two findings now in the code:
+- **duckdb pinned `<1.5.3`** — MotherDuck server rejects client ≥1.5.3 (max supported 1.5.2). Local tests use `:memory:` so were unaffected.
+- **`dry_run` skips schema mutations** — inspect-only.
+
+Tradeoffs accepted: clone-at-branch-HEAD → no SHA pinning/reproducibility, no per-PR preview flights. Fine for a nightly scrape; recoverable via `deploy.py` once SQL ships.
+
+#### deploy.py (shelved — original plan, lifted from blessed-dives)
 
 `deploy.py` is the analog of `deploy.ts`. The plan was to use **only the SQL functions from the [Flights docs PR](https://github.com/motherduckdb/motherduck-docs/pull/1633)** — no private APIs.
 
