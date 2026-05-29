@@ -40,7 +40,11 @@ export default function PlayerGameLog({
   const td = "px-2 py-0.5 text-right text-sm tabular-nums";
 
   return (
-    <div className="fixed inset-0 z-[60] flex justify-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+    <div
+      className="fixed inset-0 flex justify-end"
+      style={{ background: "rgba(0,0,0,0.5)", zIndex: 60 }}
+      onClick={onClose}
+    >
       <div
         className="h-full overflow-y-auto p-4"
         style={{ width: "min(820px, 92%)", background: COLORS.card }}

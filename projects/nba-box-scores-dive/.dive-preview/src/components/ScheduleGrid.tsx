@@ -142,7 +142,15 @@ export default function ScheduleGrid({
           <h2 className="text-lg font-bold mb-3" style={{ color: COLORS.text }}>
             {formatDateHeading(g.date)}
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {/* Inline auto-fill grid (responsive Tailwind prefixes like md:/lg: don't
+              apply in the MotherDuck dive renderer — this flows columns by width). */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+              gap: 12,
+            }}
+          >
             {g.games.map((game) => (
               <GameCard key={game.game_id} game={game} onSelect={onSelectGame} />
             ))}
