@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+/* Minimal token set carried over from mdw-turbo's "brutalist" register so
+   the login + dashboard look the same without dragging in the whole site
+   stylesheet. */
+:root {
+  --background: #fafafa;
+  --foreground: #171717;
+  --muted-foreground: #71717a;
+  --primary: #ffde00;
+  --primary-foreground: #383838;
+  --accent: #6fc2ff;
+  --accent-foreground: #383838;
+  --destructive: #ef4444;
+  --brutal-surface: #f4efea;
+  --brutal-muted: #a1a1a1;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-brutal-surface: var(--brutal-surface);
+  --color-brutal-muted: var(--brutal-muted);
+}
