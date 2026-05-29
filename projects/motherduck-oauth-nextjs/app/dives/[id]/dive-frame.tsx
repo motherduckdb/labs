@@ -3,12 +3,11 @@
 import { useState } from 'react';
 
 /**
- * Renders the MotherDuck Dive embed iframe (embed-motherduck.com) with a
- * loading overlay until it finishes loading. `src` is the documented embed URL
- * (`…/sandbox/#session=<session>`); the sandbox attributes are the documented
- * `allow-scripts allow-same-origin` (same-origin here refers to
- * embed-motherduck.com's own origin — cross-origin to this app, so it stays
- * isolated from us).
+ * Renders the Dive viewer iframe (`/api/dives/view`, same app origin) with a
+ * loading overlay until it loads. `sandbox="allow-scripts"` WITHOUT
+ * `allow-same-origin` gives the document an opaque origin, so arbitrary Dive
+ * code can't reach this app's cookies/DOM/APIs. The dive talks to the server
+ * query proxy via an encrypted capability instead.
  */
 export function DiveFrame({ src, title }: { src: string; title: string }) {
   const [loaded, setLoaded] = useState(false);
@@ -30,7 +29,7 @@ export function DiveFrame({ src, title }: { src: string; title: string }) {
         onLoad={() => setLoaded(true)}
         className="block w-full h-full"
         style={{ border: 0 }}
-        sandbox="allow-scripts allow-same-origin"
+        sandbox="allow-scripts"
       />
     </div>
   );

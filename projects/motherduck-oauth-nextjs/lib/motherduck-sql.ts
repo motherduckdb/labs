@@ -1,5 +1,12 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
 import { createMCPClient, executeToolWithStatus } from './mcp-client';
+
+// Return BIGINT (oid 20) and NUMERIC (oid 1700) as JS numbers rather than
+// strings, so dive chart libraries can do arithmetic on aggregate columns
+// (COUNT/SUM/AVG). Loses precision above 2^53 — fine for visualization; a dive
+// needing exact big integers can CAST to VARCHAR.
+types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
 
 /**
  * Run actual SQL against MotherDuck server-side via its Postgres wire-protocol
@@ -135,4 +142,36 @@ export async function runUserQuery(
     ? await pool.query(sql, params)
     : await pool.query(sql);
   return result.rows as Record<string, unknown>[];
+}
+
+/**
+ * Run a Dive's query as the signed-in user: ATTACH the dive's required shares
+ * (idempotent, failures tolerated) then run the (already read-only-validated)
+ * SQL — all on ONE checked-out connection so the ATTACHes are visible to the
+ * query.
+ */
+export async function runDiveQuery(
+  accessToken: string,
+  sql: string,
+  requiredDatabases: Array<{ path?: unknown; alias?: unknown }> = [],
+): Promise<Record<string, unknown>[]> {
+  const pool = await getPool(accessToken);
+  const client = await pool.connect();
+  try {
+    for (const db of requiredDatabases) {
+      if (!db || typeof db.path !== 'string' || typeof db.alias !== 'string') continue;
+      const path = db.path.replace(/'/g, "''");
+      const alias = db.alias.replace(/"/g, '""');
+      try {
+        await client.query(`ATTACH IF NOT EXISTS '${path}' AS "${alias}"`);
+      } catch {
+        // A share the user can't attach shouldn't abort the query — the dive's
+        // SELECT may not even reference it.
+      }
+    }
+    const result = await client.query(sql);
+    return result.rows as Record<string, unknown>[];
+  } finally {
+    client.release();
+  }
 }
