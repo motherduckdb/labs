@@ -2,6 +2,47 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/**
+ * Content-Security-Policy for the Dive viewer document.
+ *
+ * The viewer inlines a user-scoped short-lived MotherDuck token (SLT) as
+ * `window.__SLT` and runs arbitrary user/model-authored Dive source in-browser
+ * via the MotherDuck WASM client. Two jobs:
+ *
+ *   1. `sandbox allow-scripts` (with NO `allow-same-origin`) gives the document
+ *      an opaque origin so it can't touch the app's cookies / same-origin
+ *      storage — even when `/api/dives/view?id=...` is opened directly as a
+ *      top-level page, not just inside the `allow-scripts` iframe.
+ *   2. `default-src 'none'` plus a tight allowlist constrains where the SLT can
+ *      be exfiltrated: scripts/styles/connections may only reach the handful of
+ *      CDNs and MotherDuck hosts the viewer actually needs.
+ *
+ * The SAME string is served as a response header AND mirrored into a
+ * `<meta http-equiv="Content-Security-Policy">` in the document head (defense in
+ * depth).
+ *
+ * WARNING (best-effort allowlist): the `connect-src` / `worker-src` hosts below
+ * are derived from reading the bootstrap, NOT from a live browser run. The WASM
+ * client pulls DuckDB assets (esm.sh / jsdelivr / app.motherduck.com) and opens
+ * regional `*.motherduck.com` connections at runtime; a missing host silently
+ * BLANKS the dive with only a CSP console error. Re-verify in a real browser
+ * before relying on this, and widen the list if a dive blanks.
+ */
+export const DIVE_VIEWER_CSP = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://esm.sh",
+  'connect-src https://*.motherduck.com wss://*.motherduck.com https://esm.sh https://unpkg.com https://cdn.jsdelivr.net',
+  "style-src 'unsafe-inline' https:",
+  "img-src 'self' data: https:",
+  'font-src https: data:',
+  'worker-src blob:',
+  'child-src blob:',
+  "form-action 'none'",
+  "frame-src 'none'",
+  "base-uri 'none'",
+  'sandbox allow-scripts',
+].join('; ');
+
 export interface RequiredDatabase {
   type?: string;
   path?: string;
@@ -265,27 +306,39 @@ export function buildDiveViewerHtml(params: {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Defense-in-depth: mirror the response-header CSP into the document so
+       the policy still applies if the page is ever served without the header
+       (e.g. saved + reopened, or a misconfigured proxy strips headers). The
+       authoritative copy is the Content-Security-Policy response header set in
+       app/api/dives/view/route.ts. NOTE: the \`sandbox\` directive in a <meta>
+       CSP is ignored by browsers (sandbox only takes effect via the header) —
+       it's harmless here and kept so both copies are byte-identical. -->
+  <meta http-equiv="Content-Security-Policy" content="${escapeHtml(DIVE_VIEWER_CSP)}">
   <title>${escapeHtml(title)}</title>
 
-  <!-- Tailwind CSS -->
+  <!-- Tailwind CSS. cdn.tailwindcss.com is NOT version-pinnable via the URL
+       (it serves the latest JIT runtime); the host is allowlisted in the CSP
+       script-src instead. -->
   <script crossorigin="anonymous" src="https://cdn.tailwindcss.com"><\/script>
 
-  <!-- React -->
-  <script crossorigin="anonymous" src="https://unpkg.com/react@18/umd/react.development.js"><\/script>
-  <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
+  <!-- React. Pinned to exact versions (react@18.3.1 / react-dom@18.3.1) so a
+       floating tag can't silently ship a new build into this token-bearing,
+       arbitrary-code-running page. -->
+  <script crossorigin="anonymous" src="https://unpkg.com/react@18.3.1/umd/react.development.js"><\/script>
+  <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"><\/script>
 
   <!-- PropTypes (required by Recharts) -->
-  <script crossorigin="anonymous" src="https://unpkg.com/prop-types@15/prop-types.min.js"><\/script>
+  <script crossorigin="anonymous" src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"><\/script>
 
   <!-- Babel for JSX + module compilation. crossorigin so the window.error
        handler below gets a real Error object (with stack) instead of the
        sanitized "Script error." that browsers serve for opaque cross-origin
        scripts. unpkg returns Access-Control-Allow-Origin:* so anonymous is
        fine. Same reason on Recharts / Tailwind / PropTypes / React above. -->
-  <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+  <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"><\/script>
 
   <!-- Recharts -->
-  <script crossorigin="anonymous" src="https://unpkg.com/recharts@2/umd/Recharts.js"><\/script>
+  <script crossorigin="anonymous" src="https://unpkg.com/recharts@2.15.4/umd/Recharts.js"><\/script>
 
   <style>
     /* Cascade 100% height through html/body/root so dive components written

@@ -48,9 +48,41 @@ interface CachedPool {
 }
 
 const POOL_TTL_MS = 20 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const pools = new Map<string, CachedPool>();
 
+/**
+ * Close and remove every cached pool whose age has reached the TTL.
+ *
+ * Because the OAuth access token rotates on refresh, an expired token's key is
+ * never looked up again — so without a proactive sweep its `pg.Pool` would
+ * linger in the Map for the process lifetime, leaking one pool per refresh.
+ * This is invoked both at the start of every `getPool` call and from a periodic
+ * background timer.
+ */
+function sweepExpiredPools(): void {
+  const now = Date.now();
+  for (const [key, cached] of pools) {
+    if (now - cached.createdAt >= POOL_TTL_MS) {
+      cached.pool.end().catch(() => { /* ignore */ });
+      pools.delete(key);
+    }
+  }
+}
+
+// Create the periodic sweep exactly once at module level. `.unref()` keeps the
+// timer from holding the Node process alive.
+let sweepTimer: ReturnType<typeof setInterval> | undefined;
+if (!sweepTimer) {
+  sweepTimer = setInterval(sweepExpiredPools, SWEEP_INTERVAL_MS);
+  sweepTimer.unref?.();
+}
+
 async function getPool(accessToken: string): Promise<Pool> {
+  // Proactively evict expired pools (including ones whose rotated token will
+  // never be requested again) before serving this lookup.
+  sweepExpiredPools();
+
   const cached = pools.get(accessToken);
   if (cached && Date.now() - cached.createdAt < POOL_TTL_MS) {
     return cached.pool;

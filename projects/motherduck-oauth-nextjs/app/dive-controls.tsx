@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import type { DiveSort, SortDir } from '@/lib/dives';
 
 const SORT_LABELS: Record<DiveSort, string> = {
@@ -27,6 +27,34 @@ export function DiveControls({
   const params = useSearchParams();
   const [search, setSearch] = useState(q);
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // `isPending` stays true across the server round-trip a navigation triggers,
+  // so it covers the slow "All dives" list query — letting us show a loading
+  // indicator instead of the click appearing to do nothing.
+  const [isPending, startTransition] = useTransition();
+
+  // Keep refs to the LATEST params/pathname so a debounced `q` push that fires
+  // after a later render reads current values instead of the closure captured
+  // when it was scheduled. This prevents a delayed search push from clobbering
+  // a scope/sort/dir change the user made while the search was still pending.
+  const paramsRef = useRef(params);
+  const pathnameRef = useRef(pathname);
+  // Sync the refs to the latest values in an effect (not during render — refs
+  // must not be written while rendering). Runs after every commit, so a
+  // debounced `push` that fires later reads current params/pathname.
+  useEffect(() => {
+    paramsRef.current = params;
+    pathnameRef.current = pathname;
+  });
+
+  // Clear any pending debounce timer on unmount so it can't fire (and navigate
+  // via router.replace) after this component has gone away — e.g. the user
+  // types in search then immediately opens a Dive before the 300ms elapses.
+  useEffect(
+    () => () => {
+      if (debounce.current) clearTimeout(debounce.current);
+    },
+    [],
+  );
 
   // Resync the controlled input when `q` changes from outside the component
   // (e.g. back/forward navigation). Adjusting state during render with a
@@ -39,13 +67,16 @@ export function DiveControls({
   }
 
   function push(next: Record<string, string | undefined>) {
-    const sp = new URLSearchParams(params.toString());
+    const sp = new URLSearchParams(paramsRef.current.toString());
     for (const [k, v] of Object.entries(next)) {
       if (v === undefined || v === '') sp.delete(k);
       else sp.set(k, v);
     }
     const qs = sp.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    const path = pathnameRef.current;
+    startTransition(() => {
+      router.replace(qs ? `${path}?${qs}` : path, { scroll: false });
+    });
   }
 
   function onSearchChange(value: string) {
@@ -55,7 +86,7 @@ export function DiveControls({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-3 mb-6">
+    <div className="flex flex-wrap items-center gap-3 mb-6" aria-busy={isPending}>
       <div className="flex border-2 border-foreground rounded-sm shadow-[2px_2px_0_#171717] overflow-hidden">
         {(['mine', 'all'] as const).map((s) => (
           <button
@@ -105,6 +136,17 @@ export function DiveControls({
       >
         {dir === 'asc' ? '↑ Asc' : '↓ Desc'}
       </button>
+
+      {isPending && (
+        <span
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 text-sm text-brutal-muted"
+        >
+          <span className="w-4 h-4 rounded-full border-2 border-foreground/20 border-t-foreground animate-spin" />
+          Loading…
+        </span>
+      )}
     </div>
   );
 }

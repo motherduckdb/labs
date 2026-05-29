@@ -1,6 +1,6 @@
 import { createMCPClient, executeToolWithStatus } from '@/lib/mcp-client';
 import { getStoredTokens } from '@/lib/motherduck-oauth';
-import { buildDiveViewerHtml } from '@/lib/dive-viewer';
+import { buildDiveViewerHtml, DIVE_VIEWER_CSP } from '@/lib/dive-viewer';
 import { getMotherDuckApiUrl } from '@/lib/motherduck-env';
 import { NextRequest } from 'next/server';
 
@@ -77,6 +77,20 @@ export async function GET(request: NextRequest) {
     return new Response(html, {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
+        // Sandbox the RESPONSE itself (not just the <iframe>): an HTTP-level
+        // `sandbox allow-scripts` directive gives this document an opaque
+        // origin even when opened directly as a top-level page, so it can't
+        // read the app's cookies / same-origin storage. The remaining
+        // directives constrain where the inlined user-scoped SLT can be
+        // exfiltrated to while still allowing the WASM viewer to function.
+        // Mirrored as a <meta http-equiv> in the HTML <head> for defense in
+        // depth. See DIVE_VIEWER_CSP in lib/dive-viewer.ts.
+        'Content-Security-Policy': DIVE_VIEWER_CSP,
+        // Token-bearing HTML must never be cached (shared caches, browser
+        // back/forward cache, CDNs). Vary on Cookie since the response is
+        // scoped to the signed-in user.
+        'Cache-Control': 'private, no-store',
+        Vary: 'Cookie',
       },
     });
   } catch (error) {

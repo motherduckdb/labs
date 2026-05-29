@@ -19,6 +19,12 @@ import { cookies } from 'next/headers';
 import { getMotherDuckMcpUrl } from './motherduck-env';
 
 const MCP_SERVER_URL = getMotherDuckMcpUrl();
+// MotherDuck enforces read vs. write by TOKEN TYPE, not by OAuth scope: the
+// short-lived token minted for the signed-in user is read/write, so the
+// destructive delete flow (MD_DELETE_DIVE) works even though the requested
+// scope reads "read:databases". `read:databases` here gates MCP-resource
+// access, not SQL mutation. (MD has no documented granular write scope; a
+// truly read-only deployment would mint a Read-Scaling token instead.)
 const SCOPES = 'openid profile email read:databases offline_access';
 
 // Cookie names
