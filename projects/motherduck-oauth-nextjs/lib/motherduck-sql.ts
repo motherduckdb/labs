@@ -1,5 +1,6 @@
 import { Pool, types } from 'pg';
 import { createMCPClient, executeToolWithStatus } from './mcp-client';
+import { getMotherDuckApiUrl } from './motherduck-env';
 
 // Return BIGINT (oid 20) and NUMERIC (oid 1700) as JS numbers rather than
 // strings, so dive chart libraries can do arithmetic on aggregate columns
@@ -56,7 +57,41 @@ interface CachedPool {
 
 const POOL_TTL_MS = 20 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+// Keyed by `${mode}:${accessToken}` — separate read/write (list, delete) and
+// read-scaling (dive query proxy) pools per user.
 const pools = new Map<string, CachedPool>();
+
+/**
+ * Mint a delegated, engine-enforced READ-ONLY token for the signed-in user via
+ * `POST /v1/users/{username}/tokens` (token_type=read_scaling). Read-scaling
+ * tokens route to read-only replicas that reject all writes, so the query
+ * proxy can't be coerced into a mutation regardless of the SQL. Authenticated
+ * with the user's own (read/write) short-lived token, for their own username —
+ * stays delegated and per-user.
+ */
+async function mintReadScalingCreds(accessToken: string): Promise<PgCreds> {
+  const { token: rwToken, host } = await mintPgCreds(accessToken);
+  const rows = await runUserQuery(accessToken, 'SELECT CURRENT_USER AS username');
+  const username = rows[0]?.username;
+  if (typeof username !== 'string' || !username) {
+    throw new Error('Could not resolve current MotherDuck user for read-scaling token');
+  }
+  const res = await fetch(`${getMotherDuckApiUrl()}/v1/users/${encodeURIComponent(username)}/tokens`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${rwToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'motherduck-oauth-nextjs dive viewer', token_type: 'read_scaling', ttl: 1800 }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`read_scaling token mint failed (${res.status}): ${detail.slice(0, 200)}`);
+  }
+  const data = (await res.json()) as Record<string, unknown>;
+  const token = data.token ?? data.value ?? data.access_token;
+  if (typeof token !== 'string' || !token) {
+    throw new Error('read_scaling token response missing `token`');
+  }
+  return { token, host };
+}
 
 /**
  * Close and remove every cached pool whose age has reached the TTL.
@@ -85,21 +120,22 @@ if (!sweepTimer) {
   sweepTimer.unref?.();
 }
 
-async function getPool(accessToken: string): Promise<Pool> {
+/** Get-or-create a cached pg pool for `key`, building creds via `mintCreds`. */
+async function getPoolFor(key: string, mintCreds: () => Promise<PgCreds>): Promise<Pool> {
   // Proactively evict expired pools (including ones whose rotated token will
   // never be requested again) before serving this lookup.
   sweepExpiredPools();
 
-  const cached = pools.get(accessToken);
+  const cached = pools.get(key);
   if (cached && Date.now() - cached.createdAt < POOL_TTL_MS) {
     return cached.pool;
   }
   if (cached) {
     cached.pool.end().catch(() => { /* ignore */ });
-    pools.delete(accessToken);
+    pools.delete(key);
   }
 
-  const { token, host } = await mintPgCreds(accessToken);
+  const { token, host } = await mintCreds();
   const pool = new Pool({
     host,
     port: 5432,
@@ -118,8 +154,18 @@ async function getPool(accessToken: string): Promise<Pool> {
     console.error('[motherduck-sql] idle pg client error:', err.message);
   });
 
-  pools.set(accessToken, { pool, createdAt: Date.now() });
+  pools.set(key, { pool, createdAt: Date.now() });
   return pool;
+}
+
+/** Read/write pool (list, delete, resolving CURRENT_USER). */
+function getPool(accessToken: string): Promise<Pool> {
+  return getPoolFor(`rw:${accessToken}`, () => mintPgCreds(accessToken));
+}
+
+/** Read-scaling (engine-enforced read-only) pool for the dive query proxy. */
+function getReadScalingPool(accessToken: string): Promise<Pool> {
+  return getPoolFor(`ro:${accessToken}`, () => mintReadScalingCreds(accessToken));
 }
 
 /**
@@ -145,17 +191,18 @@ export async function runUserQuery(
 }
 
 /**
- * Run a Dive's query as the signed-in user: ATTACH the dive's required shares
- * (idempotent, failures tolerated) then run the (already read-only-validated)
- * SQL — all on ONE checked-out connection so the ATTACHes are visible to the
- * query.
+ * Run a Dive's query as the signed-in user over a **read-scaling (read-only)**
+ * connection — the engine rejects any write the SQL guard might miss. ATTACH
+ * the dive's required shares (idempotent, failures tolerated) then run the
+ * (already read-only-validated) SQL on ONE checked-out connection so the
+ * ATTACHes are visible to the query.
  */
 export async function runDiveQuery(
   accessToken: string,
   sql: string,
   requiredDatabases: Array<{ path?: unknown; alias?: unknown }> = [],
 ): Promise<Record<string, unknown>[]> {
-  const pool = await getPool(accessToken);
+  const pool = await getReadScalingPool(accessToken);
   const client = await pool.connect();
   try {
     for (const db of requiredDatabases) {
