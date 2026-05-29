@@ -97,8 +97,22 @@ npm run test
 - The Dive iframe is sandboxed to an **opaque origin** (no `allow-same-origin`)
   and served with a tight CSP (`connect-src` = app origin + esm.sh). It can't
   reach the app's cookies/DOM/APIs.
-- The query proxy enforces **read-only** SQL and is bound to the dive via the
-  capability; a leaked capability grants at most brief read-only proxy access.
+- The query proxy runs on a **read-scaling (read-only) token** minted per-user
+  (`POST /v1/users/{username}/tokens`), so writes are rejected by the engine —
+  not just by the SQL allowlist. It's also bound to the dive via the capability;
+  a leaked capability grants at most brief read-only proxy access.
+
+## Known limitations
+
+- **Read-replica lag.** Read-scaling tokens route to read-only replicas, which
+  can briefly lag writes — a Dive querying a *just-created/just-modified* table
+  may transiently not see it. Fine for established Dives; relevant if you expect
+  to view data seconds after writing it.
+- **Render fidelity.** The viewer runs a faithful port of the dive SDK, not
+  MotherDuck's hosted renderer; Dives leaning on SDK features beyond the query
+  hooks may differ.
+- A shared Dive's code can still exfiltrate **read-only** query results it's
+  allowed to read (inherent to letting a shared Dive query your data).
 
 ## Status
 

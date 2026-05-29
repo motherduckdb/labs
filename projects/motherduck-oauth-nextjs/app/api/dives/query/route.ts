@@ -66,6 +66,17 @@ export async function POST(req: NextRequest) {
     if (isAuthError(error)) {
       return Response.json({ error: 'auth_expired' }, { status: 401, headers: CORS });
     }
+    // A database error (pg surfaces `severity` + a SQLSTATE `code`) is the
+    // dive's own SQL failing — e.g. a Binder Error for a missing column — not a
+    // server fault. Return 400 with the message so the dive's debug HUD can
+    // show what's wrong. Infra failures (token mint, connection) fall through
+    // to 500.
+    const dbErr = error as { severity?: unknown; message?: unknown };
+    if (typeof dbErr?.severity === 'string') {
+      const message = typeof dbErr.message === 'string' ? dbErr.message : 'Query error';
+      console.warn('[DiveQuery] query error:', message);
+      return Response.json({ error: message }, { status: 400, headers: CORS });
+    }
     console.error('[DiveQuery] Error:', error);
     return Response.json({ error: 'Query failed' }, { status: 500, headers: CORS });
   }
