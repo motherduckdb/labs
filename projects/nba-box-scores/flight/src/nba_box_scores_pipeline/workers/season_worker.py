@@ -160,13 +160,18 @@ def process_season(
 
                 if not config.fill_raw:
                     rows = parse_box_score(raw)
-                    loader.load_box_scores(rows)
-                    loader.mark_ingested(IngestionLogEntry(
+                    # Replace the whole game atomically (delete + insert + mark)
+                    # so a reingest/correction can drop rows that vanished.
+                    loader.replace_game(
                         game_id=game_id,
-                        season_year=season_year,
-                        season_type=season_type,
-                        ingestion_status="success",
-                    ))
+                        rows=rows,
+                        log_entry=IngestionLogEntry(
+                            game_id=game_id,
+                            season_year=season_year,
+                            season_type=season_type,
+                            ingestion_status="success",
+                        ),
+                    )
 
                 progress.completed += 1
                 last_err = None

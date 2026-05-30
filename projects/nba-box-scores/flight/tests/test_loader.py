@@ -56,6 +56,26 @@ def _count(con, table: str) -> int:
     return con.execute(f"SELECT COUNT(*) FROM main.{table}").fetchone()[0]
 
 
+class TestReplaceGame:
+    """replace_game makes the freshly parsed set canonical — unlike a bare
+    INSERT OR REPLACE, it removes rows that are no longer present."""
+
+    def test_replace_drops_vanished_rows(self, con, loader, regulation_rows):
+        full = list(regulation_rows)
+        loader.load_box_scores(full)
+        assert _count(con, "box_scores") == len(full)
+
+        game_id = full[0].game_id
+        fewer = [r for r in full if r is not full[-1]]  # drop one row
+        loader.replace_game(
+            game_id=game_id,
+            rows=fewer,
+            log_entry=IngestionLogEntry(game_id=game_id, season_year=2024, season_type="Regular Season"),
+        )
+        assert _count(con, "box_scores") == len(fewer)
+        assert loader.is_game_ingested(game_id)
+
+
 class TestBoxScoreIdempotency:
     def test_first_load_writes_all_rows(self, con, loader, regulation_rows):
         loader.load_box_scores(regulation_rows)

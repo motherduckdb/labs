@@ -127,6 +127,27 @@ class Loader:
         )
         self._con.execute(sql, [getattr(entry, col) for col in _INGESTION_LOG_COLS])
 
+    def replace_game(self, *, game_id: str, rows: Sequence[BoxScoreRow], log_entry: IngestionLogEntry) -> None:
+        """Atomically make ``rows`` the canonical box score for ``game_id``.
+
+        `process_season` hands us a complete game at a time, so the game is the
+        natural replacement boundary: delete the game's existing rows, insert
+        the freshly parsed set, and mark ingestion success — all in one
+        transaction. `INSERT OR REPLACE` alone is enough for crash replay but
+        can't drop rows that are no longer present (a force reingest or a
+        parser/source correction that yields fewer rows), so we delete first.
+        """
+        con = self._con
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute(f"DELETE FROM main.{self._box_scores} WHERE game_id = ?", [game_id])
+            self.load_box_scores(rows)
+            self.mark_ingested(log_entry)
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+
     def store_raw_pbpstats(
         self,
         *,

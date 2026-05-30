@@ -74,9 +74,14 @@ export default function GameQualityExplorer({ filters }: { filters: Filters }) {
   });
 
   const sorted = [...rows].sort((a, b) => {
-    const av = a[sortKey] as number;
-    const bv = b[sortKey] as number;
-    return sortDir === "desc" ? bv - av : av - bv;
+    const av = a[sortKey];
+    const bv = b[sortKey];
+    // player_name is a string column — subtracting strings yields NaN (no-op sort).
+    if (typeof av === "string" || typeof bv === "string") {
+      const c = String(av).localeCompare(String(bv));
+      return sortDir === "desc" ? -c : c;
+    }
+    return sortDir === "desc" ? (bv as number) - (av as number) : (av as number) - (bv as number);
   });
 
   const clickSort = (key: string) => {
@@ -180,6 +185,8 @@ export default function GameQualityExplorer({ filters }: { filters: Filters }) {
           entityId={sel.id}
           playerName={sel.name}
           season={filters.season}
+          seasonType={filters.seasonType}
+          team={filters.team}
           onClose={() => setSel(null)}
         />
       )}

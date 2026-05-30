@@ -1,20 +1,35 @@
 import { useSQLQuery } from "@motherduck/react-sql-query";
 import { Loader2, X } from "lucide-react";
-import { DB } from "../lib/query";
+import { DB, SeasonTypeFilter } from "../lib/query";
 import { N, sqlStr, seasonLabel, COLORS } from "../lib/format";
+
+const SEASON_TYPE_SQL: Record<SeasonTypeFilter, string | null> = {
+  all: null,
+  regular: "Regular Season",
+  playoffs: "Playoffs",
+};
 
 export default function PlayerGameLog({
   entityId,
   playerName,
   season,
+  seasonType = "all",
+  team = "",
   onClose,
 }: {
   entityId: string;
   playerName: string;
   season: number | null;
+  seasonType?: SeasonTypeFilter;
+  team?: string;
   onClose: () => void;
 }) {
+  // Match the filter context of the row the user clicked, so a Playoffs or
+  // team-filtered view doesn't mix other games back into the log.
   const seasonCond = season != null ? `AND s.season_year = ${Number(season)}` : "";
+  const st = SEASON_TYPE_SQL[seasonType];
+  const typeCond = st ? `AND s.season_type = ${sqlStr(st)}` : "";
+  const teamCond = team ? `AND b.team_abbreviation = ${sqlStr(team)}` : "";
 
   const q = useSQLQuery(`
     SELECT strftime(s.game_date, '%Y-%m-%d') AS d, s.season_type,
@@ -31,7 +46,7 @@ export default function PlayerGameLog({
            b.fg_made, b.fg_attempted, b.fg3_made, b.fg3_attempted, b.ft_made, b.ft_attempted
     FROM ${DB}."box_scores" b
     JOIN ${DB}."schedule" s ON b.game_id = s.game_id
-    WHERE b.period = 'FullGame' AND b.entity_id = ${sqlStr(entityId)} ${seasonCond}
+    WHERE b.period = 'FullGame' AND b.entity_id = ${sqlStr(entityId)} ${seasonCond} ${typeCond} ${teamCond}
     ORDER BY s.game_date DESC
   `);
 

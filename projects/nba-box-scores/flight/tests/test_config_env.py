@@ -89,11 +89,33 @@ class TestFlightBootstrappersParse:
         m = _exec_flight_main("nba_nightly")
         assert callable(m.main)
         assert m.ENTRYPOINT_COMMAND == "nightly"
+        # Deploy defaults that decide whether the registered Flight runs at all.
+        assert m.DEFAULT_BRANCH == "main"
+        assert str(m.PROJECT_SUBDIR).endswith("projects/nba-box-scores/flight")
 
     def test_nba_backfill_bootstrapper(self):
         m = _exec_flight_main("nba_backfill")
         assert callable(m.main)
         assert m.ENTRYPOINT_COMMAND == "backfill"
+        assert m.DEFAULT_BRANCH == "main"
+        assert str(m.PROJECT_SUBDIR).endswith("projects/nba-box-scores/flight")
+
+
+class TestNightlyWritesProduction:
+    """run_nightly must default to the PRODUCTION table set (empty suffix);
+    a regression here would silently write box_scores_new and leave the Dive stale."""
+
+    def test_nightly_defaults_to_empty_suffix(self, monkeypatch):
+        from nba_box_scores_pipeline import entrypoints
+
+        captured: dict[str, str] = {}
+        monkeypatch.setattr(entrypoints, "build_config_from_env", lambda: object())
+        monkeypatch.setattr(
+            entrypoints, "_run",
+            lambda config, *, suffix, label: captured.update(suffix=suffix, label=label),
+        )
+        entrypoints.run_nightly()
+        assert captured["suffix"] == ""  # production, not "_new"
 
 
 class TestEntrypointDispatch:
