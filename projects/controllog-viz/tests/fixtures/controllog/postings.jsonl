@@ -1,0 +1,15 @@
+{"posting_id":"p1","event_id":"e2","account_type":"truth.money","account_id":"vendor:openrouter","unit":"$","delta_numeric":0.002,"dims_json":{}}
+{"posting_id":"p2","event_id":"e2","account_type":"truth.money","account_id":"project:demo","unit":"$","delta_numeric":-0.002,"dims_json":{}}
+{"posting_id":"p3","event_id":"e2","account_type":"truth.time","account_id":"agent:solver","unit":"ms","delta_numeric":1500,"dims_json":{}}
+{"posting_id":"p4","event_id":"e2","account_type":"truth.time","account_id":"project:demo","unit":"ms","delta_numeric":-1500,"dims_json":{}}
+{"posting_id":"p5","event_id":"e3","account_type":"truth.utility","account_id":"task:t1","unit":"points","delta_numeric":1,"dims_json":{}}
+{"posting_id":"p6","event_id":"e3","account_type":"truth.utility","account_id":"project:demo","unit":"points","delta_numeric":-1,"dims_json":{}}
+{"posting_id":"p7","event_id":"e3","account_type":"truth.state","account_id":"task:t1","unit":"tasks","delta_numeric":1,"dims_json":{}}
+{"posting_id":"p8","event_id":"e3","account_type":"truth.state","account_id":"task:t1","unit":"tasks","delta_numeric":-1,"dims_json":{}}
+{"posting_id":"p9","event_id":"e5","account_type":"truth.money","account_id":"vendor:openrouter","unit":"$","delta_numeric":0.005,"dims_json":{}}
+{"posting_id":"p10","event_id":"e5","account_type":"truth.money","account_id":"project:demo","unit":"$","delta_numeric":-0.005,"dims_json":{}}
+{"posting_id":"p11","event_id":"e5","account_type":"truth.time","account_id":"agent:solver","unit":"ms","delta_numeric":2200,"dims_json":{}}
+{"posting_id":"p12","event_id":"e5","account_type":"truth.time","account_id":"project:demo","unit":"ms","delta_numeric":-2200,"dims_json":{}}
+{"posting_id":"p13","event_id":"e6","account_type":"truth.state","account_id":"task:t2","unit":"tasks","delta_numeric":1,"dims_json":{}}
+{"posting_id":"p14","event_id":"e6","account_type":"truth.state","account_id":"task:t2","unit":"tasks","delta_numeric":-1,"dims_json":{}}
+{"posting_id":"p15","event_id":"e6","account_type":"truth.money","account_id":"project:demo","unit":"$","delta_numeric":-0.001,"dims_json":{}}
