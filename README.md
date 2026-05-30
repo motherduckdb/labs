@@ -18,6 +18,7 @@ Each experiment lives in its own directory under [`projects/`](./projects/). Bro
 | [`controllog-viz`](./projects/controllog-viz/) | Static HTML views for `controllog` datasets (JSONL or MotherDuck via one DuckDB layer) — a per-run review with a chain-of-thought conversation explorer and a cross-run dashboard with a run × question progression/regression matrix. |
 | [`metadata_generator`](./projects/metadata_generator/) | Generate rich metadata for MotherDuck databases — profile statistics, LLM-generated descriptions, and SQL `COMMENT` statements. Used as a dep by `bird-bench`. |
 | [`motherduck-dive-viewer`](./projects/motherduck-dive-viewer/) | Generic BI-style Next.js app — sign in with MotherDuck (OAuth 2.1 + PKCE), browse/search your Dives, and view them rendered inline via a server-side query proxy so no MotherDuck token ever reaches the browser. |
+| [`nba-box-scores`](./projects/nba-box-scores/) | NBA box scores on a MotherDuck-native stack: a Python ingest pipeline run as scheduled Flights (`flight/`) and a consolidated frontend built as a MotherDuck Dive (`dive/`). |
 | [`react-components`](./projects/react-components/) | Open-source React components extracted from MotherDuck's website and docs — embed a public Dive, embed a private Dive, and an in-browser MotherDuck SQL editor. |
 <!-- END PROJECT LIST -->
 
