@@ -26,7 +26,12 @@ function escapeHtml(s: string): string {
 export function buildDiveViewerCsp(appOrigin: string): string {
   return [
     "default-src 'none'",
-    "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://esm.sh",
+    // Tailwind is self-hosted from our own origin (see /tailwindcss.js) rather
+    // than cdn.tailwindcss.com: that CDN now serves Tailwind v4's browser build,
+    // which fails to apply utility classes inside this opaque-origin sandbox —
+    // collapsing every flex/grid layout to vertical block stacking. Borrowed
+    // from motherduck-website's dive-snippets renderer.
+    `script-src 'unsafe-inline' 'unsafe-eval' ${appOrigin} https://unpkg.com https://esm.sh`,
     `connect-src ${appOrigin} https://esm.sh`,
     "style-src 'unsafe-inline' https:",
     'img-src https: data:',
@@ -233,7 +238,7 @@ export function buildDiveViewerHtml(params: {
   <meta http-equiv="Content-Security-Policy" content="${escapeHtml(csp)}">
   <title>${escapeHtml(title)}</title>
 
-  <script crossorigin="anonymous" src="https://cdn.tailwindcss.com"><\/script>
+  <script src="${appOrigin}/tailwindcss.js"><\/script>
   <script crossorigin="anonymous" src="https://unpkg.com/react@18.3.1/umd/react.development.js"><\/script>
   <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"><\/script>
   <script crossorigin="anonymous" src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"><\/script>
@@ -251,7 +256,7 @@ export function buildDiveViewerHtml(params: {
 
   <style>
     html, body, #root { height: 100%; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    body { margin: 0; background: #f8f8f8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
     .dive-error { padding: 24px; color: #bc1200; font-size: 14px; white-space: pre-wrap; }
     .dive-loading { padding: 24px; color: #6a6a6a; font-size: 14px; display: flex; align-items: center; gap: 8px; }
     .dive-loading .dot { width: 6px; height: 6px; border-radius: 50%; background: #0777b3; animation: pulse 1s infinite; }
