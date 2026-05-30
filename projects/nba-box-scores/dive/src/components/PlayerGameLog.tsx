@@ -58,7 +58,12 @@ export default function PlayerGameLog({
     <div
       className="fixed inset-0 flex justify-end"
       style={{ background: "rgba(0,0,0,0.5)", zIndex: 60 }}
-      onClick={onClose}
+      // stopPropagation: when opened over BoxScorePanel this backdrop is nested
+      // inside the parent backdrop, so a bubbling click would also close the box score.
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
     >
       <div
         className="h-full overflow-y-auto p-4"

@@ -136,7 +136,17 @@ class Loader:
         transaction. `INSERT OR REPLACE` alone is enough for crash replay but
         can't drop rows that are no longer present (a force reingest or a
         parser/source correction that yields fewer rows), so we delete first.
+
+        Fails closed on an empty row set: an empty/not-ready PBPStats payload
+        parses to zero rows, and deleting + marking success would wipe a real
+        game. Raise instead so the caller's retry/error path preserves the
+        existing hydrated rows.
         """
+        if not rows:
+            raise ValueError(
+                f"refusing to replace game {game_id} with zero parsed rows "
+                "(empty or not-yet-ready box score)"
+            )
         con = self._con
         con.execute("BEGIN TRANSACTION")
         try:

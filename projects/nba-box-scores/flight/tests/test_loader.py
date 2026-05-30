@@ -75,6 +75,20 @@ class TestReplaceGame:
         assert _count(con, "box_scores") == len(fewer)
         assert loader.is_game_ingested(game_id)
 
+    def test_empty_rows_fails_closed(self, con, loader, regulation_rows):
+        full = list(regulation_rows)
+        loader.load_box_scores(full)
+        game_id = full[0].game_id
+        # An empty parse (not-ready payload) must NOT wipe the game or mark success.
+        with pytest.raises(ValueError):
+            loader.replace_game(
+                game_id=game_id,
+                rows=[],
+                log_entry=IngestionLogEntry(game_id=game_id, season_year=2024, season_type="Regular Season"),
+            )
+        assert _count(con, "box_scores") == len(full)
+        assert not loader.is_game_ingested(game_id)
+
 
 class TestBoxScoreIdempotency:
     def test_first_load_writes_all_rows(self, con, loader, regulation_rows):
