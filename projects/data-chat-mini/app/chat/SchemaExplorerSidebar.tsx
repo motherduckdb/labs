@@ -29,6 +29,10 @@ export function SchemaExplorerSidebar({
   const [openFrags, setOpenFrags] = useState<Record<string, boolean>>({});
   // Lowercased table name the user has selected; filters the context list below.
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  // Context scope. Defaults to the active database (the component is keyed by
+  // `database`, so this resets to 'database' on every switch). 'all' shows
+  // context referencing any database.
+  const [scope, setScope] = useState<'database' | 'all'>('database');
 
   // The component is keyed by `database` in ChatShell, so it remounts (and
   // state resets to the initial null/{}) when the database changes — no
@@ -124,19 +128,32 @@ export function SchemaExplorerSidebar({
     document.getElementById(`tbl-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
-  // Context list, filtered to the selected table when one is active.
+  // Context list, narrowed by scope (current database vs all) and then by the
+  // selected table when one is active.
   const visibleFragments = useMemo(() => {
-    if (!selectedTable) return fragments;
-    return fragments.filter((f) =>
-      f.references.some((ref) => {
-        const p = parseReference(ref);
-        return (
-          p.table?.toLowerCase() === selectedTable &&
-          (!p.database || p.database.toLowerCase() === database.toLowerCase())
-        );
-      }),
-    );
-  }, [fragments, selectedTable, database]);
+    let base = fragments;
+    if (scope === 'database') {
+      base = base.filter((f) => {
+        const dbRefs = f.references.map(parseReference).filter((p) => p.database && !p.isShare);
+        // Uncategorized fragments (no database-typed reference) stay visible in
+        // any database; otherwise show only those referencing this database.
+        if (dbRefs.length === 0) return true;
+        return dbRefs.some((p) => p.database!.toLowerCase() === database.toLowerCase());
+      });
+    }
+    if (selectedTable) {
+      base = base.filter((f) =>
+        f.references.some((ref) => {
+          const p = parseReference(ref);
+          return (
+            p.table?.toLowerCase() === selectedTable &&
+            (!p.database || p.database.toLowerCase() === database.toLowerCase())
+          );
+        }),
+      );
+    }
+    return base;
+  }, [fragments, scope, selectedTable, database]);
 
   return (
     <div className="flex h-full flex-col border-l border-[var(--border)] bg-[var(--panel)] w-72 shrink-0">
@@ -203,11 +220,9 @@ export function SchemaExplorerSidebar({
 
         {/* Local context fragments */}
         <div className="p-3 border-t border-[var(--border)]">
-          <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center justify-between mb-2">
             <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-              {selectedTable
-                ? `Context · ${selectedTable} (${visibleFragments.length}/${fragments.length})`
-                : `Context (${fragments.length})`}
+              Context ({visibleFragments.length})
             </div>
             <button
               onClick={refreshFragments}
@@ -217,22 +232,55 @@ export function SchemaExplorerSidebar({
               ↻
             </button>
           </div>
+
+          {/* Scope: default to the active database, or show all. */}
+          <div className="mb-2 inline-flex rounded-md border border-[var(--border)] overflow-hidden text-[10px]">
+            <button
+              onClick={() => setScope('database')}
+              title={`Show context referencing ${database}`}
+              className={`max-w-[140px] truncate px-2 py-0.5 ${
+                scope === 'database' ? 'bg-[var(--accent)] text-white' : 'bg-white text-[var(--muted)] hover:text-black'
+              }`}
+            >
+              {database}
+            </button>
+            <button
+              onClick={() => setScope('all')}
+              title="Show context across all databases"
+              className={`px-2 py-0.5 border-l border-[var(--border)] ${
+                scope === 'all' ? 'bg-[var(--accent)] text-white' : 'bg-white text-[var(--muted)] hover:text-black'
+              }`}
+            >
+              all
+            </button>
+          </div>
+
           {selectedTable && (
             <button
               onClick={() => setSelectedTable(null)}
-              className="mb-2 text-[10px] text-[var(--accent)] hover:underline"
+              className="block mb-2 text-[10px] text-[var(--accent)] hover:underline"
             >
-              ✕ clear filter — show all context
+              ✕ clear table filter (<code>{selectedTable}</code>)
             </button>
           )}
+
           {fragments.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
               No saved context yet. Ask the assistant to “remember” a durable insight.
             </div>
           )}
-          {fragments.length > 0 && selectedTable && visibleFragments.length === 0 && (
+          {fragments.length > 0 && visibleFragments.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
-              No saved context references <code>{selectedTable}</code> yet.
+              {selectedTable ? (
+                <>No saved context references <code>{selectedTable}</code>.</>
+              ) : (
+                <>
+                  No context references <code>{database}</code>.{' '}
+                  <button onClick={() => setScope('all')} className="text-[var(--accent)] hover:underline">
+                    Show all
+                  </button>
+                </>
+              )}
             </div>
           )}
           <ul className="text-sm flex flex-col gap-2">
