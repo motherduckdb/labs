@@ -27,6 +27,8 @@ export function SchemaExplorerSidebar({
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [fragments, setFragments] = useState<Fragment[]>([]);
   const [openFrags, setOpenFrags] = useState<Record<string, boolean>>({});
+  // Lowercased table name the user has selected; filters the context list below.
+  const [selectedTable, setSelectedTable] = useState<string | null>(null);
 
   // The component is keyed by `database` in ChatShell, so it remounts (and
   // state resets to the initial null/{}) when the database changes — no
@@ -97,14 +99,44 @@ export function SchemaExplorerSidebar({
     }
   };
 
-  // Clicking a fragment's reference chip expands the matching table in the tree.
+  // Clicking a table row selects it (filtering the context list below to the
+  // fragments that reference it) and expands its columns. Clicking the selected
+  // table again clears the selection and collapses it.
+  const onTableClick = (t: SchemaTable) => {
+    const key = `${t.schema}.${t.name}`;
+    const name = t.name.toLowerCase();
+    if (selectedTable === name) {
+      setSelectedTable(null);
+      if (expanded[key]) toggleTable(t);
+    } else {
+      setSelectedTable(name);
+      if (!expanded[key]) toggleTable(t);
+    }
+  };
+
+  // Clicking a fragment's reference chip selects + reveals that table in the tree.
   const revealTable = (tableName: string) => {
     const t = tables?.find((x) => x.name.toLowerCase() === tableName.toLowerCase());
     if (!t) return;
     const key = `${t.schema}.${t.name}`;
+    setSelectedTable(t.name.toLowerCase());
     if (!expanded[key]) toggleTable(t);
     document.getElementById(`tbl-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
+
+  // Context list, filtered to the selected table when one is active.
+  const visibleFragments = useMemo(() => {
+    if (!selectedTable) return fragments;
+    return fragments.filter((f) =>
+      f.references.some((ref) => {
+        const p = parseReference(ref);
+        return (
+          p.table?.toLowerCase() === selectedTable &&
+          (!p.database || p.database.toLowerCase() === database.toLowerCase())
+        );
+      }),
+    );
+  }, [fragments, selectedTable, database]);
 
   return (
     <div className="flex h-full flex-col border-l border-[var(--border)] bg-[var(--panel)] w-72 shrink-0">
@@ -124,11 +156,14 @@ export function SchemaExplorerSidebar({
               const key = `${t.schema}.${t.name}`;
               const cols = expanded[key];
               const refFrags = fragmentsByTable.get(t.name.toLowerCase());
+              const isSelected = selectedTable === t.name.toLowerCase();
               return (
                 <li key={key} id={`tbl-${key}`} className="mb-0.5">
                   <button
-                    onClick={() => toggleTable(t)}
-                    className="flex w-full items-center gap-1 rounded px-1 py-1 text-left hover:bg-white/70"
+                    onClick={() => onTableClick(t)}
+                    className={`flex w-full items-center gap-1 rounded px-1 py-1 text-left ${
+                      isSelected ? 'bg-[var(--accent)]/15' : 'hover:bg-white/70'
+                    }`}
                   >
                     <span className="text-[var(--muted)] w-3 text-xs">{cols ? '▾' : '▸'}</span>
                     <span className="truncate font-medium">{t.name}</span>
@@ -168,9 +203,11 @@ export function SchemaExplorerSidebar({
 
         {/* Local context fragments */}
         <div className="p-3 border-t border-[var(--border)]">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-1">
             <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-              Context ({fragments.length})
+              {selectedTable
+                ? `Context · ${selectedTable} (${visibleFragments.length}/${fragments.length})`
+                : `Context (${fragments.length})`}
             </div>
             <button
               onClick={refreshFragments}
@@ -180,13 +217,26 @@ export function SchemaExplorerSidebar({
               ↻
             </button>
           </div>
+          {selectedTable && (
+            <button
+              onClick={() => setSelectedTable(null)}
+              className="mb-2 text-[10px] text-[var(--accent)] hover:underline"
+            >
+              ✕ clear filter — show all context
+            </button>
+          )}
           {fragments.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
               No saved context yet. Ask the assistant to “remember” a durable insight.
             </div>
           )}
+          {fragments.length > 0 && selectedTable && visibleFragments.length === 0 && (
+            <div className="text-xs text-[var(--muted)]">
+              No saved context references <code>{selectedTable}</code> yet.
+            </div>
+          )}
           <ul className="text-sm flex flex-col gap-2">
-            {fragments.map((f) => {
+            {visibleFragments.map((f) => {
               const open = !!openFrags[f.id];
               return (
                 <li key={f.id} className="group rounded-md border border-[var(--border)] bg-white p-2">
@@ -203,6 +253,7 @@ export function SchemaExplorerSidebar({
                       title="Delete fragment"
                       className="opacity-0 group-hover:opacity-100 text-xs text-[var(--muted)] hover:text-red-600 shrink-0"
                       onClick={async () => {
+                        if (!window.confirm(`Delete saved context "${f.title}"? This can't be undone.`)) return;
                         await deleteFragment(f.id);
                         refreshFragments();
                       }}
