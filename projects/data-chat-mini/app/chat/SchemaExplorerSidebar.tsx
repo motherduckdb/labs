@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { getSessionId } from '@/lib/session-id';
 import { listFragments, deleteFragment, type Fragment } from '@/lib/context-store';
 import { parseReference } from '@/lib/references';
@@ -310,11 +312,15 @@ export function SchemaExplorerSidebar({
                     </button>
                   </div>
 
-                  <p
-                    className={`text-xs text-[var(--muted)] mt-1 whitespace-pre-wrap ${open ? '' : 'line-clamp-2'}`}
-                  >
-                    {f.content}
-                  </p>
+                  {open ? (
+                    <div className="prose prose-sm max-w-none mt-1 text-xs leading-relaxed text-[var(--foreground)] prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-1 prose-headings:text-xs prose-pre:my-1 prose-pre:text-[11px] prose-code:text-[11px]">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{f.content}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[var(--muted)] mt-1 line-clamp-2 whitespace-pre-wrap">
+                      {f.content}
+                    </p>
+                  )}
 
                   {open && f.references.length > 0 && (
                     <div className="mt-2 flex flex-col gap-1">
