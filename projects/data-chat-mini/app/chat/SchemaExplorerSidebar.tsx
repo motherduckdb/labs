@@ -1,14 +1,19 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getSessionId } from '@/lib/session-id';
 import { listFragments, deleteFragment, type Fragment } from '@/lib/context-store';
+import { parseReference } from '@/lib/references';
 import type { SchemaTable, SchemaColumn } from '@/lib/mcp-parsers';
 
 /**
  * Slim schema explorer: a catalog tree (database → tables → columns) the human
  * can browse to understand the data, plus the local context-fragment list (the
  * IndexedDB-backed context layer the model reads/writes via the round-trip).
+ *
+ * The two halves are linked: each fragment card lists the database objects it
+ * references (clickable → expands that table in the tree), and each referenced
+ * table shows a badge with how many fragments point at it.
  */
 export function SchemaExplorerSidebar({
   database,
@@ -21,6 +26,7 @@ export function SchemaExplorerSidebar({
   const [tablesError, setTablesError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [fragments, setFragments] = useState<Fragment[]>([]);
+  const [openFrags, setOpenFrags] = useState<Record<string, boolean>>({});
 
   // The component is keyed by `database` in ChatShell, so it remounts (and
   // state resets to the initial null/{}) when the database changes — no
@@ -50,6 +56,24 @@ export function SchemaExplorerSidebar({
     refreshFragments();
   }, [refreshFragments, contextReloadKey]);
 
+  // Map a table name (lowercased) → fragments that reference it in THIS db, so
+  // the schema tree can show how many saved insights relate to each object.
+  const fragmentsByTable = useMemo(() => {
+    const m = new Map<string, Fragment[]>();
+    for (const f of fragments) {
+      for (const ref of f.references) {
+        const p = parseReference(ref);
+        if (p.isShare || !p.table) continue;
+        if (p.database && p.database.toLowerCase() !== database.toLowerCase()) continue;
+        const k = p.table.toLowerCase();
+        const arr = m.get(k) ?? [];
+        if (!arr.includes(f)) arr.push(f);
+        m.set(k, arr);
+      }
+    }
+    return m;
+  }, [fragments, database]);
+
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
     if (expanded[key]) {
@@ -73,6 +97,15 @@ export function SchemaExplorerSidebar({
     }
   };
 
+  // Clicking a fragment's reference chip expands the matching table in the tree.
+  const revealTable = (tableName: string) => {
+    const t = tables?.find((x) => x.name.toLowerCase() === tableName.toLowerCase());
+    if (!t) return;
+    const key = `${t.schema}.${t.name}`;
+    if (!expanded[key]) toggleTable(t);
+    document.getElementById(`tbl-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+
   return (
     <div className="flex h-full flex-col border-l border-[var(--border)] bg-[var(--panel)] w-72 shrink-0">
       <div className="flex-1 overflow-y-auto">
@@ -90,8 +123,9 @@ export function SchemaExplorerSidebar({
             {tables?.map((t) => {
               const key = `${t.schema}.${t.name}`;
               const cols = expanded[key];
+              const refFrags = fragmentsByTable.get(t.name.toLowerCase());
               return (
-                <li key={key} className="mb-0.5">
+                <li key={key} id={`tbl-${key}`} className="mb-0.5">
                   <button
                     onClick={() => toggleTable(t)}
                     className="flex w-full items-center gap-1 rounded px-1 py-1 text-left hover:bg-white/70"
@@ -100,6 +134,14 @@ export function SchemaExplorerSidebar({
                     <span className="truncate font-medium">{t.name}</span>
                     {t.type !== 'table' && (
                       <span className="ml-1 text-[10px] text-[var(--muted)]">{t.type}</span>
+                    )}
+                    {refFrags && refFrags.length > 0 && (
+                      <span
+                        className="ml-auto shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 text-[10px] font-medium text-[var(--accent)]"
+                        title={`${refFrags.length} saved context fragment(s):\n` + refFrags.map((f) => `• ${f.title}`).join('\n')}
+                      >
+                        ⬡ {refFrags.length}
+                      </span>
                     )}
                   </button>
                   {cols === 'loading' && (
@@ -144,31 +186,66 @@ export function SchemaExplorerSidebar({
             </div>
           )}
           <ul className="text-sm flex flex-col gap-2">
-            {fragments.map((f) => (
-              <li key={f.id} className="group rounded-md border border-[var(--border)] bg-white p-2">
-                <div className="flex items-start gap-1">
-                  <span className="flex-1 font-medium text-[13px] leading-snug">{f.title}</span>
-                  <button
-                    title="Delete fragment"
-                    className="opacity-0 group-hover:opacity-100 text-xs text-[var(--muted)] hover:text-red-600"
-                    onClick={async () => {
-                      await deleteFragment(f.id);
-                      refreshFragments();
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-                <p className="text-xs text-[var(--muted)] mt-1 line-clamp-3 whitespace-pre-wrap">
-                  {f.content}
-                </p>
-                {f.references.length > 0 && (
-                  <div className="mt-1 text-[10px] text-[var(--muted)] truncate">
-                    {f.references.join(', ')}
+            {fragments.map((f) => {
+              const open = !!openFrags[f.id];
+              return (
+                <li key={f.id} className="group rounded-md border border-[var(--border)] bg-white p-2">
+                  <div className="flex items-start gap-1">
+                    <button
+                      onClick={() => setOpenFrags((prev) => ({ ...prev, [f.id]: !prev[f.id] }))}
+                      className="flex flex-1 items-start gap-1 text-left"
+                      title={open ? 'Collapse' : 'Expand'}
+                    >
+                      <span className="text-[var(--muted)] text-xs mt-0.5 w-3 shrink-0">{open ? '▾' : '▸'}</span>
+                      <span className="flex-1 font-medium text-[13px] leading-snug">{f.title}</span>
+                    </button>
+                    <button
+                      title="Delete fragment"
+                      className="opacity-0 group-hover:opacity-100 text-xs text-[var(--muted)] hover:text-red-600 shrink-0"
+                      onClick={async () => {
+                        await deleteFragment(f.id);
+                        refreshFragments();
+                      }}
+                    >
+                      ✕
+                    </button>
                   </div>
-                )}
-              </li>
-            ))}
+
+                  <p
+                    className={`text-xs text-[var(--muted)] mt-1 whitespace-pre-wrap ${open ? '' : 'line-clamp-2'}`}
+                  >
+                    {f.content}
+                  </p>
+
+                  {open && f.references.length > 0 && (
+                    <div className="mt-2 flex flex-col gap-1">
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted)]">References</div>
+                      <div className="flex flex-wrap gap-1">
+                        {f.references.map((ref, i) => {
+                          const p = parseReference(ref);
+                          const clickable = !p.isShare && !!p.table;
+                          return (
+                            <button
+                              key={i}
+                              disabled={!clickable}
+                              onClick={() => clickable && revealTable(p.table!)}
+                              title={clickable ? `Show ${p.table} in the schema tree` : ref}
+                              className={`rounded px-1.5 py-0.5 text-[10px] border border-[var(--border)] ${
+                                clickable
+                                  ? 'bg-[var(--panel)] hover:border-[var(--accent)] hover:text-[var(--accent)] cursor-pointer'
+                                  : 'bg-[var(--panel)] text-[var(--muted)] cursor-default'
+                              }`}
+                            >
+                              {p.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       </div>
