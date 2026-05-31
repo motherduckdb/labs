@@ -22,7 +22,10 @@ export function DatabasePicker({ onPick }: { onPick: (database: string) => void 
           throw new Error(body.error || `HTTP ${res.status}`);
         }
         const data = await res.json();
-        setDatabases(data.databases || []);
+        // Dedupe — the catalog can list the same database name more than once
+        // (e.g. a database plus a same-named share), which would collide on the
+        // React key and render duplicate buttons.
+        setDatabases(Array.from(new Set<string>(data.databases || [])));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load databases');
       }
