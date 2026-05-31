@@ -5,8 +5,27 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getSessionId } from '@/lib/session-id';
 import { listFragments, deleteFragment, type Fragment } from '@/lib/context-store';
-import { parseReference } from '@/lib/references';
+import { parseReference, type ParsedRef } from '@/lib/references';
 import type { SchemaTable, SchemaColumn } from '@/lib/mcp-parsers';
+
+/** A schema-qualified table selection — disambiguates same-named tables. */
+interface SelectedTable { schema: string; name: string }
+
+const tkey = (schema: string, name: string) => `${schema}.${name}`.toLowerCase();
+
+/**
+ * Does a parsed reference point at this specific table? Matches on table name
+ * AND, when the reference names them, database + schema — so `db.main.orders`
+ * links only to `main.orders`, not `archive.orders`. A reference that omits the
+ * schema falls back to a name match (best effort).
+ */
+function refMatchesTable(p: ParsedRef, table: { schema: string; name: string }, database: string): boolean {
+  if (p.isShare || !p.table) return false;
+  if (p.database && p.database.toLowerCase() !== database.toLowerCase()) return false;
+  if (p.table.toLowerCase() !== table.name.toLowerCase()) return false;
+  if (p.schema && p.schema.toLowerCase() !== table.schema.toLowerCase()) return false;
+  return true;
+}
 
 /**
  * Slim schema explorer: a catalog tree (database → tables → columns) the human
@@ -29,8 +48,8 @@ export function SchemaExplorerSidebar({
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [fragments, setFragments] = useState<Fragment[]>([]);
   const [openFrags, setOpenFrags] = useState<Record<string, boolean>>({});
-  // Lowercased table name the user has selected; filters the context list below.
-  const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  // Schema-qualified table the user has selected; filters the context list below.
+  const [selectedTable, setSelectedTable] = useState<SelectedTable | null>(null);
   // Context scope. Defaults to the active database (the component is keyed by
   // `database`, so this resets to 'database' on every switch). 'all' shows
   // context referencing any database.
@@ -64,23 +83,20 @@ export function SchemaExplorerSidebar({
     refreshFragments();
   }, [refreshFragments, contextReloadKey]);
 
-  // Map a table name (lowercased) → fragments that reference it in THIS db, so
-  // the schema tree can show how many saved insights relate to each object.
-  const fragmentsByTable = useMemo(() => {
+  // Map a schema-qualified table key (schema.name) → fragments that reference
+  // exactly that table in THIS db. Schema-qualified so same-named tables in
+  // different schemas don't share badges/filters.
+  const fragmentsByTableKey = useMemo(() => {
     const m = new Map<string, Fragment[]>();
-    for (const f of fragments) {
-      for (const ref of f.references) {
-        const p = parseReference(ref);
-        if (p.isShare || !p.table) continue;
-        if (p.database && p.database.toLowerCase() !== database.toLowerCase()) continue;
-        const k = p.table.toLowerCase();
-        const arr = m.get(k) ?? [];
-        if (!arr.includes(f)) arr.push(f);
-        m.set(k, arr);
-      }
+    if (!tables) return m;
+    for (const t of tables) {
+      const matched = fragments.filter((f) =>
+        f.references.some((ref) => refMatchesTable(parseReference(ref), t, database)),
+      );
+      if (matched.length) m.set(tkey(t.schema, t.name), matched);
     }
     return m;
-  }, [fragments, database]);
+  }, [tables, fragments, database]);
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
@@ -108,24 +124,28 @@ export function SchemaExplorerSidebar({
   // Clicking a table row selects it (filtering the context list below to the
   // fragments that reference it) and expands its columns. Clicking the selected
   // table again clears the selection and collapses it.
+  const isTableSelected = (t: { schema: string; name: string }) =>
+    !!selectedTable &&
+    selectedTable.schema.toLowerCase() === t.schema.toLowerCase() &&
+    selectedTable.name.toLowerCase() === t.name.toLowerCase();
+
   const onTableClick = (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
-    const name = t.name.toLowerCase();
-    if (selectedTable === name) {
+    if (isTableSelected(t)) {
       setSelectedTable(null);
       if (expanded[key]) toggleTable(t);
     } else {
-      setSelectedTable(name);
+      setSelectedTable({ schema: t.schema, name: t.name });
       if (!expanded[key]) toggleTable(t);
     }
   };
 
-  // Clicking a fragment's reference chip selects + reveals that table in the tree.
-  const revealTable = (tableName: string) => {
-    const t = tables?.find((x) => x.name.toLowerCase() === tableName.toLowerCase());
+  // Clicking a fragment's reference chip selects + reveals that exact table.
+  const revealTable = (p: ParsedRef) => {
+    const t = tables?.find((x) => refMatchesTable(p, x, database));
     if (!t) return;
     const key = `${t.schema}.${t.name}`;
-    setSelectedTable(t.name.toLowerCase());
+    setSelectedTable({ schema: t.schema, name: t.name });
     if (!expanded[key]) toggleTable(t);
     document.getElementById(`tbl-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
@@ -145,13 +165,7 @@ export function SchemaExplorerSidebar({
     }
     if (selectedTable) {
       base = base.filter((f) =>
-        f.references.some((ref) => {
-          const p = parseReference(ref);
-          return (
-            p.table?.toLowerCase() === selectedTable &&
-            (!p.database || p.database.toLowerCase() === database.toLowerCase())
-          );
-        }),
+        f.references.some((ref) => refMatchesTable(parseReference(ref), selectedTable, database)),
       );
     }
     return base;
@@ -174,8 +188,8 @@ export function SchemaExplorerSidebar({
             {tables?.map((t) => {
               const key = `${t.schema}.${t.name}`;
               const cols = expanded[key];
-              const refFrags = fragmentsByTable.get(t.name.toLowerCase());
-              const isSelected = selectedTable === t.name.toLowerCase();
+              const refFrags = fragmentsByTableKey.get(tkey(t.schema, t.name));
+              const isSelected = isTableSelected(t);
               return (
                 <li key={key} id={`tbl-${key}`} className="mb-0.5">
                   <button
@@ -262,7 +276,7 @@ export function SchemaExplorerSidebar({
               onClick={() => setSelectedTable(null)}
               className="block mb-2 text-[10px] text-[var(--accent)] hover:underline"
             >
-              ✕ clear table filter (<code>{selectedTable}</code>)
+              ✕ clear table filter (<code>{selectedTable.schema}.{selectedTable.name}</code>)
             </button>
           )}
 
@@ -274,7 +288,7 @@ export function SchemaExplorerSidebar({
           {fragments.length > 0 && visibleFragments.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
               {selectedTable ? (
-                <>No saved context references <code>{selectedTable}</code>.</>
+                <>No saved context references <code>{selectedTable.schema}.{selectedTable.name}</code>.</>
               ) : (
                 <>
                   No context references <code>{database}</code>.{' '}
@@ -333,8 +347,8 @@ export function SchemaExplorerSidebar({
                             <button
                               key={i}
                               disabled={!clickable}
-                              onClick={() => clickable && revealTable(p.table!)}
-                              title={clickable ? `Show ${p.table} in the schema tree` : ref}
+                              onClick={() => clickable && revealTable(p)}
+                              title={clickable ? `Show ${p.label} in the schema tree` : ref}
                               className={`rounded px-1.5 py-0.5 text-[10px] border border-[var(--border)] ${
                                 clickable
                                   ? 'bg-[var(--panel)] hover:border-[var(--accent)] hover:text-[var(--accent)] cursor-pointer'
