@@ -393,20 +393,32 @@ function StepView({ step }: { step: Step }) {
     const dot = step.status === 'running' ? '◷' : step.status === 'error' ? '✕' : '✓';
     const color =
       step.status === 'error' ? 'text-red-600' : step.status === 'complete' ? 'text-green-700' : 'text-[var(--muted)]';
+    const hasArgs = step.args && Object.keys(step.args).length > 0;
     return (
       <details className="text-xs">
         <summary className={`cursor-pointer ${color}`}>
           <span className="mr-1">{dot}</span>
           <code>{step.name}</code>
-          {step.args && Object.keys(step.args).length > 0 && (
-            <span className="text-[var(--muted)]"> {summarizeArgs(step.args)}</span>
-          )}
+          {hasArgs && <span className="text-[var(--muted)]"> {summarizeArgs(step.args!)}</span>}
         </summary>
-        {step.result && (
-          <pre className="whitespace-pre-wrap mt-1 max-h-48 overflow-auto bg-[var(--panel)] p-2 rounded text-[var(--muted)]">
-            {step.result}
-          </pre>
-        )}
+        <div className="mt-1 flex flex-col gap-2">
+          {hasArgs && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-[var(--muted)] mb-0.5">Request</div>
+              <pre className="whitespace-pre-wrap max-h-48 overflow-auto bg-[var(--panel)] p-2 rounded text-[var(--muted)]">
+                {formatRequestArgs(step.args!)}
+              </pre>
+            </div>
+          )}
+          {step.result && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-[var(--muted)] mb-0.5">Response</div>
+              <pre className="whitespace-pre-wrap max-h-48 overflow-auto bg-[var(--panel)] p-2 rounded text-[var(--muted)]">
+                {step.result}
+              </pre>
+            </div>
+          )}
+        </div>
       </details>
     );
   }
@@ -420,6 +432,22 @@ function summarizeArgs(args: Record<string, unknown>): string {
     .filter(([k]) => k !== 'new_fragments')
     .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
   return parts.join(' ').slice(0, 80);
+}
+
+/** Full, readable request body for the expanded tool step. Surfaces SQL as-is
+ *  (with any other params above it) and pretty-prints everything else. */
+function formatRequestArgs(args: Record<string, unknown>): string {
+  const rest: Record<string, unknown> = { ...args };
+  delete rest.new_fragments; // internal noise the model is forced to pass
+  if (typeof rest.sql === 'string') {
+    const sql = rest.sql;
+    delete rest.sql;
+    const others = Object.entries(rest)
+      .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      .join('\n');
+    return others ? `${others}\n\n${sql}` : sql;
+  }
+  return JSON.stringify(rest, null, 2);
 }
 
 // --- streaming helpers -----------------------------------------------------
