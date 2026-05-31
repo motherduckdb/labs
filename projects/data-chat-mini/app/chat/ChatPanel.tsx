@@ -136,11 +136,11 @@ export function ChatPanel({
         if (type === 'text') {
           appendText(updateAsst, asstId, evt.content as string);
         } else if (type === 'thinking') {
-          // Raw upstream reasoning is intentionally NOT surfaced in the UI — we
-          // show polished tool/progress steps instead. (Thinking is still
-          // captured server-side in controllog telemetry.) A lightweight
-          // "reasoning" pulse is enough signal for the user.
-          markReasoning(updateAsst, asstId);
+          // Reasoning is opt-in: the default thinking level is `none`, so the
+          // clean demo path streams no reasoning at all. When the user
+          // explicitly raises the level they expect to see it, so we render it
+          // in a collapsed block (and controllog captures it regardless).
+          appendThinking(updateAsst, asstId, evt.content as string);
         } else if (type === 'tool_start') {
           const tc = evt.toolCall as { id: string; name: string; args?: Record<string, unknown> };
           updateAsst(asstId, (m) => ({
@@ -379,8 +379,15 @@ function SegmentView({ segment }: { segment: ContentSegment }) {
 
 function StepView({ step }: { step: Step }) {
   if (step.type === 'thinking') {
-    // Raw reasoning is deliberately not rendered — just a neutral marker.
-    return <div className="text-xs text-[var(--muted)] italic">Reasoning…</div>;
+    if (!step.content) return <div className="text-xs text-[var(--muted)] italic">Reasoning…</div>;
+    return (
+      <details className="text-xs text-[var(--muted)]">
+        <summary className="cursor-pointer select-none">Thinking</summary>
+        <pre className="whitespace-pre-wrap mt-1 max-h-64 overflow-auto bg-[var(--panel)] p-2 rounded">
+          {step.content}
+        </pre>
+      </details>
+    );
   }
   if (step.type === 'tool') {
     const dot = step.status === 'running' ? '◷' : step.status === 'error' ? '✕' : '✓';
@@ -434,15 +441,21 @@ function appendText(
   });
 }
 
-/** Flag that the model reasoned, without storing/rendering the raw text. */
-function markReasoning(
+/** Accumulate streamed reasoning text into a single thinking step. */
+function appendThinking(
   update: (id: string, fn: (m: ChatMessage) => ChatMessage) => void,
   id: string,
+  text: string,
 ) {
   update(id, (m) => {
-    const steps = m.steps ?? [];
-    if (steps.some((s) => s.type === 'thinking')) return m;
-    return { ...m, steps: [...steps, { type: 'thinking', content: '' }] };
+    const steps = [...(m.steps ?? [])];
+    const last = steps[steps.length - 1];
+    if (last && last.type === 'thinking') {
+      steps[steps.length - 1] = { type: 'thinking', content: last.content + text };
+    } else {
+      steps.push({ type: 'thinking', content: text });
+    }
+    return { ...m, steps };
   });
 }
 
