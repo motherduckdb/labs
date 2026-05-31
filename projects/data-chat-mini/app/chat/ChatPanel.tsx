@@ -29,12 +29,14 @@ export function ChatPanel({
   conversationId,
   onConversationChange,
   onContextChanged,
+  onSaved,
 }: {
   databases: string[];
   thinkingLevel: ThinkingLevel;
   conversationId: string | null;
   onConversationChange: (id: string) => void;
   onContextChanged: () => void;
+  onSaved: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -77,21 +79,28 @@ export function ChatPanel({
   }, []);
 
   const persist = useCallback(
-    (msgs: ChatMessage[]) => {
+    async (msgs: ChatMessage[]) => {
       const id = convIdRef.current;
       if (!id) return;
       const now = Date.now();
-      saveConversation({
-        id,
-        title: deriveTitle(msgs),
-        createdAt: now,
-        updatedAt: now,
-        databases,
-        thinkingLevel,
-        messages: msgs,
-      }).catch((e) => console.error('[ChatPanel] save failed', e));
+      try {
+        await saveConversation({
+          id,
+          title: deriveTitle(msgs),
+          createdAt: now,
+          updatedAt: now,
+          databases,
+          thinkingLevel,
+          messages: msgs,
+        });
+        // Notify the parent only after the write lands, so the history
+        // sidebar reloads an index that actually contains this conversation.
+        onSaved();
+      } catch (e) {
+        console.error('[ChatPanel] save failed', e);
+      }
     },
-    [databases, thinkingLevel],
+    [databases, thinkingLevel, onSaved],
   );
 
   /** One streaming request → response. Recurses for the context round-trip. */
@@ -127,7 +136,11 @@ export function ChatPanel({
         if (type === 'text') {
           appendText(updateAsst, asstId, evt.content as string);
         } else if (type === 'thinking') {
-          appendThinking(updateAsst, asstId, evt.content as string);
+          // Raw upstream reasoning is intentionally NOT surfaced in the UI — we
+          // show polished tool/progress steps instead. (Thinking is still
+          // captured server-side in controllog telemetry.) A lightweight
+          // "reasoning" pulse is enough signal for the user.
+          markReasoning(updateAsst, asstId);
         } else if (type === 'tool_start') {
           const tc = evt.toolCall as { id: string; name: string; args?: Record<string, unknown> };
           updateAsst(asstId, (m) => ({
@@ -162,7 +175,13 @@ export function ChatPanel({
         } else if (type === 'mviz_html') {
           insertMviz(updateAsst, asstId, evt.content as string, evt.id as string | undefined);
         } else if (type === 'turn_complete') {
-          historyRef.current.push(...(evt.turnHistory as LlmTurn[]));
+          const th = evt.turnHistory as LlmTurn[];
+          historyRef.current.push(...th);
+          // Persist the structured turn on the assistant message so a chat
+          // reopened from IndexedDB still carries the tool_use/tool_result
+          // turns (rebuildHistory relies on m.turnHistory). Accumulate across
+          // the multiple turn_complete events a context round-trip produces.
+          updateAsst(asstId, (m) => ({ ...m, turnHistory: [...(m.turnHistory ?? []), ...th] }));
         } else if (type === 'error') {
           updateAsst(asstId, (m) => ({ ...m, error: evt.content as string }));
         } else if (type === 'auth_expired') {
@@ -247,7 +266,7 @@ export function ChatPanel({
       updateAsst(asstId, (m) => ({ ...m, isStreaming: false }));
       // Persist after state settles.
       setMessages((prev) => {
-        persist(prev);
+        void persist(prev);
         return prev;
       });
     }
@@ -360,12 +379,8 @@ function SegmentView({ segment }: { segment: ContentSegment }) {
 
 function StepView({ step }: { step: Step }) {
   if (step.type === 'thinking') {
-    return (
-      <details className="text-xs text-[var(--muted)]">
-        <summary className="cursor-pointer">Thinking</summary>
-        <pre className="whitespace-pre-wrap mt-1">{step.content}</pre>
-      </details>
-    );
+    // Raw reasoning is deliberately not rendered — just a neutral marker.
+    return <div className="text-xs text-[var(--muted)] italic">Reasoning…</div>;
   }
   if (step.type === 'tool') {
     const dot = step.status === 'running' ? '◷' : step.status === 'error' ? '✕' : '✓';
@@ -419,20 +434,15 @@ function appendText(
   });
 }
 
-function appendThinking(
+/** Flag that the model reasoned, without storing/rendering the raw text. */
+function markReasoning(
   update: (id: string, fn: (m: ChatMessage) => ChatMessage) => void,
   id: string,
-  text: string,
 ) {
   update(id, (m) => {
-    const steps = [...(m.steps ?? [])];
-    const last = steps[steps.length - 1];
-    if (last && last.type === 'thinking') {
-      steps[steps.length - 1] = { type: 'thinking', content: last.content + text };
-    } else {
-      steps.push({ type: 'thinking', content: text });
-    }
-    return { ...m, steps };
+    const steps = m.steps ?? [];
+    if (steps.some((s) => s.type === 'thinking')) return m;
+    return { ...m, steps: [...steps, { type: 'thinking', content: '' }] };
   });
 }
 

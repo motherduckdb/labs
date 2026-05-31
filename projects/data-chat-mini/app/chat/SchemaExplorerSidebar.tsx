@@ -22,25 +22,24 @@ export function SchemaExplorerSidebar({
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [fragments, setFragments] = useState<Fragment[]>([]);
 
-  const sessionHeaders = { 'x-session-id': getSessionId() };
-
+  // The component is keyed by `database` in ChatShell, so it remounts (and
+  // state resets to the initial null/{}) when the database changes — no
+  // synchronous setState-in-effect resets needed.
   useEffect(() => {
-    setTables(null);
-    setTablesError(null);
-    setExpanded({});
+    let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`/api/schema?database=${encodeURIComponent(database)}`, {
-          headers: sessionHeaders,
+          headers: { 'x-session-id': getSessionId() },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        setTables(data.tables || []);
+        if (!cancelled) setTables(data.tables || []);
       } catch (err) {
-        setTablesError(err instanceof Error ? err.message : 'Failed to load tables');
+        if (!cancelled) setTablesError(err instanceof Error ? err.message : 'Failed to load tables');
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; };
   }, [database]);
 
   const refreshFragments = useCallback(() => {
@@ -66,7 +65,7 @@ export function SchemaExplorerSidebar({
       const url = `/api/schema?database=${encodeURIComponent(database)}&schema=${encodeURIComponent(
         t.schema,
       )}&table=${encodeURIComponent(t.name)}`;
-      const res = await fetch(url, { headers: sessionHeaders });
+      const res = await fetch(url, { headers: { 'x-session-id': getSessionId() } });
       const data = await res.json();
       setExpanded((prev) => ({ ...prev, [key]: data.columns || [] }));
     } catch {

@@ -9,7 +9,9 @@ import type { ThinkingLevel } from '@/types/chat';
 
 const THINKING_LEVELS: ThinkingLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
-const DEFAULT_THINKING = (process.env.NEXT_PUBLIC_DEFAULT_THINKING_LEVEL as ThinkingLevel) || 'medium';
+// Default to `none` for an external demo — keeps raw upstream reasoning out of
+// the request entirely. Override via NEXT_PUBLIC_DEFAULT_THINKING_LEVEL.
+const DEFAULT_THINKING = (process.env.NEXT_PUBLIC_DEFAULT_THINKING_LEVEL as ThinkingLevel) || 'none';
 
 export function ChatShell() {
   const [database, setDatabase] = useState<string | null>(null);
@@ -68,13 +70,11 @@ export function ChatShell() {
           databases={databases}
           thinkingLevel={thinkingLevel}
           conversationId={conversationId}
-          onConversationChange={(id) => {
-            setConversationId(id);
-            setHistoryReloadKey((k) => k + 1);
-          }}
+          onConversationChange={setConversationId}
           onContextChanged={() => setContextReloadKey((k) => k + 1)}
+          onSaved={() => setHistoryReloadKey((k) => k + 1)}
         />
-        <SchemaExplorerSidebar database={database} contextReloadKey={contextReloadKey} />
+        <SchemaExplorerSidebar key={database} database={database} contextReloadKey={contextReloadKey} />
       </div>
     </div>
   );
