@@ -21,7 +21,12 @@ export interface Fragment {
   updatedAt: number;
 }
 
-const STORE_DB = 'data-chat-mini';
+// Distinct IndexedDB *database* name from chat-storage. idb-keyval's
+// createStore creates a DB with exactly one object store at version 1 and
+// never upgrades it, so two createStore calls sharing one DB name (with
+// different store names) collide — the second store is never created and its
+// transactions throw NotFoundError. Each store gets its own DB.
+const STORE_DB = 'data-chat-mini-context';
 const STORE_NAME = 'context-layer';
 const KEY = 'fragments';
 
