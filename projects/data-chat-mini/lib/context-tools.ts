@@ -48,7 +48,10 @@ export const CONTEXT_TOOLS: AnthropicTool[] = [
       'Create, update, or delete a saved context fragment. Be conservative — save ' +
       'only durable, reusable insights (NOT one-off query answers or point-in-time ' +
       'facts). Always `query_context_layer` first to avoid near-duplicates; prefer ' +
-      'action="update" over creating a parallel fragment.',
+      'action="update" over creating a parallel fragment. Make ONE call per insight: ' +
+      'compose the complete fragment, save it once, then reply in prose. Do NOT call ' +
+      'this tool again in the same turn to refine or extend what you just saved — that ' +
+      'creates duplicate, overlapping fragments.',
     input_schema: {
       type: 'object',
       required: ['action'],
