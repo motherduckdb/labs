@@ -20,10 +20,26 @@ export function ChatShell() {
   const [historyReloadKey, setHistoryReloadKey] = useState(0);
   const [contextReloadKey, setContextReloadKey] = useState(0);
 
+  // A conversation belongs to the database it was started under. Switching or
+  // (re)picking a database must drop the active conversation so a chat from
+  // database A can't be resumed under database B's prompt/context.
+  const pickDatabase = (db: string) => {
+    setDatabase(db);
+    setConversationId(null);
+  };
+
+  // Selecting a conversation from history switches to the database it was
+  // started under, keeping its prompt/context consistent.
+  const openConversation = (summary: { id: string; databases: string[] }) => {
+    const db = summary.databases[0];
+    if (db && db !== database) setDatabase(db);
+    setConversationId(summary.id);
+  };
+
   if (!database) {
     return (
       <div className="h-screen">
-        <DatabasePicker onPick={setDatabase} />
+        <DatabasePicker onPick={pickDatabase} />
       </div>
     );
   }
@@ -39,7 +55,7 @@ export function ChatShell() {
           {database}
         </span>
         <button
-          onClick={() => setDatabase(null)}
+          onClick={() => { setDatabase(null); setConversationId(null); }}
           className="text-xs text-[var(--muted)] hover:text-black underline"
         >
           switch
@@ -63,7 +79,7 @@ export function ChatShell() {
         <ChatHistorySidebar
           activeId={conversationId}
           reloadKey={historyReloadKey}
-          onSelect={setConversationId}
+          onSelect={openConversation}
           onNew={() => setConversationId(null)}
         />
         <ChatPanel

@@ -16,7 +16,7 @@ export function ChatHistorySidebar({
 }: {
   activeId: string | null;
   reloadKey: number;
-  onSelect: (id: string) => void;
+  onSelect: (summary: ConversationSummary) => void;
   onNew: () => void;
 }) {
   const [items, setItems] = useState<ConversationSummary[]>([]);
@@ -47,7 +47,7 @@ export function ChatHistorySidebar({
             className={`group flex items-center gap-1 rounded-md px-2 py-2 text-sm cursor-pointer ${
               c.id === activeId ? 'bg-white border border-[var(--border)]' : 'hover:bg-white/60'
             }`}
-            onClick={() => onSelect(c.id)}
+            onClick={() => onSelect(c)}
           >
             <span className="flex-1 truncate">{c.title}</span>
             <button
