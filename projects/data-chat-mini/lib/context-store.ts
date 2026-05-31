@@ -45,16 +45,31 @@ async function writeAll(frags: Fragment[]): Promise<void> {
   await set(KEY, frags, await getStore());
 }
 
-function matches(f: Fragment, query?: string, reference?: string): boolean {
-  if (query) {
-    const q = query.toLowerCase();
-    if (!(f.title.toLowerCase().includes(q) || f.content.toLowerCase().includes(q))) return false;
+function matchesReference(f: Fragment, reference: string): boolean {
+  const r = reference.toLowerCase();
+  return f.references.some((ref) => ref.toLowerCase().includes(r) || r.includes(ref.toLowerCase()));
+}
+
+/**
+ * Tokenized keyword score for a fragment against query terms. A term "hits" a
+ * field if it appears as a substring; title hits are weighted higher than
+ * content/reference hits. Returns how many distinct terms matched (for AND vs
+ * OR selection) and a relevance score (for ranking).
+ */
+function scoreFragment(f: Fragment, terms: string[]): { matchedTerms: number; score: number } {
+  const title = f.title.toLowerCase();
+  const content = f.content.toLowerCase();
+  const refs = f.references.join(' ').toLowerCase();
+  let matchedTerms = 0;
+  let score = 0;
+  for (const t of terms) {
+    let hit = false;
+    if (title.includes(t)) { score += 3; hit = true; }
+    if (content.includes(t)) { score += 1; hit = true; }
+    if (refs.includes(t)) { score += 1; hit = true; }
+    if (hit) matchedTerms++;
   }
-  if (reference) {
-    const r = reference.toLowerCase();
-    if (!f.references.some(ref => ref.toLowerCase().includes(r) || r.includes(ref.toLowerCase()))) return false;
-  }
-  return true;
+  return { matchedTerms, score };
 }
 
 export interface QueryArgs {
@@ -63,14 +78,43 @@ export interface QueryArgs {
   fragment_ids?: string[];
 }
 
+/**
+ * Local context retrieval: tokenized keyword search.
+ *
+ * - `fragment_ids` → exact lookup.
+ * - `reference` → substring match on the fragment's references (AND-ed with query).
+ * - `query` → split into whitespace-separated terms; rank fragments by a
+ *   weighted term-hit score. Prefer fragments matching ALL terms; if none do,
+ *   fall back to those matching ANY term (so multi-word queries still recall
+ *   partial matches). Ties break by recency.
+ * - No query/reference → all fragments, recency order.
+ *
+ * (The real MotherDuck context layer does richer server-side search; this is
+ * the local mirror — better than naive whole-string substring, no FTS engine.)
+ */
 export async function queryFragments(args: QueryArgs): Promise<Fragment[]> {
   const all = await listFragments();
   if (args.fragment_ids?.length) {
     const ids = new Set(args.fragment_ids);
-    return all.filter(f => ids.has(f.id));
+    return all.filter((f) => ids.has(f.id));
   }
-  if (!args.query && !args.reference) return all;
-  return all.filter(f => matches(f, args.query, args.reference));
+
+  let pool = all;
+  if (args.reference) {
+    pool = pool.filter((f) => matchesReference(f, args.reference!));
+  }
+
+  const terms = (args.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return pool; // recency order from listFragments
+
+  const scored = pool
+    .map((f) => ({ f, ...scoreFragment(f, terms) }))
+    .filter((x) => x.matchedTerms > 0);
+  const allTerms = scored.filter((x) => x.matchedTerms === terms.length);
+  const ranked = (allTerms.length ? allTerms : scored).sort(
+    (a, b) => b.score - a.score || b.f.updatedAt - a.f.updatedAt,
+  );
+  return ranked.map((x) => x.f);
 }
 
 export interface UpdateArgs {

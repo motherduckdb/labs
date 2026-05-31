@@ -86,4 +86,38 @@ describe('context-store', () => {
     const bad = await serviceContextTool('frobnicate', {});
     expect(bad.isError).toBe(true);
   });
+
+  it('tokenized query prefers fragments matching ALL terms', async () => {
+    await applyUpdate({ action: 'create', title: 'Revenue definition', content: 'revenue = sum(order_items.price)' });
+    await applyUpdate({ action: 'create', title: 'Customer join', content: 'orders join customers on customer_id' });
+
+    // "revenue order" → fragment 1 hits both ('revenue' + 'order_items'),
+    // fragment 2 hits only 'order'. AND-match wins → only fragment 1.
+    const res = await queryFragments({ query: 'revenue order' });
+    expect(res).toHaveLength(1);
+    expect(res[0].title).toBe('Revenue definition');
+  });
+
+  it('falls back to ANY-term matches when no fragment matches all terms', async () => {
+    await applyUpdate({ action: 'create', title: 'Revenue definition', content: 'revenue = sum(price)' });
+    // No fragment contains "lag"; "revenue lag" should still recall the revenue one.
+    const res = await queryFragments({ query: 'revenue lag' });
+    expect(res).toHaveLength(1);
+    expect(res[0].title).toBe('Revenue definition');
+  });
+
+  it('ranks title hits above content-only hits', async () => {
+    await applyUpdate({ action: 'create', title: 'Customers table', content: 'you can join here' });
+    await applyUpdate({ action: 'create', title: 'Join key', content: 'irrelevant body' });
+    const res = await queryFragments({ query: 'join' });
+    expect(res.map((f) => f.title)).toEqual(['Join key', 'Customers table']);
+  });
+
+  it('reference filter still ANDs with the query', async () => {
+    await applyUpdate({ action: 'create', title: 'Revenue', content: 'revenue rule', references: ['database:db.main.orders'] });
+    await applyUpdate({ action: 'create', title: 'Revenue elsewhere', content: 'revenue rule', references: ['database:db.main.customers'] });
+    const res = await queryFragments({ query: 'revenue', reference: 'orders' });
+    expect(res).toHaveLength(1);
+    expect(res[0].title).toBe('Revenue');
+  });
 });
