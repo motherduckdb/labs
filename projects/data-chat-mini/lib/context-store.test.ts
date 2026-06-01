@@ -120,4 +120,33 @@ describe('context-store', () => {
     expect(res).toHaveLength(1);
     expect(res[0].title).toBe('Revenue');
   });
+
+  it('normalizes camelCase, hyphenated words, plurals, and schema refs', async () => {
+    await applyUpdate({
+      action: 'create',
+      title: 'FullGame team points grain',
+      content: 'Filter box_scores.period = FullGame and player_name IS NULL before summing team points.',
+      references: ['database:nba_box_scores_v2.main.box_scores'],
+    });
+
+    const byVocabulary = await queryFragments({ query: 'full-game box scores team totals' });
+    expect(byVocabulary).toHaveLength(1);
+    expect(byVocabulary[0].title).toBe('FullGame team points grain');
+
+    const byReference = await queryFragments({ reference: 'nba box scores v2 main box scores' });
+    expect(byReference).toHaveLength(1);
+    expect(byReference[0].title).toBe('FullGame team points grain');
+  });
+
+  it('does not over-stem status-like search terms', async () => {
+    await applyUpdate({
+      action: 'create',
+      title: 'Injury status caveat',
+      content: 'No player availability status fields are present in this schema.',
+    });
+
+    const res = await queryFragments({ query: 'status availability' });
+    expect(res).toHaveLength(1);
+    expect(res[0].title).toBe('Injury status caveat');
+  });
 });

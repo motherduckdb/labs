@@ -47,7 +47,15 @@ async function writeAll(frags: Fragment[]): Promise<void> {
 
 function matchesReference(f: Fragment, reference: string): boolean {
   const r = reference.toLowerCase();
-  return f.references.some((ref) => ref.toLowerCase().includes(r) || r.includes(ref.toLowerCase()));
+  const normalized = normalizeForSearch(reference);
+  return f.references.some((ref) => {
+    const rawRef = ref.toLowerCase();
+    const normalizedRef = normalizeForSearch(ref);
+    return rawRef.includes(r) ||
+      r.includes(rawRef) ||
+      normalizedRef.includes(normalized) ||
+      normalized.includes(normalizedRef);
+  });
 }
 
 /**
@@ -57,9 +65,9 @@ function matchesReference(f: Fragment, reference: string): boolean {
  * OR selection) and a relevance score (for ranking).
  */
 function scoreFragment(f: Fragment, terms: string[]): { matchedTerms: number; score: number } {
-  const title = f.title.toLowerCase();
-  const content = f.content.toLowerCase();
-  const refs = f.references.join(' ').toLowerCase();
+  const title = normalizeForSearch(f.title);
+  const content = normalizeForSearch(f.content);
+  const refs = normalizeForSearch(f.references.join(' '));
   let matchedTerms = 0;
   let score = 0;
   for (const t of terms) {
@@ -70,6 +78,36 @@ function scoreFragment(f: Fragment, terms: string[]): { matchedTerms: number; sc
     if (hit) matchedTerms++;
   }
   return { matchedTerms, score };
+}
+
+function normalizeForSearch(value: string): string {
+  return value
+    // Keep "FullGame" findable from "full game" / "full-game".
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function queryTerms(query: string): string[] {
+  const seen = new Set<string>();
+  return normalizeForSearch(query)
+    .split(' ')
+    .filter(Boolean)
+    .map(singularizeSearchTerm)
+    .filter((term) => {
+      if (seen.has(term)) return false;
+      seen.add(term);
+      return true;
+    });
+}
+
+function singularizeSearchTerm(term: string): string {
+  if (term.length <= 3) return term;
+  if (!term.endsWith('s')) return term;
+  if (term.endsWith('ss') || term.endsWith('us')) return term;
+  return term.slice(0, -1);
 }
 
 export interface QueryArgs {
@@ -104,7 +142,7 @@ export async function queryFragments(args: QueryArgs): Promise<Fragment[]> {
     pool = pool.filter((f) => matchesReference(f, args.reference!));
   }
 
-  const terms = (args.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = queryTerms(args.query ?? '');
   if (terms.length === 0) return pool; // recency order from listFragments
 
   const scored = pool

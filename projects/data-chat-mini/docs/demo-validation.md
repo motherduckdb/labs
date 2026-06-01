@@ -25,6 +25,9 @@ The default run is deterministic and requires no tokens. It validates:
 - Schema browsing finds `main.schedule`, `main.box_scores`, and join columns.
 - Context `query_context_layer` and `update_context_layer` create, read, update,
   and delete local fragments.
+- Adversarial NBA questions verify the assistant filters mixed-grain box-score
+  rows before team aggregation, persists durable grain rules, and refuses to
+  invent unsupported injury analysis.
 - Conversation persistence strips transient state and reopens with structured
   tool history, not context placeholders.
 - Database switching keeps conversation and schema state scoped to the selected

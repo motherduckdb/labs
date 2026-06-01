@@ -30,7 +30,10 @@ export const CONTEXT_TOOLS: AnthropicTool[] = [
     description:
       'Read saved context fragments — durable, reusable knowledge about this data ' +
       '(join keys, metric definitions, data-quality caveats, column meanings). ' +
-      'Call this before writing SQL to reuse what is already known. Provide at least ' +
+      'Call this before writing non-trivial SQL so saved grain, filter, join, and ' +
+      'metric rules shape the query before it runs. Search by the user concept ' +
+      '("full-game team points"), by schema reference, or by known fragment id. ' +
+      'Provide at least ' +
       'one of `query` (keyword search), `reference` (a database/table ref like ' +
       '"database:db.main.table"), or `fragment_ids`.',
     input_schema: {
@@ -47,8 +50,10 @@ export const CONTEXT_TOOLS: AnthropicTool[] = [
     description:
       'Create, update, or delete a saved context fragment. Be conservative — save ' +
       'only durable, reusable insights (NOT one-off query answers or point-in-time ' +
-      'facts). Keep each fragment SMALL and ATOMIC: one rule per fragment (a single ' +
-      'join key, metric definition, or caveat) with a focused title and a 1–3 sentence ' +
+      'facts). Save rules that prevent future wrong answers: join keys, required ' +
+      'filters, row-grain caveats, metric definitions, and known data limitations. ' +
+      'Keep each fragment SMALL and ATOMIC: one rule per fragment (a single ' +
+      'join key, metric definition, grain rule, or caveat) with a focused title and a 1–3 sentence ' +
       'body — never a multi-point "summary" blob. For several distinct insights, make ' +
       'several small create calls, one per insight. But save each insight exactly once: ' +
       'always `query_context_layer` first to avoid near-duplicates, prefer ' +

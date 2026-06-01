@@ -97,8 +97,9 @@ npm run demo:validate
 
 It writes a concise latest report plus full JSON artifacts under
 `reports/demo-validation/`, covering database selection, schema browsing,
-context lifecycle, conversation reopen, database switching, tool visibility, and
-mviz table/chart rendering. Optional live mode is available with
+context lifecycle, adversarial grain/unsupported-field questions, conversation
+reopen, database switching, tool visibility, and mviz table/chart rendering.
+Optional live mode is available with
 `npm run demo:validate:live` when `MOTHERDUCK_TOKEN` and `OPENROUTER_API_KEY`
 are present. See [docs/demo-validation.md](docs/demo-validation.md).
 

@@ -228,9 +228,11 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     systemPrompt.includes(CANONICAL_DB) &&
       systemPrompt.includes('query_context_layer') &&
       systemPrompt.includes('Always respond after tool calls') &&
-      systemPrompt.includes('NO HTML'),
+      systemPrompt.includes('NO HTML') &&
+      systemPrompt.includes('Establish grain before aggregating') &&
+      systemPrompt.includes("box_scores.period = 'FullGame'"),
     'P2',
-    'prompt must name the selected DB, context tools, response-after-tools rule, and mviz/no-HTML boundary',
+    'prompt must name the selected DB, context tools, response-after-tools rule, grain guardrails, FullGame guidance, and mviz/no-HTML boundary',
   );
 
   record(
@@ -296,6 +298,52 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     `sse types: ${turn1.transcript.sseTypes.join(', ')}`,
   );
 
+  const adversarialGrainTurn = await runHarnessTurn({
+    ...commonLoop,
+    history,
+    message:
+      'Adversarial: I need the 2024 regular-season team scoring leaders. Do not double-count player rows, and save any durable grain rule you discover.',
+    sseEvents,
+  });
+  history = adversarialGrainTurn.history;
+  transcripts.push(adversarialGrainTurn.transcript);
+
+  const adversarialGrainSql = querySqls(adversarialGrainTurn.events);
+  record(
+    'adversarial grain test filters before team aggregation',
+    adversarialGrainSql.some((sql) =>
+      /join\b.*schedule|schedule\b.*join/.test(normalizeSql(sql)) &&
+      /period\s*=\s*'fullgame'/.test(normalizeSql(sql)) &&
+      /player_name\s+is\s+null/.test(normalizeSql(sql)) &&
+      /season_year\s*=\s*2024/.test(normalizeSql(sql)) &&
+      /season_type/.test(normalizeSql(sql)) &&
+      /group by/.test(normalizeSql(sql)),
+    ),
+    'P2',
+    `SQL: ${adversarialGrainSql.join(' | ') || '(none)'}`,
+  );
+
+  const fragmentsAfterAdversarialGrain = await listFragments();
+  record(
+    'adversarial grain test saves a durable context rule',
+    fragmentsAfterAdversarialGrain.some((fragment) =>
+      /fullgame/i.test(fragment.content) &&
+      /player_name\s+is\s+null/i.test(fragment.content) &&
+      fragment.references.includes(`database:${CANONICAL_DB}.main.box_scores`),
+    ),
+    'P2',
+    `fragments: ${fragmentsAfterAdversarialGrain.map((fragment) => fragment.title).join(', ')}`,
+  );
+
+  record(
+    'adversarial grain response names the anti-double-counting filter',
+    /fullgame/i.test(adversarialGrainTurn.transcript.assistantText) &&
+      (/player_name\s+is\s+null/i.test(adversarialGrainTurn.transcript.assistantText) ||
+        /team rows?/i.test(adversarialGrainTurn.transcript.assistantText)),
+    'P2',
+    adversarialGrainTurn.transcript.assistantText.slice(0, 500),
+  );
+
   const turn2 = await runHarnessTurn({
     ...commonLoop,
     history,
@@ -306,10 +354,14 @@ async function runDemoValidation(): Promise<DemoArtifact> {
   transcripts.push(turn2.transcript);
 
   record(
-    'second turn queries saved context before SQL',
-    turn2.transcript.contextServices.some((call) => call.name === 'query_context_layer' && call.resultText.includes('Join')),
+    'second turn applies saved grain before SQL',
+    turn2.transcript.contextServices.some((call) => call.name === 'query_context_layer' && call.resultText.includes('FullGame')) &&
+      querySqls(turn2.events).some((sql) =>
+        /period\s*=\s*'fullgame'/.test(normalizeSql(sql)) &&
+        /player_name\s+is\s+null/.test(normalizeSql(sql)),
+      ),
     'P2',
-    'chart turn should reuse the join key saved in the previous turn',
+    'chart turn should reuse the saved FullGame/team-row grain rule',
   );
 
   record(
@@ -321,6 +373,34 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     `assistant text length: ${turn2.transcript.assistantText.length}`,
   );
 
+  const unsupportedTurn = await runHarnessTurn({
+    ...commonLoop,
+    history,
+    message:
+      'Adversarial: Which injured players explain the biggest team scoring drops? If the schema cannot support injury analysis, be explicit.',
+    sseEvents,
+  });
+  history = unsupportedTurn.history;
+  transcripts.push(unsupportedTurn.transcript);
+
+  record(
+    'adversarial unsupported-field test inspects before refusing',
+    unsupportedTurn.transcript.toolNames.some((name) =>
+      name === 'search_catalog' || name === 'list_tables' || name === 'list_columns',
+    ),
+    'P2',
+    `tools: ${unsupportedTurn.transcript.toolNames.join(', ') || '(none)'}`,
+  );
+
+  record(
+    'adversarial unsupported-field test refuses to invent injury analysis',
+    /injur/i.test(unsupportedTurn.transcript.assistantText) &&
+      /(cannot|can't|can not|not available|does not expose|no .*injur|schema)/i.test(unsupportedTurn.transcript.assistantText) &&
+      !/lebron|durant|curry|tatum|doncic/i.test(unsupportedTurn.transcript.assistantText),
+    'P2',
+    unsupportedTurn.transcript.assistantText.slice(0, 500),
+  );
+
   record(
     'tool request and response are visible over SSE',
     hasVisibleToolRequestAndResponse(turn1.events, 'query') &&
@@ -329,7 +409,12 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     'query tool_start must expose SQL args and tool_end must expose result text',
   );
 
-  const savedConversation = await persistConversationForReopen([turn1.transcript, turn2.transcript]);
+  const savedConversation = await persistConversationForReopen([
+    turn1.transcript,
+    adversarialGrainTurn.transcript,
+    turn2.transcript,
+    unsupportedTurn.transcript,
+  ]);
   const reopened = await loadConversation(savedConversation.id);
   const reopenedHistory = reopened ? rebuildHistoryFromMessages(reopened.messages) : [];
   record(
@@ -380,7 +465,8 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     turn3.transcript.contextServices.some((call) => call.name === 'query_context_layer') &&
       turn3.transcript.contextServices.some((call) => call.name === 'update_context_layer' && call.resultText.includes('Updated')) &&
       turn3.transcript.contextServices.some((call) => call.name === 'update_context_layer' && call.resultText.includes('Deleted')) &&
-      (await listFragments()).length === 0,
+      !(await listFragments()).some((fragment) => fragment.title === 'box_scores to schedule join key') &&
+      (await listFragments()).some((fragment) => fragment.title === 'full-game team scoring grain'),
     'P2',
     `context services: ${turn3.transcript.contextServices.map((call) => `${call.name}:${call.resultText}`).join(' | ')}`,
   );
@@ -657,12 +743,91 @@ function createMockScript(): ScriptFactory[] {
     }),
     () => ({
       kind: 'tool',
+      label: 'adversarial grain lookup context',
+      calls: [
+        {
+          id: 'ctx_lookup_grain',
+          name: 'query_context_layer',
+          args: {
+            query: 'full-game team scoring grain double count',
+            reference: `database:${CANONICAL_DB}.main.box_scores`,
+          },
+        },
+      ],
+    }),
+    () => ({
+      kind: 'tool',
+      label: 'adversarial grain query scoring leaders',
+      calls: [
+        {
+          id: 'query_2024_team_scoring_leaders',
+          name: 'query',
+          args: {
+            database: CANONICAL_DB,
+            sql:
+              `WITH team_rows AS (
+  SELECT b.team_abbreviation AS team, sum(b.points) AS points
+  FROM "${CANONICAL_DB}"."main"."box_scores" b
+  JOIN "${CANONICAL_DB}"."main"."schedule" s ON b.game_id = s.game_id
+  WHERE b.period = 'FullGame'
+    AND b.player_name IS NULL
+    AND s.season_year = 2024
+    AND s.season_type = 'Regular Season'
+  GROUP BY ALL
+)
+SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5`,
+          },
+        },
+      ],
+    }),
+    () => ({
+      kind: 'tool',
+      label: 'adversarial grain save context',
+      calls: [
+        {
+          id: 'ctx_save_grain',
+          name: 'update_context_layer',
+          args: {
+            action: 'create',
+            title: 'full-game team scoring grain',
+            content:
+              'For team scoring totals in nba_box_scores_v2.main.box_scores, filter period = FullGame and player_name IS NULL before summing points. This avoids double-counting player rows when the question asks for team-level totals.',
+            references: [`database:${CANONICAL_DB}.main.box_scores`],
+          },
+        },
+      ],
+    }),
+    () => ({
+      kind: 'text',
+      label: 'adversarial grain response',
+      text:
+        'I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season.\n\n' +
+        '```table size=[16,5]\n' +
+        JSON.stringify({
+          title: '2024 Regular Season Team Scoring Leaders',
+          columns: [
+            { id: 'team', title: 'Team', bold: true },
+            { id: 'points', title: 'Points', fmt: 'num0', align: 'right' },
+          ],
+          data: [
+            { team: 'BOS', points: 10422 },
+            { team: 'DEN', points: 10051 },
+            { team: 'OKC', points: 9964 },
+            { team: 'MIN', points: 9818 },
+            { team: 'NYK', points: 9721 },
+          ],
+          compact: true,
+        }) +
+        '\n```\n\nSaved the team-scoring grain rule so later totals avoid double-counting.',
+    }),
+    () => ({
+      kind: 'tool',
       label: 'turn2 lookup saved context',
       calls: [
         {
           id: 'ctx_lookup_2',
           name: 'query_context_layer',
-          args: { query: 'schedule join', reference: `database:${CANONICAL_DB}.main.schedule` },
+          args: { query: 'full-game team scoring grain', reference: `database:${CANONICAL_DB}.main.box_scores` },
         },
       ],
     }),
@@ -676,7 +841,7 @@ function createMockScript(): ScriptFactory[] {
           args: {
             database: CANONICAL_DB,
             sql:
-              `SELECT team_abbreviation AS team, sum(points) AS points FROM "${CANONICAL_DB}"."main"."box_scores" WHERE period = 'FullGame' GROUP BY ALL ORDER BY points DESC LIMIT 5`,
+              `SELECT team_abbreviation AS team, sum(points) AS points FROM "${CANONICAL_DB}"."main"."box_scores" WHERE period = 'FullGame' AND player_name IS NULL GROUP BY ALL ORDER BY points DESC LIMIT 5`,
           },
         },
       ],
@@ -685,7 +850,7 @@ function createMockScript(): ScriptFactory[] {
       kind: 'text',
       label: 'turn2 chart response',
       text:
-        'Using the saved join context, here are the top teams by full-game points.\n\n' +
+        'Using the saved grain context, here are the top teams by full-game points from team rows only.\n\n' +
         '```bar size=[8,4]\n' +
         JSON.stringify({
           type: 'bar',
@@ -705,13 +870,30 @@ function createMockScript(): ScriptFactory[] {
     }),
     () => ({
       kind: 'tool',
+      label: 'adversarial unsupported injury lookup',
+      calls: [
+        {
+          id: 'search_injury_catalog',
+          name: 'search_catalog',
+          args: { database: CANONICAL_DB, query: 'injury injured players availability status' },
+        },
+      ],
+    }),
+    () => ({
+      kind: 'text',
+      label: 'adversarial unsupported injury response',
+      text:
+        'The visible schema does not expose injury or player-availability fields, so I cannot attribute scoring drops to injured players from this dataset. I can analyze team scoring drops using `schedule` and `box_scores`, but injury explanations would need an injury/status table or an external roster availability source.',
+    }),
+    () => ({
+      kind: 'tool',
       label: 'turn3 lookup fragment for update/delete',
       calls: [
         { id: 'ctx_lookup_3', name: 'query_context_layer', args: { query: 'FullGame join' } },
       ],
     }),
     async () => {
-      const fragment = (await listFragments())[0];
+      const fragment = (await listFragments()).find((f) => f.title === 'box_scores to schedule join key');
       return {
         kind: 'tool',
         label: 'turn3 update fragment',
@@ -735,7 +917,7 @@ function createMockScript(): ScriptFactory[] {
       };
     },
     async () => {
-      const fragment = (await listFragments())[0];
+      const fragment = (await listFragments()).find((f) => f.title === 'box_scores to schedule join key');
       return {
         kind: 'tool',
         label: 'turn3 delete fragment',
@@ -917,16 +1099,6 @@ function mockToolResult(name: string, args: Record<string, unknown>): string {
   }
   if (name === 'query') {
     const sql = String(args.sql ?? '');
-    if (/season_year/i.test(sql)) {
-      return JSON.stringify({
-        columns: ['season_year', 'games'],
-        rows: [
-          { season_year: 2024, games: 1319 },
-          { season_year: 2023, games: 1318 },
-          { season_year: 2022, games: 1317 },
-        ],
-      });
-    }
     if (/team_abbreviation/i.test(sql)) {
       return JSON.stringify({
         columns: ['team', 'points'],
@@ -939,9 +1111,22 @@ function mockToolResult(name: string, args: Record<string, unknown>): string {
         ],
       });
     }
+    if (/season_year/i.test(sql)) {
+      return JSON.stringify({
+        columns: ['season_year', 'games'],
+        rows: [
+          { season_year: 2024, games: 1319 },
+          { season_year: 2023, games: 1318 },
+          { season_year: 2022, games: 1317 },
+        ],
+      });
+    }
     return JSON.stringify({ columns: [], rows: [] });
   }
   if (name === 'search_catalog') {
+    if (/injur|availability|status/i.test(String(args.query ?? ''))) {
+      return JSON.stringify({ results: [] });
+    }
     return JSON.stringify({ results: [{ database: CANONICAL_DB, schema: 'main', table: 'box_scores' }] });
   }
   if (name === 'ask_docs_question') {
@@ -984,6 +1169,17 @@ function joinedTextEvents(events: StreamEvent[]): string {
     .filter((event) => event.type === 'text' && typeof event.content === 'string')
     .map((event) => event.content)
     .join('');
+}
+
+function querySqls(events: StreamEvent[]): string[] {
+  return events
+    .filter((event) => event.type === 'tool_start' && event.toolCall?.name === 'query')
+    .map((event) => event.toolCall?.args?.sql)
+    .filter((sql): sql is string => typeof sql === 'string');
+}
+
+function normalizeSql(sql: string): string {
+  return sql.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
 function hasVisibleToolRequestAndResponse(events: StreamEvent[], name: string): boolean {

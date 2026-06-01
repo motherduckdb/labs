@@ -1,9 +1,9 @@
 {
-  "runId": "2026-06-01T06-03-24-233Z-mock",
+  "runId": "2026-06-01T06-23-31-408Z-mock",
   "mode": "mock",
   "dataset": "nba_box_scores_v2",
-  "startedAt": "2026-06-01T06:03:24.233Z",
-  "completedAt": "2026-06-01T06:03:24.399Z",
+  "startedAt": "2026-06-01T06:23:31.408Z",
+  "completedAt": "2026-06-01T06:23:31.590Z",
   "assertions": [
     {
       "name": "database selection lists canonical dataset",
@@ -27,7 +27,7 @@
       "name": "system prompt includes demo-critical behavior",
       "pass": true,
       "severity": "P2",
-      "detail": "prompt must name the selected DB, context tools, response-after-tools rule, and mviz/no-HTML boundary"
+      "detail": "prompt must name the selected DB, context tools, response-after-tools rule, grain guardrails, FullGame guidance, and mviz/no-HTML boundary"
     },
     {
       "name": "tool catalog is read-only plus local context",
@@ -54,16 +54,46 @@
       "detail": "sse types: usage, context_tool, turn_complete, usage, tool_start, tool_end, tool_start, tool_end, tool_start, tool_end, usage, context_tool, turn_complete, usage, tool_start, tool_end, text, text, mviz_pending, text, mviz_html, text, usage, turn_complete"
     },
     {
-      "name": "second turn queries saved context before SQL",
+      "name": "adversarial grain test filters before team aggregation",
       "pass": true,
       "severity": "P2",
-      "detail": "chart turn should reuse the join key saved in the previous turn"
+      "detail": "SQL: WITH team_rows AS (\n  SELECT b.team_abbreviation AS team, sum(b.points) AS points\n  FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" b\n  JOIN \"nba_box_scores_v2\".\"main\".\"schedule\" s ON b.game_id = s.game_id\n  WHERE b.period = 'FullGame'\n    AND b.player_name IS NULL\n    AND s.season_year = 2024\n    AND s.season_type = 'Regular Season'\n  GROUP BY ALL\n)\nSELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5"
+    },
+    {
+      "name": "adversarial grain test saves a durable context rule",
+      "pass": true,
+      "severity": "P2",
+      "detail": "fragments: full-game team scoring grain, box_scores to schedule join key"
+    },
+    {
+      "name": "adversarial grain response names the anti-double-counting filter",
+      "pass": true,
+      "severity": "P2",
+      "detail": "I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season.\n\n```table size=[16,5]\n{\"title\":\"2024 Regular Season Team Scoring Leaders\",\"columns\":[{\"id\":\"team\",\"title\":\"Team\",\"bold\":true},{\"id\":\"points\",\"title\":\"Points\",\"fmt\":\"num0\",\"align\":\"right\"}],\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\""
+    },
+    {
+      "name": "second turn applies saved grain before SQL",
+      "pass": true,
+      "severity": "P2",
+      "detail": "chart turn should reuse the saved FullGame/team-row grain rule"
     },
     {
       "name": "mviz chart renders as HTML",
       "pass": true,
       "severity": "P2",
-      "detail": "assistant text length: 367"
+      "detail": "assistant text length: 388"
+    },
+    {
+      "name": "adversarial unsupported-field test inspects before refusing",
+      "pass": true,
+      "severity": "P2",
+      "detail": "tools: search_catalog"
+    },
+    {
+      "name": "adversarial unsupported-field test refuses to invent injury analysis",
+      "pass": true,
+      "severity": "P2",
+      "detail": "The visible schema does not expose injury or player-availability fields, so I cannot attribute scoring drops to injured players from this dataset. I can analyze team scoring drops using `schedule` and `box_scores`, but injury explanations would need an injury/status table or an external roster availability source."
     },
     {
       "name": "tool request and response are visible over SSE",
@@ -75,7 +105,7 @@
       "name": "conversation persistence reopens structured tool history",
       "pass": true,
       "severity": "P1",
-      "detail": "reopened messages: 4"
+      "detail": "reopened messages: 8"
     },
     {
       "name": "database switching keeps conversation and schema scoped to selected DB",
@@ -87,7 +117,7 @@
       "name": "context query/update/delete lifecycle succeeds",
       "pass": true,
       "severity": "P2",
-      "detail": "context services: query_context_layer:1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81c7-a0cd-7922-a981-3818aef98b72\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment \"box_scores to schedule join key\". | update_context_layer:Deleted fragment 019e81c7-a0cd-7922-a981-3818aef98b72."
+      "detail": "context services: query_context_layer:1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81da-0c55-7179-ad44-e530f8b9168e\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment \"box_scores to schedule join key\". | update_context_layer:Deleted fragment 019e81da-0c55-7179-ad44-e530f8b9168e."
     }
   ],
   "issues": [],
@@ -188,7 +218,7 @@
     },
     {
       "index": 6,
-      "label": "turn2 lookup saved context",
+      "label": "adversarial grain lookup context",
       "messageCount": 11,
       "toolNames": [
         "query",
@@ -200,11 +230,11 @@
         "query_context_layer",
         "update_context_layer"
       ],
-      "lastUserText": "Use the saved context and chart total points by team."
+      "lastUserText": "Adversarial: I need the 2024 regular-season team scoring leaders. Do not double-count player rows, and save any durable grain rule you discover."
     },
     {
       "index": 7,
-      "label": "turn2 query team points",
+      "label": "adversarial grain query scoring leaders",
       "messageCount": 13,
       "toolNames": [
         "query",
@@ -216,11 +246,11 @@
         "query_context_layer",
         "update_context_layer"
       ],
-      "lastUserText": "Use the saved context and chart total points by team."
+      "lastUserText": "Adversarial: I need the 2024 regular-season team scoring leaders. Do not double-count player rows, and save any durable grain rule you discover."
     },
     {
       "index": 8,
-      "label": "turn2 chart response",
+      "label": "adversarial grain save context",
       "messageCount": 15,
       "toolNames": [
         "query",
@@ -232,11 +262,11 @@
         "query_context_layer",
         "update_context_layer"
       ],
-      "lastUserText": "Use the saved context and chart total points by team."
+      "lastUserText": "Adversarial: I need the 2024 regular-season team scoring leaders. Do not double-count player rows, and save any durable grain rule you discover."
     },
     {
       "index": 9,
-      "label": "turn3 lookup fragment for update/delete",
+      "label": "adversarial grain response",
       "messageCount": 17,
       "toolNames": [
         "query",
@@ -248,11 +278,11 @@
         "query_context_layer",
         "update_context_layer"
       ],
-      "lastUserText": "Update the saved join note to mention period=FullGame, then delete it."
+      "lastUserText": "Adversarial: I need the 2024 regular-season team scoring leaders. Do not double-count player rows, and save any durable grain rule you discover."
     },
     {
       "index": 10,
-      "label": "turn3 update fragment",
+      "label": "turn2 lookup saved context",
       "messageCount": 19,
       "toolNames": [
         "query",
@@ -264,12 +294,76 @@
         "query_context_layer",
         "update_context_layer"
       ],
-      "lastUserText": "Update the saved join note to mention period=FullGame, then delete it."
+      "lastUserText": "Use the saved context and chart total points by team."
     },
     {
       "index": 11,
-      "label": "turn3 delete fragment",
+      "label": "turn2 query team points",
       "messageCount": 21,
+      "toolNames": [
+        "query",
+        "list_databases",
+        "list_tables",
+        "list_columns",
+        "search_catalog",
+        "ask_docs_question",
+        "query_context_layer",
+        "update_context_layer"
+      ],
+      "lastUserText": "Use the saved context and chart total points by team."
+    },
+    {
+      "index": 12,
+      "label": "turn2 chart response",
+      "messageCount": 23,
+      "toolNames": [
+        "query",
+        "list_databases",
+        "list_tables",
+        "list_columns",
+        "search_catalog",
+        "ask_docs_question",
+        "query_context_layer",
+        "update_context_layer"
+      ],
+      "lastUserText": "Use the saved context and chart total points by team."
+    },
+    {
+      "index": 13,
+      "label": "adversarial unsupported injury lookup",
+      "messageCount": 25,
+      "toolNames": [
+        "query",
+        "list_databases",
+        "list_tables",
+        "list_columns",
+        "search_catalog",
+        "ask_docs_question",
+        "query_context_layer",
+        "update_context_layer"
+      ],
+      "lastUserText": "Adversarial: Which injured players explain the biggest team scoring drops? If the schema cannot support injury analysis, be explicit."
+    },
+    {
+      "index": 14,
+      "label": "adversarial unsupported injury response",
+      "messageCount": 27,
+      "toolNames": [
+        "query",
+        "list_databases",
+        "list_tables",
+        "list_columns",
+        "search_catalog",
+        "ask_docs_question",
+        "query_context_layer",
+        "update_context_layer"
+      ],
+      "lastUserText": "Adversarial: Which injured players explain the biggest team scoring drops? If the schema cannot support injury analysis, be explicit."
+    },
+    {
+      "index": 15,
+      "label": "turn3 lookup fragment for update/delete",
+      "messageCount": 29,
       "toolNames": [
         "query",
         "list_databases",
@@ -283,9 +377,41 @@
       "lastUserText": "Update the saved join note to mention period=FullGame, then delete it."
     },
     {
-      "index": 12,
+      "index": 16,
+      "label": "turn3 update fragment",
+      "messageCount": 31,
+      "toolNames": [
+        "query",
+        "list_databases",
+        "list_tables",
+        "list_columns",
+        "search_catalog",
+        "ask_docs_question",
+        "query_context_layer",
+        "update_context_layer"
+      ],
+      "lastUserText": "Update the saved join note to mention period=FullGame, then delete it."
+    },
+    {
+      "index": 17,
+      "label": "turn3 delete fragment",
+      "messageCount": 33,
+      "toolNames": [
+        "query",
+        "list_databases",
+        "list_tables",
+        "list_columns",
+        "search_catalog",
+        "ask_docs_question",
+        "query_context_layer",
+        "update_context_layer"
+      ],
+      "lastUserText": "Update the saved join note to mention period=FullGame, then delete it."
+    },
+    {
+      "index": 18,
       "label": "turn3 lifecycle response",
-      "messageCount": 23,
+      "messageCount": 35,
       "toolNames": [
         "query",
         "list_databases",
@@ -367,9 +493,25 @@
       "name": "query",
       "args": {
         "database": "nba_box_scores_v2",
-        "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' GROUP BY ALL ORDER BY points DESC LIMIT 5"
+        "sql": "WITH team_rows AS (\n  SELECT b.team_abbreviation AS team, sum(b.points) AS points\n  FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" b\n  JOIN \"nba_box_scores_v2\".\"main\".\"schedule\" s ON b.game_id = s.game_id\n  WHERE b.period = 'FullGame'\n    AND b.player_name IS NULL\n    AND s.season_year = 2024\n    AND s.season_type = 'Regular Season'\n  GROUP BY ALL\n)\nSELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5"
       },
       "result": "{\"columns\":[\"team\",\"points\"],\"rows\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}"
+    },
+    {
+      "name": "query",
+      "args": {
+        "database": "nba_box_scores_v2",
+        "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' AND player_name IS NULL GROUP BY ALL ORDER BY points DESC LIMIT 5"
+      },
+      "result": "{\"columns\":[\"team\",\"points\"],\"rows\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}"
+    },
+    {
+      "name": "search_catalog",
+      "args": {
+        "database": "nba_box_scores_v2",
+        "query": "injury injured players availability status"
+      },
+      "result": "{\"results\":[]}"
     },
     {
       "name": "list_tables",
@@ -650,7 +792,7 @@
     },
     {
       "type": "mviz_pending",
-      "id": "09424a98-a2a7-4057-9610-4c679758b34f"
+      "id": "8a263fa8-8c1f-426a-b22c-09a5f43827c9"
     },
     {
       "type": "text",
@@ -660,7 +802,7 @@
       "type": "mviz_html",
       "content": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Dashboard</title>\n  <style>*{box-sizing:border-box;margin:0;padding:0}:root{--bg:#f8f8f8;--fg:#231f20;--text:#231f20;--text-muted:#6a6a6a;--grid:#d4d4d4;--red:#bc1200;--link:#0777b3;--font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;--font-mono:'Consolas','Monaco',monospace}body.theme-dark{--bg:#231f20;--fg:#ffffff;--text:#ffffff;--text-muted:#888888;--grid:#3a3a3a;--red:#bc1200;--link:#0777b3}html,body{width:100%;min-height:100%;font-family:var(--font-family);color:var(--text);font-size:12px;transition:background-color 0.3s,color 0.3s}.dashboard{max-width:720px;margin:0 auto;padding:16px;position:relative;overflow-x:hidden}body.theme-dark .theme-toggle .icon-moon{display:none}body.theme-dark .theme-toggle .icon-sun{display:block}.dashboard-section{margin-bottom:16px}.chart-title{font-family:var(--font-family);font-weight:700;font-size:10px;font-weight:bold;color:var(--text);margin-bottom:4px}.row{display:grid;grid-template-columns:repeat(16,1fr);gap:8px;margin-bottom:8px}@media (max-width:720px){.row{grid-template-columns:repeat(8,1fr)}.row>*{grid-column:span min(var(--col-span,8),8)}}@media (max-width:480px){.row{grid-template-columns:1fr}.row>*{grid-column:span 1}.grid-item{overflow-x:auto;-webkit-overflow-scrolling:touch}}.grid-item{padding:4px;transition:background-color 0.3s}.data-table{width:100%;border-collapse:collapse;font-size:11px}.data-table th{font-family:var(--font-family);font-size:9px;font-weight:bold;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.03em;padding:6px 8px;border-bottom:1px solid var(--text);text-align:left}.data-table td{padding:5px 8px;color:var(--text);border-bottom:1px solid var(--grid)}.data-table.table-compact th,.data-table.table-compact td{padding:4px 6px}.dashboard.dashboard-embed{max-width:100%;padding:8px}@media (max-width:720px){.dashboard.dashboard-embed .row{grid-template-columns:repeat(16,1fr)}.dashboard.dashboard-embed .row>*{grid-column:span var(--col-span,8)}}@media (max-width:480px){.dashboard.dashboard-embed .row{grid-template-columns:repeat(16,1fr)}.dashboard.dashboard-embed .row>*{grid-column:span var(--col-span,8)}.dashboard.dashboard-embed .grid-item{overflow-x:visible}}th.sortable{cursor:pointer}th.sortable[data-sort-dir]{color:inherit}.mviz-sort-ind{display:inline-block;min-width:0.9em;margin-left:2px;font-size:9px;opacity:0.7;text-align:left;white-space:nowrap}</style>\n\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n<link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap\" rel=\"stylesheet\">\n<style>\n  /* Kill the browser default body margin so the frame hugs its host card. */\n  html, body { margin: 0 !important; }\n  .dashboard {\n    max-width: 100% !important;\n    padding: 20px !important;\n  }\n  .dashboard-section:last-child {\n    margin-bottom: 0 !important;\n    padding-bottom: 0 !important;\n  }\n  .row:last-child {\n    margin-bottom: 0 !important;\n  }\n  html, body, .dashboard, .page-title, .section-title, .chart-title,\n  .big-value, .label, .delta, .data-table, .note-content, .text-content,\n  .markdown-content, .alert, h1, h2, h3, h4, h5, h6, p, span, div {\n    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;\n  }\n  html, body { font-size: 14px !important; }\n  .section-title { font-size: 18px !important; }\n  .chart-title { font-size: 16px !important; }\n  .big-value { font-size: 40px !important; }\n  .label { font-size: 13px !important; }\n  .delta { font-size: 24px !important; }\n  .delta .value { font-size: 24px !important; }\n  .delta .arrow { font-size: 24px !important; }\n  .delta .label { font-size: 14px !important; }\n  .row { gap: 12px !important; margin-bottom: 12px !important; }\n  .alert .message { font-size: 13px !important; }\n  .data-table th, .data-table td { font-size: 12px !important; padding: 8px 12px !important; }\n  .note-content, .text-content { font-size: 13px !important; line-height: 1.5 !important; }\n  .markdown-content { font-size: 14px !important; line-height: 1.6 !important; }\n  .markdown-content h1 { font-size: 28px !important; }\n  .markdown-content h2 { font-size: 22px !important; }\n  .markdown-content h3 { font-size: 18px !important; }\n  .markdown-content p, .markdown-content li { font-size: 14px !important; }\n  .markdown-content code { font-size: 13px !important; }\n  /* Override mviz's red accent to mdw-turbo orange (chart series, deltas,\n     heatmap negatives). The .red-line top bar itself is stripped by embed mode. */\n  :root { --red: #FF9538 !important; }\n</style>\n</head><body class=\"theme-light\"><div class=\"dashboard dashboard-embed\"><section class=\"dashboard-section\"><div class=\"row\"><div class=\"grid-item\" style=\"--col-span: 16; grid-column: span 16;\"><h3 class=\"chart-title\">Recent NBA Seasons</h3><table id=\"mviz-dash-table-1\" class=\"data-table table-compact\" style=\"width: 100%; border-collapse: collapse; font-size: 10px;\"><thead><tr><th class=\"sortable\" data-col=\"0\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;\">Season<span class=\"mviz-sort-ind\"></span></th><th class=\"sortable\" data-col=\"1\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;\">Games<span class=\"mviz-sort-ind\"></span></th></tr></thead><tbody><tr><td data-sort=\"2024\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>2,024</strong></td><td data-sort=\"1319\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">1,319</td></tr><tr><td data-sort=\"2023\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>2,023</strong></td><td data-sort=\"1318\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">1,318</td></tr><tr><td data-sort=\"2022\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>2,022</strong></td><td data-sort=\"1317\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">1,317</td></tr></tbody></table></div></div></section></div>\n  <script>(function(){if(window.mvizTableInit) return;function compareCells(a,b){var an=parseFloat(a),bn=parseFloat(b);if(!isNaN(an)&&!isNaN(bn)) return an-bn;return String(a).localeCompare(String(b));}function getSortKey(cell){var v=cell.getAttribute('data-sort');return v!=null?v:cell.textContent.trim();}window.mvizTableInit=function(tableId){var table=document.getElementById(tableId);if(!table) return;var thead=table.tHead;var tbody=table.tBodies[0];if(!thead||!tbody) return;var origRows=Array.prototype.slice.call(tbody.rows);var visibility={};origRows.forEach(function(r,i){visibility[i]=true;});function applyVisibility(){origRows.forEach(function(r,i){r.style.display=visibility[i]?'':'none';});}var sortableHeaders=thead.querySelectorAll('th.sortable');var activeTh=null;var activeState=0;sortableHeaders.forEach(function(th){th.style.cursor='pointer';th.style.userSelect='none';th.addEventListener('click',function(){var colIdx=parseInt(th.getAttribute('data-col'),10);if(isNaN(colIdx)) return;if(activeTh===th){activeState=activeState===1?-1:activeState===-1?0:1;}else{if(activeTh){activeTh.removeAttribute('data-sort-dir');var prevInd=activeTh.querySelector('.mviz-sort-ind');if(prevInd) prevInd.textContent='';}activeTh=th;activeState=1;}var ind=th.querySelector('.mviz-sort-ind');if(activeState===0){th.removeAttribute('data-sort-dir');if(ind) ind.textContent='';activeTh=null;origRows.forEach(function(r){tbody.appendChild(r);});applyVisibility();return;}th.setAttribute('data-sort-dir',activeState===1?'asc':'desc');if(ind) ind.textContent=activeState===1?'▲':'▼';var sorted=origRows.slice().sort(function(a,b){var av=getSortKey(a.cells[colIdx]);var bv=getSortKey(b.cells[colIdx]);var cmp=compareCells(av,bv);return activeState===1?cmp:-cmp;});sorted.forEach(function(r){tbody.appendChild(r);});applyVisibility();});});var container=table.parentElement;var globalInput=container&&container.querySelector('.mviz-filter-global[data-table=\"'+tableId+'\"]');if(globalInput){globalInput.addEventListener('input',function(){var q=globalInput.value.toLowerCase();origRows.forEach(function(r,i){visibility[i]=!q||r.textContent.toLowerCase().indexOf(q)!==-1;});applyVisibility();});}};})();if(window.mvizTableInit) window.mvizTableInit(\"mviz-dash-table-1\");</script>\n\n<script>\n(function() {\n  function reportHeight() {\n    var h = document.body ? document.body.scrollHeight : 0;\n    if (h > 0) parent.postMessage({ type: 'mviz-height', height: h }, '*');\n  }\n  if (document.readyState === 'complete') reportHeight();\n  else window.addEventListener('load', reportHeight);\n  new MutationObserver(reportHeight).observe(document.documentElement, { childList: true, subtree: true });\n  setTimeout(reportHeight, 300);\n  setTimeout(reportHeight, 1000);\n})();\n</script>\n</body></html>",
       "source": "```table size=[16,5]\n{\"title\":\"Recent NBA Seasons\",\"columns\":[{\"id\":\"season_year\",\"title\":\"Season\",\"bold\":true},{\"id\":\"games\",\"title\":\"Games\",\"fmt\":\"num0\",\"align\":\"right\"}],\"data\":[{\"season_year\":2024,\"games\":1319},{\"season_year\":2023,\"games\":1318},{\"season_year\":2022,\"games\":1317}],\"compact\":true}\n```",
-      "id": "09424a98-a2a7-4057-9610-4c679758b34f"
+      "id": "8a263fa8-8c1f-426a-b22c-09a5f43827c9"
     },
     {
       "type": "text",
@@ -727,11 +869,11 @@
     {
       "type": "context_tool",
       "contextCall": {
-        "callId": "ctx_lookup_2",
+        "callId": "ctx_lookup_grain",
         "name": "query_context_layer",
         "args": {
-          "query": "schedule join",
-          "reference": "database:nba_box_scores_v2.main.schedule"
+          "query": "full-game team scoring grain double count",
+          "reference": "database:nba_box_scores_v2.main.box_scores"
         }
       }
     },
@@ -743,11 +885,11 @@
           "content": [
             {
               "type": "tool_use",
-              "id": "ctx_lookup_2",
+              "id": "ctx_lookup_grain",
               "name": "query_context_layer",
               "input": {
-                "query": "schedule join",
-                "reference": "database:nba_box_scores_v2.main.schedule"
+                "query": "full-game team scoring grain double count",
+                "reference": "database:nba_box_scores_v2.main.box_scores"
               }
             }
           ]
@@ -757,7 +899,7 @@
           "content": [
             {
               "type": "tool_result",
-              "tool_use_id": "ctx_lookup_2",
+              "tool_use_id": "ctx_lookup_grain",
               "content": "[context-layer call pending client round-trip]"
             }
           ]
@@ -777,11 +919,234 @@
     {
       "type": "tool_start",
       "toolCall": {
+        "id": "query_2024_team_scoring_leaders",
+        "name": "query",
+        "args": {
+          "database": "nba_box_scores_v2",
+          "sql": "WITH team_rows AS (\n  SELECT b.team_abbreviation AS team, sum(b.points) AS points\n  FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" b\n  JOIN \"nba_box_scores_v2\".\"main\".\"schedule\" s ON b.game_id = s.game_id\n  WHERE b.period = 'FullGame'\n    AND b.player_name IS NULL\n    AND s.season_year = 2024\n    AND s.season_type = 'Regular Season'\n  GROUP BY ALL\n)\nSELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5"
+        }
+      }
+    },
+    {
+      "type": "tool_end",
+      "toolCall": {
+        "id": "query_2024_team_scoring_leaders",
+        "name": "query",
+        "result": "{\"columns\":[\"team\",\"points\"],\"rows\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}"
+      }
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "promptTokens": 108,
+        "completionTokens": 18,
+        "cost": 0,
+        "model": "demo/mock-llm",
+        "contextWindow": 1000000
+      }
+    },
+    {
+      "type": "context_tool",
+      "contextCall": {
+        "callId": "ctx_save_grain",
+        "name": "update_context_layer",
+        "args": {
+          "action": "create",
+          "title": "full-game team scoring grain",
+          "content": "For team scoring totals in nba_box_scores_v2.main.box_scores, filter period = FullGame and player_name IS NULL before summing points. This avoids double-counting player rows when the question asks for team-level totals.",
+          "references": [
+            "database:nba_box_scores_v2.main.box_scores"
+          ]
+        }
+      }
+    },
+    {
+      "type": "turn_complete",
+      "turnHistory": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "query_2024_team_scoring_leaders",
+              "name": "query",
+              "input": {
+                "database": "nba_box_scores_v2",
+                "sql": "WITH team_rows AS (\n  SELECT b.team_abbreviation AS team, sum(b.points) AS points\n  FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" b\n  JOIN \"nba_box_scores_v2\".\"main\".\"schedule\" s ON b.game_id = s.game_id\n  WHERE b.period = 'FullGame'\n    AND b.player_name IS NULL\n    AND s.season_year = 2024\n    AND s.season_type = 'Regular Season'\n  GROUP BY ALL\n)\nSELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "query_2024_team_scoring_leaders",
+              "content": "{\"columns\":[\"team\",\"points\"],\"rows\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "ctx_save_grain",
+              "name": "update_context_layer",
+              "input": {
+                "action": "create",
+                "title": "full-game team scoring grain",
+                "content": "For team scoring totals in nba_box_scores_v2.main.box_scores, filter period = FullGame and player_name IS NULL before summing points. This avoids double-counting player rows when the question asks for team-level totals.",
+                "references": [
+                  "database:nba_box_scores_v2.main.box_scores"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "ctx_save_grain",
+              "content": "[context-layer call pending client round-trip]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "content": "I treated this as a team-row analysis, not a sum acro"
+    },
+    {
+      "type": "text",
+      "content": "ss player rows. The query filters `period = FullGame` and `playe"
+    },
+    {
+      "type": "text",
+      "content": "r_name IS NULL`, then joins schedule for the 2024 regular season"
+    },
+    {
+      "type": "text",
+      "content": ".\n\n"
+    },
+    {
+      "type": "mviz_pending",
+      "id": "557a95ca-cf10-44f7-852b-8f07599eae7a"
+    },
+    {
+      "type": "text",
+      "content": "\n\nSaved the team-s"
+    },
+    {
+      "type": "mviz_html",
+      "content": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Dashboard</title>\n  <style>*{box-sizing:border-box;margin:0;padding:0}:root{--bg:#f8f8f8;--fg:#231f20;--text:#231f20;--text-muted:#6a6a6a;--grid:#d4d4d4;--red:#bc1200;--link:#0777b3;--font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;--font-mono:'Consolas','Monaco',monospace}body.theme-dark{--bg:#231f20;--fg:#ffffff;--text:#ffffff;--text-muted:#888888;--grid:#3a3a3a;--red:#bc1200;--link:#0777b3}html,body{width:100%;min-height:100%;font-family:var(--font-family);color:var(--text);font-size:12px;transition:background-color 0.3s,color 0.3s}.dashboard{max-width:720px;margin:0 auto;padding:16px;position:relative;overflow-x:hidden}body.theme-dark .theme-toggle .icon-moon{display:none}body.theme-dark .theme-toggle .icon-sun{display:block}.dashboard-section{margin-bottom:16px}.chart-title{font-family:var(--font-family);font-weight:700;font-size:10px;font-weight:bold;color:var(--text);margin-bottom:4px}.row{display:grid;grid-template-columns:repeat(16,1fr);gap:8px;margin-bottom:8px}@media (max-width:720px){.row{grid-template-columns:repeat(8,1fr)}.row>*{grid-column:span min(var(--col-span,8),8)}}@media (max-width:480px){.row{grid-template-columns:1fr}.row>*{grid-column:span 1}.grid-item{overflow-x:auto;-webkit-overflow-scrolling:touch}}.grid-item{padding:4px;transition:background-color 0.3s}.data-table{width:100%;border-collapse:collapse;font-size:11px}.data-table th{font-family:var(--font-family);font-size:9px;font-weight:bold;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.03em;padding:6px 8px;border-bottom:1px solid var(--text);text-align:left}.data-table td{padding:5px 8px;color:var(--text);border-bottom:1px solid var(--grid)}.data-table.table-compact th,.data-table.table-compact td{padding:4px 6px}.dashboard.dashboard-embed{max-width:100%;padding:8px}@media (max-width:720px){.dashboard.dashboard-embed .row{grid-template-columns:repeat(16,1fr)}.dashboard.dashboard-embed .row>*{grid-column:span var(--col-span,8)}}@media (max-width:480px){.dashboard.dashboard-embed .row{grid-template-columns:repeat(16,1fr)}.dashboard.dashboard-embed .row>*{grid-column:span var(--col-span,8)}.dashboard.dashboard-embed .grid-item{overflow-x:visible}}th.sortable{cursor:pointer}th.sortable[data-sort-dir]{color:inherit}.mviz-sort-ind{display:inline-block;min-width:0.9em;margin-left:2px;font-size:9px;opacity:0.7;text-align:left;white-space:nowrap}</style>\n\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n<link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap\" rel=\"stylesheet\">\n<style>\n  /* Kill the browser default body margin so the frame hugs its host card. */\n  html, body { margin: 0 !important; }\n  .dashboard {\n    max-width: 100% !important;\n    padding: 20px !important;\n  }\n  .dashboard-section:last-child {\n    margin-bottom: 0 !important;\n    padding-bottom: 0 !important;\n  }\n  .row:last-child {\n    margin-bottom: 0 !important;\n  }\n  html, body, .dashboard, .page-title, .section-title, .chart-title,\n  .big-value, .label, .delta, .data-table, .note-content, .text-content,\n  .markdown-content, .alert, h1, h2, h3, h4, h5, h6, p, span, div {\n    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;\n  }\n  html, body { font-size: 14px !important; }\n  .section-title { font-size: 18px !important; }\n  .chart-title { font-size: 16px !important; }\n  .big-value { font-size: 40px !important; }\n  .label { font-size: 13px !important; }\n  .delta { font-size: 24px !important; }\n  .delta .value { font-size: 24px !important; }\n  .delta .arrow { font-size: 24px !important; }\n  .delta .label { font-size: 14px !important; }\n  .row { gap: 12px !important; margin-bottom: 12px !important; }\n  .alert .message { font-size: 13px !important; }\n  .data-table th, .data-table td { font-size: 12px !important; padding: 8px 12px !important; }\n  .note-content, .text-content { font-size: 13px !important; line-height: 1.5 !important; }\n  .markdown-content { font-size: 14px !important; line-height: 1.6 !important; }\n  .markdown-content h1 { font-size: 28px !important; }\n  .markdown-content h2 { font-size: 22px !important; }\n  .markdown-content h3 { font-size: 18px !important; }\n  .markdown-content p, .markdown-content li { font-size: 14px !important; }\n  .markdown-content code { font-size: 13px !important; }\n  /* Override mviz's red accent to mdw-turbo orange (chart series, deltas,\n     heatmap negatives). The .red-line top bar itself is stripped by embed mode. */\n  :root { --red: #FF9538 !important; }\n</style>\n</head><body class=\"theme-light\"><div class=\"dashboard dashboard-embed\"><section class=\"dashboard-section\"><div class=\"row\"><div class=\"grid-item\" style=\"--col-span: 16; grid-column: span 16;\"><h3 class=\"chart-title\">2024 Regular Season Team Scoring Leaders</h3><table id=\"mviz-dash-table-2\" class=\"data-table table-compact\" style=\"width: 100%; border-collapse: collapse; font-size: 10px;\"><thead><tr><th class=\"sortable\" data-col=\"0\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;\">Team<span class=\"mviz-sort-ind\"></span></th><th class=\"sortable\" data-col=\"1\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;\">Points<span class=\"mviz-sort-ind\"></span></th></tr></thead><tbody><tr><td data-sort=\"BOS\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>BOS</strong></td><td data-sort=\"10422\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">10,422</td></tr><tr><td data-sort=\"DEN\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>DEN</strong></td><td data-sort=\"10051\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">10,051</td></tr><tr><td data-sort=\"OKC\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>OKC</strong></td><td data-sort=\"9964\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">9,964</td></tr><tr><td data-sort=\"MIN\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>MIN</strong></td><td data-sort=\"9818\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">9,818</td></tr><tr><td data-sort=\"NYK\" style=\"text-align: left; padding: 3px 6px; font-size: 10px;  \"><strong>NYK</strong></td><td data-sort=\"9721\" style=\"text-align: right; padding: 3px 6px; font-size: 10px;  \">9,721</td></tr></tbody></table></div></div></section></div>\n  <script>(function(){if(window.mvizTableInit) return;function compareCells(a,b){var an=parseFloat(a),bn=parseFloat(b);if(!isNaN(an)&&!isNaN(bn)) return an-bn;return String(a).localeCompare(String(b));}function getSortKey(cell){var v=cell.getAttribute('data-sort');return v!=null?v:cell.textContent.trim();}window.mvizTableInit=function(tableId){var table=document.getElementById(tableId);if(!table) return;var thead=table.tHead;var tbody=table.tBodies[0];if(!thead||!tbody) return;var origRows=Array.prototype.slice.call(tbody.rows);var visibility={};origRows.forEach(function(r,i){visibility[i]=true;});function applyVisibility(){origRows.forEach(function(r,i){r.style.display=visibility[i]?'':'none';});}var sortableHeaders=thead.querySelectorAll('th.sortable');var activeTh=null;var activeState=0;sortableHeaders.forEach(function(th){th.style.cursor='pointer';th.style.userSelect='none';th.addEventListener('click',function(){var colIdx=parseInt(th.getAttribute('data-col'),10);if(isNaN(colIdx)) return;if(activeTh===th){activeState=activeState===1?-1:activeState===-1?0:1;}else{if(activeTh){activeTh.removeAttribute('data-sort-dir');var prevInd=activeTh.querySelector('.mviz-sort-ind');if(prevInd) prevInd.textContent='';}activeTh=th;activeState=1;}var ind=th.querySelector('.mviz-sort-ind');if(activeState===0){th.removeAttribute('data-sort-dir');if(ind) ind.textContent='';activeTh=null;origRows.forEach(function(r){tbody.appendChild(r);});applyVisibility();return;}th.setAttribute('data-sort-dir',activeState===1?'asc':'desc');if(ind) ind.textContent=activeState===1?'▲':'▼';var sorted=origRows.slice().sort(function(a,b){var av=getSortKey(a.cells[colIdx]);var bv=getSortKey(b.cells[colIdx]);var cmp=compareCells(av,bv);return activeState===1?cmp:-cmp;});sorted.forEach(function(r){tbody.appendChild(r);});applyVisibility();});});var container=table.parentElement;var globalInput=container&&container.querySelector('.mviz-filter-global[data-table=\"'+tableId+'\"]');if(globalInput){globalInput.addEventListener('input',function(){var q=globalInput.value.toLowerCase();origRows.forEach(function(r,i){visibility[i]=!q||r.textContent.toLowerCase().indexOf(q)!==-1;});applyVisibility();});}};})();if(window.mvizTableInit) window.mvizTableInit(\"mviz-dash-table-2\");</script>\n\n<script>\n(function() {\n  function reportHeight() {\n    var h = document.body ? document.body.scrollHeight : 0;\n    if (h > 0) parent.postMessage({ type: 'mviz-height', height: h }, '*');\n  }\n  if (document.readyState === 'complete') reportHeight();\n  else window.addEventListener('load', reportHeight);\n  new MutationObserver(reportHeight).observe(document.documentElement, { childList: true, subtree: true });\n  setTimeout(reportHeight, 300);\n  setTimeout(reportHeight, 1000);\n})();\n</script>\n</body></html>",
+      "source": "```table size=[16,5]\n{\"title\":\"2024 Regular Season Team Scoring Leaders\",\"columns\":[{\"id\":\"team\",\"title\":\"Team\",\"bold\":true},{\"id\":\"points\",\"title\":\"Points\",\"fmt\":\"num0\",\"align\":\"right\"}],\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}],\"compact\":true}\n```",
+      "id": "557a95ca-cf10-44f7-852b-8f07599eae7a"
+    },
+    {
+      "type": "text",
+      "content": "coring grain rule so later totals avoid doubl"
+    },
+    {
+      "type": "text",
+      "content": "e-counting."
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "promptTokens": 129,
+        "completionTokens": 39,
+        "cost": 0,
+        "model": "demo/mock-llm",
+        "contextWindow": 1000000
+      }
+    },
+    {
+      "type": "turn_complete",
+      "turnHistory": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season.\n\n```table size=[16,5]\n{\"title\":\"2024 Regular Season Team Scoring Leaders\",\"columns\":[{\"id\":\"team\",\"title\":\"Team\",\"bold\":true},{\"id\":\"points\",\"title\":\"Points\",\"fmt\":\"num0\",\"align\":\"right\"}],\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}],\"compact\":true}\n```\n\nSaved the team-scoring grain rule so later totals avoid double-counting."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "promptTokens": 110,
+        "completionTokens": 20,
+        "cost": 0,
+        "model": "demo/mock-llm",
+        "contextWindow": 1000000
+      }
+    },
+    {
+      "type": "context_tool",
+      "contextCall": {
+        "callId": "ctx_lookup_2",
+        "name": "query_context_layer",
+        "args": {
+          "query": "full-game team scoring grain",
+          "reference": "database:nba_box_scores_v2.main.box_scores"
+        }
+      }
+    },
+    {
+      "type": "turn_complete",
+      "turnHistory": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "ctx_lookup_2",
+              "name": "query_context_layer",
+              "input": {
+                "query": "full-game team scoring grain",
+                "reference": "database:nba_box_scores_v2.main.box_scores"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "ctx_lookup_2",
+              "content": "[context-layer call pending client round-trip]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "promptTokens": 111,
+        "completionTokens": 21,
+        "cost": 0,
+        "model": "demo/mock-llm",
+        "contextWindow": 1000000
+      }
+    },
+    {
+      "type": "tool_start",
+      "toolCall": {
         "id": "query_team_points",
         "name": "query",
         "args": {
           "database": "nba_box_scores_v2",
-          "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' GROUP BY ALL ORDER BY points DESC LIMIT 5"
+          "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' AND player_name IS NULL GROUP BY ALL ORDER BY points DESC LIMIT 5"
         }
       }
     },
@@ -795,25 +1160,29 @@
     },
     {
       "type": "text",
-      "content": "Using the saved join context, here are the top teams "
+      "content": "Using the saved grain context, here are the top teams"
     },
     {
       "type": "text",
-      "content": "by full-game points.\n\n"
+      "content": " by full-game points from team rows only.\n\n"
     },
     {
       "type": "mviz_pending",
-      "id": "70f4e949-79bb-40f9-8bee-ee545b76f059"
+      "id": "06cad5f1-317c-49a7-8fc1-44c15d8c275f"
     },
     {
       "type": "text",
-      "content": "\n\nBOS leads this mo"
+      "content": "\n\nBOS leads thi"
     },
     {
       "type": "mviz_html",
       "content": "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Dashboard</title>\n  <script src=\"https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js\"></script>\n  <style>*{box-sizing:border-box;margin:0;padding:0}:root{--bg:#f8f8f8;--fg:#231f20;--text:#231f20;--text-muted:#6a6a6a;--grid:#d4d4d4;--red:#bc1200;--link:#0777b3;--font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;--font-mono:'Consolas','Monaco',monospace}body.theme-dark{--bg:#231f20;--fg:#ffffff;--text:#ffffff;--text-muted:#888888;--grid:#3a3a3a;--red:#bc1200;--link:#0777b3}html,body{width:100%;min-height:100%;font-family:var(--font-family);color:var(--text);font-size:12px;transition:background-color 0.3s,color 0.3s}.dashboard{max-width:720px;margin:0 auto;padding:16px;position:relative;overflow-x:hidden}body.theme-dark .theme-toggle .icon-moon{display:none}body.theme-dark .theme-toggle .icon-sun{display:block}.dashboard-section{margin-bottom:16px}.chart-title{font-family:var(--font-family);font-weight:700;font-size:10px;font-weight:bold;color:var(--text);margin-bottom:4px}.row{display:grid;grid-template-columns:repeat(16,1fr);gap:8px;margin-bottom:8px}@media (max-width:720px){.row{grid-template-columns:repeat(8,1fr)}.row>*{grid-column:span min(var(--col-span,8),8)}}@media (max-width:480px){.row{grid-template-columns:1fr}.row>*{grid-column:span 1}.grid-item{overflow-x:auto;-webkit-overflow-scrolling:touch}}.grid-item{padding:4px;transition:background-color 0.3s}.dashboard.dashboard-embed{max-width:100%;padding:8px}@media (max-width:720px){.dashboard.dashboard-embed .row{grid-template-columns:repeat(16,1fr)}.dashboard.dashboard-embed .row>*{grid-column:span var(--col-span,8)}}@media (max-width:480px){.dashboard.dashboard-embed .row{grid-template-columns:repeat(16,1fr)}.dashboard.dashboard-embed .row>*{grid-column:span var(--col-span,8)}.dashboard.dashboard-embed .grid-item{overflow-x:visible}}</style>\n\n<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n<link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap\" rel=\"stylesheet\">\n<style>\n  /* Kill the browser default body margin so the frame hugs its host card. */\n  html, body { margin: 0 !important; }\n  .dashboard {\n    max-width: 100% !important;\n    padding: 20px !important;\n  }\n  .dashboard-section:last-child {\n    margin-bottom: 0 !important;\n    padding-bottom: 0 !important;\n  }\n  .row:last-child {\n    margin-bottom: 0 !important;\n  }\n  html, body, .dashboard, .page-title, .section-title, .chart-title,\n  .big-value, .label, .delta, .data-table, .note-content, .text-content,\n  .markdown-content, .alert, h1, h2, h3, h4, h5, h6, p, span, div {\n    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;\n  }\n  html, body { font-size: 14px !important; }\n  .section-title { font-size: 18px !important; }\n  .chart-title { font-size: 16px !important; }\n  .big-value { font-size: 40px !important; }\n  .label { font-size: 13px !important; }\n  .delta { font-size: 24px !important; }\n  .delta .value { font-size: 24px !important; }\n  .delta .arrow { font-size: 24px !important; }\n  .delta .label { font-size: 14px !important; }\n  .row { gap: 12px !important; margin-bottom: 12px !important; }\n  .alert .message { font-size: 13px !important; }\n  .data-table th, .data-table td { font-size: 12px !important; padding: 8px 12px !important; }\n  .note-content, .text-content { font-size: 13px !important; line-height: 1.5 !important; }\n  .markdown-content { font-size: 14px !important; line-height: 1.6 !important; }\n  .markdown-content h1 { font-size: 28px !important; }\n  .markdown-content h2 { font-size: 22px !important; }\n  .markdown-content h3 { font-size: 18px !important; }\n  .markdown-content p, .markdown-content li { font-size: 14px !important; }\n  .markdown-content code { font-size: 13px !important; }\n  /* Override mviz's red accent to mdw-turbo orange (chart series, deltas,\n     heatmap negatives). The .red-line top bar itself is stripped by embed mode. */\n  :root { --red: #FF9538 !important; }\n</style>\n</head><body class=\"theme-light\"><div class=\"dashboard dashboard-embed\"><section class=\"dashboard-section\"><div class=\"row\"><div class=\"grid-item\" style=\"--col-span: 8; grid-column: span 8;\"><h3 class=\"chart-title\">Top Teams by Points</h3><div id=\"chart_1\" style=\"width: 100%; height: 104px;\"></div></div></div></section></div>\n  <script>(function(){var chart=echarts.init(document.getElementById('chart_1'),null,{renderer:'svg'});chart.setOption({\"backgroundColor\":\"transparent\",\"animation\":false,\"tooltip\":{\"trigger\":\"axis\",\"axisPointer\":{\"type\":\"shadow\"},\"backgroundColor\":\"#ffffff\",\"borderColor\":\"#d4d4d4\",\"textStyle\":{\"color\":\"#231f20\"}},\"grid\":{\"left\":\"2%\",\"right\":\"2%\",\"top\":\"14%\",\"bottom\":\"8%\",\"containLabel\":true},\"xAxis\":{\"type\":\"category\",\"data\":[\"BOS\",\"DEN\",\"OKC\",\"MIN\",\"NYK\"],\"axisLine\":{\"show\":false},\"axisTick\":{\"show\":false},\"axisLabel\":{\"color\":\"#6a6a6a\",\"interval\":0,\"rotate\":45,\"overflow\":\"truncate\",\"ellipsis\":\"...\",\"width\":100}},\"yAxis\":{\"type\":\"value\",\"axisLine\":{\"show\":false},\"axisTick\":{\"show\":false},\"axisLabel\":{\"color\":\"#6a6a6a\",\"fontSize\":11,\"margin\":10,\"formatter\":function(value){return value.toLocaleString();}},\"splitLine\":{\"lineStyle\":{\"color\":\"#d4d4d4\",\"type\":[2,3],\"opacity\":0.6}}},\"series\":[{\"name\":\"points\",\"type\":\"bar\",\"data\":[10422,10051,9964,9818,9721],\"barMaxWidth\":32,\"itemStyle\":{\"color\":\"#0777b3\"},\"label\":{\"show\":true,\"position\":\"top\",\"color\":\"#6a6a6a\",\"fontSize\":10,\"offset\":[0,-2],\"formatter\":function(params){var value=params.value;if(Array.isArray(value)) value=value[1];return value.toLocaleString();}}}]});window.addEventListener('resize',function(){chart.resize();});})();</script>\n\n<script>\n(function() {\n  function reportHeight() {\n    var h = document.body ? document.body.scrollHeight : 0;\n    if (h > 0) parent.postMessage({ type: 'mviz-height', height: h }, '*');\n  }\n  if (document.readyState === 'complete') reportHeight();\n  else window.addEventListener('load', reportHeight);\n  new MutationObserver(reportHeight).observe(document.documentElement, { childList: true, subtree: true });\n  setTimeout(reportHeight, 300);\n  setTimeout(reportHeight, 1000);\n})();\n</script>\n</body></html>",
       "source": "```bar size=[8,4]\n{\"type\":\"bar\",\"title\":\"Top Teams by Points\",\"x\":\"team\",\"y\":\"points\",\"format\":\"num0\",\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}\n```",
-      "id": "70f4e949-79bb-40f9-8bee-ee545b76f059"
+      "id": "06cad5f1-317c-49a7-8fc1-44c15d8c275f"
+    },
+    {
+      "type": "text",
+      "content": "s mo"
     },
     {
       "type": "text",
@@ -822,8 +1191,8 @@
     {
       "type": "usage",
       "usage": {
-        "promptTokens": 128,
-        "completionTokens": 38,
+        "promptTokens": 132,
+        "completionTokens": 42,
         "cost": 0,
         "model": "demo/mock-llm",
         "contextWindow": 1000000
@@ -841,7 +1210,7 @@
               "name": "query",
               "input": {
                 "database": "nba_box_scores_v2",
-                "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' GROUP BY ALL ORDER BY points DESC LIMIT 5"
+                "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' AND player_name IS NULL GROUP BY ALL ORDER BY points DESC LIMIT 5"
               }
             }
           ]
@@ -861,7 +1230,7 @@
           "content": [
             {
               "type": "text",
-              "text": "Using the saved join context, here are the top teams by full-game points.\n\n```bar size=[8,4]\n{\"type\":\"bar\",\"title\":\"Top Teams by Points\",\"x\":\"team\",\"y\":\"points\",\"format\":\"num0\",\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}\n```\n\nBOS leads this mocked slice."
+              "text": "Using the saved grain context, here are the top teams by full-game points from team rows only.\n\n```bar size=[8,4]\n{\"type\":\"bar\",\"title\":\"Top Teams by Points\",\"x\":\"team\",\"y\":\"points\",\"format\":\"num0\",\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}\n```\n\nBOS leads this mocked slice."
             }
           ]
         }
@@ -870,8 +1239,109 @@
     {
       "type": "usage",
       "usage": {
-        "promptTokens": 109,
-        "completionTokens": 19,
+        "promptTokens": 113,
+        "completionTokens": 23,
+        "cost": 0,
+        "model": "demo/mock-llm",
+        "contextWindow": 1000000
+      }
+    },
+    {
+      "type": "tool_start",
+      "toolCall": {
+        "id": "search_injury_catalog",
+        "name": "search_catalog",
+        "args": {
+          "database": "nba_box_scores_v2",
+          "query": "injury injured players availability status"
+        }
+      }
+    },
+    {
+      "type": "tool_end",
+      "toolCall": {
+        "id": "search_injury_catalog",
+        "name": "search_catalog",
+        "result": "{\"results\":[]}"
+      }
+    },
+    {
+      "type": "text",
+      "content": "The visible schema does not expose injury or player-a"
+    },
+    {
+      "type": "text",
+      "content": "vailability fields, so I cannot attribute scoring drops to injur"
+    },
+    {
+      "type": "text",
+      "content": "ed players from this dataset. I can analyze team scoring drops u"
+    },
+    {
+      "type": "text",
+      "content": "sing `schedule` and `box_scores`, but injury explanations would "
+    },
+    {
+      "type": "text",
+      "content": "need an injury/status table or an external roster availabil"
+    },
+    {
+      "type": "text",
+      "content": "ity source."
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "promptTokens": 134,
+        "completionTokens": 44,
+        "cost": 0,
+        "model": "demo/mock-llm",
+        "contextWindow": 1000000
+      }
+    },
+    {
+      "type": "turn_complete",
+      "turnHistory": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "search_injury_catalog",
+              "name": "search_catalog",
+              "input": {
+                "database": "nba_box_scores_v2",
+                "query": "injury injured players availability status"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "search_injury_catalog",
+              "content": "{\"results\":[]}"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "The visible schema does not expose injury or player-availability fields, so I cannot attribute scoring drops to injured players from this dataset. I can analyze team scoring drops using `schedule` and `box_scores`, but injury explanations would need an injury/status table or an external roster availability source."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "usage",
+      "usage": {
+        "promptTokens": 115,
+        "completionTokens": 25,
         "cost": 0,
         "model": "demo/mock-llm",
         "contextWindow": 1000000
@@ -918,8 +1388,8 @@
     {
       "type": "usage",
       "usage": {
-        "promptTokens": 110,
-        "completionTokens": 20,
+        "promptTokens": 116,
+        "completionTokens": 26,
         "cost": 0,
         "model": "demo/mock-llm",
         "contextWindow": 1000000
@@ -932,7 +1402,7 @@
         "name": "update_context_layer",
         "args": {
           "action": "update",
-          "id": "019e81c7-a0cd-7922-a981-3818aef98b72",
+          "id": "019e81da-0c55-7179-ad44-e530f8b9168e",
           "title": "box_scores to schedule join key",
           "content": "Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Filter box_scores.period = FullGame for full-game stats before aggregating.",
           "references": [
@@ -954,7 +1424,7 @@
               "name": "update_context_layer",
               "input": {
                 "action": "update",
-                "id": "019e81c7-a0cd-7922-a981-3818aef98b72",
+                "id": "019e81da-0c55-7179-ad44-e530f8b9168e",
                 "title": "box_scores to schedule join key",
                 "content": "Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Filter box_scores.period = FullGame for full-game stats before aggregating.",
                 "references": [
@@ -980,8 +1450,8 @@
     {
       "type": "usage",
       "usage": {
-        "promptTokens": 111,
-        "completionTokens": 21,
+        "promptTokens": 117,
+        "completionTokens": 27,
         "cost": 0,
         "model": "demo/mock-llm",
         "contextWindow": 1000000
@@ -994,7 +1464,7 @@
         "name": "update_context_layer",
         "args": {
           "action": "delete",
-          "id": "019e81c7-a0cd-7922-a981-3818aef98b72"
+          "id": "019e81da-0c55-7179-ad44-e530f8b9168e"
         }
       }
     },
@@ -1010,7 +1480,7 @@
               "name": "update_context_layer",
               "input": {
                 "action": "delete",
-                "id": "019e81c7-a0cd-7922-a981-3818aef98b72"
+                "id": "019e81da-0c55-7179-ad44-e530f8b9168e"
               }
             }
           ]
@@ -1042,8 +1512,8 @@
     {
       "type": "usage",
       "usage": {
-        "promptTokens": 132,
-        "completionTokens": 42,
+        "promptTokens": 138,
+        "completionTokens": 48,
         "cost": 0,
         "model": "demo/mock-llm",
         "contextWindow": 1000000
@@ -1130,7 +1600,7 @@
               "database:nba_box_scores_v2.main.schedule"
             ]
           },
-          "resultText": "Created fragment \"box_scores to schedule join key\" (id 019e81c7-a0cd-7922-a981-3818aef98b72).",
+          "resultText": "Created fragment \"box_scores to schedule join key\" (id 019e81da-0c55-7179-ad44-e530f8b9168e).",
           "isError": false
         }
       ],
@@ -1237,7 +1707,7 @@
             {
               "type": "tool_result",
               "tool_use_id": "ctx_save_1",
-              "content": "Created fragment \"box_scores to schedule join key\" (id 019e81c7-a0cd-7922-a981-3818aef98b72)."
+              "content": "Created fragment \"box_scores to schedule join key\" (id 019e81da-0c55-7179-ad44-e530f8b9168e)."
             }
           ]
         },
@@ -1277,12 +1747,162 @@
       ]
     },
     {
+      "user": "Adversarial: I need the 2024 regular-season team scoring leaders. Do not double-count player rows, and save any durable grain rule you discover.",
+      "finishReasons": [
+        "context_pause",
+        "context_pause",
+        "done"
+      ],
+      "assistantText": "I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season.\n\n```table size=[16,5]\n{\"title\":\"2024 Regular Season Team Scoring Leaders\",\"columns\":[{\"id\":\"team\",\"title\":\"Team\",\"bold\":true},{\"id\":\"points\",\"title\":\"Points\",\"fmt\":\"num0\",\"align\":\"right\"}],\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}],\"compact\":true}\n```\n\nSaved the team-scoring grain rule so later totals avoid double-counting.",
+      "sseTypes": [
+        "usage",
+        "context_tool",
+        "turn_complete",
+        "usage",
+        "tool_start",
+        "tool_end",
+        "usage",
+        "context_tool",
+        "turn_complete",
+        "text",
+        "text",
+        "text",
+        "text",
+        "mviz_pending",
+        "text",
+        "mviz_html",
+        "text",
+        "text",
+        "usage",
+        "turn_complete"
+      ],
+      "toolNames": [
+        "query",
+        "query_context_layer",
+        "update_context_layer"
+      ],
+      "mvizHtmlCount": 1,
+      "contextServices": [
+        {
+          "callId": "ctx_lookup_grain",
+          "name": "query_context_layer",
+          "args": {
+            "query": "full-game team scoring grain double count",
+            "reference": "database:nba_box_scores_v2.main.box_scores"
+          },
+          "resultText": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81da-0c55-7179-ad44-e530f8b9168e\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats.",
+          "isError": false
+        },
+        {
+          "callId": "ctx_save_grain",
+          "name": "update_context_layer",
+          "args": {
+            "action": "create",
+            "title": "full-game team scoring grain",
+            "content": "For team scoring totals in nba_box_scores_v2.main.box_scores, filter period = FullGame and player_name IS NULL before summing points. This avoids double-counting player rows when the question asks for team-level totals.",
+            "references": [
+              "database:nba_box_scores_v2.main.box_scores"
+            ]
+          },
+          "resultText": "Created fragment \"full-game team scoring grain\" (id 019e81da-0d00-7586-9a1d-3c6ef51a6395).",
+          "isError": false
+        }
+      ],
+      "turnHistory": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "ctx_lookup_grain",
+              "name": "query_context_layer",
+              "input": {
+                "query": "full-game team scoring grain double count",
+                "reference": "database:nba_box_scores_v2.main.box_scores"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "ctx_lookup_grain",
+              "content": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81da-0c55-7179-ad44-e530f8b9168e\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "query_2024_team_scoring_leaders",
+              "name": "query",
+              "input": {
+                "database": "nba_box_scores_v2",
+                "sql": "WITH team_rows AS (\n  SELECT b.team_abbreviation AS team, sum(b.points) AS points\n  FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" b\n  JOIN \"nba_box_scores_v2\".\"main\".\"schedule\" s ON b.game_id = s.game_id\n  WHERE b.period = 'FullGame'\n    AND b.player_name IS NULL\n    AND s.season_year = 2024\n    AND s.season_type = 'Regular Season'\n  GROUP BY ALL\n)\nSELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "query_2024_team_scoring_leaders",
+              "content": "{\"columns\":[\"team\",\"points\"],\"rows\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "ctx_save_grain",
+              "name": "update_context_layer",
+              "input": {
+                "action": "create",
+                "title": "full-game team scoring grain",
+                "content": "For team scoring totals in nba_box_scores_v2.main.box_scores, filter period = FullGame and player_name IS NULL before summing points. This avoids double-counting player rows when the question asks for team-level totals.",
+                "references": [
+                  "database:nba_box_scores_v2.main.box_scores"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "ctx_save_grain",
+              "content": "Created fragment \"full-game team scoring grain\" (id 019e81da-0d00-7586-9a1d-3c6ef51a6395)."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season.\n\n```table size=[16,5]\n{\"title\":\"2024 Regular Season Team Scoring Leaders\",\"columns\":[{\"id\":\"team\",\"title\":\"Team\",\"bold\":true},{\"id\":\"points\",\"title\":\"Points\",\"fmt\":\"num0\",\"align\":\"right\"}],\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}],\"compact\":true}\n```\n\nSaved the team-scoring grain rule so later totals avoid double-counting."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "user": "Use the saved context and chart total points by team.",
       "finishReasons": [
         "context_pause",
         "done"
       ],
-      "assistantText": "Using the saved join context, here are the top teams by full-game points.\n\n```bar size=[8,4]\n{\"type\":\"bar\",\"title\":\"Top Teams by Points\",\"x\":\"team\",\"y\":\"points\",\"format\":\"num0\",\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}\n```\n\nBOS leads this mocked slice.",
+      "assistantText": "Using the saved grain context, here are the top teams by full-game points from team rows only.\n\n```bar size=[8,4]\n{\"type\":\"bar\",\"title\":\"Top Teams by Points\",\"x\":\"team\",\"y\":\"points\",\"format\":\"num0\",\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}\n```\n\nBOS leads this mocked slice.",
       "sseTypes": [
         "usage",
         "context_tool",
@@ -1295,6 +1915,7 @@
         "mviz_pending",
         "text",
         "mviz_html",
+        "text",
         "text",
         "usage",
         "turn_complete"
@@ -1309,10 +1930,10 @@
           "callId": "ctx_lookup_2",
           "name": "query_context_layer",
           "args": {
-            "query": "schedule join",
-            "reference": "database:nba_box_scores_v2.main.schedule"
+            "query": "full-game team scoring grain",
+            "reference": "database:nba_box_scores_v2.main.box_scores"
           },
-          "resultText": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81c7-a0cd-7922-a981-3818aef98b72\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats.",
+          "resultText": "1 context fragment(s):\n\n### full-game team scoring grain\nid: 019e81da-0d00-7586-9a1d-3c6ef51a6395\nreferences: database:nba_box_scores_v2.main.box_scores\n\nFor team scoring totals in nba_box_scores_v2.main.box_scores, filter period = FullGame and player_name IS NULL before summing points. This avoids double-counting player rows when the question asks for team-level totals.",
           "isError": false
         }
       ],
@@ -1325,8 +1946,8 @@
               "id": "ctx_lookup_2",
               "name": "query_context_layer",
               "input": {
-                "query": "schedule join",
-                "reference": "database:nba_box_scores_v2.main.schedule"
+                "query": "full-game team scoring grain",
+                "reference": "database:nba_box_scores_v2.main.box_scores"
               }
             }
           ]
@@ -1337,7 +1958,7 @@
             {
               "type": "tool_result",
               "tool_use_id": "ctx_lookup_2",
-              "content": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81c7-a0cd-7922-a981-3818aef98b72\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats."
+              "content": "1 context fragment(s):\n\n### full-game team scoring grain\nid: 019e81da-0d00-7586-9a1d-3c6ef51a6395\nreferences: database:nba_box_scores_v2.main.box_scores\n\nFor team scoring totals in nba_box_scores_v2.main.box_scores, filter period = FullGame and player_name IS NULL before summing points. This avoids double-counting player rows when the question asks for team-level totals."
             }
           ]
         },
@@ -1350,7 +1971,7 @@
               "name": "query",
               "input": {
                 "database": "nba_box_scores_v2",
-                "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' GROUP BY ALL ORDER BY points DESC LIMIT 5"
+                "sql": "SELECT team_abbreviation AS team, sum(points) AS points FROM \"nba_box_scores_v2\".\"main\".\"box_scores\" WHERE period = 'FullGame' AND player_name IS NULL GROUP BY ALL ORDER BY points DESC LIMIT 5"
               }
             }
           ]
@@ -1370,7 +1991,67 @@
           "content": [
             {
               "type": "text",
-              "text": "Using the saved join context, here are the top teams by full-game points.\n\n```bar size=[8,4]\n{\"type\":\"bar\",\"title\":\"Top Teams by Points\",\"x\":\"team\",\"y\":\"points\",\"format\":\"num0\",\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}\n```\n\nBOS leads this mocked slice."
+              "text": "Using the saved grain context, here are the top teams by full-game points from team rows only.\n\n```bar size=[8,4]\n{\"type\":\"bar\",\"title\":\"Top Teams by Points\",\"x\":\"team\",\"y\":\"points\",\"format\":\"num0\",\"data\":[{\"team\":\"BOS\",\"points\":10422},{\"team\":\"DEN\",\"points\":10051},{\"team\":\"OKC\",\"points\":9964},{\"team\":\"MIN\",\"points\":9818},{\"team\":\"NYK\",\"points\":9721}]}\n```\n\nBOS leads this mocked slice."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "user": "Adversarial: Which injured players explain the biggest team scoring drops? If the schema cannot support injury analysis, be explicit.",
+      "finishReasons": [
+        "done"
+      ],
+      "assistantText": "The visible schema does not expose injury or player-availability fields, so I cannot attribute scoring drops to injured players from this dataset. I can analyze team scoring drops using `schedule` and `box_scores`, but injury explanations would need an injury/status table or an external roster availability source.",
+      "sseTypes": [
+        "usage",
+        "tool_start",
+        "tool_end",
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        "usage",
+        "turn_complete"
+      ],
+      "toolNames": [
+        "search_catalog"
+      ],
+      "mvizHtmlCount": 0,
+      "contextServices": [],
+      "turnHistory": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "search_injury_catalog",
+              "name": "search_catalog",
+              "input": {
+                "database": "nba_box_scores_v2",
+                "query": "injury injured players availability status"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "search_injury_catalog",
+              "content": "{\"results\":[]}"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "The visible schema does not expose injury or player-availability fields, so I cannot attribute scoring drops to injured players from this dataset. I can analyze team scoring drops using `schedule` and `box_scores`, but injury explanations would need an injury/status table or an external roster availability source."
             }
           ]
         }
@@ -1413,7 +2094,7 @@
           "args": {
             "query": "FullGame join"
           },
-          "resultText": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81c7-a0cd-7922-a981-3818aef98b72\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats.",
+          "resultText": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81da-0c55-7179-ad44-e530f8b9168e\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats.",
           "isError": false
         },
         {
@@ -1421,7 +2102,7 @@
           "name": "update_context_layer",
           "args": {
             "action": "update",
-            "id": "019e81c7-a0cd-7922-a981-3818aef98b72",
+            "id": "019e81da-0c55-7179-ad44-e530f8b9168e",
             "title": "box_scores to schedule join key",
             "content": "Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Filter box_scores.period = FullGame for full-game stats before aggregating.",
             "references": [
@@ -1437,9 +2118,9 @@
           "name": "update_context_layer",
           "args": {
             "action": "delete",
-            "id": "019e81c7-a0cd-7922-a981-3818aef98b72"
+            "id": "019e81da-0c55-7179-ad44-e530f8b9168e"
           },
-          "resultText": "Deleted fragment 019e81c7-a0cd-7922-a981-3818aef98b72.",
+          "resultText": "Deleted fragment 019e81da-0c55-7179-ad44-e530f8b9168e.",
           "isError": false
         }
       ],
@@ -1463,7 +2144,7 @@
             {
               "type": "tool_result",
               "tool_use_id": "ctx_lookup_3",
-              "content": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81c7-a0cd-7922-a981-3818aef98b72\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats."
+              "content": "1 context fragment(s):\n\n### box_scores to schedule join key\nid: 019e81da-0c55-7179-ad44-e530f8b9168e\nreferences: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule\n\nJoin nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats."
             }
           ]
         },
@@ -1476,7 +2157,7 @@
               "name": "update_context_layer",
               "input": {
                 "action": "update",
-                "id": "019e81c7-a0cd-7922-a981-3818aef98b72",
+                "id": "019e81da-0c55-7179-ad44-e530f8b9168e",
                 "title": "box_scores to schedule join key",
                 "content": "Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Filter box_scores.period = FullGame for full-game stats before aggregating.",
                 "references": [
@@ -1506,7 +2187,7 @@
               "name": "update_context_layer",
               "input": {
                 "action": "delete",
-                "id": "019e81c7-a0cd-7922-a981-3818aef98b72"
+                "id": "019e81da-0c55-7179-ad44-e530f8b9168e"
               }
             }
           ]
@@ -1517,7 +2198,7 @@
             {
               "type": "tool_result",
               "tool_use_id": "ctx_delete_1",
-              "content": "Deleted fragment 019e81c7-a0cd-7922-a981-3818aef98b72."
+              "content": "Deleted fragment 019e81da-0c55-7179-ad44-e530f8b9168e."
             }
           ]
         },
@@ -1535,7 +2216,7 @@
   ],
   "summary": {
     "p1p2Unresolved": 0,
-    "assertionsPassed": 14,
-    "assertionsTotal": 14
+    "assertionsPassed": 19,
+    "assertionsTotal": 19
   }
 }
