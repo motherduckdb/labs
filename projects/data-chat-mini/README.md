@@ -42,6 +42,40 @@ npm run dev                  # http://localhost:3000
 Pick a database, then ask away — e.g. *"what tables are here?"*, *"chart revenue by
 month"*, *"remember that orders join customers on customer_id"*.
 
+## Deploy (Vercel)
+
+The app is a self-contained Next.js project — deploy it straight from this
+subdirectory.
+
+1. **Root Directory** → set to `projects/data-chat-mini` in the Vercel project
+   settings (the repo root is a monorepo with no top-level `package.json`).
+   Deploying from inside this folder with the CLI handles this automatically.
+2. **Environment variables** (Production): `MOTHERDUCK_TOKEN`,
+   `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (optional), and
+   `MOTHERDUCK_API_URL=https://api.motherduck.com` — **the default is staging**,
+   so set it explicitly for prod.
+3. **Protect the deployment.** This app has **no application-level auth** — a
+   read scaling token plus a per-session id stands in for identity. An open URL
+   therefore exposes your catalog to anyone (read-only) and lets them spend your
+   OpenRouter budget. Turn on Vercel **Deployment Protection → Password
+   Protection** with scope **All Deployments** (not just Preview) before sharing
+   the URL.
+4. **Use a read scaling, read-only token** for `MOTHERDUCK_TOKEN`. Read-only is
+   enforced *by the token type*, not by SQL inspection — the `query` tool runs
+   model-generated SQL unmodified, so a read-write token would remove the
+   guarantee.
+5. **Function timeout / plan.** `app/api/chat/route.ts` sets `maxDuration = 300`
+   for the streaming agentic loop. Vercel Hobby clamps functions to ~60s
+   (long turns get cut off); Pro / Fluid Compute honors 300s. A single MCP query
+   is independently capped by MotherDuck at ~55s.
+
+```bash
+# from projects/data-chat-mini/
+npx vercel link            # create/link the project
+npx vercel env add MOTHERDUCK_TOKEN production   # repeat per var
+npx vercel deploy --prod
+```
+
 ## Demo Mode
 
 The picker includes a presenter-ready **Demo Mode** for the canonical
