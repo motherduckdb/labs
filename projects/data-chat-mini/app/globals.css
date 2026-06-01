@@ -14,6 +14,11 @@ main {
   padding: 48px;
 }
 
+button,
+textarea {
+  font: inherit;
+}
+
 .workshop-page {
   max-width: 920px;
 }
@@ -98,4 +103,91 @@ pre {
 
 .error {
   color: #b91c1c;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #d1d5db;
+  background: white;
+  padding: 14px 20px;
+}
+
+.topbar span {
+  display: block;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.workspace-grid {
+  display: flex;
+  gap: 24px;
+  height: calc(100vh - 58px);
+  padding: 20px;
+}
+
+.chat-panel {
+  display: flex;
+  flex: 2;
+  min-width: 0;
+  flex-direction: column;
+  border: 1px solid #d1d5db;
+  background: white;
+}
+
+.messages {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.message {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 12px 0;
+}
+
+.role {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.steps details {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.composer {
+  display: flex;
+  gap: 12px;
+  border-top: 1px solid #d1d5db;
+  padding: 12px;
+}
+
+.composer textarea {
+  min-height: 76px;
+  flex: 1;
+  resize: vertical;
+}
+
+.composer button {
+  border: 0;
+  background: #2563eb;
+  color: white;
+  padding: 0 18px;
 }
