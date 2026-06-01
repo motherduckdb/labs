@@ -239,20 +239,6 @@ pre {
   color: #ffffff;
 }
 
-.topbar-mode-switch {
-  flex: 0 1 286px;
-}
-
-.mode-guidance {
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--muted);
-  padding: 8px 14px;
-  font-size: var(--text-caption);
-  line-height: 1.4;
-  flex-shrink: 0;
-}
-
 .ghost-button,
 .solid-button,
 .send-button,
@@ -1401,19 +1387,6 @@ pre {
 
   .db-chip {
     max-width: 42vw;
-  }
-
-  .topbar-mode-switch {
-    flex: 1 1 100%;
-    order: 10;
-  }
-
-  .topbar-mode-switch button {
-    flex: 1;
-  }
-
-  .mode-guidance {
-    padding: 7px 14px;
   }
 
   .workspace-grid.with-demo {
