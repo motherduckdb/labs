@@ -1,32 +1,47 @@
-import { NextRequest } from 'next/server';
+/**
+ * Schema browser endpoint. Lazy-loads catalog metadata for the schema
+ * explorer sidebar — one request per database/table the user expands.
+ *
+ *  - `?database=foo` (optional `&schema=bar`) → list_tables
+ *  - `?database=foo&table=baz` (optional `&schema=bar`) → list_columns
+ *
+ * Read scaling: the per-session id arrives in the `x-session-id` header and is
+ * threaded into the MCP connection as a session hint.
+ */
 import { createMCPClient, executeTool } from '@/lib/mcp-client';
+import { isAuthError, authExpiredResponse, getSessionHint } from '@/lib/api-helpers';
 import { parseTables, parseColumns } from '@/lib/mcp-parsers';
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-
-function getSessionHint(request: NextRequest): string | undefined {
-  return request.headers.get('x-session-id') || request.nextUrl.searchParams.get('session') || undefined;
-}
+import { NextRequest } from 'next/server';
 
 export async function GET(request: NextRequest) {
-  let client: Client | null = null;
+  const params = request.nextUrl.searchParams;
+  const database = params.get('database');
+  const schema = params.get('schema') || undefined;
+  const table = params.get('table') || undefined;
+
+  if (!database) {
+    return Response.json({ error: 'database query param is required' }, { status: 400 });
+  }
+
   try {
-    const database = request.nextUrl.searchParams.get('database') || 'nba_box_scores_v2';
-    const table = request.nextUrl.searchParams.get('table');
-    client = await createMCPClient(getSessionHint(request));
-
-    if (table) {
-      const raw = await executeTool(client, 'list_columns', { database, table });
-      return Response.json({ columns: parseColumns(raw) });
-    }
-
-    const raw = await executeTool(client, 'list_tables', { database });
-    return Response.json({ tables: parseTables(raw) });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return Response.json({ error: message }, { status: 500 });
-  } finally {
-    if (client) {
+    const client = await createMCPClient(getSessionHint(request));
+    try {
+      if (table) {
+        const args: Record<string, unknown> = { database, table };
+        if (schema) args.schema = schema;
+        const raw = await executeTool(client, 'list_columns', args, true);
+        return Response.json({ columns: parseColumns(raw) });
+      }
+      const args: Record<string, unknown> = { database };
+      if (schema) args.schema = schema;
+      const raw = await executeTool(client, 'list_tables', args, true);
+      return Response.json({ tables: parseTables(raw) });
+    } finally {
       try { await client.close(); } catch { /* ignore */ }
     }
+  } catch (error) {
+    console.error('[Schema] Error:', error);
+    if (isAuthError(error)) return authExpiredResponse();
+    return Response.json({ error: 'Failed to fetch schema' }, { status: 500 });
   }
 }

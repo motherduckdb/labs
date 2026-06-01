@@ -1,82 +1,147 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, after } from 'next/server';
 import { getModelProfile } from '@/lib/llm-client';
 import { createMCPClient, getFilteredTools, mcpToolsToAnthropicFormat } from '@/lib/mcp-client';
-import { runAgenticLoop } from '@/lib/agentic-loop';
 import { buildSystemPrompt } from '@/lib/system-prompt';
 import { CONTEXT_TOOLS, CONTEXT_PLACEHOLDER } from '@/lib/context-tools';
+import { runAgenticLoop } from '@/lib/agentic-loop';
+import * as cl from '@/lib/controllog';
 import { sseDone, sseError } from '@/lib/sse-encoder';
+import { parseChatRequest } from '@/lib/api-helpers';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 export const maxDuration = 300;
 
+const logDir = process.env.VERCEL ? '/tmp' : 'logs';
+try { cl.init('data-chat-mini', logDir); } catch { /* already initialized */ }
+
 export async function POST(request: NextRequest) {
   let mcpClient: Client | null = null;
+
   try {
-    const body = await request.json();
-    const message = typeof body.message === 'string' ? body.message : '';
-    const history = Array.isArray(body.history) ? body.history as Array<{ role: string; content: unknown }> : [];
-    const resolvedContext = Array.isArray(body.resolvedContext)
-      ? body.resolvedContext as Array<{ callId: string; resultText: string; isError?: boolean }>
-      : [];
-    const isResume = resolvedContext.length > 0;
-    const databases = Array.isArray(body.databases) ? body.databases.filter((db: unknown): db is string => typeof db === 'string') : ['nba_box_scores_v2'];
-    const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
-    if (!message.trim() && !isResume) {
+    const parsed = await parseChatRequest(request);
+    if (!parsed.ok) {
+      return Response.json({ error: parsed.error }, { status: 400 });
+    }
+    const { message, history, databases, thinkingLevel, sessionId, resolvedContext } = parsed.body;
+
+    const isResume = Array.isArray(resolvedContext) && resolvedContext.length > 0;
+    if (!message && !isResume) {
       return Response.json({ error: 'No message provided' }, { status: 400 });
     }
+
     if (!process.env.MOTHERDUCK_TOKEN) {
       return Response.json({ error: 'Server is missing MOTHERDUCK_TOKEN' }, { status: 500 });
     }
+
     if (!process.env.OPENROUTER_API_KEY) {
       return Response.json({ error: 'Server is missing OPENROUTER_API_KEY' }, { status: 500 });
     }
 
+    // Read scaling: thread the browser session id into the MCP connection as a
+    // session hint so concurrent users fan out across read replicas.
     mcpClient = await createMCPClient(sessionId);
-    const tools = [...mcpToolsToAnthropicFormat(await getFilteredTools(mcpClient)), ...CONTEXT_TOOLS];
+    const mcpTools = await getFilteredTools(mcpClient);
+    // Context-layer tools are advertised with MotherDuck names but handled
+    // locally via the client round-trip — not dispatched to MCP.
+    const tools = [...mcpToolsToAnthropicFormat(mcpTools), ...CONTEXT_TOOLS];
+
     const profile = getModelProfile();
+    const systemPrompt = buildSystemPrompt(databases);
+
+    const logSession = cl.createSession(sessionId);
+    let markStreamFinished: () => void = () => {};
+    const streamFinished = new Promise<void>((resolve) => { markStreamFinished = resolve; });
+
+    after(async () => {
+      await streamFinished;
+      try {
+        await cl.flushSession(logSession);
+      } catch (err) {
+        console.warn(
+          `[Controllog] Flush failed (${logSession.events.length} events, ${logSession.postings.length} postings):`,
+          err,
+        );
+      }
+    });
 
     const stream = new ReadableStream({
       async start(controller) {
-        const emit = (chunk: Uint8Array) => controller.enqueue(chunk);
-        try {
-          const messages = history.map(item => ({ role: item.role, content: item.content }));
-          const turnStartIndex = messages.length;
-          if (isResume) {
-            const byId = new Map(resolvedContext.map(result => [result.callId, result]));
-            for (const item of messages) {
-              if (item.role !== 'user' || !Array.isArray(item.content)) continue;
-              for (const block of item.content as Array<Record<string, unknown>>) {
-                if (block.type === 'tool_result' && block.content === CONTEXT_PLACEHOLDER) {
-                  const resolved = byId.get(block.tool_use_id as string);
-                  if (resolved) {
-                    block.content = resolved.resultText;
-                    if (resolved.isError) block.is_error = true;
+        let closed = false;
+        const safeEnqueue = (data: Uint8Array) => {
+          if (closed) return;
+          try { controller.enqueue(data); } catch { closed = true; }
+        };
+        const safeClose = () => {
+          if (closed) return;
+          closed = true;
+          try { controller.close(); } catch { /* already closed */ }
+        };
+
+        const runStream = async () => {
+          const runId = `chat_${Date.now()}`;
+          const taskId = `chat:${runId}`;
+          try {
+            const messages: Array<{ role: string; content: unknown }> =
+              history.map(m => ({ role: m.role, content: m.content }));
+
+            if (isResume) {
+              // Patch the placeholder tool_result(s) left by the context pause
+              // with the results the client computed locally against IndexedDB.
+              const byId = new Map(resolvedContext!.map(r => [r.callId, r]));
+              for (const m of messages) {
+                if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+                for (const block of m.content as Array<Record<string, unknown>>) {
+                  if (block.type === 'tool_result' && block.content === CONTEXT_PLACEHOLDER) {
+                    const resolved = byId.get(block.tool_use_id as string);
+                    if (resolved) {
+                      block.content = resolved.resultText;
+                      if (resolved.isError) block.is_error = true;
+                    }
                   }
                 }
               }
+            } else {
+              messages.push({ role: 'user', content: message });
             }
-          } else {
-            messages.push({ role: 'user', content: message });
+
+            const turnStartIndex = messages.length;
+            await runAgenticLoop({
+              messages,
+              turnStartIndex,
+              profile,
+              thinkingLevel,
+              client: mcpClient!,
+              tools,
+              systemPrompt,
+              emit: safeEnqueue,
+              taskId,
+              runId,
+              requestText: message,
+              historyLength: history.length,
+            });
+
+            safeEnqueue(sseDone());
+            safeClose();
+          } catch (error) {
+            console.error('[Chat] Stream error:', error);
+            const errMsg = error instanceof Error ? error.message : 'Unknown error';
+            safeEnqueue(sseError('An error occurred processing your request'));
+            try {
+              cl.streamError({ taskId, runId, errorKind: 'unhandled', message: errMsg, model: profile.id });
+            } catch (logErr) { console.error('[Controllog] streamError error:', logErr); }
+            safeClose();
+          } finally {
+            markStreamFinished();
+            if (mcpClient) {
+              try { await mcpClient.close(); } catch { /* ignore */ }
+            }
           }
-          await runAgenticLoop({
-            messages,
-            turnStartIndex,
-            profile,
-            thinkingLevel: 'none',
-            client: mcpClient!,
-            tools,
-            systemPrompt: buildSystemPrompt(databases),
-            emit,
-          });
-          emit(sseDone());
-        } catch (error) {
-          console.error('[Chat] Stream error:', error);
-          emit(sseError('An error occurred processing your request'));
+        };
+
+        try {
+          await cl.runInSession(logSession, runStream);
         } finally {
-          try { controller.close(); } catch { /* already closed */ }
-          if (mcpClient) {
-            try { await mcpClient.close(); } catch { /* ignore */ }
-          }
+          markStreamFinished();
         }
       },
     });
@@ -89,10 +154,10 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
+    console.error('[Chat] Error:', error);
     if (mcpClient) {
       try { await mcpClient.close(); } catch { /* ignore */ }
     }
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return Response.json({ error: message }, { status: 500 });
+    return Response.json({ error: 'Failed to process request' }, { status: 500 });
   }
 }

@@ -1,11 +1,11 @@
 # Data Chat Mini Workshop Checkpoints
 
-This branch stack reconstructs `projects/data-chat-mini` in the same order as
-the "Building a Data Agent in 60 Minutes" cook segment.
+This branch stack reconstructs `projects/data-chat-mini` in the cook order for
+"Building a Data Agent in 60 Minutes".
 
 | Tag | Capability | Quick check |
 | --- | --- | --- |
-| `data-chat-mini-step-01` | Data ground truth | Plain `SELECT` against `nba_box_scores_v2`; show `period = 'FullGame'` grain. |
+| `data-chat-mini-step-01` | Data ground truth | Plain `SELECT`; show that game totals use `period = 'FullGame'`. |
 | `data-chat-mini-step-02` | MCP `query` tool | Call `query` by hand and get rows back. |
 | `data-chat-mini-step-03` | Read-scaling token | Connect with `MOTHERDUCK_TOKEN` plus a per-browser session id. |
 | `data-chat-mini-step-04` | Tool allowlist | See `query_rw` rejected before dispatch. |
