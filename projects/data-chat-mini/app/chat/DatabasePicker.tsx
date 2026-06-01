@@ -18,6 +18,7 @@ export function DatabasePicker({
 }) {
   const [databases, setDatabases] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<'interactive' | 'workshop'>('interactive');
 
   useEffect(() => {
     (async () => {
@@ -43,6 +44,32 @@ export function DatabasePicker({
   return (
     <div className="picker-screen">
       <div className="picker-card">
+        <div className="picker-mode-header">
+          <div className="mode-switch" role="group" aria-label="Start mode">
+            <button
+              type="button"
+              onClick={() => setMode('interactive')}
+              className={mode === 'interactive' ? 'active' : ''}
+              aria-pressed={mode === 'interactive'}
+            >
+              Interactive mode
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode('workshop')}
+              className={mode === 'workshop' ? 'active' : ''}
+              aria-pressed={mode === 'workshop'}
+            >
+              Workshop mode
+            </button>
+          </div>
+          <p>
+            {mode === 'interactive'
+              ? 'Choose a database, then ask a freeform question in the chat input.'
+              : 'Use the NBA workshop path to replay the demo or run each prompt live.'}
+          </p>
+        </div>
+
         <div className="brand-lockup picker-brand">
           <MotherDuckLogo />
           <div>
@@ -51,48 +78,54 @@ export function DatabasePicker({
           </div>
         </div>
         <p className="picker-lede">
-          Pick a MotherDuck database or launch the presenter-ready NBA workshop path.
+          {mode === 'interactive'
+            ? 'Pick a MotherDuck database to start a read-only data chat.'
+            : 'Launch the presenter-ready NBA workshop path.'}
         </p>
 
-        <div className="demo-start-panel">
-          <div>
-            <div className="eyebrow">Workshop mode</div>
-            <h2>{CANONICAL_DEMO_DATABASE}</h2>
-            <p>Guided prompts, replayable transcript, traceable SQL, context, and mviz artifacts.</p>
+        {mode === 'workshop' ? (
+          <div className="demo-start-panel">
+            <div>
+              <div className="eyebrow">Workshop mode</div>
+              <h2>{CANONICAL_DEMO_DATABASE}</h2>
+              <p>Guided prompts, replayable transcript, traceable SQL, context, and mviz artifacts.</p>
+            </div>
+            <div className="demo-start-actions">
+              <button onClick={() => onStartDemo(true)}>Replay demo</button>
+              <button onClick={() => onStartDemo(false)}>Live demo</button>
+            </div>
           </div>
-          <div className="demo-start-actions">
-            <button onClick={() => onStartDemo(true)}>Replay demo</button>
-            <button onClick={() => onStartDemo(false)}>Live demo</button>
-          </div>
-        </div>
+        ) : (
+          <>
+            {error && (
+              <div className="error-card">
+                {error === 'auth_expired'
+                  ? 'MotherDuck connection failed — check MOTHERDUCK_TOKEN in .env.local.'
+                  : error}
+              </div>
+            )}
 
-        {error && (
-          <div className="error-card">
-            {error === 'auth_expired'
-              ? 'MotherDuck connection failed — check MOTHERDUCK_TOKEN in .env.local.'
-              : error}
-          </div>
+            {databases === null && !error && (
+              <div className="loading-row">Loading databases…</div>
+            )}
+
+            {databases && databases.length === 0 && (
+              <div className="loading-row">No databases found for this token.</div>
+            )}
+
+            <div className="database-list">
+              {databases?.map((db) => (
+                <button
+                  key={db}
+                  onClick={() => onPick(db)}
+                >
+                  <span>{db}</span>
+                  <small>Read-only chat workspace</small>
+                </button>
+              ))}
+            </div>
+          </>
         )}
-
-        {databases === null && !error && (
-          <div className="loading-row">Loading databases…</div>
-        )}
-
-        {databases && databases.length === 0 && (
-          <div className="loading-row">No databases found for this token.</div>
-        )}
-
-        <div className="database-list">
-          {databases?.map((db) => (
-            <button
-              key={db}
-              onClick={() => onPick(db)}
-            >
-              <span>{db}</span>
-              <small>Read-only chat workspace</small>
-            </button>
-          ))}
-        </div>
       </div>
     </div>
   );

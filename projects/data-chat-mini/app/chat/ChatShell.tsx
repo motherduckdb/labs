@@ -59,7 +59,7 @@ export function ChatShell() {
 
   if (!database) {
     return (
-      <div className="h-screen">
+      <div className="picker-shell">
         <DatabasePicker onPick={pickDatabase} onStartDemo={startDemo} />
       </div>
     );
@@ -87,12 +87,24 @@ export function ChatShell() {
         >
           Switch
         </button>
-        <button
-          onClick={() => setDemoMode((mode) => ({ ...mode, enabled: !mode.enabled }))}
-          className={demoMode.enabled ? 'solid-button compact' : 'ghost-button'}
-        >
-          Demo
-        </button>
+        <div className="mode-switch topbar-mode-switch" role="group" aria-label="Chat mode">
+          <button
+            type="button"
+            onClick={() => setDemoMode((mode) => ({ ...mode, enabled: false }))}
+            className={!demoMode.enabled ? 'active' : ''}
+            aria-pressed={!demoMode.enabled}
+          >
+            Interactive mode
+          </button>
+          <button
+            type="button"
+            onClick={() => setDemoMode((mode) => ({ ...mode, enabled: true }))}
+            className={demoMode.enabled ? 'active' : ''}
+            aria-pressed={demoMode.enabled}
+          >
+            Workshop mode
+          </button>
+        </div>
         <label className="thinking-control">
           Thinking
           <select
@@ -105,6 +117,12 @@ export function ChatShell() {
           </select>
         </label>
       </header>
+
+      <div className="mode-guidance">
+        {demoMode.enabled
+          ? 'Workshop mode: follow the guided NBA steps, then insert a prompt or replay a validation turn.'
+          : `Interactive mode: ask a freeform question about ${database} in the input at the bottom.`}
+      </div>
 
       <div className={`workspace-grid ${demoMode.enabled ? 'with-demo' : ''}`}>
         <ChatHistorySidebar

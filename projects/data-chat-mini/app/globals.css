@@ -123,8 +123,9 @@ pre {
 
 .app-shell {
   display: flex;
-  min-height: 100vh;
-  height: 100vh;
+  min-height: 100svh;
+  height: 100svh;
+  height: 100dvh;
   flex-direction: column;
   overflow: hidden;
   background: var(--background);
@@ -209,6 +210,49 @@ pre {
   flex: 0 0 auto;
 }
 
+.mode-switch {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  padding: 2px;
+  flex: 0 1 auto;
+}
+
+.mode-switch button {
+  min-height: 30px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  padding: 0 12px;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.mode-switch button.active {
+  background: var(--foreground);
+  color: #ffffff;
+}
+
+.topbar-mode-switch {
+  flex: 0 1 286px;
+}
+
+.mode-guidance {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+  padding: 8px 14px;
+  font-size: var(--text-caption);
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
 .ghost-button,
 .solid-button,
 .send-button,
@@ -242,8 +286,13 @@ pre {
 .schema-table-button:hover,
 .schema-column-button:hover,
 .context-fragment-card:hover,
+.mode-switch button:hover,
 .segmented-control button:hover {
   background: var(--subtle);
+}
+
+.mode-switch button.active:hover {
+  background: var(--foreground);
 }
 
 .solid-button,
@@ -626,6 +675,7 @@ pre {
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
   background: var(--background);
 }
 
@@ -1195,6 +1245,13 @@ pre {
   line-height: 1.45;
 }
 
+.picker-shell {
+  min-height: 100svh;
+  height: 100svh;
+  height: 100dvh;
+  overflow-y: auto;
+}
+
 .picker-screen {
   display: grid;
   min-height: 100%;
@@ -1210,6 +1267,24 @@ pre {
   background: var(--panel);
   padding: 24px;
   box-shadow: var(--shadow-sm);
+}
+
+.picker-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+
+.picker-mode-header p {
+  max-width: 330px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-caption);
+  line-height: 1.45;
 }
 
 .picker-brand {
@@ -1328,6 +1403,19 @@ pre {
     max-width: 42vw;
   }
 
+  .topbar-mode-switch {
+    flex: 1 1 100%;
+    order: 10;
+  }
+
+  .topbar-mode-switch button {
+    flex: 1;
+  }
+
+  .mode-guidance {
+    padding: 7px 14px;
+  }
+
   .workspace-grid.with-demo {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -1361,6 +1449,27 @@ pre {
 
   .picker-card {
     padding: 16px;
+  }
+
+  .picker-mode-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+  }
+
+  .picker-mode-header .mode-switch {
+    width: 100%;
+  }
+
+  .picker-mode-header .mode-switch button {
+    flex: 1;
+    padding-inline: 8px;
+  }
+
+  .picker-mode-header p {
+    max-width: none;
   }
 
   .demo-start-actions,
