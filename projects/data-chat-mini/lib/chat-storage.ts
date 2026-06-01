@@ -102,3 +102,10 @@ export async function deleteConversation(id: string): Promise<void> {
   const next = existing.filter(c => c.id !== id);
   await set(INDEX_KEY, next, store);
 }
+
+export async function clearConversations(): Promise<void> {
+  const store = await getStore();
+  const existing = (await get<ConversationSummary[]>(INDEX_KEY, store)) || [];
+  await Promise.all(existing.map((c) => del(convKey(c.id), store)));
+  await set(INDEX_KEY, [], store);
+}

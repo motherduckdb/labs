@@ -22,6 +22,8 @@ Each run writes:
 The default run is deterministic and requires no tokens. It validates:
 
 - Database selection includes `nba_box_scores_v2`.
+- Demo Mode exposes the full presenter flow, guided prompt insertion, replay
+  transcript mapping, and presenter reset behavior.
 - Schema browsing finds `main.schedule`, `main.box_scores`, and join columns.
 - Context `query_context_layer` and `update_context_layer` create, read, update,
   and delete local fragments.

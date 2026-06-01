@@ -1,10 +1,10 @@
 # Demo Validation Report
 
-- Run: 2026-06-01T06-39-48-399Z-mock
+- Run: 2026-06-01T07-31-27-876Z-mock
 - Mode: mock
 - Dataset: nba_box_scores_v2
-- Completed: 2026-06-01T06:39:48.572Z
-- Assertions: 19/19
+- Completed: 2026-06-01T07:31:28.060Z
+- Assertions: 23/23
 - Unresolved P1/P2: 0
 
 ## Issues
@@ -23,6 +23,9 @@ No unresolved issues.
 - PASS [P1] schema browser exposes join and metric columns: box_scores: game_id, entity_id, player_name, team_abbreviation, period, points; schedule: game_id, game_date, season_year, season_type, home_team_abbreviation, away_team_abbreviation
 - PASS [P2] system prompt includes demo-critical behavior: prompt must name the selected DB, context tools, response-after-tools rule, generic grain/context guardrails, and mviz/no-HTML boundary without dataset-specific rules
 - PASS [P1] tool catalog is read-only plus local context: tools: query, list_databases, list_tables, list_columns, search_catalog, ask_docs_question, query_context_layer, update_context_layer
+- PASS [P2] demo mode covers the NBA presenter flow: steps: 1:pick-database, 2:inspect-schema, 3:adversarial-grain, 4:chart-with-context, 5:unsupported-injuries, 6:reset-workshop
+- PASS [P2] guided prompt insertion uses deterministic NBA prompts: inspect prompt: Use nba_box_scores_v2, inspect the schema, remember the schedule join, and show recent seasons as a table.
+- PASS [P2] replay mode maps the validation transcript into presenter UI state: replay step: chart-with-context
 - PASS [P2] first turn browses schema before querying: tool order: list_databases -> list_tables -> list_columns -> list_columns -> list_tables -> list_columns -> list_columns -> query
 - PASS [P2] context save creates one reusable fragment: fragments after save: box_scores to schedule join key
 - PASS [P2] mviz table renders as HTML: sse types: usage, context_tool, turn_complete, usage, tool_start, tool_end, tool_start, tool_end, tool_start, tool_end, usage, context_tool, turn_complete, usage, tool_start, tool_end, text, text, mviz_pending, text, mviz_html, text, usage, turn_complete
@@ -52,10 +55,11 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5
 - PASS [P2] context query/update/delete lifecycle succeeds: context services: query_context_layer:1 context fragment(s):
 
 ### box_scores to schedule join key
-id: 019e81e8-f4b4-7e55-9742-6f4b7bdea1a9
+id: 019e8218-4009-70d8-870b-f5f545404b41
 references: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule
 
-Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e81e8-f4b4-7e55-9742-6f4b7bdea1a9.
+Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e8218-4009-70d8-870b-f5f545404b41.
+- PASS [P2] presenter reset clears local conversations and context: conversations: 0; fragments: 0
 
 ## Tool Calls
 

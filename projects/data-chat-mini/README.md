@@ -42,6 +42,23 @@ npm run dev                  # http://localhost:3000
 Pick a database, then ask away — e.g. *"what tables are here?"*, *"chart revenue by
 month"*, *"remember that orders join customers on customer_id"*.
 
+## Demo Mode
+
+The picker includes a presenter-ready **Demo Mode** for the canonical
+`nba_box_scores_v2` workshop. Use **Replay demo** to run the full guided flow
+without MotherDuck or OpenRouter tokens; it replays the deterministic validation
+transcript, including tool timeline entries and rendered mviz artifacts. Use
+**Live demo** to run the same prompts against real tokens.
+
+The guided rail covers:
+
+- picking `nba_box_scores_v2`
+- inspecting schema and saving the schedule join as local durable context
+- asking the adversarial team-grain question
+- charting with the saved grain rule
+- refusing unsupported injury analysis
+- resetting browser-local conversations and context for the next workshop run
+
 ## How it works
 
 - **MCP, read-only.** `query`, `list_databases`, `list_tables`, `list_columns`,
@@ -97,8 +114,9 @@ npm run demo:validate
 
 It writes a concise latest report plus full JSON artifacts under
 `reports/demo-validation/`, covering database selection, schema browsing,
-context lifecycle, adversarial grain/unsupported-field questions, conversation
-reopen, database switching, tool visibility, and mviz table/chart rendering.
+Demo Mode, replay mapping, guided prompt insertion, reset behavior, context
+lifecycle, adversarial grain/unsupported-field questions, conversation reopen,
+database switching, tool visibility, and mviz table/chart rendering.
 Optional live mode is available with
 `npm run demo:validate:live` when `MOTHERDUCK_TOKEN` and `OPENROUTER_API_KEY`
 are present. See [docs/demo-validation.md](docs/demo-validation.md).

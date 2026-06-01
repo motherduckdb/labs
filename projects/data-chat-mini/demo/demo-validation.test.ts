@@ -45,6 +45,13 @@ import {
   rebuildHistoryFromMessages,
   type LlmTurn,
 } from '@/lib/chat-history-replay';
+import {
+  DEMO_STEPS,
+  applyReplaySideEffects,
+  getPromptForStep,
+  getReplayTurnForPrompt,
+  resetDemoWorkspace,
+} from '@/lib/demo-mode';
 
 const CANONICAL_DB = 'nba_box_scores_v2';
 const SWITCH_DB = 'weather_demo';
@@ -249,6 +256,39 @@ async function runDemoValidation(): Promise<DemoArtifact> {
       !hasTool(tools, 'query_rw'),
     'P1',
     `tools: ${tools.map((tool) => tool.name).join(', ')}`,
+  );
+
+  const guidedPromptIds = DEMO_STEPS.filter((step) => step.samplePrompt).map((step) => step.id);
+  record(
+    'demo mode covers the NBA presenter flow',
+    DEMO_STEPS.map((step) => step.id).join(' -> ') ===
+      'pick-database -> inspect-schema -> adversarial-grain -> chart-with-context -> unsupported-injuries -> reset-workshop' &&
+      guidedPromptIds.includes('inspect-schema') &&
+      guidedPromptIds.includes('adversarial-grain') &&
+      guidedPromptIds.includes('chart-with-context') &&
+      guidedPromptIds.includes('unsupported-injuries'),
+    'P2',
+    `steps: ${DEMO_STEPS.map((step) => `${step.order}:${step.id}`).join(', ')}`,
+  );
+
+  record(
+    'guided prompt insertion uses deterministic NBA prompts',
+    getPromptForStep('inspect-schema') ===
+      'Use nba_box_scores_v2, inspect the schema, remember the schedule join, and show recent seasons as a table.' &&
+      getPromptForStep('chart-with-context') === 'Use the saved context and chart total points by team.',
+    'P2',
+    `inspect prompt: ${getPromptForStep('inspect-schema')}`,
+  );
+
+  const replayTurn = getReplayTurnForPrompt(getPromptForStep('chart-with-context'));
+  record(
+    'replay mode maps the validation transcript into presenter UI state',
+    !!replayTurn &&
+      replayTurn.assistantMessage.segments?.some((segment) => segment.type === 'mviz') === true &&
+      replayTurn.assistantMessage.steps?.some((step) => step.type === 'tool' && step.name === 'query_context_layer (local)') === true &&
+      replayTurn.assistantMessage.steps?.some((step) => step.type === 'tool' && step.name === 'final_answer') === true,
+    'P2',
+    `replay step: ${replayTurn?.step.id ?? '(missing)'}`,
   );
 
   let history: LlmTurn[] = [];
@@ -472,6 +512,24 @@ async function runDemoValidation(): Promise<DemoArtifact> {
       (await listFragments()).some((fragment) => fragment.title === 'full-game team scoring grain'),
     'P2',
     `context services: ${turn3.transcript.contextServices.map((call) => `${call.name}:${call.resultText}`).join(' | ')}`,
+  );
+
+  await saveConversation({
+    id: 'conv-reset-smoke',
+    title: 'reset smoke',
+    createdAt: Date.now(),
+    updatedAt: Date.now() + 1,
+    databases: [CANONICAL_DB],
+    thinkingLevel: 'none',
+    messages: [{ id: 'reset-u', role: 'user', content: 'reset smoke', timestamp: Date.now() }],
+  });
+  await applyReplaySideEffects('inspect-schema');
+  await resetDemoWorkspace();
+  record(
+    'presenter reset clears local conversations and context',
+    (await listConversations()).length === 0 && (await listFragments()).length === 0,
+    'P2',
+    `conversations: ${(await listConversations()).length}; fragments: ${(await listFragments()).length}`,
   );
 
   const completedAt = new Date();

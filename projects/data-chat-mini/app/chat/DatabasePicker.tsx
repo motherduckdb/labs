@@ -2,12 +2,19 @@
 
 import { useEffect, useState } from 'react';
 import { getSessionId } from '@/lib/session-id';
+import { CANONICAL_DEMO_DATABASE } from '@/lib/demo-mode';
 
 /**
  * Onboarding picker — the user chooses a primary database before chat starts.
  * Lists databases via /api/databases (which calls the MCP list_databases tool).
  */
-export function DatabasePicker({ onPick }: { onPick: (database: string) => void }) {
+export function DatabasePicker({
+  onPick,
+  onStartDemo,
+}: {
+  onPick: (database: string) => void;
+  onStartDemo: (replay: boolean) => void;
+}) {
   const [databases, setDatabases] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,15 +40,33 @@ export function DatabasePicker({ onPick }: { onPick: (database: string) => void 
   }, []);
 
   return (
-    <div className="flex h-full items-center justify-center p-8">
-      <div className="w-full max-w-md">
-        <h1 className="text-xl font-bold mb-1">data-chat-mini</h1>
-        <p className="text-sm text-[var(--muted)] mb-6">
-          Pick a MotherDuck database to chat with.
+    <div className="picker-screen">
+      <div className="picker-card">
+        <div className="brand-lockup picker-brand">
+          <span className="brand-mark">md</span>
+          <div>
+            <h1>data-chat-mini</h1>
+            <span>MotherDuck Labs</span>
+          </div>
+        </div>
+        <p className="picker-lede">
+          Pick a MotherDuck database or launch the presenter-ready NBA workshop path.
         </p>
 
+        <div className="demo-start-panel">
+          <div>
+            <div className="eyebrow">Workshop mode</div>
+            <h2>{CANONICAL_DEMO_DATABASE}</h2>
+            <p>Guided prompts, replayable transcript, traceable SQL, context, and mviz artifacts.</p>
+          </div>
+          <div className="demo-start-actions">
+            <button onClick={() => onStartDemo(true)}>Replay demo</button>
+            <button onClick={() => onStartDemo(false)}>Live demo</button>
+          </div>
+        </div>
+
         {error && (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 mb-4">
+          <div className="error-card">
             {error === 'auth_expired'
               ? 'MotherDuck connection failed — check MOTHERDUCK_TOKEN in .env.local.'
               : error}
@@ -49,21 +74,21 @@ export function DatabasePicker({ onPick }: { onPick: (database: string) => void 
         )}
 
         {databases === null && !error && (
-          <div className="text-sm text-[var(--muted)]">Loading databases…</div>
+          <div className="loading-row">Loading databases…</div>
         )}
 
         {databases && databases.length === 0 && (
-          <div className="text-sm text-[var(--muted)]">No databases found for this token.</div>
+          <div className="loading-row">No databases found for this token.</div>
         )}
 
-        <div className="flex flex-col gap-2">
+        <div className="database-list">
           {databases?.map((db) => (
             <button
               key={db}
               onClick={() => onPick(db)}
-              className="text-left rounded-md border border-[var(--border)] bg-white px-4 py-3 text-sm font-medium hover:border-[var(--accent)] hover:bg-[var(--panel)] transition-colors"
             >
-              {db}
+              <span>{db}</span>
+              <small>Read-only chat workspace</small>
             </button>
           ))}
         </div>

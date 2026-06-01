@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { getSessionId } from '@/lib/session-id';
 import { listFragments, deleteFragment, type Fragment } from '@/lib/context-store';
 import { parseReference, type ParsedRef } from '@/lib/references';
+import { DEMO_SCHEMA_COLUMNS, DEMO_SCHEMA_TABLES } from '@/lib/demo-mode';
 import type { SchemaTable, SchemaColumn } from '@/lib/mcp-parsers';
 
 /** A schema-qualified table selection — disambiguates same-named tables. */
@@ -39,9 +40,11 @@ function refMatchesTable(p: ParsedRef, table: { schema: string; name: string }, 
 export function SchemaExplorerSidebar({
   database,
   contextReloadKey,
+  demoReplay = false,
 }: {
   database: string;
   contextReloadKey: number;
+  demoReplay?: boolean;
 }) {
   const [tables, setTables] = useState<SchemaTable[] | null>(null);
   const [tablesError, setTablesError] = useState<string | null>(null);
@@ -59,6 +62,7 @@ export function SchemaExplorerSidebar({
   // state resets to the initial null/{}) when the database changes — no
   // synchronous setState-in-effect resets needed.
   useEffect(() => {
+    if (demoReplay) return;
     let cancelled = false;
     (async () => {
       try {
@@ -73,7 +77,7 @@ export function SchemaExplorerSidebar({
       }
     })();
     return () => { cancelled = true; };
-  }, [database]);
+  }, [database, demoReplay]);
 
   const refreshFragments = useCallback(() => {
     listFragments().then(setFragments).catch(() => setFragments([]));
@@ -83,20 +87,22 @@ export function SchemaExplorerSidebar({
     refreshFragments();
   }, [refreshFragments, contextReloadKey]);
 
+  const activeTables = demoReplay ? DEMO_SCHEMA_TABLES : tables;
+
   // Map a schema-qualified table key (schema.name) → fragments that reference
   // exactly that table in THIS db. Schema-qualified so same-named tables in
   // different schemas don't share badges/filters.
   const fragmentsByTableKey = useMemo(() => {
     const m = new Map<string, Fragment[]>();
-    if (!tables) return m;
-    for (const t of tables) {
+    if (!activeTables) return m;
+    for (const t of activeTables) {
       const matched = fragments.filter((f) =>
         f.references.some((ref) => refMatchesTable(parseReference(ref), t, database)),
       );
       if (matched.length) m.set(tkey(t.schema, t.name), matched);
     }
     return m;
-  }, [tables, fragments, database]);
+  }, [activeTables, fragments, database]);
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
@@ -106,6 +112,10 @@ export function SchemaExplorerSidebar({
         delete next[key];
         return next;
       });
+      return;
+    }
+    if (demoReplay) {
+      setExpanded((prev) => ({ ...prev, [key]: DEMO_SCHEMA_COLUMNS[key] ?? [] }));
       return;
     }
     setExpanded((prev) => ({ ...prev, [key]: 'loading' }));
@@ -142,7 +152,7 @@ export function SchemaExplorerSidebar({
 
   // Clicking a fragment's reference chip selects + reveals that exact table.
   const revealTable = (p: ParsedRef) => {
-    const t = tables?.find((x) => refMatchesTable(p, x, database));
+    const t = activeTables?.find((x) => refMatchesTable(p, x, database));
     if (!t) return;
     const key = `${t.schema}.${t.name}`;
     setSelectedTable({ schema: t.schema, name: t.name });
@@ -172,20 +182,22 @@ export function SchemaExplorerSidebar({
   }, [fragments, scope, selectedTable, database]);
 
   return (
-    <div className="flex h-full flex-col border-l border-[var(--border)] bg-[var(--panel)] w-72 shrink-0">
+    <div className="schema-sidebar">
       <div className="flex-1 overflow-y-auto">
         {/* Schema tree */}
-        <div className="p-3">
-          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)] mb-2">
-            Schema · {database}
+        <div className="sidebar-section">
+          <div className="sidebar-heading">
+            <span>Schema</span>
+            <code>{database}</code>
           </div>
-          {tablesError && <div className="text-xs text-red-600">{tablesError}</div>}
-          {tables === null && !tablesError && (
+          {demoReplay && <div className="schema-note">Replay schema is loaded from the validation transcript.</div>}
+          {!demoReplay && tablesError && <div className="text-xs text-red-600">{tablesError}</div>}
+          {activeTables === null && !tablesError && (
             <div className="text-xs text-[var(--muted)]">Loading…</div>
           )}
-          {tables?.length === 0 && <div className="text-xs text-[var(--muted)]">No tables.</div>}
+          {activeTables?.length === 0 && <div className="text-xs text-[var(--muted)]">No tables.</div>}
           <ul className="text-sm">
-            {tables?.map((t) => {
+            {activeTables?.map((t) => {
               const key = `${t.schema}.${t.name}`;
               const cols = expanded[key];
               const refFrags = fragmentsByTableKey.get(tkey(t.schema, t.name));
@@ -194,11 +206,9 @@ export function SchemaExplorerSidebar({
                 <li key={key} id={`tbl-${key}`} className="mb-0.5">
                   <button
                     onClick={() => onTableClick(t)}
-                    className={`flex w-full items-center gap-1 rounded px-1 py-1 text-left ${
-                      isSelected ? 'bg-[var(--accent)]/15' : 'hover:bg-white/70'
-                    }`}
+                    className={`schema-table-button ${isSelected ? 'selected' : ''}`}
                   >
-                    <span className="text-[var(--muted)] w-3 text-xs">{cols ? '▾' : '▸'}</span>
+                    <span className="schema-caret">{cols ? '▾' : '▸'}</span>
                     <span className="truncate font-medium">{t.name}</span>
                     {t.type !== 'table' && (
                       <span className="ml-1 text-[10px] text-[var(--muted)]">{t.type}</span>
@@ -235,37 +245,34 @@ export function SchemaExplorerSidebar({
         </div>
 
         {/* Local context fragments */}
-        <div className="p-3 border-t border-[var(--border)]">
+        <div className="sidebar-section context-section">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-              Context ({visibleFragments.length})
+            <div className="sidebar-heading compact">
+              <span>Context</span>
+              <code>{visibleFragments.length}</code>
             </div>
             <button
               onClick={refreshFragments}
               title="Refresh"
-              className="text-xs text-[var(--muted)] hover:text-black"
+              className="icon-button"
             >
               ↻
             </button>
           </div>
 
           {/* Scope: default to the active database, or show all. */}
-          <div className="mb-2 inline-flex rounded-md border border-[var(--border)] overflow-hidden text-[10px]">
+          <div className="segmented-control">
             <button
               onClick={() => setScope('database')}
               title={`Show context referencing ${database}`}
-              className={`max-w-[140px] truncate px-2 py-0.5 ${
-                scope === 'database' ? 'bg-[var(--accent)] text-white' : 'bg-white text-[var(--muted)] hover:text-black'
-              }`}
+              className={scope === 'database' ? 'active' : ''}
             >
               {database}
             </button>
             <button
               onClick={() => setScope('all')}
               title="Show context across all databases"
-              className={`px-2 py-0.5 border-l border-[var(--border)] ${
-                scope === 'all' ? 'bg-[var(--accent)] text-white' : 'bg-white text-[var(--muted)] hover:text-black'
-              }`}
+              className={scope === 'all' ? 'active' : ''}
             >
               all
             </button>
@@ -274,7 +281,7 @@ export function SchemaExplorerSidebar({
           {selectedTable && (
             <button
               onClick={() => setSelectedTable(null)}
-              className="block mb-2 text-[10px] text-[var(--accent)] hover:underline"
+              className="inline-link"
             >
               ✕ clear table filter (<code>{selectedTable.schema}.{selectedTable.name}</code>)
             </button>

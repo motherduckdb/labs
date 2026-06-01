@@ -213,6 +213,10 @@ export async function deleteFragment(id: string): Promise<void> {
   await applyUpdate({ action: 'delete', id });
 }
 
+export async function clearFragments(): Promise<void> {
+  await writeAll([]);
+}
+
 /**
  * Service one intercepted context-tool call against the local store and return
  * the text the model should see as the tool_result content.

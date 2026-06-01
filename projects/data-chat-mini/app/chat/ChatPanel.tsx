@@ -8,6 +8,12 @@ import { getSessionId } from '@/lib/session-id';
 import { serviceContextTool } from '@/lib/context-store';
 import { uuid7 } from '@/lib/uuid7';
 import {
+  applyReplaySideEffects,
+  getReplayTurnForPrompt,
+  type DemoModeState,
+  type DemoStepId,
+} from '@/lib/demo-mode';
+import {
   loadConversation,
   saveConversation,
   deriveTitle,
@@ -29,16 +35,24 @@ export function ChatPanel({
   databases,
   thinkingLevel,
   conversationId,
+  draftPrompt,
+  submitPrompt,
+  demoMode,
   onConversationChange,
   onContextChanged,
   onSaved,
+  onDemoStepComplete,
 }: {
   databases: string[];
   thinkingLevel: ThinkingLevel;
   conversationId: string | null;
+  draftPrompt?: { text: string; nonce: number } | null;
+  submitPrompt?: { text: string; nonce: number } | null;
+  demoMode?: DemoModeState;
   onConversationChange: (id: string) => void;
   onContextChanged: () => void;
   onSaved: () => void;
+  onDemoStepComplete?: (id: DemoStepId) => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -48,6 +62,7 @@ export function ChatPanel({
   const convIdRef = useRef<string | null>(conversationId);
   const loadedRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const submittedPromptNonceRef = useRef<number | null>(null);
 
   // Load (or reset) when the active conversation changes.
   useEffect(() => {
@@ -75,6 +90,11 @@ export function ChatPanel({
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (!draftPrompt?.text) return;
+    setInput(draftPrompt.text);
+  }, [draftPrompt]);
 
   const updateAsst = useCallback((id: string, updater: (m: ChatMessage) => ChatMessage) => {
     setMessages((prev) => prev.map((m) => (m.id === id ? updater(m) : m)));
@@ -173,9 +193,31 @@ export function ChatPanel({
           updateAsst(asstId, (m) => ({
             ...m,
             segments: [...(m.segments ?? []), { type: 'mviz_pending', id: evt.id as string }],
+            steps: [
+              ...(m.steps ?? []),
+              {
+                type: 'tool',
+                id: `mviz:${evt.id as string}`,
+                name: 'mviz_render',
+                status: 'running',
+                args: { output: 'inline visualization' },
+              },
+            ],
           }));
         } else if (type === 'mviz_html') {
           insertMviz(updateAsst, asstId, evt.content as string, evt.id as string | undefined);
+          updateAsst(asstId, (m) => ({
+            ...m,
+            steps: (m.steps ?? []).map((s) =>
+              s.type === 'tool' && s.id === `mviz:${evt.id as string}`
+                ? {
+                    ...s,
+                    status: 'complete',
+                    result: `Rendered mviz artifact (${typeof evt.content === 'string' ? evt.content.length : 0} bytes).`,
+                  }
+                : s,
+            ),
+          }));
         } else if (type === 'turn_complete') {
           const th = evt.turnHistory as LlmTurn[];
           historyRef.current.push(...th);
@@ -245,8 +287,8 @@ export function ChatPanel({
     [databases, thinkingLevel, updateAsst, onContextChanged],
   );
 
-  const send = useCallback(async () => {
-    const text = input.trim();
+  const sendText = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || isStreaming) return;
 
     // Lazily mint a conversation id for a fresh chat.
@@ -259,6 +301,49 @@ export function ChatPanel({
 
     setInput('');
     setIsStreaming(true);
+
+    if (demoMode?.enabled && demoMode.replay) {
+      const replay = getReplayTurnForPrompt(text);
+      const userMsg: ChatMessage = replay?.userMessage ?? {
+        id: uuid7(),
+        role: 'user',
+        content: text,
+        timestamp: Date.now(),
+      };
+      const asstMsg: ChatMessage = replay?.assistantMessage ?? {
+        id: uuid7(),
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        error: 'No deterministic replay is available for that prompt. Use one of the guided NBA prompts or switch Demo Mode to Live.',
+        steps: [
+          {
+            type: 'tool',
+            id: 'final:missing-replay',
+            name: 'final_answer',
+            status: 'error',
+            result: 'Replay prompt did not match the deterministic validation transcript.',
+          },
+        ],
+      };
+      setMessages((prev) => [...prev, userMsg, asstMsg]);
+      historyRef.current.push({ role: 'user', content: text }, ...(asstMsg.turnHistory ?? []));
+
+      try {
+        if (replay) {
+          await applyReplaySideEffects(replay.step.id);
+          onDemoStepComplete?.(replay.step.id);
+          onContextChanged();
+        }
+      } finally {
+        setIsStreaming(false);
+        setMessages((prev) => {
+          void persist(prev);
+          return prev;
+        });
+      }
+      return;
+    }
 
     const userMsg: ChatMessage = { id: uuid7(), role: 'user', content: text, timestamp: Date.now() };
     const asstId = uuid7();
@@ -277,23 +362,42 @@ export function ChatPanel({
       updateAsst(asstId, (m) => ({ ...m, error: err instanceof Error ? err.message : 'Stream error' }));
     } finally {
       setIsStreaming(false);
-      updateAsst(asstId, (m) => ({ ...m, isStreaming: false }));
+      updateAsst(asstId, (m) => ({ ...m, isStreaming: false, steps: ensureFinalAnswerStep(m.steps ?? []) }));
       // Persist after state settles.
       setMessages((prev) => {
         void persist(prev);
         return prev;
       });
     }
-  }, [input, isStreaming, stream, onConversationChange, persist, updateAsst]);
+  }, [
+    demoMode,
+    input,
+    isStreaming,
+    stream,
+    onConversationChange,
+    persist,
+    updateAsst,
+    onContextChanged,
+    onDemoStepComplete,
+  ]);
+
+  useEffect(() => {
+    if (!submitPrompt?.text || submittedPromptNonceRef.current === submitPrompt.nonce) return;
+    submittedPromptNonceRef.current = submitPrompt.nonce;
+    void sendText(submitPrompt.text);
+  }, [submitPrompt, sendText]);
 
   return (
-    <div className="flex h-full flex-col flex-1 min-w-0">
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="mx-auto max-w-3xl flex flex-col gap-6">
+    <main className="chat-panel">
+      <div ref={scrollRef} className="message-scroll">
+        <div className="message-stack">
           {messages.length === 0 && (
-            <div className="text-center text-[var(--muted)] mt-20">
-              <p className="text-sm">Ask a question about <strong>{databases[0]}</strong>.</p>
-              <p className="text-xs mt-2">Read-only — I can query, explore the schema, and chart results.</p>
+            <div className="empty-chat">
+              <div className="answer-chip">Read-only MCP · traceable SQL · mviz</div>
+              <h1>Ask {databases[0]} a data question.</h1>
+              <p>
+                The assistant can inspect schema, run safe SQL, save local context, and render charts inline.
+              </p>
             </div>
           )}
           {messages.map((m) => (
@@ -302,31 +406,31 @@ export function ChatPanel({
         </div>
       </div>
 
-      <div className="border-t border-[var(--border)] bg-white px-6 py-4">
-        <div className="mx-auto max-w-3xl flex items-end gap-2">
+      <div className="composer-wrap">
+        <div className="composer">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                send();
+                void sendText();
               }
             }}
             rows={1}
             placeholder={`Ask about ${databases[0]}…`}
-            className="flex-1 resize-none rounded-md border border-[var(--border)] px-3 py-2 text-sm focus:outline-none focus:border-[var(--accent)] max-h-40"
           />
           <button
-            onClick={send}
+            onClick={() => void sendText()}
             disabled={isStreaming || !input.trim()}
-            className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+            className="send-button"
+            title="Send"
           >
-            {isStreaming ? '…' : 'Send'}
+            {isStreaming ? '…' : '↵'}
           </button>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -335,8 +439,8 @@ export function ChatPanel({
 function MessageView({ message }: { message: ChatMessage }) {
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-2xl bg-[var(--accent)] px-4 py-2 text-sm text-white whitespace-pre-wrap">
+      <div className="message-row user">
+        <div className="user-bubble">
           {message.content}
         </div>
       </div>
@@ -347,24 +451,24 @@ function MessageView({ message }: { message: ChatMessage }) {
   const hasContent = segments.length > 0 || (message.steps?.length ?? 0) > 0 || message.content;
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="message-row assistant">
       {message.steps && message.steps.length > 0 && (
-        <div className="flex flex-col gap-1">
+        <div className="tool-timeline">
           {message.steps.map((s, i) => (
             <StepView key={i} step={s} />
           ))}
         </div>
       )}
-      <div className="prose prose-sm max-w-none">
+      <div className="assistant-content prose prose-sm max-w-none">
         {segments.map((seg, i) => (
           <SegmentView key={i} segment={seg} />
         ))}
       </div>
       {message.isStreaming && !hasContent && (
-        <div className="text-sm text-[var(--muted)]">Thinking…</div>
+        <div className="loading-answer">Preparing answer…</div>
       )}
       {message.error && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div className="error-card">
           {message.error}
         </div>
       )}
@@ -379,11 +483,11 @@ function SegmentView({ segment }: { segment: ContentSegment }) {
     );
   }
   if (segment.type === 'mviz_pending') {
-    return <div className="my-2 text-xs text-[var(--muted)]">Visualizing…</div>;
+    return <div className="mviz-pending">Rendering visualization…</div>;
   }
   if (segment.type === 'mviz') {
     return (
-      <div className="my-3 rounded-lg border border-[var(--border)] overflow-hidden not-prose">
+      <div className="mviz-shell not-prose">
         <MvizFrame html={segment.html} />
       </div>
     );
@@ -393,41 +497,47 @@ function SegmentView({ segment }: { segment: ContentSegment }) {
 
 function StepView({ step }: { step: Step }) {
   if (step.type === 'thinking') {
-    if (!step.content) return <div className="text-xs text-[var(--muted)] italic">Reasoning…</div>;
+    if (!step.content) return <div className="timeline-row muted">Reasoning hidden by default…</div>;
     return (
-      <details className="text-xs text-[var(--muted)]">
-        <summary className="cursor-pointer select-none">Thinking</summary>
-        <pre className="whitespace-pre-wrap mt-1 max-h-64 overflow-auto bg-[var(--panel)] p-2 rounded">
+      <details className="timeline-row details">
+        <summary>Reasoning details</summary>
+        <pre>
           {step.content}
         </pre>
       </details>
     );
   }
   if (step.type === 'tool') {
-    const dot = step.status === 'running' ? '◷' : step.status === 'error' ? '✕' : '✓';
-    const color =
-      step.status === 'error' ? 'text-red-600' : step.status === 'complete' ? 'text-green-700' : 'text-[var(--muted)]';
+    const meta = toolMeta(step.name);
+    const status = step.status === 'running' ? 'running' : step.status === 'error' ? 'error' : 'done';
     const hasArgs = step.args && Object.keys(step.args).length > 0;
     return (
-      <details className="text-xs">
-        <summary className={`cursor-pointer ${color}`}>
-          <span className="mr-1">{dot}</span>
-          <code>{step.name}</code>
-          {hasArgs && <span className="text-[var(--muted)]"> {summarizeArgs(step.args!)}</span>}
+      <details className={`timeline-row details ${status}`}>
+        <summary>
+          <span className="timeline-dot" />
+          <span className="timeline-main">
+            <span className="timeline-title">{meta.label}</span>
+            <span className="timeline-subtitle">
+              <code>{cleanToolName(step.name)}</code>
+              {hasArgs && <span>{summarizeArgs(step.args!)}</span>}
+            </span>
+          </span>
+          <span className="timeline-status">{status}</span>
         </summary>
-        <div className="mt-1 flex flex-col gap-2">
+        <div className="timeline-detail">
+          <p>{meta.description}</p>
           {hasArgs && (
             <div>
-              <div className="text-[10px] uppercase tracking-wide text-[var(--muted)] mb-0.5">Request</div>
-              <pre className="whitespace-pre-wrap max-h-48 overflow-auto bg-[var(--panel)] p-2 rounded text-[var(--muted)]">
+              <div className="detail-label">Request</div>
+              <pre>
                 {formatRequestArgs(step.args!)}
               </pre>
             </div>
           )}
           {step.result && (
             <div>
-              <div className="text-[10px] uppercase tracking-wide text-[var(--muted)] mb-0.5">Response</div>
-              <pre className="whitespace-pre-wrap max-h-48 overflow-auto bg-[var(--panel)] p-2 rounded text-[var(--muted)]">
+              <div className="detail-label">Response</div>
+              <pre>
                 {step.result}
               </pre>
             </div>
@@ -437,6 +547,54 @@ function StepView({ step }: { step: Step }) {
     );
   }
   return null;
+}
+
+function toolMeta(name: string): { label: string; description: string } {
+  const clean = cleanToolName(name);
+  if (clean === 'list_tables' || clean === 'list_columns' || clean === 'search_catalog') {
+    return {
+      label: 'Schema exploration',
+      description: 'The assistant inspected catalog metadata before claiming what the data can support.',
+    };
+  }
+  if (clean === 'query') {
+    return {
+      label: 'SQL query',
+      description: 'Read-only MotherDuck query. Expand to inspect the exact SQL and result payload.',
+    };
+  }
+  if (clean === 'query_context_layer') {
+    return {
+      label: 'Context read',
+      description: 'Browser-local context lookup using the same tool shape as the MotherDuck context layer.',
+    };
+  }
+  if (clean === 'update_context_layer') {
+    return {
+      label: 'Context write',
+      description: 'Browser-local durable context update; no MotherDuck writes are performed.',
+    };
+  }
+  if (clean === 'mviz_render') {
+    return {
+      label: 'mviz render',
+      description: 'The chart/table fence was converted into an embedded mviz artifact.',
+    };
+  }
+  if (clean === 'final_answer') {
+    return {
+      label: 'Final answer',
+      description: 'Presenter-facing response. Raw model reasoning stays hidden unless explicitly requested.',
+    };
+  }
+  return {
+    label: clean.replaceAll('_', ' '),
+    description: 'Tool activity from the assistant run.',
+  };
+}
+
+function cleanToolName(name: string): string {
+  return name.replace(' (local)', '');
 }
 
 function summarizeArgs(args: Record<string, unknown>): string {
@@ -519,4 +677,18 @@ function insertMviz(
     segs.push({ type: 'mviz', html });
     return { ...m, segments: segs };
   });
+}
+
+function ensureFinalAnswerStep(steps: Step[]): Step[] {
+  if (steps.some((step) => step.type === 'tool' && step.name === 'final_answer')) return steps;
+  return [
+    ...steps,
+    {
+      type: 'tool',
+      id: `final:${steps.length + 1}`,
+      name: 'final_answer',
+      status: 'complete',
+      result: 'Assistant response streamed to the chat.',
+    },
+  ];
 }

@@ -40,8 +40,8 @@ export function MvizFrame({ html }: { html: string }) {
     <iframe
       ref={iframeRef}
       srcDoc={html}
-      className="w-full border-0 block"
-      style={{ height }}
+      className="mviz-frame"
+      style={{ height, pointerEvents: 'none' }}
       sandbox="allow-scripts"
       title="Visualization"
     />
