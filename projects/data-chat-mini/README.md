@@ -86,6 +86,22 @@ Then point [`controllog-viz`](../controllog-viz) at that database for the per-ru
 conversation explorer and cost/latency/token rollups. (The emitter uses the
 spec's `truth.money` / `truth.time` account names so those rollups are correct.)
 
+## Demo validation
+
+`nba_box_scores_v2` is the canonical demo dataset. Run the repeatable harness
+with no external tokens:
+
+```bash
+npm run demo:validate
+```
+
+It writes a concise latest report plus full JSON artifacts under
+`reports/demo-validation/`, covering database selection, schema browsing,
+context lifecycle, conversation reopen, database switching, tool visibility, and
+mviz table/chart rendering. Optional live mode is available with
+`npm run demo:validate:live` when `MOTHERDUCK_TOKEN` and `OPENROUTER_API_KEY`
+are present. See [docs/demo-validation.md](docs/demo-validation.md).
+
 ## Out of scope
 
 Canvas, prism, dives, MotherDuck-side writes, the HMAC/ledger confirmation

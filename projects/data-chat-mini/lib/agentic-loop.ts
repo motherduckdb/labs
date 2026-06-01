@@ -1,4 +1,4 @@
-import { streamChatCompletion } from '@/lib/llm-client';
+import { streamChatCompletion as defaultStreamChatCompletion } from '@/lib/llm-client';
 import type { ModelProfile } from '@/lib/llm-client';
 import { dispatchTool } from '@/lib/tool-dispatch';
 import { isContextTool, CONTEXT_PLACEHOLDER } from '@/lib/context-tools';
@@ -45,6 +45,7 @@ export interface RunAgenticLoopOpts {
   runId: string;
   requestText: string;
   historyLength: number;
+  streamChatCompletion?: typeof defaultStreamChatCompletion;
 }
 
 export type AgenticLoopFinishReason = 'done' | 'iteration_limit' | 'auth_expired' | 'context_pause';
@@ -86,6 +87,7 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
       : messages;
     pendingContinuationNudge = null;
 
+    const streamChatCompletion = opts.streamChatCompletion ?? defaultStreamChatCompletion;
     const llmStream = await streamChatCompletion({
       model: profile.id,
       messages: messagesForCall,
@@ -392,6 +394,10 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
             message: 'Response cut off by maxTokens cap', iteration: iterations, model: profile.id,
           });
         } catch (logErr) { console.error('[Controllog] streamError error:', logErr); }
+      }
+
+      if (!isEmptyStop && assistantContentBlocks.length > 0) {
+        messages.push({ role: 'assistant', content: assistantContentBlocks });
       }
 
       continueLoop = false;

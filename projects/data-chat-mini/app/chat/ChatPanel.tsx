@@ -6,13 +6,17 @@ import remarkGfm from 'remark-gfm';
 import { MvizFrame } from '@/app/components/MvizFrame';
 import { getSessionId } from '@/lib/session-id';
 import { serviceContextTool } from '@/lib/context-store';
-import { CONTEXT_PLACEHOLDER } from '@/lib/context-tools';
 import { uuid7 } from '@/lib/uuid7';
 import {
   loadConversation,
   saveConversation,
   deriveTitle,
 } from '@/lib/chat-storage';
+import {
+  rebuildHistoryFromMessages,
+  patchHistoryPlaceholders,
+  type LlmTurn,
+} from '@/lib/chat-history-replay';
 import type {
   ChatMessage,
   ContentSegment,
@@ -20,8 +24,6 @@ import type {
   ThinkingLevel,
   ResolvedContextTool,
 } from '@/types/chat';
-
-type LlmTurn = { role: string; content: unknown };
 
 export function ChatPanel({
   databases,
@@ -66,7 +68,7 @@ export function ChatPanel({
         return;
       }
       setMessages(conv.messages);
-      historyRef.current = rebuildHistory(conv.messages);
+      historyRef.current = rebuildHistoryFromMessages(conv.messages);
     })();
   }, [conversationId]);
 
@@ -224,6 +226,18 @@ export function ChatPanel({
         // Patch the placeholder tool_result(s) in our local history so future
         // turns send the resolved text, not the placeholder.
         patchHistoryPlaceholders(historyRef.current, resolved);
+        // Patch the assistant message copy too; this is what IndexedDB persists
+        // and what rebuilds history when a conversation is reopened.
+        updateAsst(asstId, (m) => {
+          const turnHistory = (m.turnHistory ?? []).map((turn) => ({
+            ...turn,
+            content: Array.isArray(turn.content)
+              ? turn.content.map((block) => ({ ...block }))
+              : turn.content,
+          }));
+          patchHistoryPlaceholders(turnHistory, resolved);
+          return { ...m, turnHistory };
+        });
         onContextChanged();
         await stream({ history: [...historyRef.current], message: '', asstId, resolvedContext: resolved });
       }
@@ -505,40 +519,4 @@ function insertMviz(
     segs.push({ type: 'mviz', html });
     return { ...m, segments: segs };
   });
-}
-
-// --- history reconstruction ------------------------------------------------
-
-/** Rebuild LLM-format history from stored display messages. */
-function rebuildHistory(messages: ChatMessage[]): LlmTurn[] {
-  const out: LlmTurn[] = [];
-  for (const m of messages) {
-    if (m.role === 'user') {
-      out.push({ role: 'user', content: m.content });
-    } else if (m.role === 'assistant') {
-      if (m.turnHistory && m.turnHistory.length > 0) {
-        out.push(...m.turnHistory);
-      } else if (m.content) {
-        out.push({ role: 'assistant', content: m.content });
-      }
-    }
-  }
-  return out;
-}
-
-/** Replace placeholder context tool_results in history with resolved text. */
-function patchHistoryPlaceholders(history: LlmTurn[], resolved: ResolvedContextTool[]) {
-  const byId = new Map(resolved.map((r) => [r.callId, r]));
-  for (const turn of history) {
-    if (turn.role !== 'user' || !Array.isArray(turn.content)) continue;
-    for (const block of turn.content as Array<Record<string, unknown>>) {
-      if (block.type === 'tool_result' && block.content === CONTEXT_PLACEHOLDER) {
-        const r = byId.get(block.tool_use_id as string);
-        if (r) {
-          block.content = r.resultText;
-          if (r.isError) block.is_error = true;
-        }
-      }
-    }
-  }
 }

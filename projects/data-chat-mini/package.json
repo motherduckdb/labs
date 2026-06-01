@@ -7,7 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "demo:validate": "vitest run demo/demo-validation.test.ts",
+    "demo:validate:live": "DEMO_VALIDATE_MODE=live vitest run demo/demo-validation.test.ts",
+    "audit": "npm audit --audit-level=moderate",
     "test:watch": "vitest"
   },
   "dependencies": {
