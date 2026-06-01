@@ -40,13 +40,15 @@ export function ChatShell() {
   // (re)picking a database must drop the active conversation so a chat from
   // database A can't be resumed under database B's prompt/context.
   const pickDatabase = (db: string) => {
+    setDemoMode((mode) => ({ ...mode, enabled: false }));
     setDatabase(db);
     setConversationId(null);
   };
 
   const startDemo = (replay: boolean) => {
     setDemoMode({ enabled: true, replay, activeStepId: 'pick-database' });
-    pickDatabase(CANONICAL_DEMO_DATABASE);
+    setDatabase(CANONICAL_DEMO_DATABASE);
+    setConversationId(null);
   };
 
   // Selecting a conversation from history switches to the database it was
@@ -87,24 +89,6 @@ export function ChatShell() {
         >
           Switch
         </button>
-        <div className="mode-switch topbar-mode-switch" role="group" aria-label="Chat mode">
-          <button
-            type="button"
-            onClick={() => setDemoMode((mode) => ({ ...mode, enabled: false }))}
-            className={!demoMode.enabled ? 'active' : ''}
-            aria-pressed={!demoMode.enabled}
-          >
-            Interactive mode
-          </button>
-          <button
-            type="button"
-            onClick={() => setDemoMode((mode) => ({ ...mode, enabled: true }))}
-            className={demoMode.enabled ? 'active' : ''}
-            aria-pressed={demoMode.enabled}
-          >
-            Workshop mode
-          </button>
-        </div>
         <label className="thinking-control">
           Thinking
           <select
@@ -117,12 +101,6 @@ export function ChatShell() {
           </select>
         </label>
       </header>
-
-      <div className="mode-guidance">
-        {demoMode.enabled
-          ? 'Workshop mode: follow the guided NBA steps, then insert a prompt or replay a validation turn.'
-          : `Interactive mode: ask a freeform question about ${database} in the input at the bottom.`}
-      </div>
 
       <div className={`workspace-grid ${demoMode.enabled ? 'with-demo' : ''}`}>
         <ChatHistorySidebar
