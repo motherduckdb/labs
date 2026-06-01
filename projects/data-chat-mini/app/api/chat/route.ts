@@ -6,7 +6,7 @@ import { CONTEXT_TOOLS, CONTEXT_PLACEHOLDER } from '@/lib/context-tools';
 import { runAgenticLoop } from '@/lib/agentic-loop';
 import * as cl from '@/lib/controllog';
 import { sseDone, sseError } from '@/lib/sse-encoder';
-import type { ChatRequest } from '@/types/chat';
+import { parseChatRequest } from '@/lib/api-helpers';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 export const maxDuration = 300;
@@ -18,8 +18,11 @@ export async function POST(request: NextRequest) {
   let mcpClient: Client | null = null;
 
   try {
-    const body: ChatRequest = await request.json();
-    const { message, history, databases, thinkingLevel, sessionId, resolvedContext } = body;
+    const parsed = await parseChatRequest(request);
+    if (!parsed.ok) {
+      return Response.json({ error: parsed.error }, { status: 400 });
+    }
+    const { message, history, databases, thinkingLevel, sessionId, resolvedContext } = parsed.body;
 
     const isResume = Array.isArray(resolvedContext) && resolvedContext.length > 0;
     if (!message && !isResume) {
@@ -28,6 +31,10 @@ export async function POST(request: NextRequest) {
 
     if (!process.env.MOTHERDUCK_TOKEN) {
       return Response.json({ error: 'Server is missing MOTHERDUCK_TOKEN' }, { status: 500 });
+    }
+
+    if (!process.env.OPENROUTER_API_KEY) {
+      return Response.json({ error: 'Server is missing OPENROUTER_API_KEY' }, { status: 500 });
     }
 
     // Read scaling: thread the browser session id into the MCP connection as a
