@@ -1,34 +1,49 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MvizFrame } from '@/app/components/MvizFrame';
 import { getSessionId } from '@/lib/session-id';
-import type { StreamEvent } from '@/types/chat';
+import { deriveTitle, loadConversation, saveConversation } from '@/lib/chat-storage';
+import type { ChatMessage, StreamEvent } from '@/types/chat';
 
-type ToolStep = {
-  id: string;
-  name: string;
-  status: 'running' | 'complete' | 'error';
-  args?: Record<string, unknown>;
-  result?: string;
-};
-
-type Message = {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  segments?: Array<{ type: 'text'; text: string } | { type: 'mviz_pending'; id: string } | { type: 'mviz'; id?: string; html: string }>;
-  steps?: ToolStep[];
-  error?: string;
-};
-
-export function ChatPanel({ database }: { database: string }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+export function ChatPanel({
+  database,
+  conversationId,
+  onConversationChange,
+  onSaved,
+}: {
+  database: string;
+  conversationId: string | null;
+  onConversationChange: (id: string) => void;
+  onSaved: () => void;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('How many games are in the schedule table?');
   const [isStreaming, setIsStreaming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const updateAssistant = (id: string, updater: (message: Message) => Message) => {
+  useEffect(() => {
+    if (!conversationId) {
+      setMessages([]);
+      return;
+    }
+    loadConversation(conversationId).then((conversation) => setMessages(conversation?.messages || []));
+  }, [conversationId]);
+
+  const persist = async (id: string, nextMessages: ChatMessage[]) => {
+    const now = Date.now();
+    await saveConversation({
+      id,
+      title: deriveTitle(nextMessages),
+      createdAt: now,
+      updatedAt: now,
+      databases: [database],
+      messages: nextMessages,
+    });
+    onSaved();
+  };
+
+  const updateAssistant = (id: string, updater: (message: ChatMessage) => ChatMessage) => {
     setMessages((prev) => prev.map((message) => message.id === id ? updater(message) : message));
     queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }));
   };
@@ -37,9 +52,13 @@ export function ChatPanel({ database }: { database: string }) {
     const trimmed = input.trim();
     if (!trimmed || isStreaming) return;
 
-    const user: Message = { id: crypto.randomUUID(), role: 'user', content: trimmed };
-    const assistant: Message = { id: crypto.randomUUID(), role: 'assistant', content: '', steps: [] };
-    setMessages((prev) => [...prev, user, assistant]);
+    const activeId = conversationId || crypto.randomUUID();
+    if (!conversationId) onConversationChange(activeId);
+
+    const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: trimmed, timestamp: Date.now() };
+    const assistant: ChatMessage = { id: crypto.randomUUID(), role: 'assistant', content: '', steps: [], timestamp: Date.now() };
+    const startingMessages = [...messages, user, assistant];
+    setMessages(startingMessages);
     setInput('');
     setIsStreaming(true);
 
@@ -133,6 +152,10 @@ export function ChatPanel({ database }: { database: string }) {
       }
     } finally {
       setIsStreaming(false);
+      setMessages((latest) => {
+        persist(activeId, latest).catch((error) => console.error('[history] save failed', error));
+        return latest;
+      });
     }
   };
 

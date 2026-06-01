@@ -2,15 +2,15 @@ export default function Home() {
   return (
     <main>
       <section className="workshop-page">
-        <div className="eyebrow">Step 10 · Charts</div>
-        <h1>Make answers legible.</h1>
+        <div className="eyebrow">Step 11 · History</div>
+        <h1>Keep the thread.</h1>
         <p>
-          The loop now recognizes mviz chart fences, renders them, and streams
-          inline visualizations into the chat.
+          Conversations now persist to IndexedDB. Refresh the page, reopen the
+          chat, and the thread is still available in the sidebar.
         </p>
 
         <div className="check">
-          <p>Quick check: ask for top scorers by points per game as a bar chart.</p>
+          <p>Quick check: ask a question, refresh, then reopen it from history.</p>
           <pre>{`open http://localhost:3000/chat`}</pre>
           <p>
             The important rule: <code>box_scores</code> is one row per player

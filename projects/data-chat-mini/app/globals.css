@@ -141,6 +141,37 @@ pre {
   background: white;
 }
 
+.history-panel {
+  display: flex;
+  width: 220px;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid #d1d5db;
+  background: white;
+  padding: 12px;
+}
+
+.new-chat,
+.history-row button {
+  border: 1px solid #d1d5db;
+  background: white;
+  padding: 8px;
+  text-align: left;
+}
+
+.history-row {
+  display: flex;
+  gap: 4px;
+}
+
+.history-row button:first-child {
+  flex: 1;
+}
+
+.history-row.active button:first-child {
+  border-color: #2563eb;
+}
+
 .messages {
   flex: 1;
   overflow: auto;
