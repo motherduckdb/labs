@@ -11,7 +11,7 @@ export interface TurnUsage {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'tool_start' | 'tool_end' | 'usage' | 'error' | 'done';
+  type: 'text' | 'tool_start' | 'tool_end' | 'usage' | 'mviz_pending' | 'mviz_html' | 'error' | 'done';
   content?: string;
   toolCall?: {
     id: string;
@@ -20,5 +20,7 @@ export interface StreamEvent {
     result?: string;
     error?: boolean;
   };
+  id?: string;
+  source?: string;
   usage?: TurnUsage;
 }

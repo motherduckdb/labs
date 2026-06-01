@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { MvizFrame } from '@/app/components/MvizFrame';
 import { getSessionId } from '@/lib/session-id';
 import type { StreamEvent } from '@/types/chat';
 
@@ -16,6 +17,7 @@ type Message = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  segments?: Array<{ type: 'text'; text: string } | { type: 'mviz_pending'; id: string } | { type: 'mviz'; id?: string; html: string }>;
   steps?: ToolStep[];
   error?: string;
 };
@@ -62,7 +64,11 @@ export function ChatPanel({ database }: { database: string }) {
 
       const handle = (event: StreamEvent) => {
         if (event.type === 'text') {
-          updateAssistant(assistant.id, (message) => ({ ...message, content: message.content + (event.content || '') }));
+          updateAssistant(assistant.id, (message) => ({
+            ...message,
+            content: message.content + (event.content || ''),
+            segments: [...(message.segments || []), { type: 'text', text: event.content || '' }],
+          }));
         } else if (event.type === 'tool_start' && event.toolCall) {
           const tool = event.toolCall;
           updateAssistant(assistant.id, (message) => ({
@@ -84,6 +90,31 @@ export function ChatPanel({ database }: { database: string }) {
           }));
         } else if (event.type === 'error') {
           updateAssistant(assistant.id, (message) => ({ ...message, error: event.content }));
+        } else if (event.type === 'mviz_pending' && event.id) {
+          updateAssistant(assistant.id, (message) => ({
+            ...message,
+            segments: [...(message.segments || []), { type: 'mviz_pending', id: event.id! }],
+            steps: [...(message.steps || []), {
+              id: `mviz:${event.id}`,
+              name: 'mviz_render',
+              status: 'running',
+              args: { output: 'inline visualization' },
+            }],
+          }));
+        } else if (event.type === 'mviz_html') {
+          updateAssistant(assistant.id, (message) => ({
+            ...message,
+            segments: (message.segments || []).map((segment) =>
+              segment.type === 'mviz_pending' && (!event.id || segment.id === event.id)
+                ? { type: 'mviz', id: event.id, html: event.content || '' }
+                : segment,
+            ),
+            steps: (message.steps || []).map((step) =>
+              step.id === `mviz:${event.id}`
+                ? { ...step, status: 'complete', result: 'Rendered inline visualization.' }
+                : step,
+            ),
+          }));
         }
       };
 
@@ -122,7 +153,17 @@ export function ChatPanel({ database }: { database: string }) {
                 ))}
               </div>
             )}
-            <p>{message.content}</p>
+            {message.segments && message.segments.length > 0 ? (
+              <div className="segments">
+                {message.segments.map((segment, index) => {
+                  if (segment.type === 'text') return <p key={index}>{segment.text}</p>;
+                  if (segment.type === 'mviz_pending') return <p key={segment.id}>Rendering chart...</p>;
+                  return <MvizFrame html={segment.html} key={segment.id || index} />;
+                })}
+              </div>
+            ) : (
+              <p>{message.content}</p>
+            )}
             {message.error && <p className="error">{message.error}</p>}
           </article>
         ))}

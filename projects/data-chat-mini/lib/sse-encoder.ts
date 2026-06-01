@@ -14,3 +14,6 @@ export const sseToolStart = (toolCall: { id: string; name: string; args?: Record
 export const sseToolEnd = (toolCall: { id: string; name: string; result?: string; error?: boolean }) =>
   event({ type: 'tool_end', toolCall });
 export const sseUsage = (usage: TurnUsage) => event({ type: 'usage', usage });
+export const sseMvizPending = (id: string) => event({ type: 'mviz_pending', id });
+export const sseMvizHtml = (content: string, meta: { id?: string; source?: string } = {}) =>
+  event({ type: 'mviz_html', content, ...meta });

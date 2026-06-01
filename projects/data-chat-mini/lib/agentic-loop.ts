@@ -1,7 +1,22 @@
 import { streamChatCompletion } from '@/lib/llm-client';
 import type { ModelProfile } from '@/lib/llm-client';
 import { dispatchTool } from '@/lib/tool-dispatch';
-import { sseError, sseText, sseToolEnd, sseToolStart, sseUsage } from '@/lib/sse-encoder';
+import {
+  sseError,
+  sseMvizHtml,
+  sseMvizPending,
+  sseText,
+  sseToolEnd,
+  sseToolStart,
+  sseUsage,
+} from '@/lib/sse-encoder';
+import {
+  buildMvizFallbackHtml,
+  createMvizFenceState,
+  flushMvizFence,
+  stepMvizFence,
+} from '@/lib/mviz-fence';
+import { processMvizMarkdown } from '@/lib/mviz-processor';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { ThinkingLevel } from '@/types/chat';
 
@@ -35,6 +50,7 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts) {
     const assistantBlocks: Array<Record<string, unknown>> = [];
     const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
     let fullResponseText = '';
+    let mvizState = createMvizFenceState();
     const usage = { promptTokens: 0, completionTokens: 0 };
 
     const reader = llmStream.getReader();
@@ -67,7 +83,21 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts) {
 
         if (delta.content) {
           fullResponseText += delta.content;
-          opts.emit(sseText(delta.content));
+          const { events, newState } = stepMvizFence(fullResponseText, mvizState);
+          mvizState = newState;
+          for (const event of events) {
+            if (event.kind === 'text') {
+              opts.emit(sseText(event.content));
+            } else if (event.kind === 'mviz_pending') {
+              opts.emit(sseMvizPending(event.id));
+            } else if (event.kind === 'mviz_block') {
+              const rendered = processMvizMarkdown(event.source);
+              opts.emit(sseMvizHtml(
+                rendered || buildMvizFallbackHtml('The chart block failed to render.'),
+                { source: event.source, ...(event.id && { id: event.id }) },
+              ));
+            }
+          }
         }
 
         if (delta.tool_calls) {
@@ -82,6 +112,19 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts) {
             if (tc.function?.arguments) pending.args += tc.function.arguments;
           }
         }
+      }
+    }
+
+    const flushed = flushMvizFence(fullResponseText, mvizState);
+    mvizState = flushed.newState;
+    for (const event of flushed.events) {
+      if (event.kind === 'text') {
+        opts.emit(sseText(event.content));
+      } else if (event.kind === 'mviz_fallback') {
+        opts.emit(sseMvizHtml(
+          buildMvizFallbackHtml('The chart block was cut off before it finished streaming.'),
+          { id: event.id },
+        ));
       }
     }
 
