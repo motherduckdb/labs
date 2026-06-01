@@ -11,7 +11,7 @@ export interface TurnUsage {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'tool_start' | 'tool_end' | 'usage' | 'mviz_pending' | 'mviz_html' | 'error' | 'done';
+  type: 'text' | 'tool_start' | 'tool_end' | 'context_tool' | 'turn_complete' | 'usage' | 'mviz_pending' | 'mviz_html' | 'error' | 'done';
   content?: string;
   toolCall?: {
     id: string;
@@ -22,6 +22,8 @@ export interface StreamEvent {
   };
   id?: string;
   source?: string;
+  contextCall?: { callId: string; name: string; args: Record<string, unknown> };
+  turnHistory?: Array<{ role: string; content: unknown }>;
   usage?: TurnUsage;
 }
 
@@ -55,4 +57,10 @@ export interface ConversationSummary {
   title: string;
   updatedAt: number;
   databases: string[];
+}
+
+export interface ResolvedContextTool {
+  callId: string;
+  resultText: string;
+  isError?: boolean;
 }

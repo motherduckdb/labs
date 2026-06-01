@@ -1,13 +1,16 @@
 import { streamChatCompletion } from '@/lib/llm-client';
 import type { ModelProfile } from '@/lib/llm-client';
 import { dispatchTool } from '@/lib/tool-dispatch';
+import { isContextTool, CONTEXT_PLACEHOLDER } from '@/lib/context-tools';
 import {
+  sseContextTool,
   sseError,
   sseMvizHtml,
   sseMvizPending,
   sseText,
   sseToolEnd,
   sseToolStart,
+  sseTurnComplete,
   sseUsage,
 } from '@/lib/sse-encoder';
 import {
@@ -22,6 +25,7 @@ import type { ThinkingLevel } from '@/types/chat';
 
 export interface RunAgenticLoopOpts {
   messages: Array<{ role: string; content: unknown }>;
+  turnStartIndex: number;
   profile: ModelProfile;
   thinkingLevel: ThinkingLevel;
   client: Client;
@@ -34,6 +38,7 @@ const MAX_ITERATIONS = 8;
 
 export async function runAgenticLoop(opts: RunAgenticLoopOpts) {
   const messages = opts.messages;
+  const turnStartIndex = opts.turnStartIndex;
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     const llmStream = await streamChatCompletion({
@@ -148,13 +153,27 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts) {
       if (assistantBlocks.length > 0) {
         messages.push({ role: 'assistant', content: assistantBlocks });
       }
-      return { messages };
+      opts.emit(sseTurnComplete(messages.slice(turnStartIndex)));
+      return { messages, finishReason: 'done' as const };
     }
 
     const toolResults: Array<{ type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }> = [];
     for (const tc of pendingToolCalls.values()) {
       let parsedArgs: Record<string, unknown> = {};
       try { parsedArgs = JSON.parse(tc.args || '{}'); } catch { /* keep empty */ }
+
+      if (isContextTool(tc.name)) {
+        opts.emit(sseContextTool({ callId: tc.id, name: tc.name, args: parsedArgs }));
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tc.id,
+          content: CONTEXT_PLACEHOLDER,
+        });
+        messages.push({ role: 'assistant', content: assistantBlocks });
+        messages.push({ role: 'user', content: toolResults });
+        opts.emit(sseTurnComplete(messages.slice(turnStartIndex)));
+        return { messages, finishReason: 'context_pause' as const };
+      }
 
       opts.emit(sseToolStart({ id: tc.id, name: tc.name, args: parsedArgs }));
       try {
@@ -183,5 +202,6 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts) {
   }
 
   opts.emit(sseError(`Iteration limit reached (${MAX_ITERATIONS}).`));
-  return { messages };
+  opts.emit(sseTurnComplete(messages.slice(turnStartIndex)));
+  return { messages, finishReason: 'iteration_limit' as const };
 }

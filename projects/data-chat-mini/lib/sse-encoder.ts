@@ -17,3 +17,7 @@ export const sseUsage = (usage: TurnUsage) => event({ type: 'usage', usage });
 export const sseMvizPending = (id: string) => event({ type: 'mviz_pending', id });
 export const sseMvizHtml = (content: string, meta: { id?: string; source?: string } = {}) =>
   event({ type: 'mviz_html', content, ...meta });
+export const sseContextTool = (contextCall: { callId: string; name: string; args: Record<string, unknown> }) =>
+  event({ type: 'context_tool', contextCall });
+export const sseTurnComplete = (turnHistory: Array<{ role: string; content: unknown }>) =>
+  event({ type: 'turn_complete', turnHistory });
