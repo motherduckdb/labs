@@ -49,6 +49,7 @@ export function SchemaExplorerSidebar({
   const [tables, setTables] = useState<SchemaTable[] | null>(null);
   const [tablesError, setTablesError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
+  const [openColumns, setOpenColumns] = useState<Record<string, boolean>>({});
   const [fragments, setFragments] = useState<Fragment[]>([]);
   const [openFrags, setOpenFrags] = useState<Record<string, boolean>>({});
   // Schema-qualified table the user has selected; filters the context list below.
@@ -226,13 +227,31 @@ export function SchemaExplorerSidebar({
                     <div className="pl-6 py-0.5 text-xs text-[var(--muted)]">loading columns…</div>
                   )}
                   {Array.isArray(cols) && (
-                    <ul className="pl-6 border-l border-[var(--border)] ml-2">
-                      {cols.map((c) => (
-                        <li key={c.name} className="flex items-baseline gap-2 py-0.5">
-                          <span className="truncate">{c.name}</span>
-                          <span className="text-[10px] text-[var(--muted)] shrink-0">{c.type}</span>
-                        </li>
-                      ))}
+                    <ul className="schema-column-list">
+                      {cols.map((c) => {
+                        const columnKey = `${key}.${c.name}`;
+                        const columnOpen = !!openColumns[columnKey];
+                        const comment = c.comment?.trim();
+                        return (
+                          <li key={c.name} className="schema-column-item">
+                            <button
+                              type="button"
+                              className={`schema-column-button ${columnOpen ? 'selected' : ''}`}
+                              aria-expanded={columnOpen}
+                              title={comment ? `Show comment: ${comment}` : 'No column comment'}
+                              onClick={() => setOpenColumns((prev) => ({ ...prev, [columnKey]: !prev[columnKey] }))}
+                            >
+                              <span className="schema-column-name">{c.name}</span>
+                              <span className="schema-column-type">{c.type}</span>
+                            </button>
+                            {columnOpen && (
+                              <div className="schema-column-comment">
+                                {comment || 'No column comment.'}
+                              </div>
+                            )}
+                          </li>
+                        );
+                      })}
                       {cols.length === 0 && (
                         <li className="py-0.5 text-xs text-[var(--muted)]">no columns</li>
                       )}
@@ -309,11 +328,31 @@ export function SchemaExplorerSidebar({
           <ul className="text-sm flex flex-col gap-2">
             {visibleFragments.map((f) => {
               const open = !!openFrags[f.id];
+              const toggleFragment = () => setOpenFrags((prev) => ({ ...prev, [f.id]: !prev[f.id] }));
               return (
-                <li key={f.id} className="group rounded-md border border-[var(--border)] bg-white p-2">
+                <li
+                  key={f.id}
+                  className={`context-fragment-card group ${open ? 'open' : ''}`}
+                  role={open ? undefined : 'button'}
+                  tabIndex={open ? undefined : 0}
+                  aria-expanded={open ? undefined : false}
+                  onClick={(event) => {
+                    if (open) return;
+                    if (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, summary')) {
+                      return;
+                    }
+                    toggleFragment();
+                  }}
+                  onKeyDown={(event) => {
+                    if (open || event.target !== event.currentTarget) return;
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    toggleFragment();
+                  }}
+                >
                   <div className="flex items-start gap-1">
                     <button
-                      onClick={() => setOpenFrags((prev) => ({ ...prev, [f.id]: !prev[f.id] }))}
+                      onClick={toggleFragment}
                       className="flex flex-1 items-start gap-1 text-left"
                       title={open ? 'Collapse' : 'Expand'}
                     >
@@ -323,7 +362,8 @@ export function SchemaExplorerSidebar({
                     <button
                       title="Delete fragment"
                       className="opacity-0 group-hover:opacity-100 text-xs text-[var(--muted)] hover:text-red-600 shrink-0"
-                      onClick={async () => {
+                      onClick={async (event) => {
+                        event.stopPropagation();
                         if (!window.confirm(`Delete saved context "${f.title}"? This can't be undone.`)) return;
                         await deleteFragment(f.id);
                         refreshFragments();
@@ -354,7 +394,10 @@ export function SchemaExplorerSidebar({
                             <button
                               key={i}
                               disabled={!clickable}
-                              onClick={() => clickable && revealTable(p)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (clickable) revealTable(p);
+                              }}
                               title={clickable ? `Show ${p.label} in the schema tree` : ref}
                               className={`rounded px-1.5 py-0.5 text-[10px] border border-[var(--border)] ${
                                 clickable

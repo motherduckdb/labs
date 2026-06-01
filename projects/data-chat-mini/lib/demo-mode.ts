@@ -140,20 +140,20 @@ export const DEMO_SCHEMA_TABLES: SchemaTable[] = [
 
 export const DEMO_SCHEMA_COLUMNS: Record<string, SchemaColumn[]> = {
   'main.schedule': [
-    { name: 'game_id', type: 'VARCHAR', nullable: false },
-    { name: 'game_date', type: 'DATE', nullable: true },
-    { name: 'season_year', type: 'INTEGER', nullable: true },
-    { name: 'season_type', type: 'VARCHAR', nullable: true },
-    { name: 'home_team_abbreviation', type: 'VARCHAR', nullable: true },
-    { name: 'away_team_abbreviation', type: 'VARCHAR', nullable: true },
+    { name: 'game_id', type: 'VARCHAR', nullable: false, comment: 'Stable game identifier shared with box_scores.' },
+    { name: 'game_date', type: 'DATE', nullable: true, comment: 'Calendar date when the game was played.' },
+    { name: 'season_year', type: 'INTEGER', nullable: true, comment: 'Season label used for year-level filtering.' },
+    { name: 'season_type', type: 'VARCHAR', nullable: true, comment: 'Regular Season, Playoffs, or other NBA season segment.' },
+    { name: 'home_team_abbreviation', type: 'VARCHAR', nullable: true, comment: 'Three-letter abbreviation for the home team.' },
+    { name: 'away_team_abbreviation', type: 'VARCHAR', nullable: true, comment: 'Three-letter abbreviation for the away team.' },
   ],
   'main.box_scores': [
-    { name: 'game_id', type: 'VARCHAR', nullable: false },
-    { name: 'entity_id', type: 'VARCHAR', nullable: true },
-    { name: 'player_name', type: 'VARCHAR', nullable: true },
-    { name: 'team_abbreviation', type: 'VARCHAR', nullable: true },
-    { name: 'period', type: 'VARCHAR', nullable: false },
-    { name: 'points', type: 'INTEGER', nullable: true },
+    { name: 'game_id', type: 'VARCHAR', nullable: false, comment: 'Join key to schedule.game_id.' },
+    { name: 'entity_id', type: 'VARCHAR', nullable: true, comment: 'Player or team entity identifier for the row.' },
+    { name: 'player_name', type: 'VARCHAR', nullable: true, comment: 'Null on team-level rows; populated for player rows.' },
+    { name: 'team_abbreviation', type: 'VARCHAR', nullable: true, comment: 'Three-letter team abbreviation associated with the row.' },
+    { name: 'period', type: 'VARCHAR', nullable: false, comment: 'Game period label; FullGame is used for full-game totals.' },
+    { name: 'points', type: 'INTEGER', nullable: true, comment: 'Points scored at the row grain.' },
   ],
 };
 

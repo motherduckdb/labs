@@ -240,6 +240,8 @@ pre {
 .history-action:hover,
 .database-list button:hover,
 .schema-table-button:hover,
+.schema-column-button:hover,
+.context-fragment-card:hover,
 .segmented-control button:hover {
   background: var(--subtle);
 }
@@ -1046,6 +1048,66 @@ pre {
   background: var(--subtle);
 }
 
+.schema-column-list {
+  margin-left: 8px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+
+.schema-column-item {
+  padding: 1px 0;
+}
+
+.schema-column-button {
+  display: flex;
+  width: 100%;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.schema-column-button.selected {
+  border-color: var(--border);
+  background: var(--subtle);
+}
+
+.schema-column-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--text-caption);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schema-column-type {
+  flex: 0 1 auto;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-status);
+  line-height: 16px;
+  margin-left: auto;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schema-column-comment {
+  margin: 1px 0 6px 6px;
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  padding: 4px 0 4px 8px;
+  font-size: var(--text-caption);
+  line-height: 1.45;
+}
+
 .schema-caret {
   width: 14px;
   color: var(--muted);
@@ -1096,6 +1158,31 @@ pre {
   color: var(--link);
   font-size: var(--text-eyebrow);
   font-weight: 500;
+}
+
+.context-fragment-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--panel);
+  padding: 8px;
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    border-color var(--motion-fast);
+}
+
+.context-fragment-card.open {
+  cursor: default;
+}
+
+.context-fragment-card:hover,
+.context-fragment-card:focus-within {
+  background: var(--subtle);
+  border-color: var(--border-strong);
+}
+
+.context-fragment-card button {
+  cursor: pointer;
 }
 
 .error-card {

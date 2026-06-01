@@ -1,9 +1,9 @@
 # Demo Validation Report
 
-- Run: 2026-06-01T16-57-52-455Z-mock
+- Run: 2026-06-01T17-25-37-055Z-mock
 - Mode: mock
 - Dataset: nba_box_scores_v2
-- Completed: 2026-06-01T16:57:52.651Z
+- Completed: 2026-06-01T17:25:37.259Z
 - Assertions: 23/23
 - Unresolved P1/P2: 0
 
@@ -55,10 +55,10 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5
 - PASS [P2] context query/update/delete lifecycle succeeds: context services: query_context_layer:1 context fragment(s):
 
 ### box_scores to schedule join key
-id: 019e841e-d04c-7933-b98f-d86927864654
+id: 019e8438-36a5-7f15-afd1-7e02fd34671f
 references: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule
 
-Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e841e-d04c-7933-b98f-d86927864654.
+Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e8438-36a5-7f15-afd1-7e02fd34671f.
 - PASS [P2] presenter reset clears local conversations and context: conversations: 0; fragments: 0
 
 ## Tool Calls
