@@ -2,27 +2,19 @@ export default function Home() {
   return (
     <main>
       <section className="workshop-page">
-        <div className="eyebrow">Step 01 · Data</div>
-        <h1>Start with the ground truth.</h1>
+        <div className="eyebrow">Step 02 · MCP query</div>
+        <h1>Give the app one read-only tool.</h1>
         <p>
-          The workshop agent starts from a MotherDuck database named
-          <strong> nba_box_scores_v2</strong>. Before there is a model or a
-          loop, the first checkpoint proves the data shape with a plain SQL
-          query.
+          The workshop agent still has no model and no loop. This checkpoint
+          wires the MotherDuck MCP server and exposes only the <code>query</code>
+          tool so you can call it by hand.
         </p>
 
         <div className="check">
-          <p>Quick check: run a plain SELECT and show the grain.</p>
-          <pre>{`select
-  game_id,
-  player_name,
-  period,
-  points
-from nba_box_scores_v2.main.box_scores
-where season_year = 2025
-  and season_type = 'Playoffs'
-order by game_date desc, game_id, player_name, period
-limit 12;`}</pre>
+          <p>Quick check: POST this SQL to <code>/api/query</code> and get rows back.</p>
+          <pre>{`curl -s http://localhost:3000/api/query \\
+  -H 'content-type: application/json' \\
+  -d '{"query":"select count(*) as games from nba_box_scores_v2.main.schedule"}'`}</pre>
           <p>
             The important rule: <code>box_scores</code> is one row per player
             per period. A game total is the <code>FullGame</code> row, not the
