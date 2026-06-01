@@ -425,8 +425,9 @@ export function ChatPanel({
             disabled={isStreaming || !input.trim()}
             className="send-button"
             title="Send"
+            aria-label="Send message"
           >
-            {isStreaming ? '…' : '↵'}
+            {isStreaming ? <span className="send-loading" /> : <SendIcon />}
           </button>
         </div>
       </div>
@@ -459,6 +460,7 @@ function MessageView({ message }: { message: ChatMessage }) {
           ))}
         </div>
       )}
+      <div className="assistant-label">Assistant</div>
       <div className="assistant-content prose prose-sm max-w-none">
         {segments.map((seg, i) => (
           <SegmentView key={i} segment={seg} />
@@ -547,6 +549,26 @@ function StepView({ step }: { step: Step }) {
     );
   }
   return null;
+}
+
+function SendIcon() {
+  return (
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M2.5 8h9"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path
+        d="M8.5 4.5 12 8l-3.5 3.5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function toolMeta(name: string): { label: string; description: string } {

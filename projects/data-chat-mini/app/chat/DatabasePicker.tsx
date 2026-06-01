@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { getSessionId } from '@/lib/session-id';
 import { CANONICAL_DEMO_DATABASE } from '@/lib/demo-mode';
+import { MotherDuckLogo } from './MotherDuckLogo';
 
 /**
  * Onboarding picker — the user chooses a primary database before chat starts.
@@ -43,7 +44,7 @@ export function DatabasePicker({
     <div className="picker-screen">
       <div className="picker-card">
         <div className="brand-lockup picker-brand">
-          <span className="brand-mark">md</span>
+          <MotherDuckLogo />
           <div>
             <h1>data-chat-mini</h1>
             <span>MotherDuck Labs</span>

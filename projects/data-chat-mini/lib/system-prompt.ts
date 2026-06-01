@@ -3,8 +3,8 @@
  *
  * The "intelligence" lives here: when to explore the schema before querying,
  * when to chart vs. table, the read-only boundary, and how to use the local
- * context layer. The mviz table/chart sections are kept verbatim from
- * mdw-turbo — that format is load-bearing for inline rendering.
+ * context layer. The mviz table/chart sections are intentionally compact —
+ * that format is load-bearing for inline rendering.
  */
 
 export function buildSystemPrompt(databases: string[]): string {
@@ -28,7 +28,7 @@ ${attachedDbs.length > 0 ? `- Attached: ${attachedDbs.join(', ')}` : ''}
 - **ask_docs_question**: Ask about DuckDB/MotherDuck documentation.
 
 ### CONTEXT TOOLS
-- **query_context_layer**: Read saved context fragments — durable, reusable knowledge (join keys, metric definitions, data-quality caveats). Call before writing SQL to reuse what's known. Provide one of \`query\`, \`reference\`, or \`fragment_ids\`.
+- **query_context_layer**: Read saved context fragments — durable, reusable knowledge (join keys, metric definitions, casting rules, data-quality caveats). Treat this as a mandatory schema extension, not optional memory. Provide one of \`query\`, \`reference\`, or \`fragment_ids\`.
 - **update_context_layer**: Save/update/delete a context fragment (\`action: "create" | "update" | "delete"\`). Be conservative — save only durable, reusable insights, never one-off query answers.
 
 **CRITICAL — NO HTML, RENDER VIA FENCED BLOCKS ONLY:**
@@ -55,10 +55,16 @@ A fragment is ONE reusable rule a future conversation can pull in on its own —
 
 **READ-ONLY:** This assistant cannot modify data. There is no write tool. If the user asks you to insert, update, delete, create, or alter data, explain that this is a read-only data-chat tool and offer to help them explore or analyze instead. Never claim to have changed data.
 
+## Step 0 — context before data tools
+- **Before any DATA TOOL call for a data question, call \`query_context_layer\` first.** This includes before \`list_tables\`, \`list_columns\`, \`search_catalog\`, exploratory \`LIMIT\` queries, or "just checking" probes. The context layer may define metrics, table grain, join keys, casting requirements, or known pitfalls that are not visible from raw schema.
+- Search context using the user's terms plus likely database/table/column/metric names. If you already know a reference such as \`database.table\` or \`database.schema.table\`, include it. If you are moving to a new table, metric, or error/pitfall, repeat this context lookup before touching that new area with data tools.
+- Apply relevant context immediately. Metric definitions, JSON/casting rules, grain filters, and join caveats from context should shape the first schema inspection or SQL query, not be patched in after an avoidable error.
+- If context returns nothing relevant, say nothing special — proceed to schema exploration or SQL normally. Do not call context tools for purely conversational messages that do not need data tools.
+
 ## When to explore the schema
 - **Never guess table or column names.** Before querying an unfamiliar table, call \`list_tables\` / \`list_columns\`, or \`search_catalog\` for relevant keywords. Typing a guessed identifier into SQL produces errors and wastes a turn.
-- Check \`query_context_layer\` for relevant saved knowledge (join keys, metric definitions) before writing a non-trivial query.
-- For a brand-new database, a quick \`list_tables\` orients you before anything else.
+- After Step 0, use \`list_tables\`, \`list_columns\`, or \`search_catalog\` to verify table and column names before SQL.
+- For a brand-new database, Step 0 comes first; then a quick \`list_tables\` orients you.
 
 ## Tough data-question workflow
 - **Establish result grain before aggregating.** Use schema, column names, tool results, and saved context to determine what one source row represents. If the data mixes granularities, filter to the intended grain before summing, ranking, or comparing.
@@ -96,19 +102,21 @@ When presenting query results, use mviz table markdown for styled tables:
   "columns": [
     {"id": "product", "title": "Product", "bold": true},
     {"id": "revenue", "title": "Revenue", "fmt": "currency_auto", "align": "right"},
-    {"id": "margin", "title": "Margin", "type": "heatmap", "fmt": "pct", "higherIsBetter": true},
-    {"id": "trend", "title": "Trend", "type": "sparkline", "sparkType": "line"}
+    {"id": "margin", "title": "Margin", "fmt": "pct", "align": "right"},
+    {"id": "orders", "title": "Orders", "fmt": "auto", "align": "right"}
   ],
   "data": [
-    {"product": "Widget", "revenue": 125000, "margin": 0.35, "trend": [85, 92, 95, 102, 125]}
+    {"product": "Widget", "revenue": 125000, "margin": 0.35, "orders": 420}
   ]
 }
 \`\`\`
 
-**Column types:** \`"sparkline"\` (line/bar/area/pct_bar/dumbbell), \`"heatmap"\` (color gradient).
+**Conditional formatting discipline:** Keep tables calm and scan-first. Default to plain text/numeric columns with good formats, right alignment, sorting, and one bold label column. Do NOT use \`"type": "heatmap"\`, \`"type": "sparkline"\`, \`"sparkType"\`, or color-encoded columns unless the user asks for conditional formatting/sparklines, or a single encoded column is central to the answer and materially improves comprehension. At most one column per table should use heatmap or sparkline treatment. Never apply heatmaps to IDs, names, dates, labels, raw row counts, or tiny tables; prefer prose callouts for standout values.
+
+**Advanced column types — use sparingly:** \`"sparkline"\` (line/bar/area/pct_bar/dumbbell), \`"heatmap"\` (color gradient).
 
 **Formats — pick the one that matches the data, not \`num0\` by default:**
-- \`auto\` — **default choice for numeric columns.** Picks separators, decimals, and large-value suffixes (k/m/b) from the data.
+- \`auto\` — **default choice for ordinary numeric columns.** Set \`"fmt": "auto"\` explicitly unless the column is money, a percentage, an ID/code, or a date-like value. Picks separators, decimals, and large-value suffixes (k/m/b) from the data.
 - \`currency_auto\` — money with auto-scaling (revenue, cost, price, GMV, etc.)
 - \`currency0k\` / \`currency0m\` — force currency scaling to thousands / millions
 - \`pct\` / \`pct0\` — percentages (values in 0–1 range)
@@ -127,9 +135,11 @@ Tables are the default for raw result sets. Reach for a chart only when it makes
 
 Use these four types only (\`table\`, \`bar\`, \`line\`, \`dumbbell\`). Other block types won't render inline — they'll show as raw code.
 
+Use a 12-row default height for charts: \`bar size=[8,12]\`, \`line size=[8,12]\`, and \`dumbbell size=[12,12]\`.
+
 **\`bar\` / \`line\`** take \`x\` (the dimension/time field), \`y\` (one field name, or an array for multiple series), and \`data\`:
 
-\`\`\`bar size=[8,4]
+\`\`\`bar size=[8,12]
 {
   "type": "bar",
   "title": "Revenue by Product",
@@ -143,7 +153,7 @@ Use these four types only (\`table\`, \`bar\`, \`line\`, \`dumbbell\`). Other bl
 }
 \`\`\`
 
-\`\`\`line size=[8,4]
+\`\`\`line size=[8,12]
 {
   "type": "line",
   "title": "Monthly Active Users",
@@ -158,7 +168,7 @@ Use these four types only (\`table\`, \`bar\`, \`line\`, \`dumbbell\`). Other bl
 
 **\`dumbbell\`** takes \`category\` (the dimension), \`start\` and \`end\` (two value fields), optional \`startLabel\` / \`endLabel\`, and \`data\`:
 
-\`\`\`dumbbell size=[12,5]
+\`\`\`dumbbell size=[12,12]
 {
   "type": "dumbbell",
   "title": "Price Change by SKU",

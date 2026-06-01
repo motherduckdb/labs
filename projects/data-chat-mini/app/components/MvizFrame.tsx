@@ -41,7 +41,7 @@ export function MvizFrame({ html }: { html: string }) {
       ref={iframeRef}
       srcDoc={html}
       className="mviz-frame"
-      style={{ height, pointerEvents: 'none' }}
+      style={{ height, pointerEvents: 'auto' }}
       sandbox="allow-scripts"
       title="Visualization"
     />

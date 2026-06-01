@@ -1,9 +1,9 @@
 # Demo Validation Report
 
-- Run: 2026-06-01T07-31-27-876Z-mock
+- Run: 2026-06-01T16-57-52-455Z-mock
 - Mode: mock
 - Dataset: nba_box_scores_v2
-- Completed: 2026-06-01T07:31:28.060Z
+- Completed: 2026-06-01T16:57:52.651Z
 - Assertions: 23/23
 - Unresolved P1/P2: 0
 
@@ -44,9 +44,9 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5
 - PASS [P2] adversarial grain response names the anti-double-counting filter: I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season.
 
 ```table size=[16,5]
-{"title":"2024 Regular Season Team Scoring Leaders","columns":[{"id":"team","title":"Team","bold":true},{"id":"points","title":"Points","fmt":"num0","align":"right"}],"data":[{"team":"BOS","points":10422},{"team":"DEN","points":10051},{"team":"OKC","points":9964},{"team":"MIN","points":9818},{"
+{"title":"2024 Regular Season Team Scoring Leaders","columns":[{"id":"team","title":"Team","bold":true},{"id":"points","title":"Points","fmt":"auto","align":"right"}],"data":[{"team":"BOS","points":10422},{"team":"DEN","points":10051},{"team":"OKC","points":9964},{"team":"MIN","points":9818},{"
 - PASS [P2] second turn applies saved grain before SQL: chart turn should reuse the saved FullGame/team-row grain rule
-- PASS [P2] mviz chart renders as HTML: assistant text length: 388
+- PASS [P2] mviz chart renders as HTML: assistant text length: 389
 - PASS [P2] adversarial unsupported-field test inspects before refusing: tools: search_catalog
 - PASS [P2] adversarial unsupported-field test refuses to invent injury analysis: The visible schema does not expose injury or player-availability fields, so I cannot attribute scoring drops to injured players from this dataset. I can analyze team scoring drops using `schedule` and `box_scores`, but injury explanations would need an injury/status table or an external roster availability source.
 - PASS [P2] tool request and response are visible over SSE: query tool_start must expose SQL args and tool_end must expose result text
@@ -55,10 +55,10 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5
 - PASS [P2] context query/update/delete lifecycle succeeds: context services: query_context_layer:1 context fragment(s):
 
 ### box_scores to schedule join key
-id: 019e8218-4009-70d8-870b-f5f545404b41
+id: 019e841e-d04c-7933-b98f-d86927864654
 references: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule
 
-Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e8218-4009-70d8-870b-f5f545404b41.
+Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e841e-d04c-7933-b98f-d86927864654.
 - PASS [P2] presenter reset clears local conversations and context: conversations: 0; fragments: 0
 
 ## Tool Calls
@@ -86,7 +86,7 @@ Tools: list_tables, list_columns, query, query_context_layer, update_context_lay
 
 Mviz HTML events: 1
 
-Assistant: I inspected the schema, saved the reusable join key, and summarized recent seasons. ```table size=[16,5] {"title":"Recent NBA Seasons","columns":[{"id":"season_year","title":"Season","bold":true},{"id":"games","title":"Games","fmt":"num0","align":"right"}],"data":[{"season_year":2024,"games":1319},{"season_year":2023,"games":1318},{"season_year":2022,"games":1317}],"compact":true} ``` Saved context: box_scores joins schedule on game_id.
+Assistant: I inspected the schema, saved the reusable join key, and summarized recent seasons. ```table size=[16,5] {"title":"Recent NBA Seasons","columns":[{"id":"season_year","title":"Season","bold":true},{"id":"games","title":"Games","fmt":"auto","align":"right"}],"data":[{"season_year":2024,"games":1319},{"season_year":2023,"games":1318},{"season_year":2022,"games":1317}],"compact":true} ``` Saved context: box_scores joins schedule on game_id.
 
 ## Turn 2
 
@@ -98,7 +98,7 @@ Tools: query, query_context_layer, update_context_layer
 
 Mviz HTML events: 1
 
-Assistant: I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season. ```table size=[16,5] {"title":"2024 Regular Season Team Scoring Leaders","columns":[{"id":"team","title":"Team","bold":true},{"id":"points","title":"Points","fmt":"num0","align":"right"}],"data":[{"team":"BOS","points":10422},{"team":"DEN","points":10051},{"team":"OKC","points":9964},{"team":"MIN","points":9818},{"t
+Assistant: I treated this as a team-row analysis, not a sum across player rows. The query filters `period = FullGame` and `player_name IS NULL`, then joins schedule for the 2024 regular season. ```table size=[16,5] {"title":"2024 Regular Season Team Scoring Leaders","columns":[{"id":"team","title":"Team","bold":true},{"id":"points","title":"Points","fmt":"auto","align":"right"}],"data":[{"team":"BOS","points":10422},{"team":"DEN","points":10051},{"team":"OKC","points":9964},{"team":"MIN","points":9818},{"t
 
 ## Turn 3
 
@@ -110,7 +110,7 @@ Tools: query, query_context_layer
 
 Mviz HTML events: 1
 
-Assistant: Using the saved grain context, here are the top teams by full-game points from team rows only. ```bar size=[8,4] {"type":"bar","title":"Top Teams by Points","x":"team","y":"points","format":"num0","data":[{"team":"BOS","points":10422},{"team":"DEN","points":10051},{"team":"OKC","points":9964},{"team":"MIN","points":9818},{"team":"NYK","points":9721}]} ``` BOS leads this mocked slice.
+Assistant: Using the saved grain context, here are the top teams by full-game points from team rows only. ```bar size=[8,12] {"type":"bar","title":"Top Teams by Points","x":"team","y":"points","format":"num0","data":[{"team":"BOS","points":10422},{"team":"DEN","points":10051},{"team":"OKC","points":9964},{"team":"MIN","points":9818},{"team":"NYK","points":9721}]} ``` BOS leads this mocked slice.
 
 ## Turn 4
 

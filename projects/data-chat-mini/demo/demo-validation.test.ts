@@ -234,6 +234,8 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     'system prompt includes demo-critical behavior',
     systemPrompt.includes(CANONICAL_DB) &&
       systemPrompt.includes('query_context_layer') &&
+      systemPrompt.includes('Step 0') &&
+      systemPrompt.includes('mandatory schema extension') &&
       systemPrompt.includes('Always respond after tool calls') &&
       systemPrompt.includes('NO HTML') &&
       systemPrompt.includes('Establish result grain before aggregating') &&
@@ -791,7 +793,7 @@ function createMockScript(): ScriptFactory[] {
           title: 'Recent NBA Seasons',
           columns: [
             { id: 'season_year', title: 'Season', bold: true },
-            { id: 'games', title: 'Games', fmt: 'num0', align: 'right' },
+            { id: 'games', title: 'Games', fmt: 'auto', align: 'right' },
           ],
           data: [
             { season_year: 2024, games: 1319 },
@@ -868,7 +870,7 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5`,
           title: '2024 Regular Season Team Scoring Leaders',
           columns: [
             { id: 'team', title: 'Team', bold: true },
-            { id: 'points', title: 'Points', fmt: 'num0', align: 'right' },
+            { id: 'points', title: 'Points', fmt: 'auto', align: 'right' },
           ],
           data: [
             { team: 'BOS', points: 10422 },
@@ -912,7 +914,7 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5`,
       label: 'turn2 chart response',
       text:
         'Using the saved grain context, here are the top teams by full-game points from team rows only.\n\n' +
-        '```bar size=[8,4]\n' +
+        '```bar size=[8,12]\n' +
         JSON.stringify({
           type: 'bar',
           title: 'Top Teams by Points',

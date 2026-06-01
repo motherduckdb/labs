@@ -1,17 +1,18 @@
 import { parseMarkdownToDashboard, lintSpec, SpecValidationError } from 'mviz';
+import { MVIZ_CUSTOM_THEME, MVIZ_FONT_IMPORT_URL } from './mviz-theme';
 
 // mviz embed mode (parseMarkdownToDashboard's embedOverride, see below) already
 // strips the page chrome — the red accent bar (.red-line), the "Dashboard"
 // title row (.page-title), and the theme toggle — so we no longer hand-hide
-// them here. What remains is purely mdw-turbo branding: the Inter typeface,
-// our type scale, and the orange (#FF9538) accent that overrides mviz's red.
+// them here. Native customTheme now owns colors, fonts, and series palettes.
+// This remaining CSS is a small sizing/radius/spacing layer.
 const CUSTOM_CSS_OVERRIDES = `
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
+  @import url('${MVIZ_FONT_IMPORT_URL}');
   /* Kill the browser default body margin so the frame hugs its host card. */
-  html, body { margin: 0 !important; }
+  html, body {
+    margin: 0 !important;
+  }
   .dashboard {
     max-width: 100% !important;
     padding: 20px !important;
@@ -23,23 +24,31 @@ const CUSTOM_CSS_OVERRIDES = `
   .row:last-child {
     margin-bottom: 0 !important;
   }
-  html, body, .dashboard, .page-title, .section-title, .chart-title,
-  .big-value, .label, .delta, .data-table, .note-content, .text-content,
-  .markdown-content, .alert, h1, h2, h3, h4, h5, h6, p, span, div {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
-  }
   html, body { font-size: 14px !important; }
-  .section-title { font-size: 18px !important; }
+  .section-title { font-size: 16px !important; font-weight: 600 !important; }
   .chart-title { font-size: 16px !important; }
-  .big-value { font-size: 40px !important; }
+  .big-value { font-size: 30px !important; font-weight: 700 !important; }
   .label { font-size: 13px !important; }
   .delta { font-size: 24px !important; }
   .delta .value { font-size: 24px !important; }
   .delta .arrow { font-size: 24px !important; }
-  .delta .label { font-size: 14px !important; }
+  .delta .label { font-size: 13px !important; }
   .row { gap: 12px !important; margin-bottom: 12px !important; }
   .alert .message { font-size: 13px !important; }
-  .data-table th, .data-table td { font-size: 12px !important; padding: 8px 12px !important; }
+  .data-table {
+    border-radius: 10px !important;
+    overflow: hidden !important;
+  }
+  .data-table th {
+    border-bottom-color: var(--grid) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    padding: 8px 12px !important;
+  }
+  .data-table td {
+    font-size: 12px !important;
+    padding: 8px 12px !important;
+  }
   .note-content, .text-content { font-size: 13px !important; line-height: 1.5 !important; }
   .markdown-content { font-size: 14px !important; line-height: 1.6 !important; }
   .markdown-content h1 { font-size: 28px !important; }
@@ -47,9 +56,10 @@ const CUSTOM_CSS_OVERRIDES = `
   .markdown-content h3 { font-size: 18px !important; }
   .markdown-content p, .markdown-content li { font-size: 14px !important; }
   .markdown-content code { font-size: 13px !important; }
-  /* Override mviz's red accent to mdw-turbo orange (chart series, deltas,
-     heatmap negatives). The .red-line top bar itself is stripped by embed mode. */
-  :root { --red: #FF9538 !important; }
+  .card, .chart-card, .note, .alert, .text-card {
+    border-radius: 10px !important;
+    box-shadow: none !important;
+  }
 </style>
 `;
 
@@ -93,7 +103,47 @@ function injectCssOverrides(html: string): string {
   return result;
 }
 
-function sanitizeMvizMarkdown(markdown: string): string {
+const TABLE_AUTO_FMT_SKIP_RE = /\b(id|uuid|guid|key|code|sku|zip|postal|phone|date|time|year|season|month|week|day|quarter)\b/i;
+const DEFAULT_CHART_HEIGHT = 12;
+const DEFAULT_HEIGHT_CHART_TYPES = new Set(['bar', 'line', 'dumbbell']);
+
+function shouldDefaultTableColumnToAuto(
+  col: Record<string, unknown>,
+  data: Array<Record<string, unknown>>
+): boolean {
+  if (col.fmt !== undefined || col.format !== undefined) return false;
+  if (col.type === 'heatmap' || col.type === 'sparkline') return false;
+
+  const id = typeof col.id === 'string' ? col.id : undefined;
+  if (!id) return false;
+
+  const title = typeof col.title === 'string' ? col.title : '';
+  if (TABLE_AUTO_FMT_SKIP_RE.test(`${id} ${title}`)) return false;
+
+  const values = data.map(row => row[id]).filter(value => value !== undefined && value !== null && value !== '');
+  return values.length > 0 && values.every(value => typeof value === 'number' && Number.isFinite(value));
+}
+
+function normalizeMvizSizeSpec(chartType: string, sizeSpec: string): string {
+  if (!DEFAULT_HEIGHT_CHART_TYPES.has(chartType)) return sizeSpec;
+
+  const defaultWidth = DEFAULT_WIDTHS[chartType] ?? 8;
+  const sizeRe = /size=\[\s*(\d+)(?:\s*,\s*\d+)?\s*\]/;
+  const sizeMatch = sizeSpec.match(/size=\[\s*(\d+)(?:\s*,\s*(\d+))?\s*\]/);
+  if (!sizeMatch) {
+    return `${sizeSpec} size=[${defaultWidth},${DEFAULT_CHART_HEIGHT}]`;
+  }
+
+  const oldDefaultHeight = chartType === 'dumbbell' ? '5' : '4';
+  const [, , currentHeight] = sizeMatch;
+  if (!currentHeight || currentHeight === oldDefaultHeight) {
+    return sizeSpec.replace(sizeRe, `size=[$1,${DEFAULT_CHART_HEIGHT}]`);
+  }
+
+  return sizeSpec;
+}
+
+export function sanitizeMvizMarkdown(markdown: string): string {
   return markdown.replace(
     /```(big_value|bar|line|table|sparkline|text|note|alert|textarea|delta|area|pie|scatter|heatmap|waterfall|funnel|sankey|boxplot|histogram|calendar|combo|dumbbell|xmr|pct_bar|donut)([^\n]*)\n([\s\S]*?)```/g,
     (match, chartType, sizeSpec, jsonContent) => {
@@ -115,15 +165,22 @@ function sanitizeMvizMarkdown(markdown: string): string {
         let sanitized = sanitize(parsed) as Record<string, unknown>;
 
         if (chartType === 'table' && sanitized.columns && sanitized.data) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const columns = sanitized.columns as Array<Record<string, any>>;
+          const columns = sanitized.columns as Array<Record<string, unknown>>;
           const data = sanitized.data as Array<Record<string, unknown>>;
-          const transformedColumns = columns.map(col => ({
-            ...col,
-            id: col.id ?? col.key,
-            title: col.title ?? col.label,
-          }));
-          const columnIds = transformedColumns.map(c => c.id).filter(Boolean);
+          const transformedColumns = columns.map(col => {
+            const transformed = {
+              ...col,
+              id: col.id ?? col.key,
+              title: col.title ?? col.label,
+            };
+
+            return shouldDefaultTableColumnToAuto(transformed, data)
+              ? { ...transformed, fmt: 'auto' }
+              : transformed;
+          });
+          const columnIds = transformedColumns
+            .map(c => c.id)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0);
           const sanitizedData = data.map(row => {
             const newRow: Record<string, unknown> = { ...row };
             columnIds.forEach(id => {
@@ -134,7 +191,7 @@ function sanitizeMvizMarkdown(markdown: string): string {
           sanitized = { ...sanitized, columns: transformedColumns, data: sanitizedData };
         }
 
-        return `\`\`\`${chartType}${sizeSpec}\n${JSON.stringify(sanitized)}\n\`\`\``;
+        return `\`\`\`${chartType}${normalizeMvizSizeSpec(chartType, sizeSpec)}\n${JSON.stringify(sanitized)}\n\`\`\``;
       } catch {
         return match;
       }
@@ -241,7 +298,7 @@ export function processMvizMarkdown(markdown: string, theme = 'light'): string {
     undefined,
     false,
     false,
-    undefined,
+    MVIZ_CUSTOM_THEME,
     'generate',
     true,
   );

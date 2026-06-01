@@ -6,6 +6,7 @@ import { ChatHistorySidebar } from './ChatHistorySidebar';
 import { SchemaExplorerSidebar } from './SchemaExplorerSidebar';
 import { ChatPanel } from './ChatPanel';
 import { DemoRail } from './DemoRail';
+import { MotherDuckLogo } from './MotherDuckLogo';
 import {
   CANONICAL_DEMO_DATABASE,
   getPromptForStep,
@@ -70,7 +71,7 @@ export function ChatShell() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark">md</span>
+          <MotherDuckLogo />
           <div>
             <span className="brand-name">data-chat-mini</span>
             <span className="brand-subtitle">Infrastructure for workshop answers</span>
