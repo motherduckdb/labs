@@ -1,10 +1,15 @@
+import { NextRequest } from 'next/server';
 import { createMCPClient, executeQuery, listQueryTool } from '@/lib/mcp-client';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
-export async function GET() {
+function getSessionHint(request: NextRequest): string | undefined {
+  return request.headers.get('x-session-id') || request.nextUrl.searchParams.get('session') || undefined;
+}
+
+export async function GET(request: NextRequest) {
   let client: Client | null = null;
   try {
-    client = await createMCPClient();
+    client = await createMCPClient(getSessionHint(request));
     const tool = await listQueryTool(client);
     if (!tool) {
       return Response.json({ error: 'The MotherDuck MCP server did not expose query.' }, { status: 500 });
@@ -20,7 +25,7 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   let client: Client | null = null;
   try {
     const body = await request.json();
@@ -29,7 +34,7 @@ export async function POST(request: Request) {
       return Response.json({ error: 'Provide a SQL string as { "query": "select ..." }.' }, { status: 400 });
     }
 
-    client = await createMCPClient();
+    client = await createMCPClient(getSessionHint(request));
     const result = await executeQuery(client, sql);
     return Response.json({ result });
   } catch (error) {

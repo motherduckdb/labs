@@ -2,18 +2,20 @@ export default function Home() {
   return (
     <main>
       <section className="workshop-page">
-        <div className="eyebrow">Step 02 · MCP query</div>
-        <h1>Give the app one read-only tool.</h1>
+        <div className="eyebrow">Step 03 · Read-scaling token</div>
+        <h1>Make the credential room-sized.</h1>
         <p>
-          The workshop agent still has no model and no loop. This checkpoint
-          wires the MotherDuck MCP server and exposes only the <code>query</code>
-          tool so you can call it by hand.
+          The MCP client now connects with <code>MOTHERDUCK_TOKEN</code>, a
+          read-scaling token. The browser keeps a random session id and passes
+          it as a hint so repeat requests can stay warm while the token fans the
+          room out across read replicas.
         </p>
 
         <div className="check">
-          <p>Quick check: POST this SQL to <code>/api/query</code> and get rows back.</p>
+          <p>Quick check: POST with a session id and get rows back.</p>
           <pre>{`curl -s http://localhost:3000/api/query \\
   -H 'content-type: application/json' \\
+  -H 'x-session-id: workshop-demo' \\
   -d '{"query":"select count(*) as games from nba_box_scores_v2.main.schedule"}'`}</pre>
           <p>
             The important rule: <code>box_scores</code> is one row per player
