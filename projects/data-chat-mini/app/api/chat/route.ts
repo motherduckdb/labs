@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { getModelProfile } from '@/lib/llm-client';
 import { createMCPClient, getFilteredTools, mcpToolsToAnthropicFormat } from '@/lib/mcp-client';
 import { runAgenticLoop } from '@/lib/agentic-loop';
+import { buildSystemPrompt } from '@/lib/system-prompt';
 import { sseDone, sseError } from '@/lib/sse-encoder';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
@@ -12,6 +13,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const message = typeof body.message === 'string' ? body.message : '';
+    const databases = Array.isArray(body.databases) ? body.databases.filter((db: unknown): db is string => typeof db === 'string') : ['nba_box_scores_v2'];
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId : undefined;
     if (!message.trim()) {
       return Response.json({ error: 'No message provided' }, { status: 400 });
@@ -37,7 +39,7 @@ export async function POST(request: NextRequest) {
             thinkingLevel: 'none',
             client: mcpClient!,
             tools,
-            systemPrompt: 'You are a read-only data assistant. Use tools when needed, then answer concisely.',
+            systemPrompt: buildSystemPrompt(databases),
             emit,
           });
           emit(sseDone());
