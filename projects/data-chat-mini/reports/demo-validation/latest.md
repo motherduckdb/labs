@@ -1,9 +1,9 @@
 # Demo Validation Report
 
-- Run: 2026-06-01T06-23-31-408Z-mock
+- Run: 2026-06-01T06-39-48-399Z-mock
 - Mode: mock
 - Dataset: nba_box_scores_v2
-- Completed: 2026-06-01T06:23:31.590Z
+- Completed: 2026-06-01T06:39:48.572Z
 - Assertions: 19/19
 - Unresolved P1/P2: 0
 
@@ -21,7 +21,7 @@ No unresolved issues.
 - PASS [P1] database selection lists canonical dataset: available databases: nba_box_scores_v2, weather_demo
 - PASS [P1] schema browser lists canonical tables: tables: main.schedule, main.box_scores
 - PASS [P1] schema browser exposes join and metric columns: box_scores: game_id, entity_id, player_name, team_abbreviation, period, points; schedule: game_id, game_date, season_year, season_type, home_team_abbreviation, away_team_abbreviation
-- PASS [P2] system prompt includes demo-critical behavior: prompt must name the selected DB, context tools, response-after-tools rule, grain guardrails, FullGame guidance, and mviz/no-HTML boundary
+- PASS [P2] system prompt includes demo-critical behavior: prompt must name the selected DB, context tools, response-after-tools rule, generic grain/context guardrails, and mviz/no-HTML boundary without dataset-specific rules
 - PASS [P1] tool catalog is read-only plus local context: tools: query, list_databases, list_tables, list_columns, search_catalog, ask_docs_question, query_context_layer, update_context_layer
 - PASS [P2] first turn browses schema before querying: tool order: list_databases -> list_tables -> list_columns -> list_columns -> list_tables -> list_columns -> list_columns -> query
 - PASS [P2] context save creates one reusable fragment: fragments after save: box_scores to schedule join key
@@ -52,10 +52,10 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5
 - PASS [P2] context query/update/delete lifecycle succeeds: context services: query_context_layer:1 context fragment(s):
 
 ### box_scores to schedule join key
-id: 019e81da-0c55-7179-ad44-e530f8b9168e
+id: 019e81e8-f4b4-7e55-9742-6f4b7bdea1a9
 references: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule
 
-Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e81da-0c55-7179-ad44-e530f8b9168e.
+Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e81e8-f4b4-7e55-9742-6f4b7bdea1a9.
 
 ## Tool Calls
 

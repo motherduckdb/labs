@@ -124,18 +124,18 @@ describe('context-store', () => {
   it('normalizes camelCase, hyphenated words, plurals, and schema refs', async () => {
     await applyUpdate({
       action: 'create',
-      title: 'FullGame team points grain',
-      content: 'Filter box_scores.period = FullGame and player_name IS NULL before summing team points.',
-      references: ['database:nba_box_scores_v2.main.box_scores'],
+      title: 'DailyActiveUsers event grain',
+      content: 'Filter events to activity_name = login before counting daily active users.',
+      references: ['database:product_analytics.main.events'],
     });
 
-    const byVocabulary = await queryFragments({ query: 'full-game box scores team totals' });
+    const byVocabulary = await queryFragments({ query: 'daily-active users event totals' });
     expect(byVocabulary).toHaveLength(1);
-    expect(byVocabulary[0].title).toBe('FullGame team points grain');
+    expect(byVocabulary[0].title).toBe('DailyActiveUsers event grain');
 
-    const byReference = await queryFragments({ reference: 'nba box scores v2 main box scores' });
+    const byReference = await queryFragments({ reference: 'product analytics main events' });
     expect(byReference).toHaveLength(1);
-    expect(byReference[0].title).toBe('FullGame team points grain');
+    expect(byReference[0].title).toBe('DailyActiveUsers event grain');
   });
 
   it('does not over-stem status-like search terms', async () => {

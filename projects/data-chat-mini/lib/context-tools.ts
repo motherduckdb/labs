@@ -32,7 +32,7 @@ export const CONTEXT_TOOLS: AnthropicTool[] = [
       '(join keys, metric definitions, data-quality caveats, column meanings). ' +
       'Call this before writing non-trivial SQL so saved grain, filter, join, and ' +
       'metric rules shape the query before it runs. Search by the user concept ' +
-      '("full-game team points"), by schema reference, or by known fragment id. ' +
+      '("revenue definition", "events grain"), by schema reference, or by known fragment id. ' +
       'Provide at least ' +
       'one of `query` (keyword search), `reference` (a database/table ref like ' +
       '"database:db.main.table"), or `fragment_ids`.',

@@ -229,10 +229,13 @@ async function runDemoValidation(): Promise<DemoArtifact> {
       systemPrompt.includes('query_context_layer') &&
       systemPrompt.includes('Always respond after tool calls') &&
       systemPrompt.includes('NO HTML') &&
-      systemPrompt.includes('Establish grain before aggregating') &&
-      systemPrompt.includes("box_scores.period = 'FullGame'"),
+      systemPrompt.includes('Establish result grain before aggregating') &&
+      systemPrompt.includes('Keep domain rules in context') &&
+      !systemPrompt.includes('box_scores.period') &&
+      !systemPrompt.includes('FullGame') &&
+      !systemPrompt.includes('NBA box-score'),
     'P2',
-    'prompt must name the selected DB, context tools, response-after-tools rule, grain guardrails, FullGame guidance, and mviz/no-HTML boundary',
+    'prompt must name the selected DB, context tools, response-after-tools rule, generic grain/context guardrails, and mviz/no-HTML boundary without dataset-specific rules',
   );
 
   record(

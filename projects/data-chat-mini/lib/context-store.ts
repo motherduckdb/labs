@@ -82,7 +82,7 @@ function scoreFragment(f: Fragment, terms: string[]): { matchedTerms: number; sc
 
 function normalizeForSearch(value: string): string {
   return value
-    // Keep "FullGame" findable from "full game" / "full-game".
+    // Keep camelCase terms findable from natural-language queries.
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
