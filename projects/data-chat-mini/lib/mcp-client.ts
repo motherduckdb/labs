@@ -8,6 +8,36 @@ export interface MCPTool {
   inputSchema: Record<string, unknown>;
 }
 
+export const ALLOWED_TOOLS = new Set([
+  'query',
+]);
+
+export const READONLY_TOOLS = new Set([
+  'query',
+]);
+
+export const MUTATING_TOOLS = new Set([
+  'query_rw',
+  'update_context_layer',
+]);
+
+export const DESTRUCTIVE_TOOLS = new Set([
+  'delete_dive',
+]);
+
+export function requiresConfirmation(
+  toolName: string,
+  toolArgs: Record<string, unknown> | undefined,
+): boolean {
+  if (DESTRUCTIVE_TOOLS.has(toolName)) return true;
+  if (!MUTATING_TOOLS.has(toolName)) return false;
+  if (toolName === 'update_context_layer') {
+    const action = toolArgs && typeof toolArgs.action === 'string' ? toolArgs.action : undefined;
+    return action !== 'create';
+  }
+  return true;
+}
+
 /**
  * Create an MCP client authenticated with the MotherDuck read scaling token.
  *
@@ -53,20 +83,66 @@ export async function listQueryTool(client: Client): Promise<MCPTool | null> {
   };
 }
 
-export async function executeQuery(client: Client, sql: string): Promise<string> {
+export async function getFilteredTools(client: Client): Promise<MCPTool[]> {
+  const result = await client.listTools();
+  return (result.tools || [])
+    .filter(tool => ALLOWED_TOOLS.has(tool.name))
+    .map(tool => ({
+      name: tool.name,
+      description: tool.description || '',
+      inputSchema: tool.inputSchema as Record<string, unknown>,
+    }));
+}
+
+export function mcpToolsToAnthropicFormat(tools: MCPTool[]): Array<{
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}> {
+  return tools.map(tool => ({
+    name: tool.name,
+    description: tool.description || '',
+    input_schema: tool.inputSchema,
+  }));
+}
+
+export async function executeToolWithStatus(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+  internal?: boolean,
+): Promise<{ text: string; isError: boolean }> {
+  if (!internal && !ALLOWED_TOOLS.has(name)) {
+    throw new Error(`Tool "${name}" is not in the allowed (read-only) tool set`);
+  }
   const result = await client.callTool({
-    name: 'query',
-    arguments: { query: sql },
+    name,
+    arguments: args,
   });
 
   if (result.structuredContent != null) {
-    return JSON.stringify(result.structuredContent, null, 2);
+    return { text: JSON.stringify(result.structuredContent, null, 2), isError: result.isError === true };
   }
-  return Array.isArray(result.content)
+  const text = Array.isArray(result.content)
     ? result.content
         .map((block: { type: string; text?: string }) =>
           block.type === 'text' ? block.text : JSON.stringify(block)
         )
         .join('\n')
     : JSON.stringify(result.content);
+  return { text, isError: result.isError === true };
+}
+
+export async function executeTool(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+  internal?: boolean,
+): Promise<string> {
+  const { text } = await executeToolWithStatus(client, name, args, internal);
+  return text;
+}
+
+export async function executeQuery(client: Client, sql: string): Promise<string> {
+  return executeTool(client, 'query', { query: sql });
 }

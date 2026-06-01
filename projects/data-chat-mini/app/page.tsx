@@ -2,21 +2,20 @@ export default function Home() {
   return (
     <main>
       <section className="workshop-page">
-        <div className="eyebrow">Step 03 · Read-scaling token</div>
-        <h1>Make the credential room-sized.</h1>
+        <div className="eyebrow">Step 04 · Guardrails</div>
+        <h1>Reject writes before they run.</h1>
         <p>
-          The MCP client now connects with <code>MOTHERDUCK_TOKEN</code>, a
-          read-scaling token. The browser keeps a random session id and passes
-          it as a hint so repeat requests can stay warm while the token fans the
-          room out across read replicas.
+          The MCP client now has an explicit allowlist. Only <code>query</code>
+          can run; mutating tools like <code>query_rw</code> are classified but
+          absent from the allowlist, so they fail in code before MotherDuck sees
+          the request.
         </p>
 
         <div className="check">
-          <p>Quick check: POST with a session id and get rows back.</p>
-          <pre>{`curl -s http://localhost:3000/api/query \\
+          <p>Quick check: try the write-shaped tool and see it rejected.</p>
+          <pre>{`curl -X PUT -s http://localhost:3000/api/query \\
   -H 'content-type: application/json' \\
-  -H 'x-session-id: workshop-demo' \\
-  -d '{"query":"select count(*) as games from nba_box_scores_v2.main.schedule"}'`}</pre>
+  -d '{"tool":"query_rw","args":{"query":"create table nope as select 1"}}'`}</pre>
           <p>
             The important rule: <code>box_scores</code> is one row per player
             per period. A game total is the <code>FullGame</code> row, not the

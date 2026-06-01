@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { createMCPClient, executeQuery, listQueryTool } from '@/lib/mcp-client';
+import { createMCPClient, executeQuery, executeTool, listQueryTool } from '@/lib/mcp-client';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 function getSessionHint(request: NextRequest): string | undefined {
@@ -40,6 +40,25 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return Response.json({ error: message }, { status: 500 });
+  } finally {
+    if (client) {
+      try { await client.close(); } catch { /* ignore */ }
+    }
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  let client: Client | null = null;
+  try {
+    const body = await request.json();
+    const tool = typeof body.tool === 'string' ? body.tool : 'query_rw';
+    const args = body.args && typeof body.args === 'object' ? body.args as Record<string, unknown> : {};
+    client = await createMCPClient(getSessionHint(request));
+    const result = await executeTool(client, tool, args);
+    return Response.json({ result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return Response.json({ error: message }, { status: 400 });
   } finally {
     if (client) {
       try { await client.close(); } catch { /* ignore */ }
