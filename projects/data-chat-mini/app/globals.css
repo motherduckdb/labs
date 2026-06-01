@@ -54,3 +54,48 @@ pre {
   gap: 12px;
   margin-top: 24px;
 }
+
+.schema-panel {
+  max-width: 1180px;
+  border-top: 1px solid #d1d5db;
+  margin-top: 32px;
+  padding-top: 24px;
+}
+
+.schema-grid {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.schema-grid > div {
+  flex: 1;
+}
+
+.table-row {
+  display: block;
+  width: 100%;
+  border: 1px solid #d1d5db;
+  background: white;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.table-row.selected {
+  border-color: #2563eb;
+}
+
+.column-row {
+  border: 1px solid #d1d5db;
+  background: white;
+  padding: 10px 12px;
+}
+
+.column-row span {
+  display: block;
+  color: #6b7280;
+}
+
+.error {
+  color: #b91c1c;
+}

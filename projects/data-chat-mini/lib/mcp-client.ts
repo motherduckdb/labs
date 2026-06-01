@@ -10,10 +10,20 @@ export interface MCPTool {
 
 export const ALLOWED_TOOLS = new Set([
   'query',
+  'list_tables',
+  'list_columns',
+  'list_databases',
+  'search_catalog',
+  'ask_docs_question',
 ]);
 
 export const READONLY_TOOLS = new Set([
   'query',
+  'list_tables',
+  'list_columns',
+  'list_databases',
+  'search_catalog',
+  'ask_docs_question',
 ]);
 
 export const MUTATING_TOOLS = new Set([

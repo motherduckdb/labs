@@ -2,18 +2,21 @@ export default function Home() {
   return (
     <main>
       <section className="workshop-page">
-        <div className="eyebrow">Step 07 · System prompt</div>
-        <h1>Give the loop habits.</h1>
+        <div className="eyebrow">Step 08 · Schema tools</div>
+        <h1>Let it find its way.</h1>
         <p>
-          The app now has a system prompt that teaches the model how to behave:
-          explore first, stay read-only, and respect the NBA box-score grain.
+          The MCP allowlist now includes the read-only catalog tools. Open the
+          schema page to inspect tables and columns while the model uses the
+          same tools.
         </p>
 
         <div className="check">
-          <p>Quick check: ask the same kind of question and watch it answer with the caveat in mind.</p>
-          <pre>{`curl -N http://localhost:3000/api/chat \\
+          <p>Quick check: ask a question that needs exploration.</p>
+          <pre>{`open http://localhost:3000/chat
+
+curl -N http://localhost:3000/api/chat \\
   -H 'content-type: application/json' \\
-  -d '{"message":"How many games are in the schedule table?"}'`}</pre>
+  -d '{"message":"Most points by one player in a single 2026 playoff game?"}'`}</pre>
           <p>
             The important rule: <code>box_scores</code> is one row per player
             per period. A game total is the <code>FullGame</code> row, not the
