@@ -2,20 +2,19 @@ export default function Home() {
   return (
     <main>
       <section className="workshop-page">
-        <div className="eyebrow">Step 04 · Guardrails</div>
-        <h1>Reject writes before they run.</h1>
+        <div className="eyebrow">Step 05 · Model</div>
+        <h1>Point at the engine.</h1>
         <p>
-          The MCP client now has an explicit allowlist. Only <code>query</code>
-          can run; mutating tools like <code>query_rw</code> are classified but
-          absent from the allowlist, so they fail in code before MotherDuck sees
-          the request.
+          The app now speaks OpenRouter's OpenAI-compatible streaming API. The
+          default model is <code>google/gemini-3-flash-preview</code>, with
+          <code>OPENROUTER_MODEL</code> available for swaps.
         </p>
 
         <div className="check">
-          <p>Quick check: try the write-shaped tool and see it rejected.</p>
-          <pre>{`curl -X PUT -s http://localhost:3000/api/query \\
+          <p>Quick check: call the model without tools and see a response.</p>
+          <pre>{`curl -s http://localhost:3000/api/model \\
   -H 'content-type: application/json' \\
-  -d '{"tool":"query_rw","args":{"query":"create table nope as select 1"}}'`}</pre>
+  -d '{"message":"Say hello to the workshop in one sentence."}'`}</pre>
           <p>
             The important rule: <code>box_scores</code> is one row per player
             per period. A game total is the <code>FullGame</code> row, not the
