@@ -16,11 +16,9 @@ import {
 } from '@/lib/demo-mode';
 import type { ThinkingLevel } from '@/types/chat';
 
-const THINKING_LEVELS: ThinkingLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
-
-// Default to `none` for an external demo — keeps raw upstream reasoning out of
-// the request entirely. Override via NEXT_PUBLIC_DEFAULT_THINKING_LEVEL.
-const DEFAULT_THINKING = (process.env.NEXT_PUBLIC_DEFAULT_THINKING_LEVEL as ThinkingLevel) || 'none';
+// Default to `medium` for a balanced demo experience. Override via
+// NEXT_PUBLIC_DEFAULT_THINKING_LEVEL.
+const DEFAULT_THINKING = (process.env.NEXT_PUBLIC_DEFAULT_THINKING_LEVEL as ThinkingLevel) || 'medium';
 
 export function ChatShell() {
   const [database, setDatabase] = useState<string | null>(null);
@@ -89,17 +87,6 @@ export function ChatShell() {
         >
           Switch
         </button>
-        <label className="thinking-control">
-          Thinking
-          <select
-            value={thinkingLevel}
-            onChange={(e) => setThinkingLevel(e.target.value as ThinkingLevel)}
-          >
-            {THINKING_LEVELS.map((l) => (
-              <option key={l} value={l}>{l}</option>
-            ))}
-          </select>
-        </label>
       </header>
 
       <div className={`workspace-grid ${demoMode.enabled ? 'with-demo' : ''}`}>
@@ -133,6 +120,7 @@ export function ChatShell() {
         <ChatPanel
           databases={databases}
           thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={setThinkingLevel}
           conversationId={conversationId}
           draftPrompt={draftPrompt}
           submitPrompt={submitPrompt}

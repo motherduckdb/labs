@@ -28,20 +28,35 @@ export const CONTEXT_TOOLS: AnthropicTool[] = [
   {
     name: 'query_context_layer',
     description:
-      'Read saved context fragments — durable, reusable knowledge about this data ' +
-      '(join keys, metric definitions, data-quality caveats, column meanings). ' +
-      'Call this before writing non-trivial SQL so saved grain, filter, join, and ' +
-      'metric rules shape the query before it runs. Search by the user concept ' +
-      '("revenue definition", "events grain"), by schema reference, or by known fragment id. ' +
-      'Provide at least ' +
-      'one of `query` (keyword search), `reference` (a database/table ref like ' +
-      '"database:db.main.table"), or `fragment_ids`.',
+      'STEP 0 of every data question — call this FIRST, before any other data tool ' +
+      '(list_tables, list_columns, search_catalog, ask_docs_question, or query). It returns ' +
+      'saved context fragments: durable rules about this data (table grain, required filters, ' +
+      'join keys, metric definitions, casting rules, data-quality caveats, column meanings) that ' +
+      'are NOT visible from raw schema and that change what correct SQL looks like. Reading it ' +
+      'first shapes which tables you inspect and how you query. Re-run it whenever you move to a ' +
+      'new table, metric, or error. ' +
+      'SEARCH IS SIMPLE KEYWORD MATCHING, NOT SEMANTIC: `query` is split into words, each matched ' +
+      'as a case-insensitive substring of a fragment\'s title (weighted highest), content, and ' +
+      'references. camelCase is split and plurals are stemmed, so "season year" finds `seasonYear` ' +
+      'and "games" finds "game". Fragments matching ALL words rank first, falling back to ANY-word ' +
+      'matches, with ties broken by recency. So pass a few literal keywords likely to appear in the ' +
+      'saved rule (data terms, column/table names, the metric concept) — NOT a long natural-language ' +
+      'sentence, which over-constrains the match. With NO `query` at all it returns every fragment ' +
+      '(most recent first) — the best move when you are unsure what exists. `reference` substring-' +
+      'matches a fragment\'s references (e.g. "database:db.main.table") and AND-combines with `query`; ' +
+      '`fragment_ids` fetches exact ids. Provide at least one of `query`, `reference`, or `fragment_ids`.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Keyword search across fragment titles/content.' },
-        reference: { type: 'string', description: 'A schema reference to match fragments against.' },
-        fragment_ids: { type: 'array', items: { type: 'string' }, description: 'Specific fragment ids to fetch.' },
+        query: {
+          type: 'string',
+          description:
+            'Space-separated keywords (substring + camelCase/plural-aware) matched against fragment ' +
+            'titles, content, and references. A few literal terms beat a full sentence. Omit entirely ' +
+            'to list all fragments by recency.',
+        },
+        reference: { type: 'string', description: 'A schema reference (e.g. "database:db.main.table") substring-matched against each fragment\'s references; AND-combines with `query`.' },
+        fragment_ids: { type: 'array', items: { type: 'string' }, description: 'Specific fragment ids to fetch exactly.' },
       },
     },
   },

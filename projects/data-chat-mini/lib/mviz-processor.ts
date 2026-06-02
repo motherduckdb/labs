@@ -104,7 +104,7 @@ function injectCssOverrides(html: string): string {
 }
 
 const TABLE_AUTO_FMT_SKIP_RE = /\b(id|uuid|guid|key|code|sku|zip|postal|phone|date|time|year|season|month|week|day|quarter)\b/i;
-const DEFAULT_CHART_HEIGHT = 12;
+const DEFAULT_CHART_HEIGHT = 8;
 const DEFAULT_HEIGHT_CHART_TYPES = new Set(['bar', 'line', 'dumbbell']);
 
 function shouldDefaultTableColumnToAuto(

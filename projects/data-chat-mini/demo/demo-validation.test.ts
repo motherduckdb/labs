@@ -353,13 +353,18 @@ async function runDemoValidation(): Promise<DemoArtifact> {
   history = adversarialGrainTurn.history;
   transcripts.push(adversarialGrainTurn.transcript);
 
+  // The genuine grain rule on this data is `period = 'FullGame'` — that's the
+  // only real double-counting axis (Q1-Q4/OT vs the full-game total). The real
+  // nba_box_scores_v2 has NO team-level rows (player_name is never null), so we
+  // accept any valid dedup technique and no longer mandate `player_name IS NULL`
+  // (which would return zero rows on live data; it only exists in the mock
+  // schema's fiction). See lib/demo-mode.ts:153.
   const adversarialGrainSql = querySqls(adversarialGrainTurn.events);
   record(
     'adversarial grain test filters before team aggregation',
     adversarialGrainSql.some((sql) =>
       /join\b.*schedule|schedule\b.*join/.test(normalizeSql(sql)) &&
       /period\s*=\s*'fullgame'/.test(normalizeSql(sql)) &&
-      /player_name\s+is\s+null/.test(normalizeSql(sql)) &&
       /season_year\s*=\s*2024/.test(normalizeSql(sql)) &&
       /season_type/.test(normalizeSql(sql)) &&
       /group by/.test(normalizeSql(sql)),
@@ -373,7 +378,6 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     'adversarial grain test saves a durable context rule',
     fragmentsAfterAdversarialGrain.some((fragment) =>
       /fullgame/i.test(fragment.content) &&
-      /player_name\s+is\s+null/i.test(fragment.content) &&
       fragment.references.includes(`database:${CANONICAL_DB}.main.box_scores`),
     ),
     'P2',
@@ -384,7 +388,9 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     'adversarial grain response names the anti-double-counting filter',
     /fullgame/i.test(adversarialGrainTurn.transcript.assistantText) &&
       (/player_name\s+is\s+null/i.test(adversarialGrainTurn.transcript.assistantText) ||
-        /team rows?/i.test(adversarialGrainTurn.transcript.assistantText)),
+        /team rows?/i.test(adversarialGrainTurn.transcript.assistantText) ||
+        /period/i.test(adversarialGrainTurn.transcript.assistantText) ||
+        /double[-\s]?count/i.test(adversarialGrainTurn.transcript.assistantText)),
     'P2',
     adversarialGrainTurn.transcript.assistantText.slice(0, 500),
   );
@@ -402,11 +408,10 @@ async function runDemoValidation(): Promise<DemoArtifact> {
     'second turn applies saved grain before SQL',
     turn2.transcript.contextServices.some((call) => call.name === 'query_context_layer' && call.resultText.includes('FullGame')) &&
       querySqls(turn2.events).some((sql) =>
-        /period\s*=\s*'fullgame'/.test(normalizeSql(sql)) &&
-        /player_name\s+is\s+null/.test(normalizeSql(sql)),
+        /period\s*=\s*'fullgame'/.test(normalizeSql(sql)),
       ),
     'P2',
-    'chart turn should reuse the saved FullGame/team-row grain rule',
+    'chart turn should reuse the saved FullGame grain rule',
   );
 
   record(

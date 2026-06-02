@@ -31,9 +31,12 @@ import type {
   ResolvedContextTool,
 } from '@/types/chat';
 
+const THINKING_LEVELS: ThinkingLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+
 export function ChatPanel({
   databases,
   thinkingLevel,
+  onThinkingLevelChange,
   conversationId,
   draftPrompt,
   submitPrompt,
@@ -45,6 +48,7 @@ export function ChatPanel({
 }: {
   databases: string[];
   thinkingLevel: ThinkingLevel;
+  onThinkingLevelChange: (level: ThinkingLevel) => void;
   conversationId: string | null;
   draftPrompt?: { text: string; nonce: number } | null;
   submitPrompt?: { text: string; nonce: number } | null;
@@ -430,6 +434,20 @@ export function ChatPanel({
             {isStreaming ? <span className="send-loading" /> : <SendIcon />}
           </button>
         </div>
+        <div className="composer-meta">
+          <label className="thinking-control">
+            <BrainIcon />
+            <span>Thinking</span>
+            <select
+              value={thinkingLevel}
+              onChange={(e) => onThinkingLevelChange(e.target.value as ThinkingLevel)}
+            >
+              {THINKING_LEVELS.map((l) => (
+                <option key={l} value={l}>{l}</option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
     </main>
   );
@@ -564,6 +582,20 @@ function SendIcon() {
         d="M8.5 4.5 12 8l-3.5 3.5"
         stroke="currentColor"
         strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function BrainIcon() {
+  return (
+    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M8 3.2v9.6M8 4.2a2 2 0 0 0-3.6-1.2A1.9 1.9 0 0 0 2.6 5 1.9 1.9 0 0 0 2 8a1.9 1.9 0 0 0 .9 2.6A1.9 1.9 0 0 0 4.6 13 2 2 0 0 0 8 12M8 4.2a2 2 0 0 1 3.6-1.2A1.9 1.9 0 0 1 13.4 5a1.9 1.9 0 0 1 .6 3 1.9 1.9 0 0 1-.9 2.6A1.9 1.9 0 0 1 11.4 13 2 2 0 0 1 8 12"
+        stroke="currentColor"
+        strokeWidth="1.2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />

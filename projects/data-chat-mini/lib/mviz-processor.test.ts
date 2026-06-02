@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { processMvizMarkdown, sanitizeMvizMarkdown } from './mviz-processor';
 
 describe('sanitizeMvizMarkdown', () => {
-  it('normalizes default chart heights to 12 rows', () => {
-    expect(sanitizeMvizMarkdown('```bar size=[8,4]\n{"data":[]}\n```')).toContain('```bar size=[8,12]');
-    expect(sanitizeMvizMarkdown('```line\n{"data":[]}\n```')).toContain('```line size=[8,12]');
+  it('normalizes default chart heights to 8 rows', () => {
+    expect(sanitizeMvizMarkdown('```bar size=[8,4]\n{"data":[]}\n```')).toContain('```bar size=[8,8]');
+    expect(sanitizeMvizMarkdown('```line\n{"data":[]}\n```')).toContain('```line size=[8,8]');
     expect(sanitizeMvizMarkdown('```dumbbell size=[12,5]\n{"data":[]}\n```')).toContain(
-      '```dumbbell size=[12,12]'
+      '```dumbbell size=[12,8]'
     );
     expect(sanitizeMvizMarkdown('```bar size=[16,8]\n{"data":[]}\n```')).toContain('```bar size=[16,8]');
   });
