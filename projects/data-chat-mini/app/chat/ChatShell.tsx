@@ -121,6 +121,7 @@ export function ChatShell() {
           databases={databases}
           thinkingLevel={thinkingLevel}
           onThinkingLevelChange={setThinkingLevel}
+          defaultThinkingLevel={DEFAULT_THINKING}
           conversationId={conversationId}
           draftPrompt={draftPrompt}
           submitPrompt={submitPrompt}
