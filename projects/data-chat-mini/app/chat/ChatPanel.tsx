@@ -37,6 +37,7 @@ export function ChatPanel({
   databases,
   thinkingLevel,
   onThinkingLevelChange,
+  defaultThinkingLevel,
   conversationId,
   draftPrompt,
   submitPrompt,
@@ -49,6 +50,7 @@ export function ChatPanel({
   databases: string[];
   thinkingLevel: ThinkingLevel;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
+  defaultThinkingLevel: ThinkingLevel;
   conversationId: string | null;
   draftPrompt?: { text: string; nonce: number } | null;
   submitPrompt?: { text: string; nonce: number } | null;
@@ -75,6 +77,10 @@ export function ChatPanel({
       setMessages([]);
       historyRef.current = [];
       loadedRef.current = null;
+      // Starting a new conversation resets the thinking level to the default.
+      // Without this, opening an old `none` conversation and then clicking New
+      // would leave the new chat stuck on `none` instead of the default.
+      onThinkingLevelChange(defaultThinkingLevel);
       return;
     }
     if (loadedRef.current === conversationId) return;
@@ -94,7 +100,7 @@ export function ChatPanel({
       // the conversation's original privacy/cost choice.
       if (conv.thinkingLevel) onThinkingLevelChange(conv.thinkingLevel);
     })();
-  }, [conversationId, onThinkingLevelChange]);
+  }, [conversationId, onThinkingLevelChange, defaultThinkingLevel]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
