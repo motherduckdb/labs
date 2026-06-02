@@ -305,23 +305,49 @@ pre {
 }
 
 .thinking-control {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
   color: var(--muted);
   font-size: var(--text-caption);
   font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.thinking-control:hover {
+  border-color: var(--border-strong);
+  color: var(--foreground);
+}
+
+.thinking-control:focus-within {
+  border-color: var(--link);
+  box-shadow: var(--focus);
+}
+
+.thinking-control svg {
+  flex: 0 0 auto;
+  opacity: 0.75;
 }
 
 .thinking-control select {
-  height: 32px;
-  max-width: 110px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
-  background: var(--panel);
+  height: 24px;
+  border: 0;
+  background: transparent;
   color: var(--foreground);
-  padding: 0 8px;
   font-size: var(--text-caption);
+  font-weight: 600;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.thinking-control select:focus {
+  outline: none;
 }
 
 .workspace-grid {
@@ -982,6 +1008,15 @@ pre {
   box-shadow: var(--focus);
 }
 
+.composer-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  max-width: 900px;
+  margin: 8px auto 0;
+  padding: 0 2px;
+}
+
 .composer textarea {
   flex: 1;
   min-height: 36px;
@@ -1380,8 +1415,7 @@ pre {
     flex: 1 1 180px;
   }
 
-  .brand-subtitle,
-  .thinking-control {
+  .brand-subtitle {
     display: none;
   }
 

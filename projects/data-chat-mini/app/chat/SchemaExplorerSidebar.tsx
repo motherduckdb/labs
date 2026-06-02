@@ -337,9 +337,14 @@ export function SchemaExplorerSidebar({
                   tabIndex={open ? undefined : 0}
                   aria-expanded={open ? undefined : false}
                   onClick={(event) => {
-                    if (open) return;
                     if (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, summary')) {
                       return;
+                    }
+                    // Don't collapse mid-selection — let users highlight the
+                    // open card's text without it snapping shut.
+                    if (open) {
+                      const selection = window.getSelection();
+                      if (selection && !selection.isCollapsed) return;
                     }
                     toggleFragment();
                   }}
@@ -399,7 +404,7 @@ export function SchemaExplorerSidebar({
                                 if (clickable) revealTable(p);
                               }}
                               title={clickable ? `Show ${p.label} in the schema tree` : ref}
-                              className={`rounded px-1.5 py-0.5 text-[10px] border border-[var(--border)] ${
+                              className={`max-w-full break-all text-left leading-tight rounded px-1.5 py-0.5 text-[10px] border border-[var(--border)] ${
                                 clickable
                                   ? 'bg-[var(--panel)] hover:border-[var(--accent)] hover:text-[var(--accent)] cursor-pointer'
                                   : 'bg-[var(--panel)] text-[var(--muted)] cursor-default'

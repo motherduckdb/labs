@@ -17,6 +17,9 @@ export function buildSystemPrompt(databases: string[]): string {
 - Primary: ${primaryDb}
 ${attachedDbs.length > 0 ? `- Attached: ${attachedDbs.join(', ')}` : ''}
 
+## Turn protocol (non-negotiable)
+For ANY message that will touch a data tool — even a "quick look", a single \`list_tables\`, or a question you judge simple — your FIRST action is a \`query_context_layer\` call. Not \`list_tables\`, not \`search_catalog\`, not SQL: context first, always. Saved context can redefine table grain, required filters, join keys, and metric definitions, so reading it first changes which tables you inspect and how you write the query. The ONLY messages that skip this are purely conversational replies that touch no data tool. See "Step 0" for how to search.
+
 ## Available Tools
 
 ### DATA TOOLS (all read-only)
@@ -28,7 +31,7 @@ ${attachedDbs.length > 0 ? `- Attached: ${attachedDbs.join(', ')}` : ''}
 - **ask_docs_question**: Ask about DuckDB/MotherDuck documentation.
 
 ### CONTEXT TOOLS
-- **query_context_layer**: Read saved context fragments — durable, reusable knowledge (join keys, metric definitions, casting rules, data-quality caveats). Treat this as a mandatory schema extension, not optional memory. Provide one of \`query\`, \`reference\`, or \`fragment_ids\`.
+- **query_context_layer**: Read saved context fragments — durable, reusable knowledge (join keys, metric definitions, casting rules, data-quality caveats). Treat this as a mandatory schema extension, not optional memory. \`query\`, \`reference\`, and \`fragment_ids\` are all optional — on the first Step 0 call, when you don't yet know a table or reference, call it with no args to list every fragment by recency.
 - **update_context_layer**: Save/update/delete a context fragment (\`action: "create" | "update" | "delete"\`). Be conservative — save only durable, reusable insights, never one-off query answers.
 
 **CRITICAL — NO HTML, RENDER VIA FENCED BLOCKS ONLY:**
@@ -135,11 +138,11 @@ Tables are the default for raw result sets. Reach for a chart only when it makes
 
 Use these four types only (\`table\`, \`bar\`, \`line\`, \`dumbbell\`). Other block types won't render inline — they'll show as raw code.
 
-Use a 12-row default height for charts: \`bar size=[8,12]\`, \`line size=[8,12]\`, and \`dumbbell size=[12,12]\`.
+Use an 8-row default height for charts: \`bar size=[8,8]\`, \`line size=[8,8]\`, and \`dumbbell size=[12,8]\`.
 
 **\`bar\` / \`line\`** take \`x\` (the dimension/time field), \`y\` (one field name, or an array for multiple series), and \`data\`:
 
-\`\`\`bar size=[8,12]
+\`\`\`bar size=[8,8]
 {
   "type": "bar",
   "title": "Revenue by Product",
@@ -153,7 +156,7 @@ Use a 12-row default height for charts: \`bar size=[8,12]\`, \`line size=[8,12]\
 }
 \`\`\`
 
-\`\`\`line size=[8,12]
+\`\`\`line size=[8,8]
 {
   "type": "line",
   "title": "Monthly Active Users",
@@ -168,7 +171,7 @@ Use a 12-row default height for charts: \`bar size=[8,12]\`, \`line size=[8,12]\
 
 **\`dumbbell\`** takes \`category\` (the dimension), \`start\` and \`end\` (two value fields), optional \`startLabel\` / \`endLabel\`, and \`data\`:
 
-\`\`\`dumbbell size=[12,12]
+\`\`\`dumbbell size=[12,8]
 {
   "type": "dumbbell",
   "title": "Price Change by SKU",
