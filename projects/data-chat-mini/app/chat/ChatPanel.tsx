@@ -88,8 +88,13 @@ export function ChatPanel({
       }
       setMessages(conv.messages);
       historyRef.current = rebuildHistoryFromMessages(conv.messages);
+      // Restore the conversation's saved thinking level into the shell-level
+      // control. Without this, reopening a conversation keeps the shell's
+      // current level and the next send re-persists it, silently overwriting
+      // the conversation's original privacy/cost choice.
+      if (conv.thinkingLevel) onThinkingLevelChange(conv.thinkingLevel);
     })();
-  }, [conversationId]);
+  }, [conversationId, onThinkingLevelChange]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
