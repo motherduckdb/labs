@@ -42,9 +42,10 @@ export const CONTEXT_TOOLS: AnthropicTool[] = [
       'matches, with ties broken by recency. So pass a few literal keywords likely to appear in the ' +
       'saved rule (data terms, column/table names, the metric concept) — NOT a long natural-language ' +
       'sentence, which over-constrains the match. With NO `query` at all it returns every fragment ' +
-      '(most recent first) — the best move when you are unsure what exists. `reference` substring-' +
-      'matches a fragment\'s references (e.g. "database:db.main.table") and AND-combines with `query`; ' +
-      '`fragment_ids` fetches exact ids. Provide at least one of `query`, `reference`, or `fragment_ids`.',
+      '(most recent first) — the best move on the first Step 0 call when you do not yet know a table ' +
+      'or reference. `reference` substring-matches a fragment\'s references (e.g. "database:db.main.table") ' +
+      'and AND-combines with `query`; `fragment_ids` fetches exact ids. All three args are optional and ' +
+      'may be combined — calling with no args at all is valid and lists every fragment by recency.',
     input_schema: {
       type: 'object',
       properties: {

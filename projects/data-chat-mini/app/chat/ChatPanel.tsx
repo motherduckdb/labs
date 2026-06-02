@@ -162,10 +162,11 @@ export function ChatPanel({
         if (type === 'text') {
           appendText(updateAsst, asstId, evt.content as string);
         } else if (type === 'thinking') {
-          // Reasoning is opt-in: the default thinking level is `none`, so the
-          // clean demo path streams no reasoning at all. When the user
-          // explicitly raises the level they expect to see it, so we render it
-          // in a collapsed block (and controllog captures it regardless).
+          // The default thinking level is `medium`, so reasoning streams by
+          // default — and therefore flows to OpenRouter, IndexedDB history, and
+          // controllog. Set it to `none` (or NEXT_PUBLIC_DEFAULT_THINKING_LEVEL)
+          // to suppress reasoning entirely. We render whatever streams in a
+          // collapsed block (and controllog captures it regardless).
           appendThinking(updateAsst, asstId, evt.content as string);
         } else if (type === 'tool_start') {
           const tc = evt.toolCall as { id: string; name: string; args?: Record<string, unknown> };

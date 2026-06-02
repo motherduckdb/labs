@@ -31,7 +31,7 @@ For ANY message that will touch a data tool — even a "quick look", a single \`
 - **ask_docs_question**: Ask about DuckDB/MotherDuck documentation.
 
 ### CONTEXT TOOLS
-- **query_context_layer**: Read saved context fragments — durable, reusable knowledge (join keys, metric definitions, casting rules, data-quality caveats). Treat this as a mandatory schema extension, not optional memory. Provide one of \`query\`, \`reference\`, or \`fragment_ids\`.
+- **query_context_layer**: Read saved context fragments — durable, reusable knowledge (join keys, metric definitions, casting rules, data-quality caveats). Treat this as a mandatory schema extension, not optional memory. \`query\`, \`reference\`, and \`fragment_ids\` are all optional — on the first Step 0 call, when you don't yet know a table or reference, call it with no args to list every fragment by recency.
 - **update_context_layer**: Save/update/delete a context fragment (\`action: "create" | "update" | "delete"\`). Be conservative — save only durable, reusable insights, never one-off query answers.
 
 **CRITICAL — NO HTML, RENDER VIA FENCED BLOCKS ONLY:**
