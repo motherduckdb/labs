@@ -1,4 +1,4 @@
-"""Semantic-layer context store backing the `fetch_context` tool.
+"""Semantic-layer context store backing the `semantic_lookup` tool.
 
 Knowledge that used to be dumped wholesale into the system prompt (fee-matching
 rules, bucketing logic, term mappings, SQL patterns, format rules) lives here as
@@ -15,9 +15,9 @@ each with YAML frontmatter:
 The agent navigates this store progressively, exactly like Anthropic's
 self-service-analytics semantic layer:
 
-    fetch_context()                      -> list of domains (+ one-line each)
-    fetch_context(domains=["fees"])      -> {id, summary} for every item in a domain
-    fetch_context(ids=["fees-matching-9dim"]) -> full body of those items
+    semantic_lookup()                      -> list of domains (+ one-line each)
+    semantic_lookup(domains=["fees"])      -> {id, summary} for every item in a domain
+    semantic_lookup(ids=["fees-matching-9dim"]) -> full body of those items
 
 Each domain also carries a one-sentence description, taken from a `domain:`
 description item if present, else synthesized from the domain name.
@@ -32,7 +32,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ITEMS_DIR = REPO_ROOT / "context" / "items"
 
-# One-line description per domain, shown by the no-arg fetch_context() call.
+# One-line description per domain, shown by the no-arg semantic_lookup() call.
 DOMAIN_DESCRIPTIONS: dict[str, str] = {
     "schema": "Tables, columns, relationships, and what 'the dataset' means.",
     "fees": "How fee rules match transactions and how the fee amount is computed.",
@@ -99,7 +99,7 @@ class ContextStore:
         extra = sorted(d for d in self._by_domain if d not in DOMAIN_ORDER)
         return known + extra
 
-    # -- the three fetch_context modes -------------------------------------
+    # -- the three semantic_lookup modes -------------------------------------
 
     def list_domains(self) -> list[dict]:
         out = []
@@ -163,8 +163,8 @@ def _split_arg(value) -> list[str]:
     return [str(value).strip()]
 
 
-def render_fetch_context(store: ContextStore, domains=None, ids=None) -> str:
-    """Render the fetch_context tool output for all three modes.
+def render_semantic_lookup(store: ContextStore, domains=None, ids=None) -> str:
+    """Render the semantic_lookup tool output for all three modes.
 
     Precedence: ids > domains > (neither -> domain list).
     """
@@ -185,7 +185,7 @@ def render_fetch_context(store: ContextStore, domains=None, ids=None) -> str:
             ditems, _ = store.list_items(as_domains)
             lines = [
                 f"[note: {', '.join(as_domains)} is a DOMAIN, not an item id — here are "
-                f"its items; call fetch_context(ids=[...]) with one of these:]"
+                f"its items; call semantic_lookup(ids=[...]) with one of these:]"
             ]
             for it in ditems:
                 lines.append(f"- {it['id']}  [{it['domain']}] — {it['summary']}")
@@ -194,12 +194,12 @@ def render_fetch_context(store: ContextStore, domains=None, ids=None) -> str:
         if truly_unknown:
             chunks.append(
                 f"[unknown ids: {', '.join(truly_unknown)}. To browse, call "
-                f"fetch_context(domains=[...]) — valid domains: {valid_domains}]"
+                f"semantic_lookup(domains=[...]) — valid domains: {valid_domains}]"
             )
         if not items and not as_domains:
             return (
                 f"No context found for ids: {', '.join(id_tokens)}. Call "
-                f"fetch_context(domains=[...]) to see valid ids. Domains: {valid_domains}"
+                f"semantic_lookup(domains=[...]) to see valid ids. Domains: {valid_domains}"
             )
         return "\n\n".join(chunks)
 
@@ -207,7 +207,7 @@ def render_fetch_context(store: ContextStore, domains=None, ids=None) -> str:
         items, unknown = store.list_items(domain_tokens)
         lines: list[str] = []
         if items:
-            lines.append("Context items (call fetch_context(ids=[...]) to read the full text):")
+            lines.append("Context items (call semantic_lookup(ids=[...]) to read the full text):")
             for it in items:
                 lines.append(f"- {it['id']}  [{it['domain']}] — {it['summary']}")
         if unknown:
@@ -218,7 +218,7 @@ def render_fetch_context(store: ContextStore, domains=None, ids=None) -> str:
         return "\n".join(lines)
 
     # No args -> list domains.
-    lines = ["Knowledge domains (call fetch_context(domains=[...]) to see items in one or more):"]
+    lines = ["Knowledge domains (call semantic_lookup(domains=[...]) to see items in one or more):"]
     for d in store.list_domains():
         lines.append(f"- {d['domain']} ({d['n_items']} items) — {d['description']}")
     return "\n".join(lines)

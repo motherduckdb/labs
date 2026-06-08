@@ -1,14 +1,14 @@
-"""SQL agent with a semantic-layer `fetch_context` tool.
+"""SQL agent with a semantic-layer `semantic_lookup` tool.
 
 Five tools, one loop:
-  - `fetch_context` — the semantic layer (domains -> item summaries -> full bodies)
+  - `semantic_lookup` — the semantic layer (domains -> item summaries -> full bodies)
   - `list_tables`   — list tables/views in the target database
   - `list_columns`  — describe one table's columns
   - `query`         — run a SELECT, return up to 50 rows as text
   - `submit_answer` — submit the SQL whose result IS the answer
 
 The agent always has a compact SKILL (procedure + where-knowledge-lives) in its
-system prompt; the heavy domain knowledge is fetched on demand via fetch_context.
+system prompt; the heavy domain knowledge is fetched on demand via semantic_lookup.
 The DuckDB connection is MotherDuck-attached, so tools run against `md:<db>`.
 
 Provider/usage/caching machinery is ported from agentic-sql-mini unchanged.
@@ -36,7 +36,7 @@ from agents import (
 from agents.run import RunConfig
 from openai import AsyncOpenAI
 
-from src.context_store import ContextStore, render_fetch_context
+from src.context_store import ContextStore, render_semantic_lookup
 from src.score import ExecutionError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -208,14 +208,14 @@ class OpenRouterProvider(ModelProvider):
 
 # Small, stable base. The bulk of "how to work" lives in SKILL.md (appended
 # below); the bulk of "what the data means" lives in the context store, fetched
-# on demand via fetch_context. Keep this lean — it is cached across questions.
+# on demand via semantic_lookup. Keep this lean — it is cached across questions.
 _BASE_SYSTEM_PROMPT = """You are an expert data analyst. You answer factoid questions by querying a payments database with SQL via tools.
 
 **Database:** {database}  (MotherDuck, DuckDB SQL). Schema: main.
 Use fully-qualified names when helpful: `{database}.main.table_name`.
 
 You have five tools:
-- `fetch_context` — the semantic layer. Knowledge about this dataset (fee rules, bucketing, terminology, SQL patterns, answer formatting) is NOT in this prompt; you fetch it on demand. See the Semantic Layer section of the skill below.
+- `semantic_lookup` — the semantic layer. Knowledge about this dataset (fee rules, bucketing, terminology, SQL patterns, answer formatting) is NOT in this prompt; you fetch it on demand. See the Semantic Layer section of the skill below.
 - `list_tables` — list tables/views.
 - `list_columns` — describe one table's columns.
 - `query` — run a SELECT (returns up to 50 rows).
@@ -297,7 +297,7 @@ def _make_tools(state: RunState) -> list:
         return cols, rows
 
     @function_tool
-    def fetch_context(domains: list[str] | None = None, ids: list[str] | None = None) -> str:
+    def semantic_lookup(domains: list[str] | None = None, ids: list[str] | None = None) -> str:
         """Fetch dataset knowledge progressively (the semantic layer).
 
         - Call with NO arguments to list the knowledge domains.
@@ -306,10 +306,10 @@ def _make_tools(state: RunState) -> list:
         - Call with `ids` (e.g. ["fees-matching-9dim"]) to read the FULL text of
           those items. You may pass several ids at once.
         """
-        out = render_fetch_context(state.store, domains=domains, ids=ids)
+        out = render_semantic_lookup(state.store, domains=domains, ids=ids)
         state.record(
             {
-                "tool": "fetch_context",
+                "tool": "semantic_lookup",
                 "domains": domains,
                 "ids": ids,
                 "result_chars": len(out),
@@ -382,7 +382,7 @@ def _make_tools(state: RunState) -> list:
         state.record({"tool": "submit_answer", "sql": sql, "rows": len(rows)})
         return f"Submitted. {len(rows)} rows."
 
-    return [fetch_context, list_tables, list_columns, query, submit_answer]
+    return [semantic_lookup, list_tables, list_columns, query, submit_answer]
 
 
 @dataclass

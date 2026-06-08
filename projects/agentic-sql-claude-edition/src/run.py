@@ -105,11 +105,11 @@ def load(database: str | None) -> None:
 @click.option("--domains", default=None, help="Comma-separated domains to list items for.")
 @click.option("--ids", default=None, help="Comma-separated context ids to print in full.")
 def context_cmd(domains: str | None, ids: str | None) -> None:
-    """Inspect the semantic-layer context store (mirrors the fetch_context tool)."""
-    from src.context_store import render_fetch_context
+    """Inspect the semantic-layer context store (mirrors the semantic_lookup tool)."""
+    from src.context_store import render_semantic_lookup
 
     store = ContextStore()
-    console.print(render_fetch_context(store, domains=domains, ids=ids))
+    console.print(render_semantic_lookup(store, domains=domains, ids=ids))
 
 
 def _correctness_mark(c: str) -> str:
@@ -224,7 +224,7 @@ def _render_tool_call(call: dict, task_id: str | None = None) -> None:
             t.append(extra)
         return t
 
-    if tool == "fetch_context":
+    if tool == "semantic_lookup":
         domains = call.get("domains")
         ids = call.get("ids")
         if ids:

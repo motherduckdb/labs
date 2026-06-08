@@ -143,7 +143,7 @@ doesn't match the wrong gold.
 `results/test419.jsonl` → 412/419 (98.33%). The 7 misses + fixes:
 - **36, 44** (shopper math): customer/shopper = NON-NULL email; `terminology-term-mapping.md`.
 - **2571, 2573, 2574** (T01): the agent wasn't *loading* the T01 item — passed a domain name as
-  an id, or skipped `sql_patterns`. Fixed `fetch_context` to tolerate domain-name-as-id,
+  an id, or skipped `sql_patterns`. Fixed `semantic_lookup` to tolerate domain-name-as-id,
   sharpened the item summary, added a WRONG/RIGHT worked example, and a skill nudge to drill in.
 - **2740, 2755** (T08): the agent hallucinated `capture_delay 'immediate' → '<3'`, changing the
   matched fee rules. Hardened `bucketing-capture-delay.md` + the master CTE comment: never remap

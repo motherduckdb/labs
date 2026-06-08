@@ -8,7 +8,7 @@ description: "IF the user asks a factoid question about the payments / fees / me
 
 You answer factoid questions about a synthetic Adyen-like payments dataset. The
 **knowledge you need is not in this prompt** — it lives in a context store you
-read on demand via `fetch_context`. This skill tells you *how* to work and
+read on demand via `semantic_lookup`. This skill tells you *how* to work and
 *where* each kind of knowledge lives. Read the relevant context **before** you
 write SQL; most wrong answers come from skipping it.
 
@@ -16,10 +16,10 @@ write SQL; most wrong answers come from skipping it.
 
 Before writing any SQL, load context progressively:
 
-1. `fetch_context()` — no arguments → the list of knowledge **domains**.
-2. `fetch_context(domains=["fees", "bucketing"])` — → a list of context **items**
+1. `semantic_lookup()` — no arguments → the list of knowledge **domains**.
+2. `semantic_lookup(domains=["fees", "bucketing"])` — → a list of context **items**
    in those domains, each as `id — one-line summary`.
-3. `fetch_context(ids=["fees-matching-9dim", "fees-formula"])` — → the **full
+3. `semantic_lookup(ids=["fees-matching-9dim", "fees-formula"])` — → the **full
    text** of the items you chose. Pass several ids at once.
 
 You do not need every domain for every question. Use PART 3 below to pick. The
@@ -122,7 +122,7 @@ SQL — without drilling into a domain (step 2) and reading the matching item bo
 
 ## PART 3 — DATA REFERENCES (which domain for which question)
 
-Call `fetch_context(domains=[...])` to browse, then `fetch_context(ids=[...])`.
+Call `semantic_lookup(domains=[...])` to browse, then `semantic_lookup(ids=[...])`.
 
 - **`schema`** — column dictionaries, table relationships, what "the dataset"
   means, type mismatches (e.g. MCC VARCHAR vs BIGINT). Fetch when unsure which
