@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+results/*.jsonl
+results/controllog/
+*.db
+*.db.wal
+.DS_Store
+
+# generated viz artifacts
+*.html
