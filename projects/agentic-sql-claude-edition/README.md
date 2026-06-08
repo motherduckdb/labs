@@ -6,7 +6,7 @@ ideas from Anthropic's *self-service data analytics* work:
 1. **A compact skill** (`skill/SKILL.md`) injected into the system prompt — it
    teaches the agent *how* to work and *where* knowledge lives, not the knowledge
    itself.
-2. **A semantic layer via `fetch_context`** — domain knowledge (fee matching,
+2. **A semantic layer via `semantic_lookup`** — domain knowledge (fee matching,
    bucketing, terminology, SQL patterns, answer formatting) lives in a context
    store and is fetched **progressively**: domains → one-line item summaries →
    full text. The agent loads only what each question needs.
@@ -22,7 +22,7 @@ template T01–T26; `train_ids` in `data/split.json`).
 - **Set:** all 450 DABStep questions minus the 26 template reps (= 424 held-out)
   minus **5 provably-wrong `hf_consensus` golds** set aside in `data/bad_golds.json`
   (our SQL is correct; those golds disagree with the data — verified) → **419**.
-- **Approach:** a compact always-on skill + a 27-item `fetch_context` semantic layer.
+- **Approach:** a compact always-on skill + a 27-item `semantic_lookup` semantic layer.
   The whole knowledge base is ~53K chars but the agent loads only ~16K per hard
   question — the *always-on* prompt is ~3.4× smaller than injecting the manual.
 - **Reasoning sweet spot:** `low` matches `medium` accuracy at ~half the cost; `off`
@@ -46,9 +46,9 @@ answer flow and the log-driven improvement loop.
 
 ```
 system prompt + SKILL + question
-  → fetch_context()                         # list domains
-  → fetch_context(domains=["fees", ...])    # item summaries
-  → fetch_context(ids=["fees-matching-9dim", ...])   # full context
+  → semantic_lookup()                         # list domains
+  → semantic_lookup(domains=["fees", ...])    # item summaries
+  → semantic_lookup(ids=["fees-matching-9dim", ...])   # full context
   → list_tables / list_columns              # explore schema
   → query (verify SQL)
   → submit_answer                           # the SQL whose result IS the answer
@@ -82,7 +82,7 @@ cp .env.example .env   # fill in OPENROUTER_API_KEY and MOTHERDUCK_TOKEN
 # 1. Build the MotherDuck database from data/dabstep/context/
 uv run asm load
 
-# 2. Inspect the semantic layer (mirrors the fetch_context tool)
+# 2. Inspect the semantic layer (mirrors the semantic_lookup tool)
 uv run asm context                       # list domains
 uv run asm context --domains fees,bucketing
 uv run asm context --ids fees-matching-9dim
@@ -98,7 +98,7 @@ uv run asm summary results/templates_<ts>.jsonl
 # 5. Visualize a run. controllog-viz is a standalone CLI (it caps duckdb at
 #    1.5.2, so it runs in its own environment, not this project's). It reads the
 #    JSONL under results/. `review` shows the rich per-question trace cards
-#    (chain-of-thought + every fetch_context/query/submit_answer call, predicted
+#    (chain-of-thought + every semantic_lookup/query/submit_answer call, predicted
 #    vs gold) — driven by the `evaluation_result` events the eval emits.
 uvx --from "git+https://github.com/motherduckdb/labs#subdirectory=projects/controllog-viz" \
     controllog-viz review --source results --latest --open -o review.html
@@ -115,14 +115,14 @@ Each miss points at one of four artifacts to fix, then re-run:
 - a **skill-navigation** gap (`skill/SKILL.md`).
 
 `controllog-viz review` renders the full tool-call trace (including
-`fetch_context` navigation) and predicted-vs-gold for diagnosis.
+`semantic_lookup` navigation) and predicted-vs-gold for diagnosis.
 
 ## Layout
 
 ```
 skill/SKILL.md          the skill (procedure + navigation)
 context/items/*.md      the semantic-layer context store (one file = one item)
-src/context_store.py    loads items, powers fetch_context
+src/context_store.py    loads items, powers semantic_lookup
 src/agent.py            tools + prompt + OpenRouter provider
 src/load.py             build the MotherDuck database
 src/run.py              CLI: load / context / evaluate / summary

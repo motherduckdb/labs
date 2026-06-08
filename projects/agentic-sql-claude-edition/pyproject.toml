@@ -1,7 +1,7 @@
 [project]
 name = "agentic-sql-claude-edition"
 version = "0.1.0"
-description = "Skill + semantic-layer agent for DABStep: a compact skill + fetch_context progressive disclosure, aiming for 100% on the 26 template representatives."
+description = "Skill + semantic-layer agent for DABStep: a compact skill + semantic_lookup progressive disclosure, aiming for 100% on the 26 template representatives."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
