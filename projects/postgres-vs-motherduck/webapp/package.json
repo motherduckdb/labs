@@ -1,0 +1,27 @@
+{
+  "name": "webapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Next.js dashboard. Reads analytics via the pg driver — pointed at Postgres or MotherDuck by DATA_SOURCE.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"app/**/*.{ts,tsx,css}\" \"lib/**/*.ts\"",
+    "format:check": "prettier --check \"app/**/*.{ts,tsx,css}\" \"lib/**/*.ts\""
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "pg": "^8.13.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "@types/react": "^19.0.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -20,6 +20,7 @@ Each experiment lives in its own directory under [`projects/`](./projects/). Bro
 | [`data-chat-mini`](./projects/data-chat-mini/) | Minimal "chat with your data" Next.js app — read-only agentic SQL over the MotherDuck MCP, inline `mviz` charts, IndexedDB history + local context layer, and `controllog` telemetry. Runs a fleet on one read scaling token. |
 | [`metadata_generator`](./projects/metadata_generator/) | Generate rich metadata for MotherDuck databases — profile statistics, LLM-generated descriptions, and SQL `COMMENT` statements. Used as a dep by `bird-bench`. |
 | [`motherduck-dive-viewer`](./projects/motherduck-dive-viewer/) | Generic BI-style Next.js app — sign in with MotherDuck (OAuth 2.1 + PKCE), browse/search your Dives, and view them rendered inline via a server-side query proxy so no MotherDuck token ever reaches the browser. |
+| [`postgres-vs-motherduck`](./projects/postgres-vs-motherduck/) | Same query, same `pg` driver, two engines side by side — a Next.js page fires one heavy aggregate at managed Postgres and at MotherDuck at once and charts each as it answers, with server-measured latency. Includes a Python pipeline to load Postgres → MotherDuck. Deploys to Vercel. |
 | [`react-components`](./projects/react-components/) | Open-source React components extracted from MotherDuck's website and docs — embed a public Dive, embed a private Dive, and an in-browser MotherDuck SQL editor. |
 <!-- END PROJECT LIST -->
 
