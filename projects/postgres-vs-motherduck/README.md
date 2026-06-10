@@ -6,11 +6,36 @@ fires one heavy analytical aggregate (a full scan of ~3.9M order-items) at a man
 moment its engine answers. You watch Postgres grind while MotherDuck has already drawn its
 chart — and the latency is **server-measured**, so it's a real number, not a vibe.
 
-The dataset ships as a ready-made **public MotherDuck share**, so the "after" needs no data
-loading at all. A small Python (uv) pipeline can also seed a throwaway Postgres "before"
-from that same share, or move your own Postgres into MotherDuck end to end.
+Use it two ways: point it at **your own Postgres** to see the real ingest-and-serve workflow,
+or **start from the ready-made MotherDuck share** when you don't have data of your own. Either
+way it drives the same webapp.
 
 > Experimental. Part of [MotherDuck Labs](../../README.md).
+
+## Two ways to use it
+
+**1 — Bring your own Postgres.** Point it at a database you already run. The pipeline then
+shows the real workflow: **ingest** your Postgres into MotherDuck (DuckDB's Postgres scanner —
+full-refresh dimensions, incremental facts) and **serve** the identical query from MotherDuck.
+This is the production story — *"I have Postgres; how do I make the analytics fast?"*
+
+```bash
+uv run hello_postgres_scanner.py    # read your Postgres in place — no data moved
+uv run load_to_motherduck.py        # ingest → MotherDuck, then serve it in the app
+```
+
+**2 — Start from the MotherDuck share.** No Postgres of your own? The demo dataset is
+published as an unrestricted **public share**, so you can have the "after" running in one
+command — and even manufacture a "before" Postgres from that same share:
+
+```bash
+uv run attach_share.py              # the "after", instantly — no loading
+uv run seed_postgres.py             # optional "before": share → throwaway Postgres (indexed)
+```
+
+The webapp doesn't care which path you took — for MotherDuck it reads the database
+`multishop_commerce` (your own load, or the attached share); for Postgres it reads your
+`POSTGRES_URL`. Same query, same driver, either way.
 
 ## What it demonstrates
 
