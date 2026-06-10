@@ -57,7 +57,7 @@ export default function ComparePage() {
           </p>
           <h1>Postgres vs MotherDuck</h1>
           <p style={{ color: "var(--darker-grey)", marginTop: 0, maxWidth: 720, lineHeight: 1.55 }}>
-            Monthly paid revenue — a full scan of ~39M order-items joined to orders. Identical SQL,
+            Monthly paid revenue — a full scan of ~3.9M order-items joined to orders. Identical SQL,
             identical <code>pg</code> driver; only the connection host differs.
           </p>
 
@@ -136,8 +136,8 @@ const DATASET = [
   { table: "categories", rows: "12", kind: "dimension", desc: "product categories" },
   { table: "products", rows: "50,000", kind: "dimension", desc: "catalog across all shops" },
   { table: "customers", rows: "500,000", kind: "dimension", desc: "buyers" },
-  { table: "orders", rows: "20,000,000", kind: "fact", desc: "one row per placed order" },
-  { table: "order_items", rows: "39,382,720", kind: "fact", desc: "line items — the heavy grain" },
+  { table: "orders", rows: "2,000,000", kind: "fact", desc: "one row per placed order" },
+  { table: "order_items", rows: "3,938,272", kind: "fact", desc: "line items — the heavy grain" },
 ];
 
 function AboutTheDataset() {
@@ -146,7 +146,7 @@ function AboutTheDataset() {
       <h2>About the dataset</h2>
       <p style={{ color: "var(--darker-grey)", marginTop: 0, fontSize: 14, lineHeight: 1.55 }}>
         A synthetic multi-shop commerce platform — shops (tenants) on plan tiers, their catalog, and
-        ~40M order line-items. The revenue query above is a full scan of <code>order_items</code>{" "}
+        ~3.9M order line-items. The revenue query above is a full scan of <code>order_items</code>{" "}
         joined up to <code>orders</code> and <code>shops</code> — exactly the kind of analytical
         aggregate that row-store Postgres labors over and a columnar engine eats for breakfast.
       </p>

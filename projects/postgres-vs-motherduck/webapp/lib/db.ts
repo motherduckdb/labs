@@ -12,6 +12,24 @@ import { Pool } from "pg";
  */
 export type DataSource = "postgres" | "motherduck";
 
+/**
+ * The "after" reads a ready-made, unrestricted MotherDuck **share** — so the demo
+ * needs zero data-loading. Attach it once into your account under the name the app
+ * connects to (default `multishop_commerce`):
+ *
+ *     uv run pipeline/attach_share.py        # or, in any MotherDuck SQL console:
+ *     ATTACH 'md:_share/multishop_commerce/ac3d36cc-f295-4c66-bf13-371b998f12e8'
+ *       AS multishop_commerce;
+ *
+ * Override with your own loaded database via MD_DATABASE (e.g. after running the
+ * pipeline against your own Postgres), or point at a different share via MD_SHARE_URL.
+ */
+export const MOTHERDUCK_SHARE_URL =
+  process.env.MD_SHARE_URL ?? "md:_share/multishop_commerce/ac3d36cc-f295-4c66-bf13-371b998f12e8";
+
+/** The MotherDuck database the app reads — an attached share or your own load. */
+export const MD_DATABASE = process.env.MD_DATABASE ?? "multishop_commerce";
+
 export function poolFor(source: DataSource): Pool {
   if (source === "motherduck") {
     return new Pool({
@@ -20,7 +38,7 @@ export function poolFor(source: DataSource): Pool {
       // Any non-empty username works; the MotherDuck token is the credential.
       user: process.env.MD_PG_USER ?? "motherduck",
       password: process.env.MOTHERDUCK_TOKEN,
-      database: process.env.MD_DATABASE ?? "multishop_commerce",
+      database: MD_DATABASE,
       ssl: { rejectUnauthorized: false },
       max: 4,
     });

@@ -1,12 +1,14 @@
 # postgres-vs-motherduck
 
 The **same query, the same `pg` driver, two engines — side by side.** A Next.js page
-fires one heavy analytical aggregate (a full scan of ~39M order-items) at your managed
+fires one heavy analytical aggregate (a full scan of ~3.9M order-items) at a managed
 **Postgres** and at **MotherDuck** at the same time, then renders each as a bar chart the
-moment its engine answers. You watch Postgres grind for ~100s while MotherDuck has already
-drawn its chart in ~1s — and the latency is **server-measured**, so it's a real number, not
-a vibe. A small Python pipeline moves the data from Postgres into MotherDuck so you can
-reproduce the whole thing end to end.
+moment its engine answers. You watch Postgres grind while MotherDuck has already drawn its
+chart — and the latency is **server-measured**, so it's a real number, not a vibe.
+
+The dataset ships as a ready-made **public MotherDuck share**, so the "after" needs no data
+loading at all. A small Python (uv) pipeline can also seed a throwaway Postgres "before"
+from that same share, or move your own Postgres into MotherDuck end to end.
 
 > Experimental. Part of [MotherDuck Labs](../../README.md).
 
@@ -18,7 +20,9 @@ reproduce the whole thing end to end.
 | The engine switch is just a host swap | `webapp/lib/db.ts` — same `pg` `Pool`, different host + credentials |
 | Live, server-measured latency | `webapp/app/api/chart/route.ts` — times the query on the server, per engine |
 | Side-by-side charts (no chart lib) | `webapp/app/page.tsx` — dependency-free inline SVG |
-| Reproduce the data load | `pipeline/load_to_motherduck.py` — DuckDB Postgres scanner, full-refresh dims + incremental facts |
+| Ready-made data via a share | `pipeline/attach_share.py` — attach the public share as the "after" |
+| Seed a "before" Postgres | `pipeline/seed_postgres.py` — share → Postgres, with fair indexes |
+| Move your own data in | `pipeline/load_to_motherduck.py` — DuckDB Postgres scanner, dims + incremental facts |
 | Prove it from the terminal too | `pipeline/benchmark.py` — times the same query on both, prints the speedup |
 
 The point: MotherDuck speaks the **Postgres wire protocol**, so "switching to MotherDuck"
@@ -28,19 +32,29 @@ change. That's also why the webapp runs fine in a serverless function.
 ```
 postgres-vs-motherduck/
 ├─ webapp/      Next.js app — the side-by-side comparison. This is what deploys to Vercel.
-└─ pipeline/    Python (uv) — move Postgres → MotherDuck, and a CLI benchmark.
+└─ pipeline/    Python (uv) — attach the share, seed a Postgres, or load your own → MotherDuck.
 ```
 
 ## Run locally
 
-You need a populated Postgres (the "before") and a MotherDuck account (the "after").
+You need a **MotherDuck token** (free tier is fine). A Postgres is only needed for the
+"before" — and the seed script can make you one.
 
-**1 — move the data into MotherDuck** (skip if MotherDuck is already loaded):
+**1 — set up the data.** Pick the path that fits:
 
 ```bash
 cd pipeline
-cp .env.example .env                  # fill in POSTGRES_URL + MOTHERDUCK_TOKEN + MD_PG_HOST
-uv run hello_postgres_scanner.py      # sanity-check: read Postgres in place, list the tables
+cp .env.example .env                  # fill in MOTHERDUCK_TOKEN (+ POSTGRES_URL for the 'before')
+
+# (a) Fast path — the "after" with zero loading: attach the ready-made public share.
+uv run attach_share.py
+
+# (b) Optional — manufacture a slow "before": load the share into a throwaway Postgres,
+#     with the indexes a real OLTP Postgres would have (so the comparison is fair).
+uv run seed_postgres.py               # or: uv run seed_postgres.py --fraction 0.25
+
+# (c) Your own data instead: move your existing Postgres into MotherDuck.
+uv run hello_postgres_scanner.py      # sanity-check the connection
 uv run load_to_motherduck.py          # full-refresh dims, incremental facts
 ```
 
@@ -67,9 +81,10 @@ no top-level `package.json`, point Vercel at the subdirectory:
 1. **Import the repo**, then set **Root Directory → `projects/postgres-vs-motherduck/webapp`**
    in the Vercel project settings. (Deploying from inside that folder with `vercel` CLI sets
    this for you.)
-2. **Environment variables** (Production): `POSTGRES_URL`, `MOTHERDUCK_TOKEN`, `MD_PG_HOST`,
-   and optionally `MD_DATABASE`, `MD_PG_PORT`, `MD_PG_USER`, `DATA_SOURCE` — see
-   [`webapp/.env.example`](./webapp/.env.example).
+2. **Environment variables** (Production): `MOTHERDUCK_TOKEN` + `POSTGRES_URL` (the "before"),
+   and optionally `MD_DATABASE`, `MD_SHARE_URL`, `MD_PG_HOST`, `DATA_SOURCE` — see
+   [`webapp/.env.example`](./webapp/.env.example). The "after" reads the public share once
+   you've attached it (`uv run attach_share.py`), so no MotherDuck data-loading is required.
 3. **Protect the deployment.** This app has **no application-level auth**, and every request
    runs live queries against your Postgres and MotherDuck on your credentials. An open URL
    therefore lets anyone hammer your databases (and your bill). Turn on Vercel
@@ -85,7 +100,9 @@ they see are their own — a live, shareable benchmark.
 
 - **postgres** → your managed Postgres, via a standard connection string.
 - **motherduck** → MotherDuck's Postgres wire endpoint: host swap, `user` is any non-empty
-  string, and the **MotherDuck token is the password**. No DuckDB native extension involved.
+  string, and the **MotherDuck token is the password**. It reads the database named by
+  `MD_DATABASE` (default `multishop_commerce`) — that's the attached public share, or your
+  own load. No DuckDB native extension involved.
 
 `DATA_SOURCE` (or the `?source=` query param) picks which pool answers. Same query text
 either way.
@@ -93,7 +110,8 @@ either way.
 ## The dataset
 
 A synthetic multi-shop commerce platform — shops (tenants) on plan tiers, their catalog, and
-~40M order line-items:
+~3.9M order line-items — published as the public share
+`md:_share/multishop_commerce/ac3d36cc-f295-4c66-bf13-371b998f12e8`:
 
 | Table | Kind | Rows |
 |---|---|---|
@@ -101,8 +119,8 @@ A synthetic multi-shop commerce platform — shops (tenants) on plan tiers, thei
 | `categories` | dimension | 12 |
 | `products` | dimension | 50,000 |
 | `customers` | dimension | 500,000 |
-| `orders` | fact | 20,000,000 |
-| `order_items` | fact | 39,382,720 |
+| `orders` | fact | 2,000,000 |
+| `order_items` | fact | 3,938,272 |
 
 The comparison query is a full scan of `order_items` joined up to `orders` and `shops` —
 exactly the analytical aggregate a row-store labors over and a columnar engine eats for
@@ -112,9 +130,8 @@ breakfast.
 
 - **Latency is environment-dependent.** Numbers depend on your Postgres instance size, its
   region, MotherDuck warm/cold state, and serverless cold starts. The *shape* of the gap is
-  the point, not an exact multiplier.
+  the point, not an exact multiplier. The seed adds the obvious indexes so Postgres gets a
+  fair shot — it's a row-store-vs-columnar comparison, not Postgres-with-no-indexes.
 - **No auth.** See the deployment note above — protect any public URL.
-- **Bring your own data.** This repo ships the app and the loader, not the source dataset.
-  You need a Postgres with the schema above (or adapt the queries to your own tables).
 - The `/dashboard` page also expects an optional MotherDuck **Dive** embed
   (`NEXT_PUBLIC_DIVE_URL`) for the per-shop drill-down; it's optional and degrades gracefully.
