@@ -7,6 +7,9 @@
  *
  * Hit "Run comparison" to fire both at once. A live timer ticks up while each
  * engine is working, then freezes at the server-measured query latency.
+ *
+ * Styled to MotherDuck's design language: sand canvas, #383838 ink, sharp 2px
+ * borders, hard offset shadows, uppercase mono headings, sky/sun/duck accents.
  */
 import { useCallback, useEffect, useState } from "react";
 import { PLATFORM_MONTHLY_REVENUE } from "@/lib/queries";
@@ -18,7 +21,7 @@ const ENGINES = [
   {
     source: "postgres",
     label: "Postgres",
-    color: "#336791",
+    color: "#336791", // postgres brand blue
     note: "your managed Postgres",
     logo: "/postgres.svg",
     wordmark: false, // icon only — pair it with the text label
@@ -26,71 +29,104 @@ const ENGINES = [
   {
     source: "motherduck",
     label: "MotherDuck",
-    color: "#f7b733",
+    color: "#ff9538", // duck orange
     note: "Postgres wire endpoint",
     logo: "/motherduck.svg",
     wordmark: true, // the SVG already contains the "MotherDuck" wordmark
   },
 ] as const;
 
+// Sections, in order — drives both the anchors and the left "on this page" nav.
+const SECTIONS = [
+  { id: "compare", label: "The comparison" },
+  { id: "dataset", label: "About the dataset" },
+  { id: "connection", label: "How it connects" },
+  { id: "clients", label: "Ways to connect" },
+] as const;
+
 export default function ComparePage() {
   const [runId, setRunId] = useState(0);
 
   return (
-    <main style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
-      <h1 style={{ marginBottom: 4 }}>Same query. Two engines.</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>
-        Monthly paid revenue — a full scan of ~39M order-items joined to orders. Identical SQL,
-        identical <code>pg</code> driver; only the connection host differs.
+    <div className="md-layout">
+      <TocSidebar />
+      <main className="md-main">
+        <section id="compare">
+          <p className="md-eyebrow" style={{ margin: "0 0 8px" }}>
+            Same query · two engines
+          </p>
+          <h1>Postgres vs MotherDuck</h1>
+          <p style={{ color: "var(--darker-grey)", marginTop: 0, maxWidth: 720, lineHeight: 1.55 }}>
+            Monthly paid revenue — a full scan of ~39M order-items joined to orders. Identical SQL,
+            identical <code>pg</code> driver; only the connection host differs.
+          </p>
+
+          <details open style={{ marginBottom: 22 }}>
+            <summary className="md-eyebrow" style={{ cursor: "pointer", marginBottom: 10 }}>
+              The query — run verbatim against both engines
+            </summary>
+            <pre className="md-code">
+              <code>{PLATFORM_MONTHLY_REVENUE.trim()}</code>
+            </pre>
+          </details>
+
+          <button
+            className="md-btn"
+            onClick={() => setRunId((n) => n + 1)}
+            style={{ marginBottom: 24 }}
+          >
+            {runId === 0 ? "Run comparison" : "Run again"}
+          </button>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+            {ENGINES.map((e) => (
+              <EnginePanel key={e.source} engine={e} runId={runId} />
+            ))}
+          </div>
+        </section>
+
+        <AboutTheDataset />
+        <HowTheConnectionWorks />
+        <OtherWaysToConnect />
+      </main>
+    </div>
+  );
+}
+
+// Left "navigation doc" — sticky anchors with scroll-spy highlighting the
+// section currently in view (collapses under 900px via CSS).
+function TocSidebar() {
+  const [active, setActive] = useState<string>(SECTIONS[0].id);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) setActive(entry.target.id);
+        }
+      },
+      { rootMargin: "-15% 0px -75% 0px", threshold: 0 },
+    );
+    for (const s of SECTIONS) {
+      const el = document.getElementById(s.id);
+      if (el) observer.observe(el);
+    }
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <aside className="md-toc">
+      <p className="md-eyebrow" style={{ margin: "0 0 12px" }}>
+        On this page
       </p>
-
-      <details open style={{ marginBottom: 20 }}>
-        <summary style={{ cursor: "pointer", color: "#666", fontSize: 13, marginBottom: 8 }}>
-          The query — run verbatim against both engines
-        </summary>
-        <pre
-          style={{
-            margin: 0,
-            padding: "14px 16px",
-            background: "#1a1a1a",
-            color: "#e6e6e6",
-            borderRadius: 8,
-            fontSize: 12.5,
-            lineHeight: 1.5,
-            overflowX: "auto",
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-          }}
-        >
-          <code>{PLATFORM_MONTHLY_REVENUE.trim()}</code>
-        </pre>
-      </details>
-
-      <button
-        onClick={() => setRunId((n) => n + 1)}
-        style={{
-          padding: "10px 18px",
-          fontSize: 15,
-          fontWeight: 600,
-          border: "none",
-          borderRadius: 8,
-          background: "#1a1a1a",
-          color: "#fff",
-          cursor: "pointer",
-          marginBottom: 20,
-        }}
-      >
-        {runId === 0 ? "Run comparison" : "Run again"}
-      </button>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        {ENGINES.map((e) => (
-          <EnginePanel key={e.source} engine={e} runId={runId} />
+      <nav>
+        {SECTIONS.map((s) => (
+          <a key={s.id} href={`#${s.id}`} className={active === s.id ? "active" : undefined}>
+            {s.label}
+          </a>
         ))}
-      </div>
-
-      <AboutTheDataset />
-      <HowTheConnectionWorks />
-    </main>
+      </nav>
+    </aside>
   );
 }
 
@@ -106,79 +142,133 @@ const DATASET = [
 
 function AboutTheDataset() {
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 18, marginBottom: 6 }}>About the dataset</h2>
-      <p style={{ color: "#666", marginTop: 0, fontSize: 14 }}>
-        A synthetic multi-shop commerce platform — shops (tenants) on plan tiers, their catalog,
-        and ~40M order line-items. The revenue query above is a full scan of <code>order_items</code>{" "}
+    <section id="dataset" style={{ marginTop: 40 }}>
+      <h2>About the dataset</h2>
+      <p style={{ color: "var(--darker-grey)", marginTop: 0, fontSize: 14, lineHeight: 1.55 }}>
+        A synthetic multi-shop commerce platform — shops (tenants) on plan tiers, their catalog, and
+        ~40M order line-items. The revenue query above is a full scan of <code>order_items</code>{" "}
         joined up to <code>orders</code> and <code>shops</code> — exactly the kind of analytical
         aggregate that row-store Postgres labors over and a columnar engine eats for breakfast.
       </p>
-      <table cellPadding={6} style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
-        <thead>
-          <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd", color: "#888" }}>
-            <th>Table</th>
-            <th>Kind</th>
-            <th style={{ textAlign: "right" }}>Rows</th>
-            <th>What it is</th>
-          </tr>
-        </thead>
-        <tbody>
-          {DATASET.map((t) => (
-            <tr key={t.table} style={{ borderBottom: "1px solid #f3f3f3" }}>
-              <td style={{ fontFamily: "ui-monospace, Menlo, monospace" }}>{t.table}</td>
-              <td style={{ color: "#999" }}>{t.kind}</td>
-              <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{t.rows}</td>
-              <td style={{ color: "#666" }}>{t.desc}</td>
+      <div className="md-card" style={{ overflow: "hidden", marginTop: 14 }}>
+        <table cellPadding={0} style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+          <thead>
+            <tr
+              style={{
+                textAlign: "left",
+                background: "var(--sand)",
+                borderBottom: "2px solid var(--ink)",
+              }}
+            >
+              <Th>Table</Th>
+              <Th>Kind</Th>
+              <Th align="right">Rows</Th>
+              <Th>What it is</Th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {DATASET.map((t) => (
+              <tr key={t.table} style={{ borderBottom: "1px solid var(--dark-sand)" }}>
+                <Td mono>{t.table}</Td>
+                <Td>
+                  <span
+                    style={{ color: t.kind === "fact" ? "var(--dark-sky)" : "var(--darker-grey)" }}
+                  >
+                    {t.kind}
+                  </span>
+                </Td>
+                <Td align="right" mono>
+                  {t.rows}
+                </Td>
+                <Td muted>{t.desc}</Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }
 
-function HowTheConnectionWorks() {
-  const cardStyle: React.CSSProperties = {
-    border: "1px solid #eee",
-    borderRadius: 10,
-    padding: 16,
-    fontSize: 12.5,
-    lineHeight: 1.55,
-  };
-  const codeStyle: React.CSSProperties = {
-    margin: "8px 0 0",
-    padding: "12px 14px",
-    background: "#1a1a1a",
-    color: "#e6e6e6",
-    borderRadius: 8,
-    overflowX: "auto",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-    fontSize: 12,
-    lineHeight: 1.5,
-  };
+function Th({ children, align }: { children: React.ReactNode; align?: "right" }) {
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 18, marginBottom: 6 }}>How the connection works</h2>
-      <p style={{ color: "#666", marginTop: 0, fontSize: 14 }}>
-        Both engines are reached through the <strong>same Node <code>pg</code> driver</strong>.
-        MotherDuck speaks the Postgres wire protocol, so &ldquo;switching to MotherDuck&rdquo; is
+    <th
+      style={{
+        padding: "10px 14px",
+        textAlign: align ?? "left",
+        fontFamily: "var(--font-mono)",
+        fontSize: 11,
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+        color: "var(--darker-grey)",
+        fontWeight: 600,
+      }}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  align,
+  mono,
+  muted,
+}: {
+  children: React.ReactNode;
+  align?: "right";
+  mono?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <td
+      style={{
+        padding: "9px 14px",
+        textAlign: align ?? "left",
+        fontFamily: mono ? "var(--font-mono)" : undefined,
+        fontVariantNumeric: align === "right" ? "tabular-nums" : undefined,
+        color: muted ? "var(--darker-grey)" : "var(--ink)",
+      }}
+    >
+      {children}
+    </td>
+  );
+}
+
+function HowTheConnectionWorks() {
+  return (
+    <section id="connection" style={{ marginTop: 40 }}>
+      <h2>How the connection works</h2>
+      <p style={{ color: "var(--darker-grey)", marginTop: 0, fontSize: 14, lineHeight: 1.55 }}>
+        Both engines are reached through the{" "}
+        <strong>
+          same Node <code>pg</code> driver
+        </strong>
+        . MotherDuck speaks the Postgres wire protocol, so &ldquo;switching to MotherDuck&rdquo; is
         just a different host + credentials — no DuckDB native extension, no SQL rewrite, no driver
         change. That&rsquo;s why this runs fine in a serverless function.
       </p>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div style={cardStyle}>
-          <strong style={{ color: "#336791" }}>Postgres</strong> — standard connection string
-          <pre style={codeStyle}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 14 }}>
+        <div className="md-card" style={{ padding: 16 }}>
+          <strong style={{ color: "var(--postgres)" }}>Postgres</strong>
+          <span style={{ color: "var(--darker-grey)", fontSize: 12.5 }}>
+            {" "}
+            — standard connection string
+          </span>
+          <pre className="md-code" style={{ marginTop: 10, fontSize: 12 }}>
             <code>{`new Pool({
   connectionString: POSTGRES_URL,
   ssl: { rejectUnauthorized: false },
 })`}</code>
           </pre>
         </div>
-        <div style={cardStyle}>
-          <strong style={{ color: "#c98a00" }}>MotherDuck</strong> — its Postgres wire endpoint
-          <pre style={codeStyle}>
+        <div className="md-card" style={{ padding: 16 }}>
+          <strong style={{ color: "var(--darker-duck)" }}>MotherDuck</strong>
+          <span style={{ color: "var(--darker-grey)", fontSize: 12.5 }}>
+            {" "}
+            — its Postgres wire endpoint
+          </span>
+          <pre className="md-code" style={{ marginTop: 10, fontSize: 12 }}>
             <code>{`new Pool({
   host: "pg.us-east-1-aws.motherduck.com",
   port: 5432,
@@ -190,7 +280,7 @@ function HowTheConnectionWorks() {
           </pre>
         </div>
       </div>
-      <p style={{ color: "#999", fontSize: 12.5, marginBottom: 0 }}>
+      <p style={{ color: "var(--grey)", fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
         Defined once in <code>lib/db.ts</code> — <code>DATA_SOURCE</code> (or the{" "}
         <code>?source=</code> param) picks which pool answers. Same query text either way.
       </p>
@@ -198,13 +288,206 @@ function HowTheConnectionWorks() {
   );
 }
 
-function EnginePanel({
-  engine,
-  runId,
-}: {
-  engine: (typeof ENGINES)[number];
-  runId: number;
-}) {
+// The three first-party ways to query MotherDuck from JS/TS. This app uses the
+// first (Postgres wire) precisely because it needs zero new deps and runs in a
+// serverless function — but the native and Wasm clients buy you more.
+const CONNECTION_OPTIONS = [
+  {
+    name: "Postgres wire",
+    pkg: "pg",
+    accent: "var(--dark-sky)",
+    thisApp: true,
+    blurb: "MotherDuck's Postgres-protocol endpoint, via the standard node-postgres driver.",
+    code: `import { Pool } from "pg";
+
+const pool = new Pool({
+  host: "pg.us-east-1-aws.motherduck.com",
+  user: "motherduck",         // any non-empty user
+  password: MOTHERDUCK_TOKEN, // token is the credential
+  database: "multishop_commerce",
+  ssl: { rejectUnauthorized: false },
+});
+const { rows } = await pool.query("SELECT 1");`,
+    pros: [
+      "Zero new deps if you already use Postgres",
+      "Pure JS — runs in any serverless / Node runtime",
+      "Drop-in for an existing PG app: just swap the host",
+    ],
+    cons: "Goes through the Postgres-protocol surface — a subset of DuckDB SQL and PG type coercion; no local-file ATTACH.",
+  },
+  {
+    name: "DuckDB Node.js",
+    pkg: "@duckdb/node-api",
+    accent: "var(--darker-duck)",
+    thisApp: false,
+    blurb: "The native DuckDB engine in-process, connected to MotherDuck with an md: string.",
+    code: `import duckdb from "@duckdb/node-api";
+
+const instance = await duckdb.DuckDBInstance.create(
+  \`md:multishop_commerce?motherduck_token=\${MOTHERDUCK_TOKEN}\`
+);
+const connection = await instance.connect();
+const result = await connection.run("SELECT 1");`,
+    pros: [
+      "Full native DuckDB SQL + extensions",
+      "ATTACH local files / Parquet alongside MotherDuck",
+      "Arrow-native results; hybrid local+cloud execution",
+    ],
+    cons: "Native addon — platform-specific binary, larger bundle, heavier cold starts; not edge-runtime compatible.",
+  },
+  {
+    name: "MotherDuck Wasm",
+    pkg: "@motherduck/wasm-client",
+    accent: "var(--garden)",
+    thisApp: false,
+    blurb: "DuckDB-Wasm in the browser — query MotherDuck straight from the client.",
+    code: `import { MDConnection } from "@motherduck/wasm-client";
+
+const connection = MDConnection.create({
+  mdToken: READ_SCALING_TOKEN, // reaches the browser!
+});
+await connection.isInitialized();
+const result = await connection.evaluateQuery("SELECT 1");`,
+    pros: [
+      "Queries run in the browser — no server round-trip",
+      "Hybrid execution: local Wasm + cloud compute",
+      "Great for interactive dashboards & per-user drill-downs",
+    ],
+    cons: "The token reaches the client — use a read-scaling / short-lived token, never your main one. Plus Wasm bundle + browser memory limits.",
+  },
+] as const;
+
+function OtherWaysToConnect() {
+  return (
+    <section id="clients" style={{ marginTop: 40 }}>
+      <h2>Three ways to query MotherDuck from JS/TS</h2>
+      <p
+        style={{
+          color: "var(--darker-grey)",
+          marginTop: 0,
+          fontSize: 14,
+          lineHeight: 1.55,
+          maxWidth: 760,
+        }}
+      >
+        This demo uses the <strong>Postgres wire</strong> path because it drops into an existing
+        Postgres app with no new dependencies and runs in a serverless function. When you want the
+        full native engine or browser-side compute, reach for one of the other two.
+      </p>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gap: 16,
+          marginTop: 14,
+        }}
+      >
+        {CONNECTION_OPTIONS.map((opt) => (
+          <div
+            key={opt.name}
+            className="md-card"
+            style={{ padding: 16, display: "flex", flexDirection: "column" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+              <strong
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  textTransform: "uppercase",
+                  fontSize: 14,
+                  color: opt.accent,
+                }}
+              >
+                {opt.name}
+              </strong>
+              {opt.thisApp && (
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 9,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    background: "var(--sun)",
+                    border: "2px solid var(--ink)",
+                    borderRadius: "var(--radius)",
+                    padding: "1px 6px",
+                  }}
+                >
+                  This app
+                </span>
+              )}
+            </div>
+            <code style={{ fontSize: 11, color: "var(--darker-grey)" }}>{opt.pkg}</code>
+            <p
+              style={{
+                fontSize: 12.5,
+                color: "var(--darker-grey)",
+                lineHeight: 1.5,
+                margin: "8px 0 0",
+              }}
+            >
+              {opt.blurb}
+            </p>
+            <pre className="md-code" style={{ marginTop: 10, fontSize: 11, flexGrow: 1 }}>
+              <code>{opt.code}</code>
+            </pre>
+            <ul style={{ listStyle: "none", padding: 0, margin: "12px 0 0" }}>
+              {opt.pros.map((p) => (
+                <li
+                  key={p}
+                  style={{
+                    fontSize: 12,
+                    color: "var(--ink)",
+                    lineHeight: 1.45,
+                    paddingLeft: 18,
+                    position: "relative",
+                    marginBottom: 4,
+                  }}
+                >
+                  <span
+                    style={{ position: "absolute", left: 0, color: opt.accent, fontWeight: 700 }}
+                  >
+                    +
+                  </span>
+                  {p}
+                </li>
+              ))}
+            </ul>
+            <p
+              style={{
+                fontSize: 11.5,
+                color: "var(--darker-grey)",
+                lineHeight: 1.45,
+                margin: "10px 0 0",
+                paddingTop: 10,
+                borderTop: "1px solid var(--dark-sand)",
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  textTransform: "uppercase",
+                  fontSize: 10,
+                  letterSpacing: "0.06em",
+                  color: "var(--watermelon)",
+                }}
+              >
+                Trade-off ·{" "}
+              </span>
+              {opt.cons}
+            </p>
+          </div>
+        ))}
+      </div>
+      <p style={{ color: "var(--grey)", fontSize: 12, marginBottom: 0, marginTop: 14 }}>
+        All three authenticate with the same MotherDuck access token. For the Wasm path, mint a{" "}
+        <strong>read-scaling token</strong> server-side so your primary token never ships to the
+        browser.
+      </p>
+    </section>
+  );
+}
+
+function EnginePanel({ engine, runId }: { engine: (typeof ENGINES)[number]; runId: number }) {
   const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -237,15 +520,7 @@ function EnginePanel({
   }, [runId, run]);
 
   return (
-    <section
-      style={{
-        border: "1px solid #eee",
-        borderRadius: 12,
-        padding: 18,
-        minHeight: 320,
-        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
-      }}
-    >
+    <section className="md-card" style={{ padding: 18, minHeight: 320 }}>
       <header style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -254,31 +529,53 @@ function EnginePanel({
           height={24}
           style={{ height: 24, width: "auto", display: "block" }}
         />
-        {!engine.wordmark && <strong>{engine.label}</strong>}
-        <span style={{ color: "#999", fontSize: 12 }}>· {engine.note}</span>
+        {!engine.wordmark && (
+          <strong
+            style={{ fontFamily: "var(--font-mono)", textTransform: "uppercase", fontSize: 14 }}
+          >
+            {engine.label}
+          </strong>
+        )}
+        <span style={{ color: "var(--grey)", fontSize: 12 }}>· {engine.note}</span>
         <span style={{ marginLeft: "auto", fontVariantNumeric: "tabular-nums" }}>
           {state === "loading" && (
-            <span style={{ color: engine.color }}>{(elapsed / 1000).toFixed(1)}s…</span>
+            <span style={{ color: engine.color, fontFamily: "var(--font-mono)" }}>
+              {(elapsed / 1000).toFixed(1)}s…
+            </span>
           )}
           {state === "done" && result && (
-            <span style={{ fontWeight: 700, color: engine.color }}>
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontWeight: 600,
+                fontSize: 16,
+                color: "var(--ink)",
+                background: engine.color,
+                padding: "3px 9px",
+                borderRadius: "var(--radius)",
+                border: "2px solid var(--ink)",
+              }}
+            >
               {result.ms < 1000 ? `${result.ms} ms` : `${(result.ms / 1000).toFixed(2)} s`}
             </span>
           )}
         </span>
       </header>
 
-      {state === "idle" && (
-        <Placeholder text="Press “Run comparison” to query this engine." />
-      )}
+      {state === "idle" && <Placeholder text="Press “Run comparison” to query this engine." />}
       {state === "loading" && <Placeholder text="Querying…" pulse color={engine.color} />}
-      {state === "error" && (
-        <Placeholder text={`Error: ${error}`} color="#c0392b" />
-      )}
+      {state === "error" && <Placeholder text={`Error: ${error}`} color="var(--watermelon)" />}
       {state === "done" && result && <BarChart points={result.points} color={engine.color} />}
 
       {state === "done" && result && (
-        <p style={{ color: "#999", fontSize: 12, marginBottom: 0 }}>
+        <p
+          style={{
+            color: "var(--grey)",
+            fontSize: 12,
+            marginBottom: 0,
+            fontFamily: "var(--font-mono)",
+          }}
+        >
           {result.rowCount.toLocaleString()} rows aggregated to {result.points.length} months
         </p>
       )}
@@ -289,7 +586,7 @@ function EnginePanel({
 function Placeholder({
   text,
   pulse,
-  color = "#bbb",
+  color = "var(--light-grey)",
 }: {
   text: string;
   pulse?: boolean;
@@ -303,14 +600,19 @@ function Placeholder({
         alignItems: "center",
         justifyContent: "center",
         color,
-        fontSize: 14,
-        border: "1px dashed #eee",
-        borderRadius: 8,
+        fontSize: 13,
+        fontFamily: "var(--font-mono)",
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
+        background: "var(--snow)",
+        border: "1px dashed var(--lighter-grey)",
+        borderRadius: "var(--radius)",
         animation: pulse ? "pulse 1.2s ease-in-out infinite" : undefined,
+        textAlign: "center",
+        padding: "0 16px",
       }}
     >
       {text}
-      <style>{`@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.45 } }`}</style>
     </div>
   );
 }
@@ -334,7 +636,7 @@ function BarChart({ points, color }: { points: Point[]; color: string }) {
   const baseY = PAD.top + innerH;
   const max = Math.max(1, ...points.map((p) => p.revenue));
   const bw = innerW / Math.max(1, points.length);
-  const gradId = `g-${color.replace("#", "")}`;
+  const gradId = `g-${color.replace(/[^a-z0-9]/gi, "")}`;
   const ticks = [0, 0.25, 0.5, 0.75, 1]; // horizontal gridlines
   const labelStep = Math.ceil(points.length / 8); // keep the x-axis readable
 
@@ -342,8 +644,8 @@ function BarChart({ points, color }: { points: Point[]; color: string }) {
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} role="img" aria-label="Revenue by month">
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity={0.95} />
-          <stop offset="100%" stopColor={color} stopOpacity={0.55} />
+          <stop offset="0%" stopColor={color} stopOpacity={1} />
+          <stop offset="100%" stopColor={color} stopOpacity={0.7} />
         </linearGradient>
       </defs>
 
@@ -352,8 +654,8 @@ function BarChart({ points, color }: { points: Point[]; color: string }) {
         const y = baseY - t * innerH;
         return (
           <g key={t}>
-            <line x1={PAD.left} y1={y} x2={W - PAD.right} y2={y} stroke="#f0f0f0" strokeWidth={1} />
-            <text x={PAD.left - 6} y={y + 3} fontSize={9} fill="#aaa" textAnchor="end">
+            <line x1={PAD.left} y1={y} x2={W - PAD.right} y2={y} stroke="#e1d6cb" strokeWidth={1} />
+            <text x={PAD.left - 6} y={y + 3} fontSize={9} fill="#a1a1a1" textAnchor="end">
               {fmtMoney(max * t)}
             </text>
           </g>
@@ -367,11 +669,19 @@ function BarChart({ points, color }: { points: Point[]; color: string }) {
         const y = baseY - h;
         return (
           <g key={p.month}>
-            <rect x={x + 1} y={y} width={Math.max(1, bw - 2)} height={h} fill={`url(#${gradId})`} rx={1.5}>
+            <rect
+              x={x + 1}
+              y={y}
+              width={Math.max(1, bw - 2)}
+              height={h}
+              fill={`url(#${gradId})`}
+              stroke="#383838"
+              strokeWidth={0.75}
+            >
               <title>{`${p.month}: ${fmtMoney(p.revenue)}`}</title>
             </rect>
             {i % labelStep === 0 && (
-              <text x={x + bw / 2} y={H - 8} fontSize={9} fill="#999" textAnchor="middle">
+              <text x={x + bw / 2} y={H - 8} fontSize={9} fill="#818181" textAnchor="middle">
                 {p.month.slice(2)}
               </text>
             )}
@@ -380,7 +690,14 @@ function BarChart({ points, color }: { points: Point[]; color: string }) {
       })}
 
       {/* baseline */}
-      <line x1={PAD.left} y1={baseY} x2={W - PAD.right} y2={baseY} stroke="#ddd" strokeWidth={1} />
+      <line
+        x1={PAD.left}
+        y1={baseY}
+        x2={W - PAD.right}
+        y2={baseY}
+        stroke="#383838"
+        strokeWidth={1.5}
+      />
     </svg>
   );
 }

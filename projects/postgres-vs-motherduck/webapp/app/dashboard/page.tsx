@@ -17,34 +17,120 @@ export default async function DashboardPage() {
   const { rows } = await pool.query<Row>(PLATFORM_MONTHLY_REVENUE);
   const ms = performance.now() - start;
   const source = process.env.DATA_SOURCE ?? "postgres";
+  const accent = source === "motherduck" ? "var(--darker-duck)" : "var(--postgres)";
 
   return (
-    <main style={{ fontFamily: "system-ui", padding: 24, maxWidth: 720 }}>
-      <h1>Platform revenue</h1>
-      <p style={{ color: "#666" }}>
-        Source: <strong>{source}</strong> · query took <strong>{ms.toFixed(0)} ms</strong> ·{" "}
-        {rows.length} rows
+    <main style={{ padding: "32px 24px 64px", maxWidth: 760, margin: "0 auto" }}>
+      <p className="md-eyebrow" style={{ margin: "0 0 8px" }}>
+        Single-source dashboard
       </p>
-      <table cellPadding={6} style={{ borderCollapse: "collapse", width: "100%" }}>
-        <thead>
-          <tr style={{ textAlign: "left", borderBottom: "1px solid #ddd" }}>
-            <th>Plan tier</th>
-            <th>Month</th>
-            <th style={{ textAlign: "right" }}>Revenue</th>
-            <th style={{ textAlign: "right" }}>Orders</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 36).map((r, i) => (
-            <tr key={i} style={{ borderBottom: "1px solid #f0f0f0" }}>
-              <td>{r.plan_tier}</td>
-              <td>{new Date(r.month).toISOString().slice(0, 7)}</td>
-              <td style={{ textAlign: "right" }}>${Number(r.revenue).toLocaleString()}</td>
-              <td style={{ textAlign: "right" }}>{Number(r.orders).toLocaleString()}</td>
+      <h1>Platform revenue</h1>
+      <p
+        style={{
+          color: "var(--darker-grey)",
+          marginTop: 0,
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap",
+          fontSize: 14,
+        }}
+      >
+        Source:{" "}
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            textTransform: "uppercase",
+            fontSize: 12,
+            fontWeight: 600,
+            color: "var(--ink)",
+            background: accent,
+            padding: "2px 8px",
+            borderRadius: "var(--radius)",
+            border: "2px solid var(--ink)",
+          }}
+        >
+          {source}
+        </span>
+        · query took <strong style={{ fontFamily: "var(--font-mono)" }}>{ms.toFixed(0)} ms</strong>{" "}
+        · {rows.length} rows
+      </p>
+
+      <div className="md-card" style={{ overflow: "hidden", marginTop: 16 }}>
+        <table cellPadding={0} style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+          <thead>
+            <tr
+              style={{
+                textAlign: "left",
+                background: "var(--sand)",
+                borderBottom: "2px solid var(--ink)",
+              }}
+            >
+              <Th>Plan tier</Th>
+              <Th>Month</Th>
+              <Th align="right">Revenue</Th>
+              <Th align="right">Orders</Th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.slice(0, 36).map((r, i) => (
+              <tr key={i} style={{ borderBottom: "1px solid var(--dark-sand)" }}>
+                <Td>{r.plan_tier}</Td>
+                <Td mono>{new Date(r.month).toISOString().slice(0, 7)}</Td>
+                <Td align="right" mono>
+                  ${Number(r.revenue).toLocaleString()}
+                </Td>
+                <Td align="right" mono>
+                  {Number(r.orders).toLocaleString()}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </main>
+  );
+}
+
+function Th({ children, align }: { children: React.ReactNode; align?: "right" }) {
+  return (
+    <th
+      style={{
+        padding: "10px 14px",
+        textAlign: align ?? "left",
+        fontFamily: "var(--font-mono)",
+        fontSize: 11,
+        textTransform: "uppercase",
+        letterSpacing: "0.06em",
+        color: "var(--darker-grey)",
+        fontWeight: 600,
+      }}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  align,
+  mono,
+}: {
+  children: React.ReactNode;
+  align?: "right";
+  mono?: boolean;
+}) {
+  return (
+    <td
+      style={{
+        padding: "9px 14px",
+        textAlign: align ?? "left",
+        fontFamily: mono ? "var(--font-mono)" : undefined,
+        fontVariantNumeric: align === "right" ? "tabular-nums" : undefined,
+        color: "var(--ink)",
+      }}
+    >
+      {children}
+    </td>
   );
 }
