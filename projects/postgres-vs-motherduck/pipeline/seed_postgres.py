@@ -22,6 +22,7 @@ Env (.env): POSTGRES_URL, MOTHERDUCK_TOKEN.
 
 import argparse
 import os
+from urllib.parse import parse_qs, urlparse
 
 import duckdb
 from dotenv import load_dotenv
@@ -35,11 +36,36 @@ SHARE_URL = os.environ.get(
     "md:_share/multishop_commerce/ac3d36cc-f295-4c66-bf13-371b998f12e8",
 )
 
-PG_URL = os.environ["POSTGRES_URL"]
-TOKEN = os.environ["MOTHERDUCK_TOKEN"]
-
 DIMENSIONS = ["shops", "categories", "products", "customers"]
 FACTS = ["orders", "order_items"]
+
+
+def export_libpq_env() -> None:
+    """Postgres credentials via env (cookbook style) — pg_* vars or POSTGRES_URL —
+    so the destination attach uses an empty connection string, no creds in SQL."""
+    if os.environ.get("pg_HOST"):
+        env = {
+            "PGHOST": os.environ["pg_HOST"],
+            "PGPORT": os.environ.get("pg_PORT", "5432"),
+            "PGDATABASE": os.environ.get("pg_DATABASE", ""),
+            "PGUSER": os.environ.get("pg_USER", ""),
+            "PGPASSWORD": os.environ.get("pg_PASSWORD", ""),
+            "PGSSLMODE": os.environ.get("pg_SSLMODE", "require"),
+        }
+    elif os.environ.get("POSTGRES_URL"):
+        u = urlparse(os.environ["POSTGRES_URL"])
+        q = parse_qs(u.query)
+        env = {
+            "PGHOST": u.hostname or "",
+            "PGPORT": str(u.port or 5432),
+            "PGDATABASE": (u.path or "").lstrip("/"),
+            "PGUSER": u.username or "",
+            "PGPASSWORD": u.password or "",
+            "PGSSLMODE": (q.get("sslmode") or ["require"])[0],
+        }
+    else:
+        raise SystemExit("Set pg_HOST… (cookbook/Flight vars) or POSTGRES_URL in .env")
+    os.environ.update({k: v for k, v in env.items() if v})
 
 # Indexes a real transactional Postgres would carry — primary keys + the foreign
 # keys the analytics query joins/filters on. Created after the bulk load (faster).
@@ -70,12 +96,15 @@ def main() -> None:
     args = ap.parse_args()
     frac = max(0.0, min(1.0, args.fraction))
 
-    con = duckdb.connect(f"md:?motherduck_token={TOKEN}")
+    export_libpq_env()
+
+    con = duckdb.connect("md:")  # token from MOTHERDUCK_TOKEN env
     con.execute(f"ATTACH '{SHARE_URL}' AS src (READ_ONLY)")
 
     con.execute("INSTALL postgres")
     con.execute("LOAD postgres")
-    con.execute(f"ATTACH '{PG_URL}' AS pg (TYPE postgres)")
+    # Empty connection string: libpq reads PG* from env (writable — seed creates tables).
+    con.execute("ATTACH '' AS pg (TYPE postgres)")
 
     # 1) dimensions — full copy.
     for t in DIMENSIONS:

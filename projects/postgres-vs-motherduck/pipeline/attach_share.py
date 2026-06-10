@@ -27,11 +27,10 @@ SHARE_URL = os.environ.get(
     "md:_share/multishop_commerce/ac3d36cc-f295-4c66-bf13-371b998f12e8",
 )
 MD_DB = os.environ.get("MD_DATABASE", "multishop_commerce")
-TOKEN = os.environ["MOTHERDUCK_TOKEN"]
 
 
 def main() -> None:
-    con = duckdb.connect(f"md:?motherduck_token={TOKEN}")
+    con = duckdb.connect("md:")  # token from MOTHERDUCK_TOKEN env
 
     already = con.execute(
         "SELECT COUNT(*) FROM duckdb_databases() WHERE database_name = ?", [MD_DB]

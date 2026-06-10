@@ -83,6 +83,34 @@ uv run load_to_motherduck.py
 Dimensions full-refresh; facts append on an `order_id` watermark, so re-running
 only pulls new rows.
 
+### Auth + attach — same as the tested cookbook
+
+`hello_postgres_scanner.py` and `load_to_motherduck.py` use the exact auth + attach
+pattern from MotherDuck's [Flight Postgres-ingest cookbook](https://motherduck.com/docs/cookbook/flight-postgres-ingest/):
+
+- **MotherDuck:** `duckdb.connect("md:")` — the token comes from the `MOTHERDUCK_TOKEN`
+  env var, never the connection string.
+- **Postgres:** `ATTACH '' AS pg (TYPE postgres, READ_ONLY)` — an *empty* connection
+  string, so libpq reads the credentials from the environment and the password never
+  lands in SQL. `READ_ONLY` lets the extension parallelize reads.
+
+That means these scripts drop into a **MotherDuck Flight** unchanged. In a Flight you'd
+create the Postgres credentials as a secret and list it in `flight_secret_names: ["pg"]`,
+and it injects the same `pg_*` env vars the scripts already read:
+
+```sql
+CREATE SECRET pg IN motherduck (
+  TYPE flights,
+  PARAMS MAP {
+    'HOST': 'your-postgres-host', 'PORT': '5432', 'DATABASE': 'your_database',
+    'USER': 'readonly_user', 'PASSWORD': 'your_password', 'SSLMODE': 'require'
+  }
+);
+```
+
+Locally, set those `pg_*` vars (or a single `POSTGRES_URL`) in `.env` — see
+[`.env.example`](./.env.example).
+
 ## Prove it — `benchmark.py`
 
 ```bash
