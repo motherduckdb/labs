@@ -325,11 +325,11 @@ export default function ComparePage() {
               ).
             </p>
             <p>
-              <strong style={{ color: "var(--ink)" }}>Comparable hardware.</strong> Postgres runs on
-              an entry-tier managed instance — <strong>0.5 vCPU · 4 GB RAM · 10 GB storage</strong>,
-              single node. MotherDuck runs on a single <strong>Pulse</strong> read-scaling Duckling,
-              its smallest compute tier, built for read / customer-facing analytics. Small vs small
-              — the &ldquo;after&rdquo; isn&rsquo;t an oversized warehouse.
+              <strong style={{ color: "var(--ink)" }}>Comparable compute.</strong> Postgres runs on
+              a standard managed instance — <strong>0.5 vCPU · 4 GB RAM · 10 GB storage</strong>,
+              single node. MotherDuck runs on a single <strong>Standard</strong> Duckling — its
+              default, production-grade compute tier. Roughly standard compute on both sides — the
+              &ldquo;after&rdquo; isn&rsquo;t an oversized warehouse.
             </p>
           </div>
         </section>
