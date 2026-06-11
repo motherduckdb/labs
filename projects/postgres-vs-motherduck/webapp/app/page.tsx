@@ -304,7 +304,7 @@ export default function ComparePage() {
           {/* Dashed lanes flow from the button down into whichever engine is running. */}
           <RunLanes states={states} />
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+          <div className="md-cols2" style={{ gap: 20 }}>
             {ENGINES.map((e) => (
               <EnginePanel key={e.source} engine={e} runId={runId} onState={report} />
             ))}
@@ -312,30 +312,26 @@ export default function ComparePage() {
 
           {/* Transparency: the Postgres side is properly indexed — head off the
               "you didn't index Postgres" objection. */}
-          <p
-            style={{
-              marginTop: 16,
-              padding: "12px 14px",
-              fontSize: 12.5,
-              lineHeight: 1.6,
-              color: "var(--darker-grey)",
-              background: "var(--snow)",
-              borderLeft: "3px solid var(--sky)",
-              borderRadius: "var(--radius)",
-              maxWidth: 720,
-            }}
-          >
-            <strong style={{ color: "var(--ink)" }}>Fair comparison.</strong> Both engines run the
-            identical SQL, and the Postgres side is <strong>indexed</strong> on its primary and
-            foreign keys — <code>orders(order_id, shop_id, status, ordered_at)</code>,{" "}
-            <code>order_items(order_id, shop_id, product_id)</code>, and every table&rsquo;s PK.
-            This is a row-store-vs-columnar comparison, not Postgres without indexes. The exact{" "}
-            <code>CREATE INDEX</code> statements are in{" "}
-            <a href={SEED_URL} target="_blank" rel="noreferrer">
-              the seed script
-            </a>
-            .
-          </p>
+          <div className="md-note">
+            <p>
+              <strong style={{ color: "var(--ink)" }}>Fair comparison.</strong> Both engines run the
+              identical SQL, and the Postgres side is <strong>indexed</strong> on its primary and
+              foreign keys — <code>orders(order_id, shop_id, status, ordered_at)</code>,{" "}
+              <code>order_items(order_id, shop_id, product_id)</code>, and every table&rsquo;s PK —
+              so it&rsquo;s row-store vs columnar, not Postgres without indexes (
+              <a href={SEED_URL} target="_blank" rel="noreferrer">
+                seed script
+              </a>
+              ).
+            </p>
+            <p>
+              <strong style={{ color: "var(--ink)" }}>Comparable hardware.</strong> Postgres runs on
+              an entry-tier managed instance — <strong>0.5 vCPU · 4 GB RAM · 10 GB storage</strong>,
+              single node. MotherDuck runs on a single <strong>Pulse</strong> read-scaling Duckling,
+              its smallest compute tier, built for read / customer-facing analytics. Small vs small
+              — the &ldquo;after&rdquo; isn&rsquo;t an oversized warehouse.
+            </p>
+          </div>
         </section>
 
         <AboutTheDataset />
@@ -363,6 +359,7 @@ const LANES = [
 function RunLanes({ states }: { states: Record<string, EngineState> }) {
   return (
     <svg
+      className="md-run-lanes"
       viewBox="0 0 100 100"
       preserveAspectRatio="none"
       width="100%"
@@ -447,7 +444,7 @@ function AboutTheDataset() {
         joined up to <code>orders</code> and <code>shops</code> — exactly the kind of analytical
         aggregate that row-store Postgres labors over and a columnar engine eats for breakfast.
       </p>
-      <div className="md-card" style={{ overflow: "hidden", marginTop: 14 }}>
+      <div className="md-card" style={{ overflowX: "auto", marginTop: 14 }}>
         <table cellPadding={0} style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
           <thead>
             <tr
@@ -545,7 +542,7 @@ function HowTheConnectionWorks() {
         just a different host + credentials — no DuckDB native extension, no SQL rewrite, no driver
         change. That&rsquo;s why this runs fine in a serverless function.
       </p>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 14 }}>
+      <div className="md-cols2" style={{ gap: 16, marginTop: 14 }}>
         <div className="md-card" style={{ padding: 16 }}>
           <strong style={{ color: "var(--postgres)" }}>Postgres</strong>
           <span style={{ color: "var(--darker-grey)", fontSize: 12.5 }}>
@@ -686,7 +683,7 @@ function OtherWaysToConnect() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
           gap: 16,
           marginTop: 14,
         }}

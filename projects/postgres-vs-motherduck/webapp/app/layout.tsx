@@ -16,6 +16,8 @@ export const metadata = {
   description: "Same query, same driver — Postgres vs MotherDuck, side by side.",
 };
 
+export const viewport = { width: "device-width", initialScale: 1 };
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`}>
