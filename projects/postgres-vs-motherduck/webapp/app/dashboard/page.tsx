@@ -21,7 +21,20 @@ export default async function DashboardPage() {
 
   return (
     <main style={{ padding: "32px 24px 64px", maxWidth: 760, margin: "0 auto" }}>
-      <p className="md-eyebrow" style={{ margin: "0 0 8px" }}>
+      <a
+        href="/"
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 12,
+          textTransform: "uppercase",
+          letterSpacing: "0.03em",
+          color: "var(--darker-grey)",
+          textDecoration: "none",
+        }}
+      >
+        ← Postgres vs MotherDuck
+      </a>
+      <p className="md-eyebrow" style={{ margin: "12px 0 8px" }}>
         Single-source dashboard
       </p>
       <h1>Platform revenue</h1>

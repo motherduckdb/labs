@@ -46,6 +46,29 @@ uv run seed_postgres.py                  # full share (~3.9M order_items)
 uv run seed_postgres.py --fraction 0.25  # a quarter of the facts, for a quicker load
 ```
 
+The indexes it creates after the load (so the comparison is fair, not Postgres-without-indexes):
+
+```sql
+-- primary keys
+CREATE INDEX ix_shops_pk         ON shops(shop_id);
+CREATE INDEX ix_categories_pk    ON categories(category_id);
+CREATE INDEX ix_products_pk      ON products(product_id);
+CREATE INDEX ix_customers_pk     ON customers(customer_id);
+CREATE INDEX ix_orders_pk        ON orders(order_id);
+-- foreign keys + the columns the analytics query joins/filters on
+CREATE INDEX ix_products_cat     ON products(category_id);
+CREATE INDEX ix_orders_shop      ON orders(shop_id);
+CREATE INDEX ix_orders_status    ON orders(status);
+CREATE INDEX ix_orders_ordered   ON orders(ordered_at);
+CREATE INDEX ix_order_items_order ON order_items(order_id);
+CREATE INDEX ix_order_items_shop  ON order_items(shop_id);
+CREATE INDEX ix_order_items_prod  ON order_items(product_id);
+```
+
+> Note: the heavy query is a *full scan* aggregate, so these indexes don't make Postgres
+> "win" — they just ensure the gap reflects **row-store vs columnar execution**, not a
+> missing index. The webapp says the same thing inline so viewers of the live demo know it.
+
 ## Bring your own data instead
 
 Already have data in Postgres? Skip the share and move *yours* into MotherDuck.

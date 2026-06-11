@@ -16,6 +16,7 @@ import { PLATFORM_MONTHLY_REVENUE } from "@/lib/queries";
 
 type Point = { month: string; revenue: number };
 type Result = { ms: number; rowCount: number; points: Point[] };
+type EngineState = "idle" | "loading" | "done" | "error";
 
 const ENGINES = [
   {
@@ -44,21 +45,82 @@ const SECTIONS = [
   { id: "clients", label: "Ways to connect" },
 ] as const;
 
+// Source lives in the MotherDuck Labs monorepo — link straight to this project's folder.
+const GITHUB_URL = "https://github.com/motherduckdb/labs/tree/main/projects/postgres-vs-motherduck";
+const SEED_URL =
+  "https://github.com/motherduckdb/labs/blob/main/projects/postgres-vs-motherduck/pipeline/seed_postgres.py";
+
+function GitHubMark() {
+  return (
+    <svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+    </svg>
+  );
+}
+
 export default function ComparePage() {
   const [runId, setRunId] = useState(0);
+  // Lifted per-engine state so the connector lanes know which side is "running".
+  const [states, setStates] = useState<Record<string, EngineState>>({
+    postgres: "idle",
+    motherduck: "idle",
+  });
+  const report = useCallback((source: string, s: EngineState) => {
+    setStates((prev) => (prev[source] === s ? prev : { ...prev, [source]: s }));
+  }, []);
 
   return (
     <div className="md-layout">
       <TocSidebar />
       <main className="md-main">
         <section id="compare">
-          <p className="md-eyebrow" style={{ margin: "0 0 8px" }}>
-            Same query · two engines
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              gap: 16,
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <p className="md-eyebrow" style={{ margin: "0 0 8px" }}>
+                MotherDuck Labs · experiment
+              </p>
+              <h1 style={{ marginBottom: 0 }}>Postgres vs MotherDuck</h1>
+            </div>
+            <a className="md-source" href={GITHUB_URL} target="_blank" rel="noreferrer">
+              <GitHubMark /> View source
+            </a>
+          </div>
+
+          {/* Subtitle: what the experiment is, in plain terms. */}
+          <p
+            style={{
+              fontSize: 17,
+              lineHeight: 1.5,
+              color: "var(--ink)",
+              maxWidth: 720,
+              marginTop: 16,
+            }}
+          >
+            Is the same analytics query really faster on <strong>MotherDuck</strong> than on{" "}
+            <strong>Postgres</strong>? This experiment runs the <em>exact same SQL</em> against both
+            engines, live in your browser — so you can measure the gap yourself.
           </p>
-          <h1>Postgres vs MotherDuck</h1>
-          <p style={{ color: "var(--darker-grey)", marginTop: 0, maxWidth: 720, lineHeight: 1.55 }}>
-            Monthly paid revenue — a full scan of ~3.9M order-items joined to orders. Identical SQL,
-            identical <code>pg</code> driver; only the connection host differs.
+          {/* More info: the technical detail, demoted. */}
+          <p
+            style={{
+              color: "var(--darker-grey)",
+              marginTop: 0,
+              maxWidth: 720,
+              lineHeight: 1.55,
+              fontSize: 14,
+            }}
+          >
+            Under the hood it's a full scan of ~3.9M order-items joined to orders, through the same{" "}
+            <code>pg</code> driver — only the connection host changes. Hit <em>Run comparison</em>{" "}
+            and watch Postgres grind while MotherDuck has already drawn its chart.
           </p>
 
           <details open style={{ marginBottom: 22 }}>
@@ -70,26 +132,99 @@ export default function ComparePage() {
             </pre>
           </details>
 
-          <button
-            className="md-btn"
-            onClick={() => setRunId((n) => n + 1)}
-            style={{ marginBottom: 24 }}
-          >
-            {runId === 0 ? "Run comparison" : "Run again"}
-          </button>
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <button className="md-btn" onClick={() => setRunId((n) => n + 1)}>
+              {runId === 0 ? "Run comparison" : "Run again"}
+            </button>
+          </div>
+
+          {/* Dashed lanes flow from the button down into whichever engine is running. */}
+          <RunLanes states={states} />
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
             {ENGINES.map((e) => (
-              <EnginePanel key={e.source} engine={e} runId={runId} />
+              <EnginePanel key={e.source} engine={e} runId={runId} onState={report} />
             ))}
           </div>
+
+          {/* Transparency: the Postgres side is properly indexed — head off the
+              "you didn't index Postgres" objection. */}
+          <p
+            style={{
+              marginTop: 16,
+              padding: "12px 14px",
+              fontSize: 12.5,
+              lineHeight: 1.6,
+              color: "var(--darker-grey)",
+              background: "var(--snow)",
+              borderLeft: "3px solid var(--sky)",
+              borderRadius: "var(--radius)",
+              maxWidth: 720,
+            }}
+          >
+            <strong style={{ color: "var(--ink)" }}>Fair comparison.</strong> Both engines run the
+            identical SQL, and the Postgres side is <strong>indexed</strong> on its primary and
+            foreign keys — <code>orders(order_id, shop_id, status, ordered_at)</code>,{" "}
+            <code>order_items(order_id, shop_id, product_id)</code>, and every table&rsquo;s PK.
+            This is a row-store-vs-columnar comparison, not Postgres without indexes. The exact{" "}
+            <code>CREATE INDEX</code> statements are in{" "}
+            <a href={SEED_URL} target="_blank" rel="noreferrer">
+              the seed script
+            </a>
+            .
+          </p>
         </section>
 
         <AboutTheDataset />
         <HowTheConnectionWorks />
         <OtherWaysToConnect />
+
+        <footer className="md-footer">
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+            <GitHubMark /> Source on GitHub
+          </a>
+          <a href="/dashboard">Dashboard</a>
+          <span style={{ color: "var(--grey)" }}>Part of MotherDuck Labs · experimental</span>
+        </footer>
       </main>
     </div>
+  );
+}
+
+// Connector lanes: each runs from the centered button (x=50) down to a card center
+// (Postgres ≈ 25%, MotherDuck ≈ 75%) and animates while that engine is loading.
+const LANES = [
+  { source: "postgres", x: 25, color: "#336791" },
+  { source: "motherduck", x: 75, color: "#ff9538" },
+] as const;
+
+function RunLanes({ states }: { states: Record<string, EngineState> }) {
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+      width="100%"
+      height={52}
+      aria-hidden
+      style={{ display: "block", margin: "2px 0" }}
+    >
+      {LANES.map((l) => {
+        const loading = states[l.source] === "loading";
+        return (
+          <path
+            key={l.source}
+            d={`M50,0 C50,50 ${l.x},50 ${l.x},100`}
+            fill="none"
+            stroke={loading ? l.color : "var(--dark-sand)"}
+            strokeWidth={2}
+            strokeDasharray="6 6"
+            vectorEffect="non-scaling-stroke"
+            className={loading ? "lane-flow" : undefined}
+            style={{ opacity: loading ? 1 : 0.4 }}
+          />
+        );
+      })}
+    </svg>
   );
 }
 
@@ -487,8 +622,16 @@ function OtherWaysToConnect() {
   );
 }
 
-function EnginePanel({ engine, runId }: { engine: (typeof ENGINES)[number]; runId: number }) {
-  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+function EnginePanel({
+  engine,
+  runId,
+  onState,
+}: {
+  engine: (typeof ENGINES)[number];
+  runId: number;
+  onState: (source: string, s: EngineState) => void;
+}) {
+  const [state, setState] = useState<EngineState>("idle");
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
@@ -518,6 +661,11 @@ function EnginePanel({ engine, runId }: { engine: (typeof ENGINES)[number]; runI
   useEffect(() => {
     if (runId > 0) run();
   }, [runId, run]);
+
+  // Report state up so the connector lanes can animate the running engine.
+  useEffect(() => {
+    onState(engine.source, state);
+  }, [state, engine.source, onState]);
 
   return (
     <section className="md-card" style={{ padding: 18, minHeight: 320 }}>
