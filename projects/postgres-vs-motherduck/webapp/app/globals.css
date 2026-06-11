@@ -175,6 +175,19 @@ a {
   background: var(--sun);
 }
 
+/* Inline link to MotherDuck docs. */
+.md-doclink {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dark-sky);
+  text-decoration: none;
+}
+.md-doclink:hover {
+  text-decoration: underline;
+}
+
 /* Footer link row. */
 .md-footer {
   margin-top: 48px;

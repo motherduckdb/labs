@@ -11,7 +11,7 @@
  * Styled to MotherDuck's design language: sand canvas, #383838 ink, sharp 2px
  * borders, hard offset shadows, uppercase mono headings, sky/sun/duck accents.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { PLATFORM_MONTHLY_REVENUE } from "@/lib/queries";
 
 type Point = { month: string; revenue: number };
@@ -49,6 +49,171 @@ const SECTIONS = [
 const GITHUB_URL = "https://github.com/motherduckdb/labs/tree/main/projects/postgres-vs-motherduck";
 const SEED_URL =
   "https://github.com/motherduckdb/labs/blob/main/projects/postgres-vs-motherduck/pipeline/seed_postgres.py";
+
+// Relevant MotherDuck docs, linked inline where each topic shows up.
+const DOCS = {
+  pgEndpoint:
+    "https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/postgres-endpoint",
+  nodejs: "https://motherduck.com/docs/integrations/language-apis-and-drivers/node-js",
+  wasm: "https://motherduck.com/docs/sql-reference/wasm-client",
+};
+
+// ── Minimal, dependency-free syntax highlighting for the on-page code ──────────
+const TOKEN = {
+  comment: "#8a948c",
+  string: "#8ee6c8",
+  number: "#f6c177",
+  keyword: "#6fc2ff",
+  func: "#ffb86b",
+};
+const SQL_KEYWORDS = new Set([
+  "select",
+  "from",
+  "join",
+  "left",
+  "right",
+  "inner",
+  "outer",
+  "full",
+  "on",
+  "where",
+  "group",
+  "by",
+  "order",
+  "as",
+  "and",
+  "or",
+  "not",
+  "in",
+  "is",
+  "null",
+  "distinct",
+  "case",
+  "when",
+  "then",
+  "else",
+  "end",
+  "limit",
+  "offset",
+  "having",
+  "union",
+  "all",
+  "interval",
+  "asc",
+  "desc",
+  "using",
+  "with",
+  "between",
+  "like",
+]);
+const SQL_FUNCS = new Set([
+  "sum",
+  "count",
+  "avg",
+  "min",
+  "max",
+  "date_trunc",
+  "now",
+  "coalesce",
+  "cast",
+  "round",
+]);
+const JS_KEYWORDS = new Set([
+  "import",
+  "from",
+  "const",
+  "let",
+  "var",
+  "await",
+  "async",
+  "new",
+  "return",
+  "function",
+  "export",
+  "default",
+  "true",
+  "false",
+  "null",
+  "of",
+  "in",
+  "class",
+  "extends",
+  "try",
+  "catch",
+  "if",
+  "else",
+  "for",
+  "while",
+  "typeof",
+]);
+
+function tokenize(code: string, lang: "sql" | "js"): ReactNode[] {
+  const re =
+    lang === "sql"
+      ? /(--[^\n]*)|('(?:[^']|'')*')|(\d+(?:\.\d+)?)|([A-Za-z_]\w*)|(\s+|[^\sA-Za-z0-9_]+)/g
+      : /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\d+(?:\.\d+)?)|([A-Za-z_$][\w$]*)|(\s+|[^\sA-Za-z0-9_$]+)/g;
+  const kw = lang === "sql" ? SQL_KEYWORDS : JS_KEYWORDS;
+  const fns = lang === "sql" ? SQL_FUNCS : null;
+  const out: ReactNode[] = [];
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = re.exec(code)) !== null) {
+    const [text, comment, str, num, word] = m;
+    let color: string | undefined;
+    let italic = false;
+    let bold = false;
+    if (comment) {
+      color = TOKEN.comment;
+      italic = true;
+    } else if (str) {
+      color = TOKEN.string;
+    } else if (num) {
+      color = TOKEN.number;
+    } else if (word) {
+      const lw = word.toLowerCase();
+      if (kw.has(lw)) {
+        color = TOKEN.keyword;
+        bold = true;
+      } else if (fns?.has(lw)) {
+        color = TOKEN.func;
+      }
+    }
+    out.push(
+      color ? (
+        <span
+          key={i}
+          style={{
+            color,
+            fontStyle: italic ? "italic" : undefined,
+            fontWeight: bold ? 600 : undefined,
+          }}
+        >
+          {text}
+        </span>
+      ) : (
+        <span key={i}>{text}</span>
+      ),
+    );
+    i++;
+  }
+  return out;
+}
+
+function CodeBlock({
+  code,
+  lang,
+  style,
+}: {
+  code: string;
+  lang: "sql" | "js";
+  style?: CSSProperties;
+}) {
+  return (
+    <pre className="md-code" style={style}>
+      <code>{tokenize(code, lang)}</code>
+    </pre>
+  );
+}
 
 function GitHubMark() {
   return (
@@ -127,9 +292,7 @@ export default function ComparePage() {
             <summary className="md-eyebrow" style={{ cursor: "pointer", marginBottom: 10 }}>
               The query — run verbatim against both engines
             </summary>
-            <pre className="md-code">
-              <code>{PLATFORM_MONTHLY_REVENUE.trim()}</code>
-            </pre>
+            <CodeBlock code={PLATFORM_MONTHLY_REVENUE.trim()} lang="sql" />
           </details>
 
           <div style={{ display: "flex", justifyContent: "center" }}>
@@ -390,12 +553,14 @@ function HowTheConnectionWorks() {
             {" "}
             — standard connection string
           </span>
-          <pre className="md-code" style={{ marginTop: 10, fontSize: 12 }}>
-            <code>{`new Pool({
+          <CodeBlock
+            lang="js"
+            style={{ marginTop: 10, fontSize: 12 }}
+            code={`new Pool({
   connectionString: POSTGRES_URL,
   ssl: { rejectUnauthorized: false },
-})`}</code>
-          </pre>
+})`}
+          />
         </div>
         <div className="md-card" style={{ padding: 16 }}>
           <strong style={{ color: "var(--darker-duck)" }}>MotherDuck</strong>
@@ -403,21 +568,28 @@ function HowTheConnectionWorks() {
             {" "}
             — its Postgres wire endpoint
           </span>
-          <pre className="md-code" style={{ marginTop: 10, fontSize: 12 }}>
-            <code>{`new Pool({
+          <CodeBlock
+            lang="js"
+            style={{ marginTop: 10, fontSize: 12 }}
+            code={`new Pool({
   host: "pg.us-east-1-aws.motherduck.com",
   port: 5432,
   user: "motherduck",        // any non-empty user
   password: MOTHERDUCK_TOKEN, // the token is the credential
   database: "multishop_commerce",
   ssl: { rejectUnauthorized: false },
-})`}</code>
-          </pre>
+})`}
+          />
         </div>
       </div>
       <p style={{ color: "var(--grey)", fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
         Defined once in <code>lib/db.ts</code> — <code>DATA_SOURCE</code> (or the{" "}
         <code>?source=</code> param) picks which pool answers. Same query text either way.
+      </p>
+      <p style={{ marginTop: 12, marginBottom: 0 }}>
+        <a className="md-doclink" href={DOCS.pgEndpoint} target="_blank" rel="noreferrer">
+          MotherDuck Postgres wire endpoint docs ↗
+        </a>
       </p>
     </section>
   );
@@ -449,6 +621,7 @@ const { rows } = await pool.query("SELECT 1");`,
       "Drop-in for an existing PG app: just swap the host",
     ],
     cons: "Goes through the Postgres-protocol surface — a subset of DuckDB SQL and PG type coercion; no local-file ATTACH.",
+    docs: DOCS.pgEndpoint,
   },
   {
     name: "DuckDB Node.js",
@@ -469,6 +642,7 @@ const result = await connection.run("SELECT 1");`,
       "Arrow-native results; hybrid local+cloud execution",
     ],
     cons: "Native addon — platform-specific binary, larger bundle, heavier cold starts; not edge-runtime compatible.",
+    docs: DOCS.nodejs,
   },
   {
     name: "MotherDuck Wasm",
@@ -489,6 +663,7 @@ const result = await connection.evaluateQuery("SELECT 1");`,
       "Great for interactive dashboards & per-user drill-downs",
     ],
     cons: "The token reaches the client — use a read-scaling / short-lived token, never your main one. Plus Wasm bundle + browser memory limits.",
+    docs: DOCS.wasm,
   },
 ] as const;
 
@@ -562,9 +737,11 @@ function OtherWaysToConnect() {
             >
               {opt.blurb}
             </p>
-            <pre className="md-code" style={{ marginTop: 10, fontSize: 11, flexGrow: 1 }}>
-              <code>{opt.code}</code>
-            </pre>
+            <CodeBlock
+              lang="js"
+              style={{ marginTop: 10, fontSize: 11, flexGrow: 1 }}
+              code={opt.code}
+            />
             <ul style={{ listStyle: "none", padding: 0, margin: "12px 0 0" }}>
               {opt.pros.map((p) => (
                 <li
@@ -610,6 +787,15 @@ function OtherWaysToConnect() {
               </span>
               {opt.cons}
             </p>
+            <a
+              className="md-doclink"
+              href={opt.docs}
+              target="_blank"
+              rel="noreferrer"
+              style={{ display: "inline-block", marginTop: 10 }}
+            >
+              MotherDuck docs ↗
+            </a>
           </div>
         ))}
       </div>
