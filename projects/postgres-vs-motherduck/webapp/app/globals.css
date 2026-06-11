@@ -153,6 +153,66 @@ a {
   color: var(--darker-grey);
 }
 
+/* "View source" link — branded pill with the GitHub mark. */
+.md-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+  text-decoration: none;
+  border: var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  background: var(--white);
+  white-space: nowrap;
+  transition: background 120ms ease;
+}
+.md-source:hover {
+  background: var(--sun);
+}
+
+/* Inline link to MotherDuck docs. */
+.md-doclink {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dark-sky);
+  text-decoration: none;
+}
+.md-doclink:hover {
+  text-decoration: underline;
+}
+
+/* Footer link row. */
+.md-footer {
+  margin-top: 48px;
+  padding-top: 18px;
+  border-top: 2px solid var(--ink);
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.md-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.md-footer a:hover {
+  color: var(--dark-sky);
+}
+
 @keyframes pulse {
   0%,
   100% {
@@ -161,6 +221,16 @@ a {
   50% {
     opacity: 0.45;
   }
+}
+
+/* Dashed "signal" lanes flowing from the Run button into each engine card. */
+@keyframes lane-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.lane-flow {
+  animation: lane-flow 0.5s linear infinite;
 }
 
 /* Two-column doc layout: sticky TOC on the left, content on the right. */

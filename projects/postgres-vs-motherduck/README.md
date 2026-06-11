@@ -107,7 +107,7 @@ no top-level `package.json`, point Vercel at the subdirectory:
    in the Vercel project settings. (Deploying from inside that folder with `vercel` CLI sets
    this for you.)
 2. **Environment variables** (Production): `MOTHERDUCK_TOKEN` + `POSTGRES_URL` (the "before"),
-   and optionally `MD_DATABASE`, `MD_SHARE_URL`, `MD_PG_HOST`, `DATA_SOURCE` — see
+   and optionally `MD_DATABASE`, `MD_SHARE_URL`, `MD_PG_HOST` — see
    [`webapp/.env.example`](./webapp/.env.example). The "after" reads the public share once
    you've attached it (`uv run attach_share.py`), so no MotherDuck data-loading is required.
 3. **Protect the deployment.** This app has **no application-level auth**, and every request
@@ -129,7 +129,7 @@ they see are their own — a live, shareable benchmark.
   `MD_DATABASE` (default `multishop_commerce`) — that's the attached public share, or your
   own load. No DuckDB native extension involved.
 
-`DATA_SOURCE` (or the `?source=` query param) picks which pool answers. Same query text
+The `?source=` query param (see `/api/chart`) picks which pool answers. Same query text
 either way.
 
 ## The dataset
@@ -158,5 +158,3 @@ breakfast.
   the point, not an exact multiplier. The seed adds the obvious indexes so Postgres gets a
   fair shot — it's a row-store-vs-columnar comparison, not Postgres-with-no-indexes.
 - **No auth.** See the deployment note above — protect any public URL.
-- The `/dashboard` page also expects an optional MotherDuck **Dive** embed
-  (`NEXT_PUBLIC_DIVE_URL`) for the per-shop drill-down; it's optional and degrades gracefully.

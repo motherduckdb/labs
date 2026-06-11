@@ -2,7 +2,7 @@ import { Pool } from "pg";
 
 /**
  * The before/after switch lives here. Both code paths use the SAME `pg` driver;
- * `DATA_SOURCE` only decides which host the pool points at.
+ * the `?source=` param (see /api/chart) only decides which host the pool points at.
  *
  *   postgres   → your managed Postgres (Supabase / Neon / RDS / PlanetScale for Postgres…)
  *   motherduck → MotherDuck's Postgres wire-protocol endpoint
@@ -49,11 +49,6 @@ export function poolFor(source: DataSource): Pool {
     ssl: process.env.POSTGRES_SSL === "false" ? false : { rejectUnauthorized: false },
     max: 4,
   });
-}
-
-/** The pool the app reads from, chosen by env. Flip DATA_SOURCE to swap engines. */
-export function appPool(): Pool {
-  return poolFor((process.env.DATA_SOURCE as DataSource) ?? "postgres");
 }
 
 export interface Timed<T> {
