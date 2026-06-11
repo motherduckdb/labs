@@ -1,8 +1,8 @@
 /**
- * GET /api/benchmark?shop=1
+ * GET /api/benchmark
  * Runs the platform aggregate against Postgres and MotherDuck and returns both
- * latencies + the speedup. This is the live version of scripts/benchmark.ts, so
- * the dashboard can show the before/after without a terminal.
+ * latencies + the speedup as JSON — the server-side equivalent of the pipeline's
+ * benchmark.py, for measuring the before/after without a terminal.
  */
 import { NextResponse } from "next/server";
 import { poolFor, timedQuery } from "@/lib/db";

@@ -346,7 +346,6 @@ export default function ComparePage() {
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">
             <GitHubMark /> Source on GitHub
           </a>
-          <a href="/dashboard">Dashboard</a>
           <span style={{ color: "var(--grey)" }}>Part of MotherDuck Labs · experimental</span>
         </footer>
       </main>
@@ -583,8 +582,8 @@ function HowTheConnectionWorks() {
         </div>
       </div>
       <p style={{ color: "var(--grey)", fontSize: 12.5, marginBottom: 0, marginTop: 14 }}>
-        Defined once in <code>lib/db.ts</code> — <code>DATA_SOURCE</code> (or the{" "}
-        <code>?source=</code> param) picks which pool answers. Same query text either way.
+        Defined once in <code>lib/db.ts</code> — the <code>?source=</code> param picks which pool
+        answers. Same query text either way.
       </p>
       <p style={{ marginTop: 12, marginBottom: 0 }}>
         <a className="md-doclink" href={DOCS.pgEndpoint} target="_blank" rel="noreferrer">
