@@ -1,0 +1,348 @@
+/* MotherDuck-flavored theme — palette + brand primitives.
+   Tokens lifted from the motherduck-website design system: sand background,
+   #383838 ink, 2px borders/radius, hard offset shadows, sky/sun/duck accents,
+   uppercase mono headings. Fonts are Inter + a Google mono (we don't ship the
+   licensed Aeonik faces); the mono headings keep the technical feel. */
+
+:root {
+  --sand: #f4efea;
+  --snow: #f8f8f7;
+  --dark-sand: #e1d6cb;
+  --white: #ffffff;
+  --ink: #383838;
+
+  --grey: #a1a1a1;
+  --dark-grey: #818181;
+  --darker-grey: #666666;
+  --light-grey: #c0c0c0;
+  --lighter-grey: #d7d7d7;
+
+  --sky: #6fc2ff;
+  --light-sky: #97d4ff;
+  --lightest-sky: #ceebff;
+  --dark-sky: #1276bf;
+
+  --sun: #ffde00;
+  --light-sun: #fced49;
+
+  --duck: #ff9538;
+  --darker-duck: #ff6b35;
+
+  --garden: #16aa98;
+  --watermelon: #e23f35;
+
+  --postgres: #336791;
+  --code-bg: #22272e;
+
+  --radius: 2px;
+  --border: 2px solid var(--ink);
+  --shadow: 5px 5px 0 var(--ink);
+  --shadow-sm: 3px 3px 0 var(--ink);
+
+  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-mono-brand), ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--sand);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+h1 {
+  font-size: clamp(28px, 4vw, 44px);
+  margin: 0 0 6px;
+}
+
+h2 {
+  font-size: 20px;
+  margin: 0 0 8px;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--dark-sky);
+}
+
+/* Primary action — MotherDuck offset-shadow button. */
+.md-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--light-sky);
+  color: var(--ink);
+  border: var(--border);
+  border-radius: var(--radius);
+  padding: 12px 22px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition:
+    transform 100ms ease,
+    box-shadow 100ms ease,
+    background 120ms ease;
+}
+.md-btn:hover {
+  background: var(--sky);
+  transform: translate(2px, 2px);
+  box-shadow: var(--shadow-sm);
+}
+.md-btn:active {
+  transform: translate(5px, 5px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* Sharp card with a hard offset shadow — the signature MD surface. */
+.md-card {
+  background: var(--white);
+  border: var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* Dark code block. */
+.md-code {
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--code-bg);
+  color: #e6e6e6;
+  border: var(--border);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-x: auto;
+}
+
+/* Small uppercase mono eyebrow/label. */
+.md-eyebrow {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: var(--darker-grey);
+}
+
+/* "View source" link — branded pill with the GitHub mark. */
+.md-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+  text-decoration: none;
+  border: var(--border);
+  border-radius: var(--radius);
+  padding: 7px 12px;
+  background: var(--white);
+  white-space: nowrap;
+  transition: background 120ms ease;
+}
+.md-source:hover {
+  background: var(--sun);
+}
+
+/* Inline link to MotherDuck docs. */
+.md-doclink {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dark-sky);
+  text-decoration: none;
+}
+.md-doclink:hover {
+  text-decoration: underline;
+}
+
+/* Footer link row. */
+.md-footer {
+  margin-top: 48px;
+  padding-top: 18px;
+  border-top: 2px solid var(--ink);
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.md-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  text-decoration: none;
+}
+.md-footer a:hover {
+  color: var(--dark-sky);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Dashed "signal" lanes flowing from the Run button into each engine card. */
+@keyframes lane-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.lane-flow {
+  animation: lane-flow 0.5s linear infinite;
+}
+
+/* Reusable info note (sky left-border) — used for the fairness / setup callout. */
+.md-note {
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--snow);
+  border-left: 3px solid var(--sky);
+  border-radius: var(--radius);
+  max-width: 720px;
+}
+.md-note p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--darker-grey);
+}
+.md-note p + p {
+  margin-top: 8px;
+}
+
+/* Two equal columns that collapse to one on small screens. Gap stays inline. */
+.md-cols2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+/* ── Mobile ──────────────────────────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .md-cols2 {
+    grid-template-columns: 1fr;
+  }
+  /* The connector lanes assume a left/right split — hide them once charts stack. */
+  .md-run-lanes {
+    display: none;
+  }
+  .md-layout {
+    padding: 24px 16px 48px;
+  }
+  .md-code {
+    font-size: 11.5px;
+  }
+}
+
+/* Two-column doc layout: sticky TOC on the left, content on the right. */
+.md-layout {
+  display: flex;
+  gap: 36px;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+  align-items: flex-start;
+}
+.md-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Left "on this page" navigation doc. */
+.md-toc {
+  position: sticky;
+  top: 24px;
+  width: 200px;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.md-toc nav {
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--dark-sand);
+}
+.md-toc nav a {
+  display: block;
+  padding: 7px 14px;
+  margin-left: -2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--darker-grey);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.md-toc nav a:hover {
+  color: var(--ink);
+  background: var(--snow);
+}
+.md-toc nav a.active {
+  color: var(--ink);
+  font-weight: 600;
+  border-left-color: var(--ink);
+  background: var(--sun);
+}
+
+/* Offset anchor jumps so headings don't hide under the sticky nav. */
+section[id] {
+  scroll-margin-top: 16px;
+}
+html {
+  scroll-behavior: smooth;
+}
+
+/* Collapse the TOC on narrow viewports. */
+@media (max-width: 900px) {
+  .md-layout {
+    gap: 0;
+  }
+  .md-toc {
+    display: none;
+  }
+}
