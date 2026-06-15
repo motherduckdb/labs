@@ -138,6 +138,11 @@ def _fmt_time(value: object) -> str:
     return str(value)
 
 
+def _short_meta(value: object, n: int = 12) -> str:
+    text = "" if value is None else str(value)
+    return text[:n] if len(text) > n else text
+
+
 def _invariant_pill(violations: list[dict]) -> str:
     if not violations:
         return '<span class="pill ok">invariants balanced</span>'
@@ -401,13 +406,15 @@ document.querySelectorAll('#summaryTable th.sortable').forEach(th => {
 
 function applyFilters() {
     const proj = (document.getElementById('filterProject') || {}).value || '';
+    const effort = (document.getElementById('filterEffort') || {}).value || '';
     const q = ((document.getElementById('filterRunId') || {}).value || '').toLowerCase();
     let visible = 0, total = 0;
     document.querySelectorAll('#summaryTable tbody tr').forEach(row => {
         total++;
         const okProj = !proj || row.dataset.project === proj;
+        const okEffort = !effort || row.dataset.effort === effort;
         const okId = !q || (row.dataset.runid || '').toLowerCase().includes(q);
-        const show = okProj && okId;
+        const show = okProj && okEffort && okId;
         row.classList.toggle('hidden', !show);
         if (show) visible++;
     });
@@ -569,6 +576,7 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", lim
 
     # --- Summary tab: filters + sortable table ---
     projects = sorted({str(r["project"]) for r in run_rows if r.get("project")})
+    efforts = sorted({str(r["effort"]) for r in run_rows if r.get("effort") is not None})
     proj_filter = ""
     if len(projects) > 1:
         opts = "".join(f'<option value="{_esc(p)}">{_esc(p)}</option>' for p in projects)
@@ -576,9 +584,17 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", lim
             '<label>Project:</label>'
             f'<select id="filterProject" onchange="applyFilters()"><option value="">All</option>{opts}</select>'
         )
+    effort_filter = ""
+    if efforts:
+        opts = "".join(f'<option value="{_esc(e)}">{_esc(e)}</option>' for e in efforts)
+        effort_filter = (
+            '<label>Effort:</label>'
+            f'<select id="filterEffort" onchange="applyFilters()"><option value="">All</option>{opts}</select>'
+        )
     filters_html = (
         '<div class="filters">'
         f"{proj_filter}"
+        f"{effort_filter}"
         '<label>Run id:</label>'
         '<input id="filterRunId" type="text" placeholder="substring…" oninput="applyFilters()">'
         '<span class="filter-count" id="filter-count"></span>'
@@ -586,10 +602,38 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", lim
     )
 
     if run_rows:
+        provenance_cols = [
+            ("commit_sha", "commit"),
+            ("effort", "effort"),
+            ("config_hash", "config"),
+            ("job_id", "job"),
+            ("trial_id", "trial"),
+            ("trial_index", "trial #"),
+            ("agent_name", "agent"),
+            ("agent_version", "agent ver"),
+            ("runtime", "runtime"),
+            ("image_digest", "image"),
+            ("os", "os"),
+            ("dataset_name", "dataset"),
+            ("dataset_version", "dataset ver"),
+        ]
+        provenance_cols = [
+            col for col in provenance_cols
+            if any(r.get(col[0]) is not None and r.get(col[0]) != "" for r in run_rows)
+        ]
+
+        def meta_cells(r: dict) -> str:
+            cells = []
+            for key, _label in provenance_cols:
+                raw = r.get(key)
+                display = _short_meta(raw) if key in {"commit_sha", "config_hash", "image_digest"} else ("" if raw is None else str(raw))
+                cells.append(f'<td data-sort="{_esc(raw)}">{_esc(display)}</td>')
+            return "".join(cells)
+
         ok_cell = '<span class="ok">ok</span>'
         drift_cell = '<span class="bad">drift</span>'
         trs = "".join(
-            f'<tr data-runid="{_esc(r["run_id"])}" data-project="{_esc(r.get("project") or "")}">'
+            f'<tr data-runid="{_esc(r["run_id"])}" data-project="{_esc(r.get("project") or "")}" data-effort="{_esc(r.get("effort") or "")}">'
             f'<td data-sort="{_esc(r["run_id"])}">{_esc(r["run_id"])}</td>'
             # data-sort keeps the raw ISO timestamp so the column sorts chronologically
             # (lexically) instead of being mis-parsed as the year by the numeric path
@@ -601,10 +645,12 @@ def render_dashboard(con: duckdb.DuckDBPyConnection, source_label: str = "", lim
             f'<td class="num" data-sort="{r["utility"]}">{_fmt_num(r["utility"], 2)}</td>'
             f'<td data-sort="{1 if r["invariant_ok"] else 0}">'
             f"{ok_cell if r['invariant_ok'] else drift_cell}</td>"
+            f"{meta_cells(r)}"
             "</tr>"
             for r in run_rows
         )
         headers = ["run_id", "started", "events", "kinds", "cost", "latency ms", "utility", "inv"]
+        headers.extend(label for _key, label in provenance_cols)
         num_cols = {2, 3, 4, 5, 6}
         ths = "".join(
             f'<th class="sortable{" num" if i in num_cols else ""}" data-col="{i}">{h}</th>'

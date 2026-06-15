@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+from datetime import datetime
+from typing import Any
 
 from controllog_viz.eval_review.model import ErrorCard, _escape
 
@@ -17,14 +19,25 @@ def _render_cot_trace(raw_response: dict | None, card: ErrorCard) -> str:
     Supports both OpenAI Chat Completions format and OpenAI Responses API format.
     Falls back to a metadata summary when no trace is available.
     """
+    event_spans = getattr(card, "tool_spans", []) or []
+    event_waterfall = _render_tool_waterfall(event_spans)
+
     if raw_response is None or not isinstance(raw_response, dict):
-        return _render_metadata_fallback(card)
+        fallback = _render_metadata_fallback(card)
+        return event_waterfall + fallback if event_waterfall else fallback
 
     messages = raw_response.get("messages", [])
     if not messages:
-        return _render_metadata_fallback(card)
+        fallback = _render_metadata_fallback(card)
+        return event_waterfall + fallback if event_waterfall else fallback
 
     parts = []
+    if event_waterfall:
+        parts.append(event_waterfall)
+    else:
+        message_waterfall = _render_tool_waterfall(_extract_tool_spans_from_raw_response(raw_response))
+        if message_waterfall:
+            parts.append(message_waterfall)
 
     ctx_messages = raw_response.get("context_agent_messages", [])
     if ctx_messages:
@@ -63,6 +76,209 @@ def _render_cot_trace(raw_response: dict | None, card: ErrorCard) -> str:
         )
         return "\n".join(parts)
     return main_trace
+
+
+def _extract_tool_spans_from_raw_response(raw_response: dict) -> list[dict[str, Any]]:
+    """Extract timed tool spans from bundled raw_response traces."""
+    spans: list[dict[str, Any]] = []
+    direct = raw_response.get("tool_spans")
+    if isinstance(direct, list):
+        spans.extend(s for s in direct if isinstance(s, dict))
+
+    ctx_messages = raw_response.get("context_agent_messages", [])
+    if isinstance(ctx_messages, list):
+        spans.extend(_extract_message_tool_spans(ctx_messages, source="context-message"))
+
+    messages = raw_response.get("messages", [])
+    if isinstance(messages, list):
+        spans.extend(_extract_message_tool_spans(messages, source="message"))
+    return spans
+
+
+def _extract_message_tool_spans(messages: list, source: str) -> list[dict[str, Any]]:
+    """Pair tool call/result messages with optional start/end/duration fields."""
+    spans: list[dict[str, Any]] = []
+    pending: dict[str, dict[str, Any]] = {}
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        item_type = msg.get("type", "")
+        role = msg.get("role", "")
+
+        if item_type == "function_call":
+            call_id = str(msg.get("call_id", msg.get("id", "")))
+            if not call_id:
+                continue
+            pending[call_id] = {
+                "call_id": call_id,
+                "name": msg.get("name", "unknown"),
+                "arguments": msg.get("arguments"),
+                "start_time": msg.get("start_time") or msg.get("event_time"),
+                "end_time": msg.get("end_time"),
+                "duration_ms": msg.get("duration_ms") or msg.get("wall_ms"),
+                "source": source,
+            }
+            continue
+
+        if item_type == "function_call_output":
+            call_id = str(msg.get("call_id", ""))
+            call = pending.pop(call_id, {}) if call_id else {}
+            spans.append(
+                {
+                    "call_id": call_id,
+                    "name": call.get("name") or msg.get("name", "unknown"),
+                    "arguments": call.get("arguments"),
+                    "output": msg.get("output"),
+                    "status": msg.get("status"),
+                    "start_time": call.get("start_time") or msg.get("start_time"),
+                    "end_time": msg.get("end_time") or msg.get("event_time"),
+                    "duration_ms": msg.get("duration_ms") or msg.get("wall_ms") or call.get("duration_ms"),
+                    "source": source,
+                }
+            )
+            continue
+
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls") or []
+            for position, tc in enumerate(tool_calls):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else None
+                src = fn if fn is not None else tc
+                call_id = str(tc.get("id", f"tool-{len(pending)}"))
+                pending[call_id] = {
+                    "call_id": call_id,
+                    "name": src.get("name", "unknown"),
+                    "arguments": src.get("arguments"),
+                    "start_time": tc.get("start_time") or msg.get("start_time") or msg.get("event_time"),
+                    "end_time": tc.get("end_time"),
+                    "duration_ms": tc.get("duration_ms") or tc.get("wall_ms"),
+                    "position": position,
+                    "source": source,
+                }
+            continue
+
+        if role in ("tool", "function_call_output"):
+            call_id = str(msg.get("tool_call_id", msg.get("call_id", "")))
+            call = pending.pop(call_id, {}) if call_id else {}
+            spans.append(
+                {
+                    "call_id": call_id,
+                    "name": call.get("name") or msg.get("tool_name") or msg.get("name", "unknown"),
+                    "arguments": call.get("arguments"),
+                    "output": msg.get("result", msg.get("content", msg.get("output"))),
+                    "status": msg.get("status"),
+                    "start_time": call.get("start_time") or msg.get("start_time"),
+                    "end_time": msg.get("end_time") or msg.get("event_time"),
+                    "duration_ms": msg.get("duration_ms") or msg.get("wall_ms") or call.get("duration_ms"),
+                    "source": source,
+                }
+            )
+
+    spans.extend(call for call in pending.values() if call.get("duration_ms") or call.get("end_time"))
+    return spans
+
+
+def _render_tool_waterfall(spans: list[dict[str, Any]]) -> str:
+    """Render a time-scaled Gantt/waterfall for spans that carry timing."""
+    rows = []
+    starts: list[datetime] = []
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        start = _parse_time(span.get("start_time"))
+        end = _parse_time(span.get("end_time"))
+        duration = _duration_ms(span, start, end)
+        if duration is None:
+            continue
+        if start is not None or end is not None:
+            starts.append(start or end)
+        rows.append((span, start, end, max(float(duration), 0.0)))
+
+    if not rows:
+        return ""
+
+    base = min(starts) if starts else None
+    positioned = []
+    total_ms = 0.0
+    for span, start, end, duration in rows:
+        offset = _offset_ms(base, start)
+        if offset is None:
+            offset = 0.0
+        if end is not None:
+            total_ms = max(total_ms, offset + max(_offset_ms(start or base, end) or 0.0, duration))
+        else:
+            total_ms = max(total_ms, offset + duration)
+        positioned.append((span, offset, duration))
+
+    total_ms = max(total_ms, 1.0)
+    bar_rows = []
+    for span, offset, duration in positioned:
+        left = max(0.0, min(100.0, offset / total_ms * 100.0))
+        width = max(1.2, duration / total_ms * 100.0)
+        if left + width > 100:
+            width = max(1.2, 100.0 - left)
+        name = _escape(span.get("name", "unknown"))
+        call_id = _escape(span.get("call_id", ""))
+        duration_label = _format_duration(duration)
+        title = _escape(f"{span.get('name', 'unknown')} | +{offset:.0f}ms | {duration_label}")
+        bar_rows.append(
+            '<div class="tool-waterfall-row">'
+            f'<div class="tool-waterfall-label">{name}<span>{call_id}</span></div>'
+            '<div class="tool-waterfall-track">'
+            f'<div class="tool-waterfall-bar" style="left:{left:.3f}%;width:{width:.3f}%;" title="{title}">'
+            f"{_escape(duration_label)}</div>"
+            "</div></div>"
+        )
+
+    return (
+        '<details class="tool-waterfall-section" open>'
+        f"<summary>TOOL TIMING ({len(bar_rows)} timed call(s), {_escape(_format_duration(total_ms))} total)</summary>"
+        '<div class="tool-waterfall">'
+        '<div class="tool-waterfall-axis"><span>0ms</span>'
+        f"<span>{_escape(_format_duration(total_ms))}</span></div>"
+        f"{''.join(bar_rows)}</div></details>"
+    )
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value)
+    if not text:
+        return None
+    with contextlib.suppress(ValueError):
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return None
+
+
+def _duration_ms(span: dict[str, Any], start: datetime | None, end: datetime | None) -> float | None:
+    for key in ("duration_ms", "wall_ms"):
+        value = span.get(key)
+        if value is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                return float(value)
+    if start is not None and end is not None:
+        with contextlib.suppress(TypeError):
+            return max((end - start).total_seconds() * 1000.0, 0.0)
+    return None
+
+
+def _offset_ms(base: datetime | None, value: datetime | None) -> float | None:
+    if base is None or value is None:
+        return None
+    with contextlib.suppress(TypeError):
+        return max((value - base).total_seconds() * 1000.0, 0.0)
+    return None
+
+
+def _format_duration(ms: float) -> str:
+    if ms >= 1000:
+        return f"{ms / 1000:.2f}s"
+    return f"{ms:.0f}ms"
 
 
 def _extract_text_from_content_blocks(content: Any) -> str:
@@ -359,4 +575,3 @@ def _render_metadata_fallback(card: ErrorCard) -> str:
         f"Duration: {_escape(card.duration_ms)}ms"
         f"</pre>"
     )
-

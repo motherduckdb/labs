@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,55 @@ MODEL_ALIASES = {
     "gemini": "google/gemini-3-flash-preview",
     "gpt": "openai/gpt-5.5",
 }
+
+
+def _git_output(*args: str) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", *args],
+            cwd=REPO_ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+
+
+def _build_run_provenance(
+    *,
+    split: str,
+    database: str,
+    model: str,
+    reasoning: str,
+    max_turns: int,
+    concurrency: int,
+    out: Path,
+    question_count: int,
+) -> dict:
+    commit_sha = _git_output("rev-parse", "HEAD")
+    dirty_status = _git_output("status", "--porcelain")
+    resolved_config = {
+        "split": split,
+        "database": database,
+        "model": model,
+        "reasoning": reasoning,
+        "max_turns": max_turns,
+        "concurrency": concurrency,
+        "question_count": question_count,
+        "run_label": out.stem,
+    }
+    return {
+        "commit_sha": commit_sha,
+        "repo": _git_output("config", "--get", "remote.origin.url"),
+        "dirty": bool(dirty_status) if dirty_status is not None else None,
+        "effort": reasoning,
+        "resolved_config": resolved_config,
+        "run_parameters": resolved_config,
+        "agent_name": AGENT_ID,
+        "agent_version": commit_sha[:12] if commit_sha else None,
+        "dataset_name": database,
+        "dataset_version": split,
+    }
 
 
 def _md_database() -> str:
@@ -291,6 +341,16 @@ async def _evaluate_loop(
     wall_t0 = time.time()
 
     run_id = controllog.new_id()
+    run_provenance = _build_run_provenance(
+        split=split,
+        database=database,
+        model=model,
+        reasoning=reasoning,
+        max_turns=max_turns,
+        concurrency=concurrency,
+        out=out,
+        question_count=len(questions),
+    )
     controllog.init(
         project_id=PROJECT_ID,
         log_dir=RESULTS_DIR,
@@ -299,6 +359,7 @@ async def _evaluate_loop(
             "run_id": run_id, "run_label": out.stem,
         },
     )
+    run_provenance = dict(controllog.run_metadata(run_id=run_id, **run_provenance)["payload_json"])
 
     async def run_one(q: dict) -> None:
         nonlocal correct, total_cost, total_elapsed, total_turns, n_hit_limit, completed
@@ -449,6 +510,7 @@ async def _evaluate_loop(
                     "cost_usd": float(cost),
                     "input_tokens": run.prompt_tokens if run else 0,
                     "output_tokens": run.completion_tokens if run else 0,
+                    "run": run_provenance,
                     "raw_response": raw_response,
                     "answer_source": q.get("answer_source"),
                     "error_description": err,

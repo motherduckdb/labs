@@ -8,7 +8,10 @@ from .sdk import event, init, is_initialized, new_id, post
 from .builders import (
     model_completion,
     model_prompt,
+    run_metadata,
     state_move,
+    tool_call,
+    tool_result,
     utility,
 )
 
@@ -20,6 +23,9 @@ __all__ = [
     "new_id",
     "model_prompt",
     "model_completion",
+    "run_metadata",
+    "tool_call",
+    "tool_result",
     "state_move",
     "utility",
 ]

@@ -268,3 +268,120 @@ def test_unmatched_chat_completions_tool_call_flushed(tmp_path):
         assert "SELECT 2" in html
     finally:
         con.close()
+
+
+def test_message_level_tool_timing_renders_waterfall(tmp_path):
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    payload = {
+        "question_id": "1", "db_id": "d", "question_text": "q", "model": "m",
+        "config_type": "v3", "database": "d", "predicted_sql": None, "gold_sql": None,
+        "gold_result": "x", "predicted_result": "x", "is_correct": True,
+        "correctness_level": "correct", "duration_ms": 500, "cost_usd": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "tool_calls": 1,
+        "raw_response": {"messages": [
+            {"role": "user", "content": "q"},
+            {
+                "type": "function_call", "call_id": "c1", "name": "run_sql",
+                "arguments": json.dumps({"sql": "SELECT 1"}),
+                "start_time": "2026-05-26T10:00:00+00:00",
+            },
+            {
+                "type": "function_call_output", "call_id": "c1", "output": "[[1]]",
+                "end_time": "2026-05-26T10:00:00.125000+00:00",
+                "duration_ms": 125,
+            },
+        ]},
+    }
+    ev = {"event_id": "e1", "event_time": "2026-05-26T10:00:01+00:00",
+          "ingest_time": "2026-05-26T10:00:01+00:00", "kind": "evaluation_result",
+          "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+          "payload_json": payload, "run_id": "r", "actor_agent_id": None, "actor_task_id": "t1"}
+    (cl / "events.jsonl").write_text(json.dumps(ev) + "\n")
+    con = reader.connect(str(tmp_path))
+    try:
+        html = eval_review.generate_eval_review(con, "r")
+        assert "TOOL TIMING (1 timed call" in html
+        assert "run_sql" in html
+        assert "125ms" in html
+        assert "TOOL CALL #1 - run_sql" in html
+    finally:
+        con.close()
+
+
+def test_event_level_tool_timing_renders_waterfall(tmp_path):
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    eval_payload = {
+        "question_id": "1", "db_id": "d", "question_text": "q", "model": "m",
+        "config_type": "v3", "database": "d", "predicted_sql": None, "gold_sql": None,
+        "gold_result": "x", "predicted_result": "x", "is_correct": True,
+        "correctness_level": "correct", "duration_ms": 500, "cost_usd": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "tool_calls": 1, "raw_response": None,
+    }
+    events = [
+        {"event_id": "tc", "event_time": "2026-05-26T10:00:00+00:00",
+         "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "tool_call",
+         "project_id": "p", "source": "sdk", "idempotency_key": "tc",
+         "payload_json": {"call_id": "c1", "name": "run_sql", "arguments": {"sql": "SELECT 1"}},
+         "run_id": "r", "actor_agent_id": "a", "actor_task_id": "t1"},
+        {"event_id": "tr", "event_time": "2026-05-26T10:00:00.250000+00:00",
+         "ingest_time": "2026-05-26T10:00:00.250000+00:00", "kind": "tool_result",
+         "project_id": "p", "source": "sdk", "idempotency_key": "tr",
+         "payload_json": {"call_id": "c1", "name": "run_sql", "output": "[[1]]", "duration_ms": 250},
+         "run_id": "r", "actor_agent_id": "a", "actor_task_id": "t1"},
+        {"event_id": "e1", "event_time": "2026-05-26T10:00:01+00:00",
+         "ingest_time": "2026-05-26T10:00:01+00:00", "kind": "evaluation_result",
+         "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+         "payload_json": eval_payload, "run_id": "r", "actor_agent_id": "a", "actor_task_id": "t1"},
+    ]
+    (cl / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    con = reader.connect(str(tmp_path))
+    try:
+        html = eval_review.generate_eval_review(con, "r")
+        assert "TOOL TIMING (1 timed call" in html
+        assert "run_sql" in html
+        assert "250ms" in html
+        assert "Tool calls:" in html  # metadata fallback still appears below the waterfall
+    finally:
+        con.close()
+
+
+def test_run_metadata_summary_and_effort_filter(tmp_path):
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    eval_payload = {
+        "question_id": "1", "db_id": "d", "question_text": "q", "model": "m",
+        "config_type": "v3", "database": "d", "predicted_sql": None, "gold_sql": None,
+        "gold_result": "x", "predicted_result": "x", "is_correct": True,
+        "correctness_level": "correct", "duration_ms": 1, "cost_usd": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "tool_calls": 0, "raw_response": None,
+    }
+    metadata = {
+        "commit_sha": "abcdef1234567890",
+        "dirty": False,
+        "effort": "high",
+        "config_hash": "1234567890abcdef",
+        "agent_name": "solver",
+        "dataset_name": "dabstep",
+    }
+    events = [
+        {"event_id": "m1", "event_time": "2026-05-26T10:00:00+00:00",
+         "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "run_metadata",
+         "project_id": "p", "source": "sdk", "idempotency_key": "m1",
+         "payload_json": metadata, "run_id": "r", "actor_agent_id": None, "actor_task_id": None},
+        {"event_id": "e1", "event_time": "2026-05-26T10:00:01+00:00",
+         "ingest_time": "2026-05-26T10:00:01+00:00", "kind": "evaluation_result",
+         "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+         "payload_json": eval_payload, "run_id": "r", "actor_agent_id": None, "actor_task_id": "t1"},
+    ]
+    (cl / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    con = reader.connect(str(tmp_path))
+    try:
+        html = eval_review.generate_eval_review(con, "r")
+        assert "provenance-badge" in html
+        assert "abcdef123456" in html
+        assert 'id="effort-filter"' in html
+        assert 'data-effort="high"' in html
+    finally:
+        con.close()

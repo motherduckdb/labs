@@ -11,9 +11,22 @@ Account names follow ``docs/spec-v1.1.md`` § 7:
 ``project_id`` is resolved from ``init()``'s config — builders don't accept
 it per call. One configured project per SDK instance per spec § 3.1.
 """
+import hashlib
+import json
 from typing import Any, Dict, Optional
 
 from .sdk import _require_config, event, new_id, post
+
+
+def _stable_hash(obj: Any) -> str:
+    """Return a deterministic SHA-256 hash for resolved config payloads."""
+    encoded = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _compact(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop absent optional metadata while preserving explicit false/zero values."""
+    return {k: v for k, v in payload.items() if v is not None}
 
 
 def model_prompt(
@@ -126,6 +139,152 @@ def model_completion(
         payload={**(payload or {}), **canonical},
         postings=postings,
         idempotency_key=f"{exchange_id}:completion",
+    )
+
+
+def run_metadata(
+    *,
+    run_id: str,
+    commit_sha: Optional[str] = None,
+    repo: Optional[str] = None,
+    dirty: Optional[bool] = None,
+    effort: Optional[Any] = None,
+    resolved_config: Optional[Dict[str, Any]] = None,
+    config_hash: Optional[str] = None,
+    run_parameters: Optional[Dict[str, Any]] = None,
+    job_id: Optional[str] = None,
+    trial_id: Optional[str] = None,
+    trial_index: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    agent_version: Optional[str] = None,
+    runtime: Optional[str] = None,
+    image_digest: Optional[str] = None,
+    os: Optional[str] = None,
+    dataset_name: Optional[str] = None,
+    dataset_version: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    idempotency_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Emit run-level provenance as a ``run_metadata`` event.
+
+    The core events table has no separate runs table, so this builder records one
+    posting-free event scoped by ``run_id``. Renderers and query layers can join it
+    back to the run while older consumers simply ignore the event kind.
+    """
+    _require_config()
+    if config_hash is None and resolved_config is not None:
+        config_hash = _stable_hash(resolved_config)
+
+    canonical = _compact(
+        {
+            "commit_sha": commit_sha,
+            "repo": repo,
+            "dirty": dirty,
+            "effort": effort,
+            "resolved_config": resolved_config,
+            "config_hash": config_hash,
+            "run_parameters": run_parameters,
+            "job_id": job_id,
+            "trial_id": trial_id,
+            "trial_index": trial_index,
+            "agent_name": agent_name,
+            "agent_version": agent_version,
+            "runtime": runtime,
+            "image_digest": image_digest,
+            "os": os,
+            "dataset_name": dataset_name,
+            "dataset_version": dataset_version,
+        }
+    )
+    return event(
+        kind="run_metadata",
+        run_id=run_id,
+        payload={**(payload or {}), **canonical},
+        postings=[],
+        idempotency_key=idempotency_key or f"{run_id}:run_metadata",
+    )
+
+
+def tool_call(
+    *,
+    task_id: str,
+    agent_id: str,
+    name: str,
+    call_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    arguments: Any = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Emit a timestamped ``tool_call`` event and return its ``call_id``.
+
+    Pair this with :func:`tool_result`. The event's ``event_time`` marks the call
+    start; the result event marks the end and can carry ``duration_ms``.
+    """
+    _require_config()
+    if call_id is None:
+        call_id = new_id()
+
+    canonical = _compact(
+        {
+            "call_id": call_id,
+            "name": name,
+            "arguments": arguments,
+            "phase": "call",
+        }
+    )
+    event(
+        kind="tool_call",
+        actor={"agent_id": agent_id, "task_id": task_id},
+        run_id=run_id,
+        payload={**(payload or {}), **canonical},
+        postings=[],
+        idempotency_key=f"{call_id}:tool_call",
+    )
+    return call_id
+
+
+def tool_result(
+    *,
+    call_id: str,
+    task_id: str,
+    agent_id: str,
+    name: Optional[str] = None,
+    run_id: Optional[str] = None,
+    output: Any = None,
+    status: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Emit a timestamped ``tool_result`` event paired with a ``tool_call``.
+
+    When ``duration_ms`` is supplied it is also posted to ``truth.time`` so tool
+    latency participates in the same balanced accounting as model latency.
+    """
+    project_id = _require_config().project_id
+    postings = []
+    if duration_ms is not None:
+        postings = [
+            post("truth.time", f"agent:{agent_id}", "ms", -int(duration_ms), {"kind": "tool", "tool": name}),
+            post("truth.time", f"project:{project_id}", "ms", +int(duration_ms), {"kind": "tool", "tool": name}),
+        ]
+
+    canonical = _compact(
+        {
+            "call_id": call_id,
+            "name": name,
+            "output": output,
+            "status": status,
+            "duration_ms": duration_ms,
+            "phase": "result",
+        }
+    )
+    event(
+        kind="tool_result",
+        actor={"agent_id": agent_id, "task_id": task_id},
+        run_id=run_id,
+        payload={**(payload or {}), **canonical},
+        postings=postings,
+        idempotency_key=f"{call_id}:tool_result",
     )
 
 

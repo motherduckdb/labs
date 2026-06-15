@@ -31,10 +31,14 @@ def _generate_html(report_data: ReportData) -> str:
     """Generate a self-contained HTML evaluation review."""
     models: set[str] = set()
     configs: set[str] = set()
+    efforts: set[str] = set()
     categories: set[str] = set()
     for card in report_data.cards:
         models.add(_model_short_name(card.model))
         configs.add(card.config_type)
+        effort = card.run_metadata.get("effort")
+        if effort is not None:
+            efforts.add(str(effort))
         if card.error_category:
             categories.add(card.error_category)
 
@@ -43,6 +47,9 @@ def _generate_html(report_data: ReportData) -> str:
     )
     config_options = "".join(
         f'<option value="{_escape(c)}">{_escape(c)}</option>' for c in sorted(configs) if c
+    )
+    effort_options = "".join(
+        f'<option value="{_escape(e)}">{_escape(e)}</option>' for e in sorted(efforts) if e
     )
     category_options = "".join(
         f'<option value="{_escape(c)}">{_escape(c)}</option>' for c in sorted(categories)
@@ -59,6 +66,8 @@ def _generate_html(report_data: ReportData) -> str:
         f'<span class="stat-badge partial">{rd.partial_count} partial</span>'
         f"</div>"
     )
+    metadata = report_data.run_metadata or (report_data.cards[0].run_metadata if report_data.cards else {})
+    provenance_html = _render_run_metadata_summary(metadata)
 
     cards_html = [_render_card(card) for card in report_data.cards]
 
@@ -73,6 +82,7 @@ def _generate_html(report_data: ReportData) -> str:
     <div class="header">
         <h1>EVALUATION REVIEW - {_escape(report_data.title)}</h1>
         {stats_html}
+        {provenance_html}
         <div class="filter-bar">
             <label>Status:</label>
             <select id="status-filter" onchange="applyFilters()">
@@ -94,6 +104,7 @@ def _generate_html(report_data: ReportData) -> str:
                 <option value="">All</option>
                 {config_options}
             </select>
+            {_render_optional_filter("Effort", "effort-filter", effort_options)}
             <label>Category:</label>
             <select id="category-filter" onchange="applyFilters()">
                 <option value="">All</option>
@@ -117,6 +128,61 @@ def _generate_html(report_data: ReportData) -> str:
 </html>"""
 
 
+def _render_optional_filter(label: str, select_id: str, options: str) -> str:
+    if not options:
+        return ""
+    return (
+        f"<label>{_escape(label)}:</label>"
+        f'<select id="{_escape(select_id)}" onchange="applyFilters()">'
+        f'<option value="">All</option>{options}</select>'
+    )
+
+
+def _render_run_metadata_summary(metadata: dict) -> str:
+    if not metadata:
+        return ""
+
+    badges: list[tuple[str, str]] = []
+    commit = metadata.get("commit_sha")
+    if commit:
+        text = str(commit)
+        badges.append(("commit", text[:12]))
+    if metadata.get("dirty") is not None:
+        badges.append(("dirty", "yes" if metadata.get("dirty") else "no"))
+    for key, label in (
+        ("effort", "effort"),
+        ("config_hash", "config"),
+        ("job_id", "job"),
+        ("trial_id", "trial"),
+        ("trial_index", "trial #"),
+        ("agent_name", "agent"),
+        ("agent_version", "agent ver"),
+        ("runtime", "runtime"),
+        ("image_digest", "image"),
+        ("os", "os"),
+        ("dataset_name", "dataset"),
+        ("dataset_version", "dataset ver"),
+    ):
+        value = metadata.get(key)
+        if value is None or value == "":
+            continue
+        text = str(value)
+        if key in {"config_hash", "image_digest"}:
+            text = text[:12]
+        badges.append((label, text))
+
+    if not badges:
+        return ""
+    return (
+        '<div class="provenance-bar">'
+        + "".join(
+            f'<span class="provenance-badge"><span>{_escape(label)}</span>{_escape(value)}</span>'
+            for label, value in badges
+        )
+        + "</div>"
+    )
+
+
 def _render_card(card: ErrorCard) -> str:
     model_short = _model_short_name(card.model)
     level = card.correctness_level
@@ -127,6 +193,7 @@ def _render_card(card: ErrorCard) -> str:
         else "(no question)"
     )
     cost_str = f"${card.cost_usd:.4f}" if card.cost_usd is not None else "n/a"
+    effort = card.run_metadata.get("effort")
 
     category_badge = ""
     if card.error_category:
@@ -148,7 +215,7 @@ def _render_card(card: ErrorCard) -> str:
     )
 
     return f"""
-        <div class="question-card {_escape(level)}" data-qid="{_escape(card.question_id)}" data-model="{_escape(model_short)}" data-config="{_escape(card.config_type)}" data-status="{_escape(level)}" data-category="{_escape(card.error_category or '')}">
+        <div class="question-card {_escape(level)}" data-qid="{_escape(card.question_id)}" data-model="{_escape(model_short)}" data-config="{_escape(card.config_type)}" data-effort="{_escape(effort or '')}" data-status="{_escape(level)}" data-category="{_escape(card.error_category or '')}">
             <div class="card-header" onclick="toggleCard(this)">
                 <div>
                     <span class="q-id">Q{_escape(card.question_id)}</span>
@@ -298,4 +365,3 @@ def _render_sql_panel(card: ErrorCard) -> str:
 
     parts.append("</div>")
     return "\n".join(parts)
-

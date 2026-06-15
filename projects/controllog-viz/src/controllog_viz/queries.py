@@ -17,6 +17,7 @@ Conventions:
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import duckdb
@@ -44,6 +45,26 @@ ACCOUNT_LABELS = {
     "resource.tokens": "Tokens",
     "truth.state": "State",
 }
+
+RUN_PROVENANCE_KEYS = (
+    "commit_sha",
+    "repo",
+    "dirty",
+    "effort",
+    "resolved_config",
+    "config_hash",
+    "run_parameters",
+    "job_id",
+    "trial_id",
+    "trial_index",
+    "agent_name",
+    "agent_version",
+    "runtime",
+    "image_digest",
+    "os",
+    "dataset_name",
+    "dataset_version",
+)
 
 
 def _rows(con: duckdb.DuckDBPyConnection, sql: str, params: list[Any] | None = None) -> list[dict]:
@@ -142,7 +163,50 @@ def runs(
         {limit_clause}
         """,
     )
+    if rows:
+        metadata = run_metadata_by_run(con, run_ids=[r["run_id"] for r in rows])
+        for row in rows:
+            row.update(metadata.get(row["run_id"], {}))
     return rows
+
+
+def run_metadata_by_run(
+    con: duckdb.DuckDBPyConnection,
+    run_ids: list[str | None] | None = None,
+) -> dict[str | None, dict[str, Any]]:
+    """Best-effort run provenance from ``run_metadata`` or embedded eval payloads."""
+    pred = _run_filter(run_ids, "run_id")
+    run_filter = f"AND {pred}" if pred else ""
+    rows = _rows(
+        con,
+        f"""
+        SELECT run_id, kind, CAST(payload_json AS VARCHAR) AS payload_json
+        FROM events
+        WHERE kind IN ('run_metadata', 'evaluation_result')
+        {run_filter}
+        ORDER BY event_time, event_id
+        """,
+    )
+    by_run: dict[str | None, dict[str, Any]] = {}
+    for row in rows:
+        payload_raw = row.get("payload_json")
+        try:
+            payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        meta: dict[str, Any] = {}
+        if row["kind"] == "run_metadata":
+            meta.update(payload)
+        embedded = payload.get("run")
+        if isinstance(embedded, dict):
+            meta.update({k: v for k, v in embedded.items() if v is not None})
+        meta.update({k: payload[k] for k in RUN_PROVENANCE_KEYS if payload.get(k) is not None})
+        if meta:
+            by_run.setdefault(row["run_id"], {}).update(meta)
+    return by_run
 
 
 def events_for_run(con: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
