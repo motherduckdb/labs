@@ -191,6 +191,10 @@ The `tool_call.event_time` marks the start of the invocation. The
 result event SHOULD also carry balanced `truth.time` postings with
 `dims_json.kind = "tool"`.
 
+Consumers deriving latency from `truth.time` SHOULD filter by `dims_json.kind`.
+Use `kind = "wall"` for model wall time and `kind = "tool"` for tool spans.
+Summing `truth.time` without that dimension may conflate overlapping streams.
+
 Exporters that bundle a conversation trace inside another payload, such as
 `evaluation_result.payload_json.raw_response.messages`, MAY also include
 message-level timing fields. Supported optional fields are:

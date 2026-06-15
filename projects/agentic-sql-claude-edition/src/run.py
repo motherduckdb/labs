@@ -91,9 +91,7 @@ def _build_run_provenance(
         "dirty": bool(dirty_status) if dirty_status is not None else None,
         "effort": reasoning,
         "resolved_config": resolved_config,
-        "run_parameters": resolved_config,
         "agent_name": AGENT_ID,
-        "agent_version": commit_sha[:12] if commit_sha else None,
         "dataset_name": database,
         "dataset_version": split,
     }
@@ -510,7 +508,7 @@ async def _evaluate_loop(
                     "cost_usd": float(cost),
                     "input_tokens": run.prompt_tokens if run else 0,
                     "output_tokens": run.completion_tokens if run else 0,
-                    "run": run_provenance,
+                    "run": {"config_hash": run_provenance.get("config_hash")},
                     "raw_response": raw_response,
                     "answer_source": q.get("answer_source"),
                     "error_description": err,

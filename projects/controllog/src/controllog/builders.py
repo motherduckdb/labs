@@ -258,7 +258,9 @@ def tool_result(
     """Emit a timestamped ``tool_result`` event paired with a ``tool_call``.
 
     When ``duration_ms`` is supplied it is also posted to ``truth.time`` so tool
-    latency participates in the same balanced accounting as model latency.
+    latency participates in the same balanced accounting as model latency. Consumers
+    should filter ``truth.time`` by ``dims_json.kind`` (``tool`` vs ``wall``) before
+    deriving latency totals, because tool spans can overlap model wall time.
     """
     project_id = _require_config().project_id
     postings = []
