@@ -100,6 +100,107 @@ def test_model_completion_postings_balance(log_dir, read_postings):
 
 
 # -------------------------
+# run_metadata (spec § 5.4: run-level provenance)
+# -------------------------
+
+
+def test_run_metadata_records_provenance_and_config_hash(log_dir, read_events):
+    row = controllog.run_metadata(
+        run_id="r",
+        commit_sha="0123456789abcdef0123456789abcdef01234567",
+        dirty=False,
+        effort="high",
+        resolved_config={"temperature": 0, "limits": {"tool_calls": 8}},
+        job_id="job-1",
+        trial_id="trial-1",
+        trial_index=2,
+        agent_name="solver",
+        agent_version="1.2.3",
+        runtime="docker",
+        image_digest="sha256:abc",
+        os="linux",
+        dataset_name="dabstep",
+        dataset_version="2026-05-26",
+    )
+    event = read_events()[0]
+    payload = event["payload_json"]
+
+    assert row["kind"] == "run_metadata"
+    assert event["run_id"] == "r"
+    assert event["idempotency_key"] == "r:run_metadata"
+    assert payload["commit_sha"] == "0123456789abcdef0123456789abcdef01234567"
+    assert payload["dirty"] is False
+    assert payload["effort"] == "high"
+    assert payload["resolved_config"]["limits"]["tool_calls"] == 8
+    assert len(payload["config_hash"]) == 64
+    assert payload["job_id"] == "job-1"
+    assert payload["trial_id"] == "trial-1"
+    assert payload["trial_index"] == 2
+    assert payload["agent_name"] == "solver"
+    assert payload["image_digest"] == "sha256:abc"
+    assert payload["dataset_name"] == "dabstep"
+
+
+def test_run_metadata_preserves_explicit_config_hash(log_dir, read_events):
+    controllog.run_metadata(
+        run_id="r",
+        resolved_config={"temperature": 0},
+        config_hash="manual",
+        payload={"extra": "kept"},
+    )
+    payload = read_events()[0]["payload_json"]
+    assert payload["config_hash"] == "manual"
+    assert payload["extra"] == "kept"
+
+
+# -------------------------
+# tool_call / tool_result (spec § 5.3: per-tool-call timing)
+# -------------------------
+
+
+def test_tool_call_and_result_share_call_id(log_dir, read_events):
+    call_id = controllog.tool_call(
+        task_id="t1",
+        agent_id="a",
+        run_id="r",
+        name="run_sql",
+        arguments={"sql": "SELECT 1"},
+    )
+    controllog.tool_result(
+        call_id=call_id,
+        task_id="t1",
+        agent_id="a",
+        run_id="r",
+        name="run_sql",
+        output=[[1]],
+        status="ok",
+        duration_ms=25,
+    )
+
+    by_kind = {e["kind"]: e for e in read_events()}
+    assert by_kind["tool_call"]["payload_json"]["call_id"] == call_id
+    assert by_kind["tool_result"]["payload_json"]["call_id"] == call_id
+    assert by_kind["tool_call"]["idempotency_key"] == f"{call_id}:tool_call"
+    assert by_kind["tool_result"]["idempotency_key"] == f"{call_id}:tool_result"
+    assert by_kind["tool_result"]["payload_json"]["duration_ms"] == 25
+
+
+def test_tool_result_time_postings_balance(log_dir, read_postings):
+    controllog.tool_result(
+        call_id="c1",
+        task_id="t1",
+        agent_id="a",
+        run_id="r",
+        name="run_sql",
+        duration_ms=25,
+    )
+    postings = read_postings()
+    assert len(postings) == 2
+    assert {p["account_id"] for p in postings} == {"agent:a", "project:test"}
+    assert sum(p["delta_numeric"] for p in postings) == pytest.approx(0.0)
+
+
+# -------------------------
 # state_move (spec § 6 — exactly-once lifecycle)
 # -------------------------
 

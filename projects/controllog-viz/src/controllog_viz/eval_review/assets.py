@@ -53,6 +53,26 @@ body {
 .stats-bar .stat-badge.hit_limit { background: #aa0000; color: #fff; }
 .stats-bar .stat-badge.incorrect { background: #ff8800; color: #000; }
 .stats-bar .stat-badge.partial { background: #ffff00; color: #000; }
+.provenance-bar {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.provenance-badge {
+    display: inline-flex;
+    gap: 5px;
+    padding: 2px 7px;
+    background: #101826;
+    border: 1px solid #263850;
+    color: #d8e8ff;
+    font-size: 9px;
+    border-radius: 3px;
+}
+.provenance-badge span {
+    color: #6f8fb3;
+    text-transform: uppercase;
+}
 .container { display: flex; flex-direction: column; gap: 2px; padding: 8px; }
 .question-card {
     background: #111;
@@ -251,6 +271,70 @@ pre.error-msg { color: #ff4444; }
 .tool-args-label:first-child { margin-top: 0; }
 .cot-section .tool-args { color: #888; }
 .cot-section .tool-result { color: #aaa; }
+.tool-waterfall-section {
+    margin-bottom: 8px;
+    border: 1px solid #2a4a4a;
+    background: #081212;
+}
+.tool-waterfall-section summary {
+    padding: 6px 10px;
+    cursor: pointer;
+    color: #44ddff;
+    font-weight: bold;
+    font-size: 10px;
+    text-transform: uppercase;
+    background: #0d2020;
+    border-bottom: 1px solid #2a4a4a;
+}
+.tool-waterfall {
+    padding: 8px;
+}
+.tool-waterfall-axis {
+    display: flex;
+    justify-content: space-between;
+    color: #666;
+    font-size: 9px;
+    margin-left: 132px;
+    margin-bottom: 4px;
+}
+.tool-waterfall-row {
+    display: grid;
+    grid-template-columns: 124px 1fr;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 5px;
+}
+.tool-waterfall-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #ddd;
+    font-size: 10px;
+}
+.tool-waterfall-label span {
+    display: block;
+    color: #666;
+    font-size: 8px;
+}
+.tool-waterfall-track {
+    position: relative;
+    height: 18px;
+    background: #071010;
+    border: 1px solid #1e3a3a;
+}
+.tool-waterfall-bar {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    min-width: 2px;
+    padding: 1px 4px;
+    overflow: hidden;
+    white-space: nowrap;
+    background: #00aaff;
+    color: #001015;
+    font-weight: bold;
+    font-size: 9px;
+}
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: #111; }
 ::-webkit-scrollbar-thumb { background: #444; }
@@ -277,21 +361,24 @@ function applyFilters() {
     const statusFilter = document.getElementById('status-filter').value;
     const modelFilter = document.getElementById('model-filter').value;
     const configFilter = document.getElementById('config-filter').value;
+    const effortFilter = ((document.getElementById('effort-filter') || {}).value) || '';
     const categoryFilter = document.getElementById('category-filter').value;
 
     document.querySelectorAll('.question-card').forEach(card => {
         const status = card.dataset.status || '';
         const model = card.dataset.model || '';
         const config = card.dataset.config || '';
+        const effort = card.dataset.effort || '';
         const category = card.dataset.category || '';
 
         const statusMatch = !statusFilter || statusFilter === 'all' || status === statusFilter ||
             (statusFilter === 'errors' && (status === 'error' || status === 'incorrect' || status === 'partial' || status === 'hit_limit'));
         const modelMatch = !modelFilter || model === modelFilter;
         const configMatch = !configFilter || config === configFilter;
+        const effortMatch = !effortFilter || effort === effortFilter;
         const categoryMatch = !categoryFilter || category === categoryFilter;
 
-        if (statusMatch && modelMatch && configMatch && categoryMatch) {
+        if (statusMatch && modelMatch && configMatch && effortMatch && categoryMatch) {
             card.classList.remove('hidden');
         } else {
             card.classList.add('hidden');
@@ -338,4 +425,3 @@ document.addEventListener('DOMContentLoaded', () => {
     applyFilters();
 });
 """
-

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import html as _html_module
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,6 +26,26 @@ LEVEL_ORDER = {
 
 QUESTION_PREVIEW_LENGTH = 100
 MAX_RESULT_ROWS = 20
+
+RUN_PROVENANCE_KEYS = (
+    "commit_sha",
+    "repo",
+    "dirty",
+    "effort",
+    "resolved_config",
+    "config_hash",
+    "run_parameters",
+    "job_id",
+    "trial_id",
+    "trial_index",
+    "agent_name",
+    "agent_version",
+    "runtime",
+    "image_digest",
+    "os",
+    "dataset_name",
+    "dataset_version",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +86,10 @@ class ErrorCard:
     error_category: str | None = None
     error_description: str | None = None
     answer_source: str | None = None
+    event_time: str | None = None
+    actor_task_id: str | None = None
+    run_metadata: dict[str, Any] = field(default_factory=dict)
+    tool_spans: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -81,6 +105,7 @@ class ReportData:
     hit_limit_count: int = 0
     incorrect_count: int = 0
     partial_count: int = 0
+    run_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -123,16 +148,19 @@ def has_eval_results(con: duckdb.DuckDBPyConnection, run_id: str | None) -> bool
 
 def build_report_data(con: duckdb.DuckDBPyConnection, run_id: str | None, title: str) -> ReportData:
     """Build ReportData from the run's ``evaluation_result`` events."""
+    run_metadata = _load_run_metadata(con, run_id)
+    tool_spans_by_task = _load_tool_event_spans(con, run_id)
     rows = con.execute(
-        "SELECT CAST(payload_json AS VARCHAR) FROM events "
+        "SELECT CAST(event_time AS VARCHAR), actor_task_id, CAST(payload_json AS VARCHAR) FROM events "
         "WHERE kind = 'evaluation_result' AND run_id IS NOT DISTINCT FROM ? "
         "ORDER BY event_time",
         [run_id],
     ).fetchall()
 
     cards: list[ErrorCard] = []
-    for (payload_raw,) in rows:
+    for event_time, actor_task_id, payload_raw in rows:
         payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        card_run_metadata = _merge_run_metadata(run_metadata, payload)
         cards.append(
             ErrorCard(
                 question_id=str(payload.get("question_id", "")),
@@ -164,11 +192,15 @@ def build_report_data(con: duckdb.DuckDBPyConnection, run_id: str | None, title:
                 error_category=payload.get("error_category"),
                 error_description=payload.get("error_description"),
                 answer_source=payload.get("answer_source"),
+                event_time=event_time,
+                actor_task_id=actor_task_id,
+                run_metadata=card_run_metadata,
+                tool_spans=tool_spans_by_task.get(actor_task_id, []),
             )
         )
 
     cards.sort(key=_card_sort_key)
-    return _build_report_data(cards, title)
+    return _build_report_data(cards, title, run_metadata)
 
 
 def _card_sort_key(card: ErrorCard) -> tuple:
@@ -176,7 +208,7 @@ def _card_sort_key(card: ErrorCard) -> tuple:
     return (LEVEL_ORDER.get(card.correctness_level, 3), card.question_id)
 
 
-def _build_report_data(cards: list[ErrorCard], title: str) -> ReportData:
+def _build_report_data(cards: list[ErrorCard], title: str, run_metadata: dict[str, Any] | None = None) -> ReportData:
     total = len(cards)
     correct = sum(1 for c in cards if c.correctness_level in ("correct", "judge_correct"))
     error = sum(1 for c in cards if c.correctness_level == "error")
@@ -193,7 +225,82 @@ def _build_report_data(cards: list[ErrorCard], title: str) -> ReportData:
         hit_limit_count=hit_limit,
         incorrect_count=incorrect,
         partial_count=partial,
+        run_metadata=run_metadata or {},
     )
+
+
+def _load_run_metadata(con: duckdb.DuckDBPyConnection, run_id: str | None) -> dict[str, Any]:
+    """Latest ``run_metadata`` event for a run, if present."""
+    row = con.execute(
+        "SELECT CAST(payload_json AS VARCHAR) FROM events "
+        "WHERE kind = 'run_metadata' AND run_id IS NOT DISTINCT FROM ? "
+        "ORDER BY event_time DESC, event_id DESC LIMIT 1",
+        [run_id],
+    ).fetchone()
+    if row is None:
+        return {}
+    payload = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    return payload if isinstance(payload, dict) else {}
+
+
+def _merge_run_metadata(run_metadata: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """Merge run-level metadata with payload-local provenance overrides."""
+    merged = dict(run_metadata)
+    embedded = payload.get("run")
+    if isinstance(embedded, dict):
+        merged.update({k: v for k, v in embedded.items() if v is not None})
+    merged.update({k: payload[k] for k in RUN_PROVENANCE_KEYS if payload.get(k) is not None})
+    return merged
+
+
+def _load_tool_event_spans(con: duckdb.DuckDBPyConnection, run_id: str | None) -> dict[str | None, list[dict[str, Any]]]:
+    """Pair event-level ``tool_call``/``tool_result`` events into spans by task."""
+    rows = con.execute(
+        "SELECT CAST(event_time AS VARCHAR), kind, actor_task_id, CAST(payload_json AS VARCHAR) "
+        "FROM events "
+        "WHERE kind IN ('tool_call', 'tool_result') AND run_id IS NOT DISTINCT FROM ? "
+        "ORDER BY event_time, event_id",
+        [run_id],
+    ).fetchall()
+
+    pending: dict[tuple[str | None, str], dict[str, Any]] = {}
+    spans_by_task: dict[str | None, list[dict[str, Any]]] = {}
+    for event_time, kind, task_id, payload_raw in rows:
+        payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+        if not isinstance(payload, dict):
+            continue
+        call_id = payload.get("call_id")
+        if not call_id:
+            continue
+        key = (task_id, str(call_id))
+        if kind == "tool_call":
+            pending[key] = {
+                "call_id": str(call_id),
+                "name": payload.get("name", "unknown"),
+                "arguments": payload.get("arguments"),
+                "start_time": payload.get("start_time") or event_time,
+                "source": "event",
+            }
+            continue
+
+        call = pending.pop(key, {})
+        span = {
+            "call_id": str(call_id),
+            "name": call.get("name") or payload.get("name", "unknown"),
+            "arguments": call.get("arguments"),
+            "output": payload.get("output"),
+            "status": payload.get("status"),
+            "start_time": call.get("start_time") or payload.get("start_time"),
+            "end_time": payload.get("end_time") or event_time,
+            "duration_ms": payload.get("duration_ms") or payload.get("wall_ms"),
+            "source": "event",
+        }
+        spans_by_task.setdefault(task_id, []).append(span)
+
+    for (task_id, _call_id), call in pending.items():
+        spans_by_task.setdefault(task_id, []).append(call)
+
+    return spans_by_task
 
 
 # ---------------------------------------------------------------------------
@@ -228,4 +335,3 @@ def _format_result(result: Any) -> str:
 
 def _model_short_name(model: str) -> str:
     return model.split("/")[-1] if "/" in model else model
-

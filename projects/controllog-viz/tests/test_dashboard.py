@@ -132,3 +132,60 @@ def test_null_run_id_not_dropped(tmp_path):
         assert "no runs found" not in html
     finally:
         con.close()
+
+
+def test_dashboard_surfaces_run_provenance(tmp_path):
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    events = [
+        {"event_id": "m1", "event_time": "2026-05-26T10:00:00+00:00",
+         "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "run_metadata",
+         "project_id": "p", "source": "sdk", "idempotency_key": "m1",
+         "payload_json": {
+             "commit_sha": "abcdef1234567890",
+             "effort": "high",
+             "config_hash": "1234567890abcdef",
+             "job_id": "job-1",
+             "trial_index": 2,
+             "agent_name": "solver",
+             "dataset_name": "dabstep",
+         },
+         "run_id": "r", "actor_agent_id": None, "actor_task_id": None},
+    ]
+    (cl / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    con = reader.connect(str(tmp_path))
+    try:
+        row = q.runs(con)[0]
+        assert row["commit_sha"] == "abcdef1234567890"
+        assert row["effort"] == "high"
+        html = render.render_dashboard(con, "x")
+        assert 'id="filterEffort"' in html
+        assert 'data-effort="high"' in html
+        assert ">commit<" in html
+        assert "abcdef123456" in html
+        assert ">trial #<" in html
+        assert "dabstep" in html
+    finally:
+        con.close()
+
+
+def test_dashboard_reads_embedded_run_provenance(tmp_path):
+    cl = tmp_path / "controllog"
+    cl.mkdir(parents=True)
+    event = {"event_id": "e1", "event_time": "2026-05-26T10:00:00+00:00",
+             "ingest_time": "2026-05-26T10:00:00+00:00", "kind": "evaluation_result",
+             "project_id": "p", "source": "sdk", "idempotency_key": "e1",
+             "payload_json": {
+                 "question_id": "1",
+                 "is_correct": True,
+                 "run": {"commit_sha": "fedcba654321", "effort": "low"},
+             },
+             "run_id": "r", "actor_agent_id": None, "actor_task_id": None}
+    (cl / "events.jsonl").write_text(json.dumps(event) + "\n")
+    con = reader.connect(str(tmp_path))
+    try:
+        row = q.runs(con)[0]
+        assert row["commit_sha"] == "fedcba654321"
+        assert row["effort"] == "low"
+    finally:
+        con.close()

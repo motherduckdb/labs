@@ -19,7 +19,9 @@ from __future__ import annotations
 import contextvars
 import os
 import threading
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -284,6 +286,99 @@ def _budget_suffix(state: RunState) -> str:
     return ""
 
 
+def _tool_timing_start() -> tuple[str, float]:
+    return datetime.now(timezone.utc).isoformat(), time.perf_counter()
+
+
+def _with_tool_timing(call: dict, start_time: str, start_perf: float) -> dict:
+    end_time = datetime.now(timezone.utc).isoformat()
+    call["start_time"] = start_time
+    call["end_time"] = end_time
+    call["duration_ms"] = int((time.perf_counter() - start_perf) * 1000)
+    return call
+
+
+def _attach_tool_timings(messages: list, tool_calls: list[dict]) -> list:
+    """Add optional per-tool timing fields to existing trace messages.
+
+    The Agents SDK exposes call IDs in ``to_input_list()`` but tool callbacks do
+    not receive those IDs, so timings are matched by tool name in execution
+    order. This keeps the exported trace backwards-compatible: old renderers
+    ignore the added fields; new renderers can draw a time-scaled waterfall.
+    """
+    timed = [
+        call for call in tool_calls
+        if call.get("start_time") and call.get("end_time") and call.get("duration_ms") is not None
+    ]
+    if not messages or not timed:
+        return messages
+
+    used: set[int] = set()
+
+    def pop_timing(name: str | None) -> dict | None:
+        for idx, call in enumerate(timed):
+            if idx in used:
+                continue
+            if name and call.get("tool") == name:
+                used.add(idx)
+                return call
+        for idx, call in enumerate(timed):
+            if idx not in used:
+                used.add(idx)
+                return call
+        return None
+
+    def apply_timing(target: dict, timing: dict) -> None:
+        target.setdefault("start_time", timing.get("start_time"))
+        target.setdefault("end_time", timing.get("end_time"))
+        target.setdefault("duration_ms", timing.get("duration_ms"))
+
+    pending: dict[str, tuple[str | None, dict]] = {}
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        item_type = msg.get("type")
+        role = msg.get("role")
+
+        if item_type == "function_call":
+            call_id = str(msg.get("call_id") or msg.get("id") or "")
+            if call_id:
+                pending[call_id] = (msg.get("name"), msg)
+            continue
+
+        if item_type == "function_call_output":
+            call_id = str(msg.get("call_id") or "")
+            name, call_msg = pending.pop(call_id, (None, {}))
+            timing = pop_timing(name)
+            if timing:
+                if call_msg:
+                    apply_timing(call_msg, timing)
+                apply_timing(msg, timing)
+            continue
+
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") if isinstance(tc.get("function"), dict) else None
+                src = fn if fn is not None else tc
+                call_id = str(tc.get("id") or "")
+                if call_id:
+                    pending[call_id] = (src.get("name"), tc)
+            continue
+
+        if role in ("tool", "function_call_output"):
+            call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+            name, call_msg = pending.pop(call_id, (msg.get("name"), {}))
+            timing = pop_timing(name)
+            if timing:
+                if call_msg:
+                    apply_timing(call_msg, timing)
+                apply_timing(msg, timing)
+
+    return messages
+
+
 def _make_tools(state: RunState) -> list:
     def _execute(sql: str, fetchmany: int | None = None):
         with state.lock:
@@ -306,51 +401,55 @@ def _make_tools(state: RunState) -> list:
         - Call with `ids` (e.g. ["fees-matching-9dim"]) to read the FULL text of
           those items. You may pass several ids at once.
         """
+        start_time, start_perf = _tool_timing_start()
         out = render_semantic_lookup(state.store, domains=domains, ids=ids)
         state.record(
-            {
+            _with_tool_timing({
                 "tool": "semantic_lookup",
                 "domains": domains,
                 "ids": ids,
                 "result_chars": len(out),
-            }
+            }, start_time, start_perf)
         )
         return out + _budget_suffix(state)
 
     @function_tool
     def list_tables() -> str:
         """List all tables and views in the database."""
+        start_time, start_perf = _tool_timing_start()
         _, rows = _execute(
             "SELECT table_schema, table_name FROM information_schema.tables "
             f"WHERE table_catalog = '{state.database}' "
             "AND table_schema NOT IN ('information_schema', 'pg_catalog') "
             "ORDER BY table_schema, table_name"
         )
-        state.record({"tool": "list_tables", "result_rows": len(rows)})
+        state.record(_with_tool_timing({"tool": "list_tables", "result_rows": len(rows)}, start_time, start_perf))
         body = "(no tables)" if not rows else "\n".join(f"{s}.{t}" for s, t in rows)
         return body + _budget_suffix(state)
 
     @function_tool
     def list_columns(table: str) -> str:
         """Describe a table's columns. Accepts `name`, `schema.name`, or `db.schema.name`."""
+        start_time, start_perf = _tool_timing_start()
         try:
             _, rows = _execute(f"DESCRIBE {table}")
         except Exception as e:
-            state.record({"tool": "list_columns", "table": table, "error": str(e)})
+            state.record(_with_tool_timing({"tool": "list_columns", "table": table, "error": str(e)}, start_time, start_perf))
             return f"ERROR: {e}" + _budget_suffix(state)
-        state.record({"tool": "list_columns", "table": table, "cols": len(rows)})
+        state.record(_with_tool_timing({"tool": "list_columns", "table": table, "cols": len(rows)}, start_time, start_perf))
         body = "\n".join(f"  {r[0]}: {r[1]}" for r in rows)
         return body + _budget_suffix(state)
 
     @function_tool
     def query(sql: str) -> str:
         """Run a SELECT and return up to 50 rows as text."""
+        start_time, start_perf = _tool_timing_start()
         try:
             cols, rows = _execute(sql, fetchmany=50)
         except Exception as e:
-            state.record({"tool": "query", "sql": sql, "error": str(e)})
+            state.record(_with_tool_timing({"tool": "query", "sql": sql, "error": str(e)}, start_time, start_perf))
             return f"ERROR: {e}" + _budget_suffix(state)
-        state.record({"tool": "query", "sql": sql, "rows": len(rows)})
+        state.record(_with_tool_timing({"tool": "query", "sql": sql, "rows": len(rows)}, start_time, start_perf))
         if not rows:
             return "(no rows)" + _budget_suffix(state)
         header = " | ".join(cols)
@@ -363,13 +462,14 @@ def _make_tools(state: RunState) -> list:
         with state.lock:
             if state.submitted:
                 return "ERROR: answer already submitted"
+        start_time, start_perf = _tool_timing_start()
         # Execute FIRST. Only latch the submission on success — a SQL error here
         # must NOT end the run, or a single typo would lock the agent out of
         # resubmitting a corrected query.
         try:
             _, rows = _execute(sql)
         except Exception as e:
-            state.record({"tool": "submit_answer", "sql": sql, "error": str(e)})
+            state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": str(e)}, start_time, start_perf))
             return (
                 f"Your submitted SQL failed to execute: {e}\n"
                 "The answer was NOT recorded. Fix the SQL and call submit_answer "
@@ -379,7 +479,7 @@ def _make_tools(state: RunState) -> list:
             state.submitted = True
             state.final_sql = sql
             state.final_rows = rows
-        state.record({"tool": "submit_answer", "sql": sql, "rows": len(rows)})
+        state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "rows": len(rows)}, start_time, start_perf))
         return f"Submitted. {len(rows)} rows."
 
     return [semantic_lookup, list_tables, list_columns, query, submit_answer]
@@ -499,7 +599,7 @@ async def run_agent(
     messages: list | None = None
     try:
         if result is not None:
-            messages = result.to_input_list()
+            messages = _attach_tool_timings(result.to_input_list(), state.tool_calls)
     except Exception:
         messages = None
 

@@ -156,6 +156,89 @@ Each has its own idempotency key:
 * Clean reconciliation with provider data
 * Phase-specific latency and cost attribution
 
+### 5.3 Tool Calls: Two-Phase Timing Pattern
+
+Tool invocations SHOULD be represented as two timestamped events:
+
+1. `tool_call`
+2. `tool_result`
+
+Both share a common `call_id`.
+
+Each has its own idempotency key:
+
+* `<call_id>:tool_call`
+* `<call_id>:tool_result`
+
+Required `tool_call.payload_json` fields:
+
+* `call_id`
+* `name`
+* `arguments` (when safe to persist)
+* `phase = "call"`
+
+Required `tool_result.payload_json` fields:
+
+* `call_id`
+* `name` (recommended, for display without joining)
+* `status` (recommended)
+* `duration_ms` (recommended)
+* `output` (when safe to persist)
+* `phase = "result"`
+
+The `tool_call.event_time` marks the start of the invocation. The
+`tool_result.event_time` marks the end. When `duration_ms` is available, the
+result event SHOULD also carry balanced `truth.time` postings with
+`dims_json.kind = "tool"`.
+
+Consumers deriving latency from `truth.time` SHOULD filter by `dims_json.kind`.
+Use `kind = "wall"` for model wall time and `kind = "tool"` for tool spans.
+Summing `truth.time` without that dimension may conflate overlapping streams.
+
+Exporters that bundle a conversation trace inside another payload, such as
+`evaluation_result.payload_json.raw_response.messages`, MAY also include
+message-level timing fields. Supported optional fields are:
+
+* `start_time`
+* `end_time`
+* `duration_ms`
+
+Renderers SHOULD prefer event-level timing when present, fall back to
+message-level timing, and finally fall back to a step-ordered trace when no
+per-tool timing exists.
+
+### 5.4 Run Provenance
+
+Runs SHOULD emit one `run_metadata` event scoped by `run_id`. This keeps the
+append-only events table storage-compatible while giving consumers a canonical
+run-level record to join against.
+
+Recommended `run_metadata.payload_json` fields:
+
+* `commit_sha` (full 40-character hash)
+* `repo`
+* `dirty` (boolean)
+* `effort` (model effort/reasoning level, or provider-native value)
+* `resolved_config` (the resolved TrialConfig/JobConfig after defaults and overrides)
+* `config_hash` (stable hash of `resolved_config`)
+* `run_parameters` (generic parameters not captured by the resolved config)
+* `job_id`
+* `trial_id`
+* `trial_index`
+* `agent_name`
+* `agent_version`
+* `runtime`
+* `image_digest`
+* `os`
+* `dataset_name`
+* `dataset_version`
+
+Consumers SHOULD also accept the same fields directly on
+`evaluation_result.payload_json` or under `evaluation_result.payload_json.run`
+for exporters that cannot emit a separate `run_metadata` event. Missing
+provenance fields are allowed; UIs SHOULD omit unavailable dimensions rather
+than failing the render.
+
 ---
 
 ## 6. Task Lifecycle: truth.state
