@@ -459,11 +459,10 @@ def _make_tools(state: RunState) -> list:
     @function_tool
     def submit_answer(sql: str) -> str:
         """Submit the SQL whose result IS the answer. Call once with working SQL."""
-        start_time, start_perf = _tool_timing_start()
         with state.lock:
             if state.submitted:
-                state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": "answer already submitted"}, start_time, start_perf))
                 return "ERROR: answer already submitted"
+        start_time, start_perf = _tool_timing_start()
         # Execute FIRST. Only latch the submission on success — a SQL error here
         # must NOT end the run, or a single typo would lock the agent out of
         # resubmitting a corrected query.
