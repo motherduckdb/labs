@@ -1,0 +1,8 @@
+file: payments_base.malloy
+domain: payments
+summary: One row per transaction. Authoritative source for counts, volume, fraud, customers.
+exports:
+  - name: payments_base
+    kind: source
+    summary: The payments table with transaction_count and total_eur measures.
+provides_for: [transaction_count, total_volume]
