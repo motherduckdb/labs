@@ -1,0 +1,19 @@
+file: merchants_base.malloy
+domain: payments
+summary: |
+  Base Malloy source over the DuckDB `merchants` table. One row per merchant,
+  with derived dimensions for account type labels (per Merchant Manual §2),
+  capture-delay buckets (§5), MCC helpers (§3), and acquirer-count features,
+  plus basic count/avg measures and starter views (by account type, capture
+  delay, MCC, and an overview). No joins.
+exports:
+  - name: merchants_base
+    kind: source
+    summary: Per-merchant configuration: name, capture_delay, acquirer list, MCC, account_type, with derived labels and counts.
+provides_for:
+  - merchant lookups by name
+  - segmentation by account_type / account_segment
+  - capture-delay distribution analysis
+  - acquirer footprint (single vs multi-acquirer) analysis
+  - MCC distribution and category-prefix grouping
+  - join target for fee/payment fact tables on `merchant`

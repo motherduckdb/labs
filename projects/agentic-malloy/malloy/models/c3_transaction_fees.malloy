@@ -1,0 +1,169 @@
+// c3_transaction_fees.malloy
+// ONE focused source: every payment, joined to (a) its merchant's
+// monthly volume/fraud bucket and (b) every fee rule that matches the
+// transaction. Each matched rule yields one (transaction, rule) pair on
+// which we compute the effective fee:
+//
+//     fee = fees.fixed_amount + fees.rate * eur_amount / 10000
+//
+// The match conditions come straight from manual §5: NULL on a rule
+// field = wildcard, list-valued fields use membership, scalar fields
+// equality. account_type / aci / merchant_category_code are LIST columns
+// on the fee rule, so we use list_contains!boolean.
+
+source: c3_transaction_fees is c1_payments extend {
+
+  //--------------------------------------------------------------------
+  // Joins
+  //--------------------------------------------------------------------
+
+  // Pull this transaction's (merchant, year, month) bucket so we can
+  // match the rule's monthly_volume / monthly_fraud_level tier strings.
+  join_one: monthly is c2_merchant_monthly on
+    merchant = monthly.merchant
+    and `year` = monthly.`year`
+    and date_part!number('month', transaction_date) = monthly.month_num
+
+  // Every fee rule that applies to this transaction. join_many because a
+  // transaction can match multiple rules (wildcards), and a rule
+  // matches many transactions.
+  join_many: fees is fees_base on
+        card_scheme = fees.card_scheme
+    and (fees.account_type is null
+         or list_contains!boolean(fees.account_type, account_type))
+    and (fees.capture_delay is null
+         or fees.capture_delay = capture_delay)
+    and (fees.monthly_volume is null
+         or fees.monthly_volume = monthly.monthly_volume_tier)
+    and (fees.monthly_fraud_level is null
+         or fees.monthly_fraud_level = monthly.monthly_fraud_level_tier)
+    and (fees.merchant_category_code is null
+         or list_contains!boolean(fees.merchant_category_code, merchant_category_code))
+    and (fees.is_credit is null
+         or fees.is_credit = is_credit)
+    and (fees.aci is null
+         or list_contains!boolean(fees.aci, aci))
+    and (fees.intracountry is null
+         or fees.intracountry = intracountry_int)
+
+  //--------------------------------------------------------------------
+  // Convenience dimensions for grouping the post-join grain
+  //--------------------------------------------------------------------
+  dimension: fee_id            is fees.`ID`
+  dimension: rule_fixed_amount is fees.fixed_amount
+  dimension: rule_rate         is fees.rate
+  dimension: rule_card_scheme  is fees.card_scheme
+  dimension: rule_aci_label    is fees.aci_label
+  dimension: rule_specificity  is fees.rule_specificity
+
+  dimension: txn_year      is `year`
+  dimension: txn_month_num is monthly.month_num
+  dimension: txn_day       is day_of_year
+
+  // Volume / fraud bucket carried up to the transaction grain.
+  dimension: monthly_volume_tier      is monthly.monthly_volume_tier
+  dimension: monthly_fraud_level_tier is monthly.monthly_fraud_level_tier
+
+  // Per-(txn, matched-rule) fee amount. Useful as a row-level value
+  // when projecting individual matches.
+  dimension: pair_fee_amount is
+    fees.fixed_amount + fees.rate * eur_amount / 10000.0
+
+  //--------------------------------------------------------------------
+  // Measures
+  //
+  // Aggregates that involve BOTH the source (eur_amount) and the joined
+  // fees rule (fixed_amount, rate) must declare locality on the joined
+  // side: `fees.sum(<expr-using-both>)` — Malloy then sums over
+  // (txn, matched-rule) pairs at the fees-join grain.
+  //--------------------------------------------------------------------
+
+  // Pair count = number of (transaction, matching-rule) pairs.
+  measure: matched_pair_count is fees.rule_count
+
+  // Distinct rule IDs that matched at this grouping level.
+  measure: distinct_matched_fee_ids is count(fees.`ID`)
+
+  // Total fee paid (or applicable, depending on usage) — sum of the
+  // per-pair fee amount.
+  measure: total_fee_amount is
+    fees.sum(fees.fixed_amount + fees.rate * eur_amount / 10000.0)
+
+  // Components, for diagnostics.
+  measure: total_fixed_component is fees.fixed_amount.sum()
+  measure: total_variable_component is
+    fees.sum(fees.rate * eur_amount / 10000.0)
+
+  // Mean fee across matched pairs (the "average scenario" the manual
+  // refers to when comparing schemes).
+  measure: avg_fee_amount is
+    fees.avg(fees.fixed_amount + fees.rate * eur_amount / 10000.0)
+
+  // Convenience: total transaction value at this grain (symmetric, so
+  // a plain source-level sum is what we want — declare locality on the
+  // payments source to silence the asymmetric-aggregate warning).
+  measure: total_txn_value is eur_amount.sum()
+
+  //--------------------------------------------------------------------
+  // Views
+  //--------------------------------------------------------------------
+
+  // Which fee IDs apply to a merchant across a year.
+  view: applicable_fee_ids_by_merchant_year is {
+    group_by: merchant, txn_year, fee_id
+    aggregate: matched_pair_count
+    order_by: merchant, txn_year, fee_id
+  }
+
+  // Same, monthly.
+  view: applicable_fee_ids_by_merchant_month is {
+    group_by: merchant, txn_year, txn_month_num, fee_id
+    aggregate: matched_pair_count
+    order_by: merchant, txn_year, txn_month_num, fee_id
+  }
+
+  // Same, daily (day-of-year).
+  view: applicable_fee_ids_by_merchant_day is {
+    group_by: merchant, txn_year, txn_day, fee_id
+    aggregate: matched_pair_count
+    order_by: merchant, txn_year, txn_day, fee_id
+  }
+
+  // Total fees by merchant × year.
+  view: fees_by_merchant_year is {
+    group_by: merchant, txn_year
+    aggregate: total_fee_amount, matched_pair_count
+    order_by: total_fee_amount desc
+  }
+
+  // Total fees by merchant × month.
+  view: fees_by_merchant_month is {
+    group_by: merchant, txn_year, txn_month_num
+    aggregate: total_fee_amount, matched_pair_count
+    order_by: merchant, txn_year, txn_month_num
+  }
+
+  // Total fees by merchant × card scheme (used for "steer traffic to
+  // which scheme" questions).
+  view: fees_by_merchant_scheme is {
+    group_by: merchant, card_scheme
+    aggregate: total_fee_amount, matched_pair_count
+    order_by: merchant, total_fee_amount
+  }
+
+  // Total fees by merchant × ACI (used for "steer to which ACI"
+  // questions).
+  view: fees_by_merchant_aci is {
+    group_by: merchant, aci, aci_label
+    aggregate: total_fee_amount, matched_pair_count
+    order_by: merchant, total_fee_amount
+  }
+
+  // Fees by scheme alone (for the "average scenario" cheapest-scheme
+  // questions — combine with where: eur_amount = 50, etc.).
+  view: fees_by_scheme is {
+    group_by: card_scheme
+    aggregate: avg_fee_amount, total_fee_amount, matched_pair_count
+    order_by: avg_fee_amount asc
+  }
+}

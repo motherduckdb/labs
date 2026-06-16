@@ -1,0 +1,21 @@
+file: c3_transaction_fees.malloy
+domain: payments
+summary: |
+  Joins each payment to its merchant's monthly volume/fraud bucket and to every
+  fee rule that matches (card_scheme + list/scalar/wildcard match across
+  account_type, capture_delay, monthly_volume tier, monthly_fraud_level tier,
+  MCC, is_credit, ACI, intracountry). Exposes per-(transaction, matched-rule)
+  effective fee = fixed_amount + rate*eur_amount/10000, plus aggregates and
+  views for total/avg fees rolled up by merchant, month, day, card scheme,
+  ACI, and fee ID.
+exports:
+  - name: c3_transaction_fees
+    kind: source
+    summary: Payments × merchant-monthly × matched fee rules; effective fee per pair and rollup measures/views.
+provides_for:
+  - "Which fee IDs apply to a merchant in a year / month / day"
+  - "Total fees paid by a merchant in a year / month / day"
+  - "Cheapest / most expensive card scheme for a given transaction value or merchant"
+  - "Cheapest ACI to steer traffic toward for a merchant"
+  - "Fee-rule sensitivity: delta when a rule's rate or fixed amount changes"
+  - "Average fee for an account_type + MCC + scheme + transaction value combo"

@@ -1,0 +1,11 @@
+file: merchant_category_codes_base.malloy
+domain: Payments / Merchant reference data
+summary: Base source over the merchant_category_codes lookup table, exposing the raw MCC code and description plus derived category/subcategory/industry-group dimensions and simple count measures for use in joins from fees and transactions models.
+exports:
+  - name: merchant_category_codes_base
+    kind: source
+    summary: One row per 4-digit Merchant Category Code with description, numeric form, category/subcategory splits, an industry-group bucket, and count measures.
+provides_for:
+  - fees (lookup of MCC descriptions / category for fee rules whose merchant_category_code list references these codes)
+  - merchants (enrich merchant rows with human-readable MCC description and industry group)
+  - transactions (categorize transactions by merchant industry group)

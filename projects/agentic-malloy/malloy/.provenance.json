@@ -1,0 +1,20 @@
+{
+  "malloy_provenance": "model_authored",
+  "malloy_model_hash": "8fdf7cea47f5768b",
+  "manual_included": true,
+  "authoring_model": "anthropic/claude-opus-4.7",
+  "central_only": false,
+  "built_at": "2026-06-16T23:41:49.588Z",
+  "files": [
+    "acquirer_countries_base.malloy",
+    "c1_payments.malloy",
+    "c2_merchant_monthly.malloy",
+    "c3_transaction_fees.malloy",
+    "c4_fee_scenarios.malloy",
+    "dabstep.malloy",
+    "fees_base.malloy",
+    "merchant_category_codes_base.malloy",
+    "merchants_base.malloy",
+    "payments_base.malloy"
+  ]
+}

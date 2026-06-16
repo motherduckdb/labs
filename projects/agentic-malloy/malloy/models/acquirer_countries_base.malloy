@@ -1,0 +1,21 @@
+source: acquirer_countries_base is duckdb.table('acquirer_countries') extend {
+
+  // --- Dimensions ---
+
+  // Uppercased acquirer name (useful for case-insensitive matching/joins
+  // against acquirer fields in other tables).
+  dimension: acquirer_name is upper(acquirer)
+
+  // Uppercased ISO country code for the acquirer.
+  dimension: acquirer_country is upper(country_code)
+
+  // --- Measures ---
+
+  measure: row_count is count()
+
+  // Distinct acquirers represented in this lookup.
+  measure: acquirer_count is count(acquirer)
+
+  // Distinct acquirer countries represented.
+  measure: country_count is count(country_code)
+}

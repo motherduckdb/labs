@@ -1,0 +1,102 @@
+// merchants_base.malloy
+// Base source for the `merchants` directory table.
+// One row per merchant with its processing configuration:
+//   - merchant name
+//   - capture_delay (auth → settlement timing bucket)
+//   - acquirer list (acquiring banks the merchant routes through)
+//   - merchant_category_code (MCC, see manual §3)
+//   - account_type (single-letter code, see manual §2)
+
+source: merchants_base is duckdb.table('merchants') extend {
+
+  //-------------------------------------------------------------------
+  // Derived dimensions
+  //-------------------------------------------------------------------
+
+  // Human-readable account type per the Merchant Manual §2.
+  dimension: account_type_label is
+    pick 'Enterprise - Retail'      when account_type = 'R'
+    pick 'Enterprise - Digital'     when account_type = 'D'
+    pick 'Enterprise - Hospitality' when account_type = 'H'
+    pick 'Platform - Franchise'     when account_type = 'F'
+    pick 'Platform - SaaS'          when account_type = 'S'
+    pick 'Other'                    when account_type = 'O'
+    else 'Unknown'
+
+  // Broad channel grouping derived from account_type.
+  dimension: account_segment is
+    pick 'Enterprise' when account_type = 'R' | 'D' | 'H'
+    pick 'Platform'   when account_type = 'F' | 'S'
+    else 'Other'
+
+  // capture_delay as an ordered bucket (faster = more expensive per manual §5).
+  dimension: capture_delay_bucket is
+    pick 'immediate' when capture_delay = 'immediate'
+    pick '<3 days'   when capture_delay = '<3'
+    pick '3-5 days'  when capture_delay = '3-5'
+    pick '>5 days'   when capture_delay = '>5'
+    pick 'manual'    when capture_delay = 'manual'
+    else 'unknown'
+
+  // True when the merchant settles quickly (more expensive bucket).
+  dimension: is_fast_capture is
+    capture_delay = 'immediate' or capture_delay = '<3'
+
+  // Number of acquirers the merchant routes through.
+  dimension: acquirer_count is len!number(acquirer)
+
+  dimension: is_multi_acquirer is len!number(acquirer) > 1
+
+  // MCC as string (handy for joins/labels, two-digit category prefix, etc.)
+  dimension: mcc_string is merchant_category_code::string
+
+  // First two digits of the MCC = high-level category (manual §3).
+  dimension: mcc_category_prefix is
+    substr!string(lpad!string(merchant_category_code::string, 4, '0'), 1, 2)
+
+  //-------------------------------------------------------------------
+  // Measures
+  //-------------------------------------------------------------------
+
+  measure: merchant_count is count()
+  measure: distinct_merchants is count(merchant)
+  measure: distinct_mccs is count(merchant_category_code)
+  measure: distinct_account_types is count(account_type)
+  measure: avg_acquirers_per_merchant is avg(len!number(acquirer))
+  measure: max_acquirers_per_merchant is max(len!number(acquirer))
+  measure: multi_acquirer_merchants is count() { where: len!number(acquirer) > 1 }
+  measure: fast_capture_merchants is
+    count() { where: capture_delay = 'immediate' or capture_delay = '<3' }
+
+  //-------------------------------------------------------------------
+  // Handy views
+  //-------------------------------------------------------------------
+
+  view: by_account_type is {
+    group_by: account_type, account_type_label
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+
+  view: by_capture_delay is {
+    group_by: capture_delay_bucket
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+
+  view: by_mcc is {
+    group_by: merchant_category_code
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+
+  view: overview is {
+    aggregate:
+      merchant_count
+      distinct_mccs
+      distinct_account_types
+      avg_acquirers_per_merchant
+      multi_acquirer_merchants
+      fast_capture_merchants
+  }
+}

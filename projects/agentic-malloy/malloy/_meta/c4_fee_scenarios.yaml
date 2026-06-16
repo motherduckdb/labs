@@ -1,0 +1,30 @@
+file: c4_fee_scenarios.malloy
+domain: fees
+summary: |
+  "Average scenario" fee model — hypothetical per-rule fees at canonical
+  transaction values (50, 100, 1 000, 4 321, 50 000 EUR), independent of
+  actual payment volume. Encodes the manual §5 formula
+  `fee = fixed_amount + rate * value / 10000` as a set of pre-baked
+  dimensions on every fee rule, plus convenience views that average per
+  card scheme. Two helper sources expand list-valued rule columns so we
+  can group BY ACI (`c4_fee_rules_by_aci`) and BY MCC
+  (`c4_fee_rules_by_mcc`) without losing rule grain on the main source.
+  NULL on a rule field is treated as a wildcard per the manual; the ACI
+  helper expands NULL `aci` to all 7 ACI letters so wildcard rules
+  contribute to every ACI bucket.
+exports:
+  - name: c4_fee_scenarios
+    kind: source
+    summary: Rule-grain scenario source — fees at canonical transaction values, scheme-level rollups.
+  - name: c4_fee_rules_by_aci
+    kind: source
+    summary: Fee rules exploded by ACI letter (NULL aci ⇒ all 7 letters). Group BY aci_letter to answer "most expensive ACI at X EUR" style questions.
+  - name: c4_fee_rules_by_mcc
+    kind: source
+    summary: Fee rules exploded by MCC number (NULL MCC excluded — wildcards add a constant to every bucket and don't change ranking). Group BY mcc_number for "most expensive MCC at X EUR" questions; joined to merchant_category_codes for descriptions.
+provides_for:
+  - "In the average scenario, which card scheme is cheapest/most expensive at N EUR?"
+  - "For a credit transaction of N EUR on <scheme>, what is the most expensive ACI?"
+  - "What is the most expensive MCC for a transaction of N EUR, in general?"
+  - "For account type X (and MCC Y), what would be the average fee that <scheme> would charge for N EUR?"
+  - "Average fee that <scheme> would charge for a credit transaction of N EUR."

@@ -1,99 +1,119 @@
+// payments_base.malloy
+// Base semantic model for the `payments` transaction table.
+// Adds derived dimensions (timestamps, geography flags, account-type labels,
+// ACI labels) and the core KPI measures called out in the Merchant Manual:
+// authorization rate, fraud rate, refusal rate, transaction counts/volume.
+// NO joins here — join logic belongs in payments.malloy.
+
 source: payments_base is duckdb.table('payments') extend {
 
-  // ---------- Time / derived dimensions ----------
-  dimension: transaction_date is make_date!date(`year`, 1, 1) + (day_of_year - 1) day
+  //--------------------------------------------------------------------------
+  // Derived time dimensions
+  //--------------------------------------------------------------------------
+  // day_of_year + year → an actual date (Jan 1 of `year` + (day_of_year - 1) days).
+  dimension: transaction_date is
+    (make_date!date(`year`, 1, 1) + (day_of_year - 1) day)::date
+
+  dimension: transaction_timestamp is
+    (transaction_date::timestamp
+      + hour_of_day hour
+      + minute_of_hour minute)
+
   dimension: transaction_month is transaction_date.month
   dimension: transaction_quarter is transaction_date.quarter
-  dimension: day_of_week is strftime!string(transaction_date, '%A')
+  dimension: transaction_week is transaction_date.week
 
-  // ---------- Geo / routing flags ----------
-  dimension: is_intracountry is ip_country = acquirer_country
-  dimension: is_cross_border is ip_country != acquirer_country
+  // Rough time-of-day buckets
+  dimension: time_of_day is
+    pick 'night'   when hour_of_day < 6
+    pick 'morning' when hour_of_day < 12
+    pick 'afternoon' when hour_of_day < 18
+    else 'evening'
+
+  //--------------------------------------------------------------------------
+  // Geography / routing
+  //--------------------------------------------------------------------------
+  // "Local acquiring" (section 5.1.1): issuer country == acquirer country.
+  dimension: is_intracountry is issuing_country = acquirer_country
+  dimension: is_cross_border is issuing_country != acquirer_country
+
+  // IP/issuer mismatch — a common fraud signal.
   dimension: ip_issuer_mismatch is ip_country != issuing_country
 
-  // ---------- Account / channel decoders ----------
-  dimension: aci_description is aci ?
-      pick 'Card present - Non-authenticated'        when 'A'
-      pick 'Card Present - Authenticated'            when 'B'
-      pick 'Tokenized card with mobile device'       when 'C'
-      pick 'Card Not Present - Card On File'         when 'D'
-      pick 'Card Not Present - Recurring Bill'       when 'E'
-      pick 'Card Not Present - 3-D Secure'           when 'F'
-      pick 'Card Not Present - Non-3-D Secure'       when 'G'
-      else 'Unknown'
+  //--------------------------------------------------------------------------
+  // ACI label (section 4)
+  //--------------------------------------------------------------------------
+  dimension: aci_label is
+    pick 'Card present - Non-authenticated'         when aci = 'A'
+    pick 'Card Present - Authenticated'             when aci = 'B'
+    pick 'Tokenized card with mobile device'        when aci = 'C'
+    pick 'Card Not Present - Card On File'          when aci = 'D'
+    pick 'Card Not Present - Recurring Bill'        when aci = 'E'
+    pick 'Card Not Present - 3-D Secure'            when aci = 'F'
+    pick 'Card Not Present - Non-3-D Secure'        when aci = 'G'
+    else 'Unknown'
 
   dimension: is_card_present is aci ? 'A' | 'B'
   dimension: is_card_not_present is aci ? 'D' | 'E' | 'F' | 'G'
-  dimension: is_3ds_authenticated is aci = 'F'
+  dimension: is_3d_secure is aci = 'F'
 
-  // ---------- Outcome flags ----------
-  dimension: is_approved is not is_refused_by_adyen
-  dimension: is_fraud is has_fraudulent_dispute
+  //--------------------------------------------------------------------------
+  // Transaction type / amount buckets
+  //--------------------------------------------------------------------------
+  dimension: credit_or_debit is
+    pick 'credit' when is_credit
+    else 'debit'
 
-  // ---------- Amount buckets ----------
   dimension: amount_bucket is
-      pick 'micro (<10)'      when eur_amount < 10
-      pick 'small (10-50)'    when eur_amount < 50
-      pick 'medium (50-200)'  when eur_amount < 200
-      pick 'large (200-1000)' when eur_amount < 1000
-      else 'xlarge (1000+)'
+    pick 'micro (<10)'      when eur_amount < 10
+    pick 'small (10-50)'    when eur_amount < 50
+    pick 'medium (50-200)'  when eur_amount < 200
+    pick 'large (200-1000)' when eur_amount < 1000
+    else 'xlarge (>=1000)'
 
-  // ---------- Time-of-day buckets ----------
-  dimension: time_of_day is
-      pick 'night (0-5)'      when hour_of_day < 6
-      pick 'morning (6-11)'   when hour_of_day < 12
-      pick 'afternoon (12-17)' when hour_of_day < 18
-      else 'evening (18-23)'
+  //--------------------------------------------------------------------------
+  // Card BIN as string (BINs are conventionally 6-digit codes)
+  //--------------------------------------------------------------------------
+  dimension: card_bin_str is card_bin::string
 
-  // ---------- Core volume measures ----------
+  //==========================================================================
+  // MEASURES
+  //==========================================================================
+
+  // Volumes
   measure: transaction_count is count()
   measure: unique_shoppers is count(email_address)
   measure: unique_cards is count(card_number)
   measure: unique_merchants is count(merchant)
-  measure: unique_ips is count(ip_address)
 
-  // ---------- Monetary measures ----------
-  measure: total_eur_volume is eur_amount.sum()
-  measure: avg_transaction_value is eur_amount.avg()
-  measure: min_transaction_value is eur_amount.min()
-  measure: max_transaction_value is eur_amount.max()
+  measure: total_eur_amount is eur_amount.sum()
+  measure: avg_eur_amount is eur_amount.avg()
+  measure: median_eur_amount is eur_amount.avg()
+  measure: max_eur_amount is eur_amount.max()
+  measure: min_eur_amount is eur_amount.min()
 
-  // ---------- Outcome rates ----------
+  // Authorization / refusal (manual §8.2 KPIs)
   measure: refused_count is count() { where: is_refused_by_adyen }
-  measure: approved_count is count() { where: not is_refused_by_adyen }
+  measure: authorized_count is count() { where: not is_refused_by_adyen }
   measure: refusal_rate is refused_count / count()
-  measure: authorization_rate is approved_count / count()
+  measure: authorization_rate is authorized_count / count()
 
+  // Fraud (manual §7: fraud = fraudulent volume / total volume)
   measure: fraud_count is count() { where: has_fraudulent_dispute }
   measure: fraud_rate is fraud_count / count()
-  measure: fraud_volume is eur_amount.sum() { where: has_fraudulent_dispute }
-  measure: fraud_volume_rate is fraud_volume / eur_amount.sum()
+  measure: fraud_eur_amount is eur_amount.sum() { where: has_fraudulent_dispute }
+  measure: fraud_volume_rate is fraud_eur_amount / eur_amount.sum()
 
-  // ---------- Credit / debit splits ----------
+  // Cross-border vs local mix (manual §5.1.1)
+  measure: intracountry_count is count() { where: is_intracountry }
+  measure: cross_border_count is count() { where: is_cross_border }
+  measure: intracountry_share is intracountry_count / count()
+
+  // Credit vs debit mix (credit is typically more expensive)
   measure: credit_count is count() { where: is_credit }
-  measure: debit_count is count() { where: not is_credit }
   measure: credit_share is credit_count / count()
-  measure: credit_volume is eur_amount.sum() { where: is_credit }
 
-  // ---------- Cross-border / local acquiring ----------
-  measure: intracountry_count is count() { where: ip_country = acquirer_country }
-  measure: cross_border_count is count() { where: ip_country != acquirer_country }
-  measure: intracountry_rate is intracountry_count / count()
-  measure: cross_border_rate is cross_border_count / count()
-  measure: intracountry_volume is eur_amount.sum() { where: ip_country = acquirer_country }
-  measure: cross_border_volume is eur_amount.sum() { where: ip_country != acquirer_country }
-
-  // ---------- 3DS / CNP optimization ----------
-  measure: cnp_count is count() { where: aci ? 'D' | 'E' | 'F' | 'G' }
-  measure: cnp_3ds_count is count() { where: aci = 'F' }
-  measure: cnp_non_3ds_count is count() { where: aci = 'G' }
-  measure: cnp_3ds_share is cnp_3ds_count / nullif!number(cnp_count, 0)
-
-  // ---------- ACI-level fraud rates (useful breakdown helpers) ----------
-  measure: cnp_fraud_rate is
-      count() { where: has_fraudulent_dispute and (aci ? 'D' | 'E' | 'F' | 'G') } /
-      nullif!number(cnp_count, 0)
-  measure: cp_fraud_rate is
-      count() { where: has_fraudulent_dispute and (aci ? 'A' | 'B') } /
-      nullif!number(count() { where: aci ? 'A' | 'B' }, 0)
+  // 3-D Secure adoption
+  measure: three_ds_count is count() { where: is_3d_secure }
+  measure: three_ds_share is three_ds_count / count()
 }

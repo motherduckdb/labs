@@ -1,0 +1,20 @@
+file: fees_base.malloy
+domain: payments
+summary: |
+  Base source over the `fees` table — the fee-rule catalog. Each row is a
+  pricing rule keyed by card scheme, account type(s), capture delay, monthly
+  fraud band, monthly volume band, MCC list, credit flag, ACI list and
+  intracountry flag, producing a (fixed_amount, rate) pair where the
+  effective fee is fixed_amount + rate * txn_value / 10000. NULL columns are
+  wildcards meaning "applies to all values of that field". Exposes readable
+  labels for the list columns, wildcard flags, a rule-specificity score, a
+  scope label (domestic/international/any), and measures over fixed amount,
+  rate (raw and percent), and the effective fee on a EUR 100 reference
+  transaction, plus segmentation views by scheme, capture delay, fraud band,
+  volume band, scope, credit flag and ACI.
+exports:
+  - name: fees_base
+    kind: source
+    summary: Fee-rule catalog with dimensions, wildcard flags, and fee/rate measures.
+provides_for:
+  - fees

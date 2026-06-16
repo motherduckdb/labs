@@ -1,0 +1,96 @@
+// dabstep.malloy
+// Thin top-level layer. ALL fee/payment logic lives in c1..c4 (and the
+// *_base sources). This file just (a) re-exports those sources under
+// short stable names and (b) adds the handful of composed views the
+// train questions need that aren't already on the intermediate sources.
+//
+// Every train question can be answered by a one-stage Malloy query on
+// one of the sources below — no joins or fee-formula reconstruction
+// needed at the query site.
+
+// ---------------------------------------------------------------------
+// Stable short aliases for the intermediate sources.
+// ---------------------------------------------------------------------
+
+source: payments is c1_payments
+
+source: merchant_months is c2_merchant_monthly
+
+// "What did a merchant actually pay?" — txn × matched-rule grain.
+// Carries: merchant, card_scheme, aci, txn_year, txn_month_num, txn_day,
+// fee_id, rule_rate, rule_fixed_amount, eur_amount, has_fraudulent_dispute,
+// merchant_category_code, account_type, monthly_volume_tier,
+// monthly_fraud_level_tier, plus measures total_fee_amount /
+// matched_pair_count / total_txn_value / avg_fee_amount.
+source: txn_fees is c3_transaction_fees extend {
+
+  // Per-merchant per-ACI per-month fees on FRAUDULENT transactions only —
+  // the building block for "move fraud to a cheaper ACI" questions
+  // (Belles 2023, Crossfit February, etc.). Pick the ACI with the
+  // lowest avg_fee_amount.
+  view: fraud_fee_by_merchant_aci_month is {
+    where: has_fraudulent_dispute
+    group_by: merchant, txn_year, txn_month_num, aci
+    aggregate:
+      matched_pair_count
+      total_fee_amount
+      avg_fee_amount
+    order_by: merchant, txn_year, txn_month_num, avg_fee_amount asc
+  }
+
+  // Same idea, rolled up to the year.
+  view: fraud_fee_by_merchant_aci_year is {
+    where: has_fraudulent_dispute
+    group_by: merchant, txn_year, aci
+    aggregate:
+      matched_pair_count
+      total_fee_amount
+      avg_fee_amount
+    order_by: merchant, txn_year, avg_fee_amount asc
+  }
+
+  // Fees by (merchant, year, card_scheme) — "steer to which scheme for
+  // the year" (Golfclub 2023, Rafa_AI 2023).
+  view: fees_by_merchant_year_scheme is {
+    group_by: merchant, txn_year, card_scheme
+    aggregate: total_fee_amount, matched_pair_count
+    order_by: merchant, txn_year, total_fee_amount asc
+  }
+
+  // Fees by (merchant, year, month, card_scheme) — "steer in February /
+  // June" (Belles Feb, Martinis Jun).
+  view: fees_by_merchant_month_scheme is {
+    group_by: merchant, txn_year, txn_month_num, card_scheme
+    aggregate: total_fee_amount, matched_pair_count
+    order_by: merchant, txn_year, txn_month_num, total_fee_amount asc
+  }
+
+  // Distinct merchants that a given fee rule applied to in a year —
+  // "which merchants were affected by Fee ID X in 2023".
+  view: merchants_by_fee_year is {
+    group_by: fee_id, txn_year, merchant
+    aggregate: matched_pair_count
+    order_by: fee_id, txn_year, merchant
+  }
+}
+
+// ---------------------------------------------------------------------
+// "Average scenario" — rule-grain, parameterized by canonical
+// transaction values. Use these for value-only questions ("cheapest
+// scheme at 50 EUR", "most expensive MCC at 50 000 EUR", "credit at
+// 1000 EUR on NexPay", "account_type H on GlobalCard at 100 EUR").
+// ---------------------------------------------------------------------
+
+source: scenarios          is c4_fee_scenarios       // by scheme (+credit, +scope) at 50/100/1000/4321/50000
+source: scenarios_by_aci   is c4_fee_rules_by_aci    // exploded by ACI letter
+source: scenarios_by_mcc   is c4_fee_rules_by_mcc    // exploded by MCC number, joined to description
+
+// ---------------------------------------------------------------------
+// Catalogs — used directly by the "raw lookup" questions
+// (fee-IDs-for-account-D-aci-F, MCC-by-description, etc.).
+// ---------------------------------------------------------------------
+
+source: fees      is fees_base
+source: merchants is merchants_base
+source: mcc       is merchant_category_codes_base
+source: acquirers is acquirer_countries_base

@@ -1,0 +1,13 @@
+file: c2_merchant_monthly.malloy
+domain: payments
+summary: Per-merchant per-month rollup of payments — total EUR volume, fraudulent EUR volume, fraud rate, and the bucketed monthly_volume / monthly_fraud_level tier strings that the fee model matches against.
+exports:
+  - name: c2_merchant_monthly
+    kind: source
+    summary: One row per (merchant, year, month) with total volume, fraud volume, fraud rate, account_type, capture_delay, MCC, and the derived monthly_volume_tier / monthly_fraud_level_tier strings used to match fee rules.
+provides_for:
+  - "merchant monthly volume bucket"
+  - "merchant monthly fraud level bucket"
+  - "inputs to fee-rule matching (per-merchant per-month tiers)"
+  - "fees Belles_cookbook_store / Crossfit_Hanna / Rafa_AI / Martinis_Fine_Steakhouse by month and by year"
+  - "per-month per-merchant fee bucketing"

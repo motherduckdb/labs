@@ -1,13 +1,23 @@
 file: payments_base.malloy
 domain: payments
-summary: Base semantic model over the `payments` table — adds derived dimensions (transaction date, ACI descriptions, channel flags, geo flags, amount/time buckets) and core measures for volume, monetary totals, authorization rate, refusal rate, fraud rate, credit share, and cross-border vs local acquiring splits. No joins.
+summary: |
+  Base source over the `payments` table. Adds derived time, geography, ACI,
+  and amount-bucket dimensions plus the core KPIs from the Merchant Manual:
+  authorization rate, refusal rate, fraud rate (count + volume), local vs
+  cross-border share, credit share, and 3-D Secure share. No joins.
 exports:
   - name: payments_base
     kind: source
-    summary: Per-transaction payments source with measures (counts, volumes, fraud/refusal/authorization rates, cross-border splits) and dimensions (transaction_date, aci_description, is_intracountry, amount_bucket, time_of_day, is_card_present/CNP, is_3ds_authenticated).
+    summary: |
+      Transactions enriched with derived dimensions (transaction_date,
+      transaction_timestamp, time_of_day, is_intracountry, aci_label,
+      amount_bucket, credit_or_debit, etc.) and KPI measures
+      (transaction_count, total_eur_amount, authorization_rate, fraud_rate,
+      fraud_volume_rate, intracountry_share, three_ds_share, ...).
 provides_for:
-  - payment processing analytics
-  - fraud-rate and authorization-rate KPI tracking
-  - cross-border vs local acquiring analysis
-  - ACI / channel mix analysis
-  - merchant volume and average ticket analysis
+  - payments
+  - transactions
+  - fraud analysis
+  - authorization rate
+  - acquiring routing
+  - ACI mix
