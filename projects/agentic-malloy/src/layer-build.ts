@@ -176,12 +176,12 @@ export async function buildLayer(opts: {
         PROVENANCE_PATH,
         JSON.stringify(
           {
-            provenance: 'model_authored',
+            malloy_provenance: 'model_authored',
             malloy_model_hash: hash,
-            model: opts.model,
             manual_included: opts.includeManual !== false,
-            files: Object.keys(files.models),
+            authoring_model: opts.model,
             built_at: new Date().toISOString(),
+            files: Object.keys(files.models),
           },
           null,
           2,

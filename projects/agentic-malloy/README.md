@@ -70,6 +70,21 @@ Exploration (MotherDuck MCP tools) and the scored Malloy answer both execute on
 DuckDB** built from the same CSVs, used only for schema introspection and the
 translation-check; execution never happens locally.
 
+## Layer provenance & the official gate (do NOT hand-edit the layer)
+
+The experiment's claim is that the Malloy layer is **model-authored**. To keep that
+honest:
+
+- `layer-build` writes `malloy/.provenance.json` (`malloy_provenance: "model_authored"`,
+  `malloy_model_hash`, `manual_included`, `authoring_model`, `built_at`).
+- `evaluate --run-class official` **fails fast** unless that marker exists, says
+  `model_authored`, AND the on-disk layer still hashes to the recorded
+  `malloy_model_hash`. A hand-edit breaks the hash → the run is refused.
+- **Never hand-edit `malloy/models/*` to improve answers.** If the layer misses
+  questions, change the `layer-build` prompt / `skill.md` / `layer-build.ts` and
+  **rerun `layer-build`** — then re-run `evaluate`. Hand-edits make the run
+  `human_edited` and disqualify it from the official 26/26.
+
 ## Harness status
 
 End-to-end harness wired and unit-verified (all but a live eval, which needs

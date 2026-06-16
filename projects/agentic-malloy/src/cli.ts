@@ -68,6 +68,8 @@ function gitOutput(args: string): string | undefined {
 interface Provenance {
   malloy_provenance: 'model_authored' | 'human_edited';
   malloy_model_hash: string;
+  manual_included: boolean | null;
+  authoring_model: string | null;
   reason: string;
 }
 
@@ -78,13 +80,19 @@ interface Provenance {
  */
 async function resolveProvenance(): Promise<Provenance> {
   const diskHash = await hashLayerOnDisk();
+  const base = { malloy_model_hash: diskHash, manual_included: null, authoring_model: null };
   try {
-    const marker = JSON.parse(await readFile(PROVENANCE_PATH, 'utf8')) as { provenance?: string; malloy_model_hash?: string };
-    if (marker.provenance !== 'model_authored') return { malloy_provenance: 'human_edited', malloy_model_hash: diskHash, reason: 'marker not model_authored' };
-    if (marker.malloy_model_hash !== diskHash) return { malloy_provenance: 'human_edited', malloy_model_hash: diskHash, reason: 'layer edited since build (hash mismatch)' };
-    return { malloy_provenance: 'model_authored', malloy_model_hash: diskHash, reason: 'marker matches on-disk layer' };
+    const m = JSON.parse(await readFile(PROVENANCE_PATH, 'utf8')) as {
+      malloy_provenance?: string; malloy_model_hash?: string; manual_included?: boolean; authoring_model?: string;
+    };
+    const meta = { manual_included: m.manual_included ?? null, authoring_model: m.authoring_model ?? null };
+    if (m.malloy_provenance !== 'model_authored')
+      return { ...base, ...meta, malloy_provenance: 'human_edited', reason: 'marker not model_authored' };
+    if (m.malloy_model_hash !== diskHash)
+      return { ...base, ...meta, malloy_provenance: 'human_edited', reason: 'layer edited since build (hash mismatch)' };
+    return { ...base, ...meta, malloy_provenance: 'model_authored', reason: 'marker matches on-disk layer' };
   } catch {
-    return { malloy_provenance: 'human_edited', malloy_model_hash: diskHash, reason: 'no provenance marker' };
+    return { ...base, malloy_provenance: 'human_edited', reason: 'no provenance marker' };
   }
 }
 
@@ -196,11 +204,22 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     cl.runMetadata({
       runId,
       resolvedConfig: {
-        run_class: runClass, split, author_model: author, fixer_model: fixer,
-        escalate_after: escalateAfter, max_author_turns: maxAuthorTurns, max_fixer_turns: maxFixerTurns,
-        substrate: 'motherduck', malloy_runtime: 'node-inprocess', database,
+        run_class: runClass,
+        author_model: author,
+        fixer_model: fixer,
+        escalate_after: escalateAfter,
+        max_author_turns: maxAuthorTurns,
+        max_fixer_turns: maxFixerTurns,
+        substrate: 'motherduck',
+        malloy_runtime: 'node-inprocess',
+        malloy_model_hash: prov.malloy_model_hash,
+        malloy_provenance: prov.malloy_provenance,
+        manual_included: prov.manual_included,
+        // (config_hash is derived from this object by runMetadata())
+        split,
+        database,
         central_layer_chars: store.centralLayerChars(),
-        malloy_provenance: prov.malloy_provenance, malloy_model_hash: prov.malloy_model_hash,
+        authoring_model: prov.authoring_model,
       },
       commitSha: gitOutput('rev-parse HEAD'),
       repo: gitOutput('config --get remote.origin.url'),
