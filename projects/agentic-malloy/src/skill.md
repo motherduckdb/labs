@@ -21,6 +21,18 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 5. **`submit_answer(source=...)`** with the Malloy whose result IS the answer.
    Select exactly the asked value(s) — no extra columns, labels, or prose.
 
+## Malloy query syntax (common pitfalls)
+
+- A query is `run: <source> -> { where: ... aggregate: ... group_by: ... }`.
+- **Backtick columns that collide with Malloy keywords** — notably `` `year` `` (a
+  Malloy time function). `where: \`year\` = 2023` works; bare `year = 2023` fails with
+  "mismatched input '='".
+- Multiple filters: `where: a = 'x' and \`year\` = 2023 and day_of_year = 10` (or
+  comma-separated). Don't wrap the whole thing in parentheses.
+- The central `dabstep.malloy` already defines the joined/fee-matching sources and
+  measures (e.g. a transaction source with a `total_fees` measure) — `get_file` it and
+  reuse those measures rather than rebuilding fee logic in your per-query Malloy.
+
 ## Malloy notes for this dataset
 
 - DuckDB list/SQL functions need the typed raw escape: `len!number(fees.aci) = 0`,
