@@ -30,6 +30,20 @@ describe('lintMalloy', () => {
     expect(fixedSrc).not.toContain('len!number!number');
   });
 
+  it('does not corrupt SQL inside duckdb.sql blocks (masks strings/comments)', () => {
+    const src =
+      'source: t is duckdb.sql("""SELECT count(*) AS n, a || b AS c, list_contains(x, y) AS m FROM p WHERE year = 2023""") extend { measure: cnt is count() }\n' +
+      'run: t -> { where: year = 2023; aggregate: cnt }';
+    const { fixedSrc } = lintMalloy(src, new Set(['t', 'year', 'cnt']));
+    // inside the SQL string — untouched
+    expect(fixedSrc).toContain('count(*)');
+    expect(fixedSrc).toContain('a || b');
+    expect(fixedSrc).toContain('list_contains(x, y)');
+    expect(fixedSrc).toContain('WHERE year = 2023');
+    // outside the string — the Malloy where-clause `year` gets backticked
+    expect(fixedSrc).toMatch(/where: `year` = 2023/);
+  });
+
   it('leaves a clean query unchanged', () => {
     const src = 'run: payments_base -> { aggregate: transaction_count }';
     const { fixedSrc, fixes } = lintMalloy(src, SYMBOLS);
