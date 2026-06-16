@@ -21,6 +21,9 @@ export interface RunState {
   finalMalloy?: string;
   finalCompiledSql?: string;
   finalRows?: unknown[][];
+  /** Did the local-DuckDB run of the compiled query match the MotherDuck result?
+   *  Warning diagnostic only (DuckDB/MotherDuck skew detector); null = couldn't check. */
+  translationMatch?: boolean | null;
   filesRead: string[];
   lintFixesTotal: number;
 }
@@ -89,6 +92,23 @@ function rowsToText(rows: unknown[][], cols?: string[]): string {
   return header + rows.map((r) => r.map((v) => String(v)).join(' | ')).join('\n');
 }
 
+/** Normalize a cell for cross-engine comparison (numbers by value, else string). */
+function normCell(v: unknown): string {
+  if (v === null || v === undefined) return '∅';
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  const n = Number(v);
+  return Number.isFinite(n) && String(v).trim() !== '' ? n.toPrecision(10) : String(v);
+}
+
+/** Multiset equality over all cells — local (objects) vs MotherDuck (positional). */
+function rowsetsMatch(local: Record<string, unknown>[], md: unknown[][]): boolean {
+  if (local.length !== md.length) return false;
+  const localTokens = local.flatMap((r) => Object.values(r).map(normCell)).sort();
+  const mdTokens = md.flatMap((r) => r.map(normCell)).sort();
+  if (localTokens.length !== mdTokens.length) return false;
+  return localTokens.every((t, i) => t === mdTokens[i]);
+}
+
 export async function dispatchTool(deps: ToolDeps, name: string, args: Record<string, unknown>): Promise<DispatchResult> {
   const { client, runtime, store, symbols, state, database } = deps;
 
@@ -148,6 +168,15 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
       state.finalMalloy = fixedSrc;
       state.finalCompiledSql = c.sql!;
       state.finalRows = rows;
+      // Translation-check (warning only): the same compiled query must agree on
+      // the local DuckDB. A mismatch flags DuckDB/MotherDuck skew; scoring still
+      // uses the MotherDuck result.
+      try {
+        const local = await runtime.runLocal(fixedSrc);
+        state.translationMatch = local.ok && local.rows ? rowsetsMatch(local.rows as Record<string, unknown>[], rows) : null;
+      } catch {
+        state.translationMatch = null;
+      }
       return { content: `Submitted. ${rows.length} row(s).`, isError: false };
     } catch (e) {
       return {

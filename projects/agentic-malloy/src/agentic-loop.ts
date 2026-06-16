@@ -154,7 +154,9 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   let fixerTurns = 0;
   let toolCallCount = 0;
   const usage: TaskUsage = { promptTokens: 0, completionTokens: 0, cost: 0 };
-  const maxTurns = opts.maxAuthorTurns + opts.maxFixerTurns;
+  // Hard ceiling only; each role is bounded separately below so the expensive
+  // fixer can never run past --max-fixer-turns regardless of when it escalated.
+  const HARD_CAP = opts.maxAuthorTurns + opts.maxFixerTurns;
 
   const escalate = (reason: string) => {
     escalated = true;
@@ -166,7 +168,17 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     opts.onEvent?.({ kind: 'escalate', detail: reason });
   };
 
-  for (let turn = 0; turn < maxTurns; turn++) {
+  for (let turn = 0; turn < HARD_CAP; turn++) {
+    // Enforce the ACTIVE role's budget before spending a turn. (Cast: TS doesn't
+    // track that `escalate` reassigns `role` inside its closure, so it over-narrows
+    // `role` to 'author' here — at runtime it can be 'fixer' from a prior iteration.)
+    const activeRole = role as 'author' | 'fixer';
+    if (activeRole === 'fixer' && fixerTurns >= opts.maxFixerTurns) break;
+    if (activeRole === 'author' && authorTurns >= opts.maxAuthorTurns) {
+      if (deps.state.submitted) break;
+      escalate('author hit max turns without submitting');
+      if (fixerTurns >= opts.maxFixerTurns) break; // fixer already exhausted
+    }
     if (role === 'author') authorTurns++;
     else fixerTurns++;
 
@@ -231,10 +243,10 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     if (deps.state.submitted) break;
 
     consecutiveErrors = anyError ? consecutiveErrors + 1 : 0;
+    // Author max-turns escalation is handled at the top of the loop; here we
+    // only escalate early on repeated tool errors.
     if (role === 'author' && consecutiveErrors >= opts.escalateAfter) {
       escalate(`${consecutiveErrors} consecutive tool errors`);
-    } else if (role === 'author' && authorTurns >= opts.maxAuthorTurns && !deps.state.submitted) {
-      escalate('author hit max turns without submitting');
     }
   }
 

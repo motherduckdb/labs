@@ -18,7 +18,7 @@ import { createMCPClient, getExplorationTools } from './mcp-client.js';
 import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
 import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
-import { buildLayer } from './layer-build.js';
+import { buildLayer, hashLayerOnDisk, PROVENANCE_PATH } from './layer-build.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -62,6 +62,29 @@ function gitOutput(args: string): string | undefined {
     return execSync(`git ${args}`, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch {
     return undefined;
+  }
+}
+
+interface Provenance {
+  malloy_provenance: 'model_authored' | 'human_edited';
+  malloy_model_hash: string;
+  reason: string;
+}
+
+/**
+ * Resolve the layer's provenance from the marker written by layer-build, and
+ * verify the on-disk layer hash still matches it. A missing marker or a hash
+ * mismatch (a hand-edit since the build) downgrades to human_edited.
+ */
+async function resolveProvenance(): Promise<Provenance> {
+  const diskHash = await hashLayerOnDisk();
+  try {
+    const marker = JSON.parse(await readFile(PROVENANCE_PATH, 'utf8')) as { provenance?: string; malloy_model_hash?: string };
+    if (marker.provenance !== 'model_authored') return { malloy_provenance: 'human_edited', malloy_model_hash: diskHash, reason: 'marker not model_authored' };
+    if (marker.malloy_model_hash !== diskHash) return { malloy_provenance: 'human_edited', malloy_model_hash: diskHash, reason: 'layer edited since build (hash mismatch)' };
+    return { malloy_provenance: 'model_authored', malloy_model_hash: diskHash, reason: 'marker matches on-disk layer' };
+  } catch {
+    return { malloy_provenance: 'human_edited', malloy_model_hash: diskHash, reason: 'no provenance marker' };
   }
 }
 
@@ -112,7 +135,22 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const split = (flags.split as string) || 'templates';
   const author = resolveModel((flags.author as string) || 'sonnet');
   const fixer = resolveModel((flags.fixer as string) || 'opus');
-  const runClass = (flags['run-class'] as string) || (flags.author || flags.fixer ? 'official' : 'smoke');
+
+  // run_class is EXPLICIT (default smoke). It is NOT inferred from model flags —
+  // that would mislabel runs (e.g. cheap gemini/gemini as "official"). Only an
+  // explicit --run-class official, on a model-authored layer, backs the claim.
+  const runClass = (flags['run-class'] as string) || 'smoke';
+  if (runClass !== 'smoke' && runClass !== 'official') {
+    throw new Error(`--run-class must be 'smoke' or 'official' (got '${runClass}')`);
+  }
+  const prov = await resolveProvenance();
+  if (runClass === 'official' && prov.malloy_provenance !== 'model_authored') {
+    throw new Error(
+      `Refusing an OFFICIAL run on a ${prov.malloy_provenance} layer. ` +
+        `The official 26/26 must run on a model-authored layer — run \`layer-build\` first ` +
+        `and don't hand-edit malloy/ (provenance: ${prov.reason}).`,
+    );
+  }
   const escalateAfter = Number(flags['escalate-after'] ?? 2);
   const maxAuthorTurns = Number(flags['max-author-turns'] ?? 20);
   const maxFixerTurns = Number(flags['max-fixer-turns'] ?? 6);
@@ -149,7 +187,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const symbols = buildSymbolSet(await runtime.describe());
   const scorer = new ScoreClient();
 
-  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · db=${database} · conc=${concurrency}`);
+  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency}`);
 
   let correct = 0;
   let completed = 0;
@@ -162,6 +200,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
         escalate_after: escalateAfter, max_author_turns: maxAuthorTurns, max_fixer_turns: maxFixerTurns,
         substrate: 'motherduck', malloy_runtime: 'node-inprocess', database,
         central_layer_chars: store.centralLayerChars(),
+        malloy_provenance: prov.malloy_provenance, malloy_model_hash: prov.malloy_model_hash,
       },
       commitSha: gitOutput('rev-parse HEAD'),
       repo: gitOutput('config --get remote.origin.url'),
@@ -219,8 +258,10 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
           question_id: tid, question_text: q.question, evidence: q.guidelines, level: q.level,
           config_type: 'malloy', run_class: runClass, database, model: author,
           author_model: author, fixer_model: fixer,
+          malloy_provenance: prov.malloy_provenance, malloy_model_hash: prov.malloy_model_hash,
           malloy_source: state.finalMalloy ?? null, malloy_source_chars: state.finalMalloy?.length ?? 0,
           compiled_sql: state.finalCompiledSql ?? null, compiled_sql_chars: state.finalCompiledSql?.length ?? 0,
+          translation_match: state.translationMatch ?? null,
           predicted_result: scoreResp.predicted_answer, gold_result: q.answer,
           is_correct: scoreResp.is_correct, correctness_level: scoreResp.correctness, match_source: scoreResp.match_source,
           escalated: result?.escalated ?? false, escalation_reason: result?.escalationReason ?? null,
@@ -237,6 +278,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
         question: q.question, guidelines: q.guidelines, gold_answer: q.answer,
         predicted_answer: scoreResp.predicted_answer, is_correct: scoreResp.is_correct, correctness: scoreResp.correctness,
         match_source: scoreResp.match_source, malloy_source: state.finalMalloy ?? null, compiled_sql: state.finalCompiledSql ?? null,
+        translation_match: state.translationMatch ?? null,
         escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
         files_read: state.filesRead, lint_fixes: state.lintFixesTotal, elapsed_s: +(elapsedMs / 1000).toFixed(2),
         cost_usd: result?.usage.cost ?? 0, prompt_tokens: result?.usage.promptTokens ?? 0, completion_tokens: result?.usage.completionTokens ?? 0,

@@ -52,11 +52,13 @@ def main() -> None:
         line = line.strip()
         if not line:
             continue
+        rid = None
         try:
             req = json.loads(line)
+            rid = req.get("id")  # capture id first so an error still resolves the caller
             resp = handle(req)
-        except Exception as e:  # never die on one bad request
-            resp = {"id": None, "error": f"{type(e).__name__}: {e}"}
+        except Exception as e:  # never die on one bad request; keep rid so score() fails the task instead of hanging it
+            resp = {"id": rid, "error": f"{type(e).__name__}: {e}"}
         sys.stdout.write(json.dumps(resp) + "\n")
         sys.stdout.flush()
 

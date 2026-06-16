@@ -19,8 +19,10 @@ import { LOCAL_DB_PATH } from './load.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = path.join(REPO_ROOT, 'data');
-const MODELS_DIR = path.join(REPO_ROOT, 'malloy', 'models');
-const META_DIR = path.join(REPO_ROOT, 'malloy', '_meta');
+const MALLOY_DIR = path.join(REPO_ROOT, 'malloy');
+const MODELS_DIR = path.join(MALLOY_DIR, 'models');
+const META_DIR = path.join(MALLOY_DIR, '_meta');
+export const PROVENANCE_PATH = path.join(MALLOY_DIR, '.provenance.json');
 const TABLES = ['payments', 'fees', 'merchants', 'acquirer_countries', 'merchant_category_codes'];
 
 interface LayerFiles {
@@ -99,6 +101,17 @@ function layerHash(files: LayerFiles): string {
   return h.digest('hex').slice(0, 16);
 }
 
+/** Hash the on-disk layer the same way layerHash() does — to detect hand-edits. */
+export async function hashLayerOnDisk(): Promise<string> {
+  const files = (await readdir(MODELS_DIR)).filter((f) => f.endsWith('.malloy')).sort();
+  const h = createHash('sha256');
+  for (const f of files) {
+    h.update(f);
+    h.update(await readFile(path.join(MODELS_DIR, f), 'utf8'));
+  }
+  return h.digest('hex').slice(0, 16);
+}
+
 export interface LayerBuildResult {
   ok: boolean;
   rounds: number;
@@ -153,7 +166,28 @@ export async function buildLayer(opts: {
     await rt.close();
 
     if (ok) {
-      return { ok: true, rounds: round, malloyModelHash: layerHash(files), files: Object.keys(files.models) };
+      const hash = layerHash(files);
+      // Provenance marker: this layer was model-authored. `evaluate` reads it so
+      // only a model-authored layer can back an official run (a hand-edit that
+      // doesn't rewrite this marker still leaves the recorded hash stale, which
+      // is detectable). Written next to the layer; gitignored is NOT desired —
+      // it travels with the layer.
+      await writeFile(
+        PROVENANCE_PATH,
+        JSON.stringify(
+          {
+            provenance: 'model_authored',
+            malloy_model_hash: hash,
+            model: opts.model,
+            manual_included: opts.includeManual !== false,
+            files: Object.keys(files.models),
+            built_at: new Date().toISOString(),
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+      return { ok: true, rounds: round, malloyModelHash: hash, files: Object.keys(files.models) };
     }
     console.log(`  compile failed:\n${diag.split('\n').map((l) => '    ' + l).join('\n')}`);
     repair = diag;
