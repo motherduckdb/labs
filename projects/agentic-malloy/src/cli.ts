@@ -211,6 +211,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
         escalate_after: escalateAfter,
         max_author_turns: maxAuthorTurns,
         max_fixer_turns: maxFixerTurns,
+        reasoning,
         substrate: 'motherduck',
         malloy_runtime: 'node-inprocess',
         malloy_model_hash: prov.malloy_model_hash,
