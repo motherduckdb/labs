@@ -196,46 +196,15 @@ async function authorStage(opts: {
   return { ok: false, diag: repair, ...agg };
 }
 
-// A PROVEN, compiling fee-match shape (verified to reproduce task 1711 = 29.93).
-// Handed to the central model so it builds the hardest piece on a known-good
-// pattern instead of rediscovering Malloy's array/join syntax.
-const FEE_MATCH_PATTERN = `PROVEN fee-match pattern — build the fee logic on THIS shape (it compiles and is correct). Put the per-transaction enrichment (merchant profile + monthly volume/fraud buckets + intracountry + capture_delay bucket) in a duckdb.sql("...") source, then join_many the fees table with the wildcard condition, then sum:
-
-source: txn is duckdb.sql("""
-  WITH monthly_stats AS (
-    SELECT merchant, year,
-      MONTH(MAKE_DATE(year,1,1) + INTERVAL (day_of_year-1) DAY) AS month,
-      CASE WHEN SUM(eur_amount) < 100000 THEN '<100k'
-           WHEN SUM(eur_amount) < 1000000 THEN '100k-1m'
-           WHEN SUM(eur_amount) < 5000000 THEN '1m-5m' ELSE '>5m' END AS volume_range,
-      CASE WHEN SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END)/NULLIF(SUM(eur_amount),0)*100 < 7.2 THEN '<7.2%'
-           WHEN ... < 7.7 THEN '7.2%-7.7%' WHEN ... < 8.3 THEN '7.7%-8.3%' ELSE '>8.3%' END AS fraud_level_range
-    FROM payments GROUP BY merchant, year, month),
-  mp AS (SELECT m.merchant, m.account_type, m.merchant_category_code,
-      CASE WHEN TRY_CAST(m.capture_delay AS INTEGER) < 3 THEN '<3'
-           WHEN TRY_CAST(m.capture_delay AS INTEGER) BETWEEN 3 AND 5 THEN '3-5'
-           WHEN TRY_CAST(m.capture_delay AS INTEGER) > 5 THEN '>5' ELSE m.capture_delay END AS capture_delay_range
-    FROM merchants m)
-  SELECT p.*, (p.issuing_country = p.acquirer_country) AS intracountry,
-         mp.account_type, mp.merchant_category_code, mp.capture_delay_range,
-         ms.volume_range, ms.fraud_level_range
-  FROM payments p JOIN mp ON mp.merchant=p.merchant
-  JOIN monthly_stats ms ON ms.merchant=p.merchant AND ms.year=p.year
-    AND ms.month = MONTH(MAKE_DATE(p.year,1,1) + INTERVAL (p.day_of_year-1) DAY)
-""") extend {
-  join_many: fees is duckdb.table('fees') on
-        (fees.card_scheme is null or fees.card_scheme = card_scheme)
-    and (fees.is_credit is null or fees.is_credit = is_credit)
-    and (fees.intracountry is null or (fees.intracountry != 0) = intracountry)
-    and (len!number(fees.aci) = 0 or list_contains!boolean(fees.aci, aci))
-    and (len!number(fees.account_type) = 0 or list_contains!boolean(fees.account_type, account_type))
-    and (len!number(fees.merchant_category_code) = 0 or list_contains!boolean(fees.merchant_category_code, merchant_category_code))
-    and (fees.capture_delay is null or fees.capture_delay = capture_delay_range)
-    and (fees.monthly_volume is null or fees.monthly_volume = volume_range)
-    and (fees.monthly_fraud_level is null or fees.monthly_fraud_level = fraud_level_range)
-} extend {
-  measure: total_fees is fees.sum(fees.fixed_amount + fees.rate / 10000.0 * eur_amount)
-}`;
+// TASK-GENERAL Malloy structural syntax only — NO solved query logic and NO
+// eval-derived patterns. (The dataset's actual fee rules / formula / bucketing come
+// from the manual, an allowed input; the model must derive the modeling itself.)
+const MALLOY_STRUCTURE = `Malloy structural syntax (general — the modeling itself is yours to derive from the manual + schema):
+- A source extends a table/query: \`source: s is duckdb.table('t') extend { dimension: ...; measure: ... }\`.
+- A many-to-one or matching join: \`join_many: other is OTHER_SOURCE on <boolean condition over fields of both sides>\`. The condition may use ANDs/ORs and the typed raw escapes above for list columns.
+- A measure that aggregates a joined source's fields: \`measure: m is other.sum(<expr over other.* and this side>)\`.
+- A reusable query lives on the source as \`view: name is { where: ...; group_by: ...; aggregate: ... }\`.
+- When a transformation is awkward in pure Malloy (multi-step CTEs, window/group enrichment, casts), wrap that SQL in a \`duckdb.sql("...")\` source and extend it.`;
 
 // ---------------------------------------------------------------------------
 // Orchestration
@@ -291,7 +260,7 @@ export async function buildLayer(opts: {
 
   // 2. Central model: joins (directionality from cardinality) + views for the question shapes.
   const baseContents = (await Promise.all(TABLES.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(MODELS_DIR, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
-  const centralSystem = `You are a Malloy expert writing the CENTRAL model dabstep.malloy: it extends the base sources with joins (directionality inferred from cardinality) and named views/measures for the common analytical questions. Reuse the base sources' measures; keep per-query Malloy thin.\n\nFee matching is the hard part: a transaction matches MANY fee rules across 9 dimensions and ALL matching fees SUM (no most-specific-wins); an empty list / NULL in a fee dimension matches anything. fee = fixed_amount + rate/10000 * eur_amount. The 9 dims: card_scheme, account_type, aci, is_credit, intracountry, merchant_category_code, capture_delay, monthly_volume, monthly_fraud_level. Bucket monthly_volume/monthly_fraud_level per merchant per calendar month and capture_delay per the manual.\n\n${FEE_MATCH_PATTERN}\n\n${MALLOY_RULES}`;
+  const centralSystem = `You are a Malloy expert writing the CENTRAL model dabstep.malloy: it extends the base sources with joins (directionality inferred from cardinality) and named views/measures for the common analytical questions. Reuse the base sources' measures; keep per-query Malloy thin.\n\nThe fee questions are the hardest. DERIVE the fee model yourself from the manual's fee section and the schema — how a transaction matches fee rules, how the fee is computed, and how the dynamic dimensions are bucketed are all defined in the manual provided below. Do not assume a pattern; model what the manual specifies.\n\n${MALLOY_STRUCTURE}\n\n${MALLOY_RULES}`;
   const centralUser = `## The base sources already authored (visible to your file)\n${baseContents}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite dabstep.malloy now: joins + views/measures so the questions above are answerable by thin per-query Malloy on top of this layer.`;
   const central = await authorStage({
     label: 'dabstep.malloy', modelFile: 'dabstep.malloy', metaFile: 'dabstep.yaml',
