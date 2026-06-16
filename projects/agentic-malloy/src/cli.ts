@@ -19,6 +19,7 @@ import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
 import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
 import { buildLayer, hashLayerOnDisk, PROVENANCE_PATH } from './layer-build.js';
+import { uploadControllog } from './upload.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -336,13 +337,22 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   const reasoning = (flags.reasoning as string) || 'medium';
   const res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 3) });
   if (res.ok) {
-    console.log(`\n✓ layer built in ${res.rounds} round(s) · hash ${res.malloyModelHash}`);
+    console.log(`\n✓ layer built · hash ${res.malloyModelHash} · $${res.cost.toFixed(4)}`);
     console.log(`  files: ${res.files.join(', ')}`);
     console.log(`  (model_authored; manual_included=${includeManual})`);
   } else {
-    console.error(`\n✗ layer-build failed after ${res.rounds} rounds. Last diagnostics:\n${res.diagnostics}`);
+    console.error(`\n✗ layer-build failed ($${res.cost.toFixed(4)}). Last diagnostics:\n${res.diagnostics}`);
     process.exit(1);
   }
+}
+
+async function cmdUpload(flags: Record<string, string | boolean>) {
+  const database = (flags.database as string) || process.env.CONTROLLOG_DB || 'agentic_malloy_logs';
+  console.log(`Uploading controllog → MotherDuck ${database}.main.{events,postings} …`);
+  const { events, postings } = await uploadControllog({ database });
+  console.log(`  events:   ${events.toLocaleString()}`);
+  console.log(`  postings: ${postings.toLocaleString()}`);
+  console.log(`✓ uploaded to ${database} (dive reads ${database}.main.events / .postings)`);
 }
 
 async function cmdSummary(file: string) {
@@ -376,13 +386,17 @@ async function main() {
       return cmdLayerBuild(flags);
     case 'evaluate':
       return cmdEvaluate(flags);
+    case 'upload':
+      return cmdUpload(flags);
     case 'summary':
       return cmdSummary(rest[0]);
     default:
-      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|evaluate|summary> [flags]');
+      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|evaluate|upload|summary> [flags]');
+      console.log('  load [--motherduck --database agentic_malloy]');
       console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3]');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
       console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N');
+      console.log('  upload [--database agentic_malloy_logs]   # controllog JSONL -> MotherDuck for the dive');
   }
 }
 
