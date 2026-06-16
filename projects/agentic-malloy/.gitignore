@@ -1,0 +1,8 @@
+node_modules/
+*.duckdb
+*.duckdb.wal
+.env
+.env.local
+results/*.jsonl
+results/controllog/
+.DS_Store
