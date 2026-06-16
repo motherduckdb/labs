@@ -38,14 +38,30 @@ data/dabstep/      # DABstep sources + tasks (copied from the baseline)
 malloy/            # the semantic layer (model-authored; being built)
 ```
 
-## Run the proofs
+## Run it
 
 ```bash
 npm install
+cp .env.example .env        # add OPENROUTER_API_KEY + MOTHERDUCK_TOKEN
+
+# Phase-0 proofs (no credentials needed):
 npx tsx src/load.ts         # builds data/dabstep.duckdb (gitignored)
 npx tsx src/spike.ts        # compile + run a trivial Malloy query
 npx tsx src/spike-fees.ts   # reproduce task 1711's 29.93 via a Malloy fee match
+
+# Harness (needs credentials; executes on MotherDuck via MCP):
+npx tsx bin/asm-malloy.ts load              # build the local compile DB
+npx tsx bin/asm-malloy.ts malloy-preflight  # compile + local run sanity check
+npx tsx bin/asm-malloy.ts evaluate --task-id 1711 --author sonnet --fixer opus
+npx tsx bin/asm-malloy.ts evaluate --split templates --run-class official
+npx tsx bin/asm-malloy.ts summary results/<file>.jsonl
 ```
+
+`evaluate` runs the two-model author→fixer loop, explores via MotherDuck MCP,
+executes the compiled Malloy answer on MotherDuck, scores via the Python sidecar,
+and writes `results/*.jsonl` + `results/controllog/{events,postings}.jsonl`.
+Defaults to the baseline's MotherDuck DB (`agentic_sql_claude`) so no separate
+build is needed.
 
 ## Substrate
 
@@ -54,8 +70,16 @@ Exploration (MotherDuck MCP tools) and the scored Malloy answer both execute on
 DuckDB** built from the same CSVs, used only for schema introspection and the
 translation-check; execution never happens locally.
 
-## What's next (Phase 1)
+## Harness status
 
-MCP client + exploration tools, controllog wiring, the two-model author→fixer loop,
-a Python scoring sidecar (vendors the baseline's `score.py`), the Malloy file store +
-linter, then a **model-authored** `layer-build` pass → drive the train set to 26/26.
+End-to-end harness wired and unit-verified (all but a live eval, which needs
+credentials): Malloy runtime, MotherDuck MCP client, two-model author→fixer loop,
+Python scoring sidecar (vendors `score.py`), Malloy file store + linter, controllog
+emitter, and the CLI (`load` / `malloy-preflight` / `evaluate` / `summary`).
+
+## What's next
+
+- A **model-authored** `layer-build` pass that writes the real `malloy/` layer from
+  the manual + 26 train Q/A (the current `payments_base.malloy` is throwaway/smoke).
+- First live `evaluate` runs → iterate the layer/skill to 26/26 on the train split.
+- Phase 2 (optimization) + Phase 3 (held-out) per the plan.
