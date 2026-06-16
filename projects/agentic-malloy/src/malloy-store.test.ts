@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeAll } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { MalloyStore } from './malloy-store.js';
 
+// Stable fixture layer (not the live malloy/ dir, which changes per build).
+const FIXTURE_MODELS = fileURLToPath(new URL('./__fixtures__/malloy/models', import.meta.url));
+const FIXTURE_META = fileURLToPath(new URL('./__fixtures__/malloy/_meta', import.meta.url));
+
 describe('MalloyStore', () => {
-  const store = new MalloyStore();
+  const store = new MalloyStore(FIXTURE_MODELS, FIXTURE_META);
   beforeAll(async () => {
     await store.load();
   });

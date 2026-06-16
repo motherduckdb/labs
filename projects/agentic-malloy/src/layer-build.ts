@@ -214,6 +214,34 @@ async function authorStage(opts: {
   return { ok: false, diag: repair, ...agg };
 }
 
+/** Ask the model to decompose the central layer into a small set of focused
+ *  source files (model-derived, dependency-first). Returns [] on parse failure
+ *  (caller then authors a single dabstep.malloy). */
+async function planCentral(opts: {
+  model: string; reasoningEffort?: string; baseContents: string; manual: string; qa: string; runId?: string;
+}): Promise<{ files: { file: string; purpose: string }[]; cost: number }> {
+  const system = `You are planning the CENTRAL files of a Malloy semantic layer (the base sources, one per table, already exist). Decompose the joins, the fee model, and the analytical needs into a SMALL set (1–5) of FOCUSED intermediate source files — each a \`<name>.malloy\` — so NO single file is huge (each must comfortably fit in one model response) and lineage is clean. Order them DEPENDENCY-FIRST (a later file may reference earlier ones + the bases). Do NOT include the base files. Do NOT include the top-level dabstep.malloy (it is added automatically last). Return ONLY a JSON array: [{"file":"<name>.malloy","purpose":"<one line>"}, ...].`;
+  const user = `## Base sources\n${opts.baseContents}\n\n## The Merchant Manual\n${opts.manual}\n\n## Train questions the layer must support\n${opts.qa}\n\nPlan the intermediate source files now (JSON array only).`;
+  const t0 = Date.now();
+  const resp = await complete({ model: opts.model, systemPrompt: system, userPrompt: user, reasoningEffort: opts.reasoningEffort, maxTokens: 4000 });
+  if (opts.runId) {
+    const ex = cl.newId();
+    cl.modelPrompt({ taskId: '__plan__', runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: '__plan__', round: 1 } });
+    cl.modelCompletion({ taskId: '__plan__', runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs: Date.now() - t0, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: '__plan__', round: 1, malloy: resp.text.slice(0, 4000) } });
+  }
+  try {
+    const m = resp.text.match(/\[[\s\S]*\]/);
+    const arr = JSON.parse(m ? m[0] : resp.text) as Array<{ file?: string; purpose?: string }>;
+    const files = arr
+      .filter((x) => x && typeof x.file === 'string')
+      .slice(0, 6)
+      .map((x) => ({ file: String(x.file), purpose: String(x.purpose ?? '') }));
+    return { files, cost: resp.cost ?? 0 };
+  } catch {
+    return { files: [], cost: resp.cost ?? 0 };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -277,15 +305,39 @@ export async function buildLayer(opts: {
     if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `${t}_base: ${r.diag}`, cost: totalCost };
   }
 
-  // 2. Central model: joins (directionality from cardinality) + views for the question shapes.
+  // 2. Plan the central decomposition (model-derived) — a SMALL set of focused
+  //    intermediate source files so no single file blows past the output-token cap
+  //    (and lineage stays clean). Then author each one-at-a-time, then a thin top-level.
   const baseContents = (await Promise.all(TABLES.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(MODELS_DIR, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
-  const centralSystem = `You are a Malloy expert writing the CENTRAL model dabstep.malloy: it extends the base sources with joins (cardinality inferred per the discovery guide) and named views/measures for the common analytical questions. Reuse the base sources' measures; keep per-query Malloy thin.\n\nThe fee questions are the hardest. DERIVE the fee model yourself from the manual's fee section and the schema — how a transaction matches fee rules, how the fee is computed, and how the dynamic dimensions are bucketed are all defined in the manual provided below. Do not assume a pattern; model what the manual specifies. Express the joins and the per-merchant/per-month bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\n=== MALLOY PRIMER ===\n${primer}\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}\n\n${DUCKDB_NOTES}`;
-  const centralUser = `## The base sources already authored (visible to your file)\n${baseContents}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite dabstep.malloy now: joins + views/measures so the questions above are answerable by thin per-query Malloy on top of this layer.`;
+  const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nThe fee questions are the hardest. DERIVE the fee model yourself from the manual's fee section + the schema — matching, formula, and dynamic-dimension bucketing are all defined there. Express joins and per-merchant/per-month bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\n=== MALLOY PRIMER ===\n${primer}\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}\n\n${DUCKDB_NOTES}`;
+
+  const plan = await planCentral({ model: opts.model, reasoningEffort: opts.reasoningEffort, baseContents, manual, qa, runId: opts.runId });
+  totalCost += plan.cost;
+  console.log(`  central plan: ${plan.files.length} file(s) — ${plan.files.map((f) => f.file).join(', ') || '(none → single dabstep.malloy)'}`);
+
+  // 3. Author each planned intermediate source in order (numeric prefix → the runtime
+  //    concatenates them after the bases in dependency order).
+  let authored = '';
+  for (let i = 0; i < plan.files.length; i++) {
+    const stem = `c${i + 1}_${plan.files[i].file.replace(/\.malloy$/, '').replace(/[^a-z0-9_]/gi, '_')}`;
+    const modelFile = `${stem}.malloy`;
+    const user = `## Base sources\n${baseContents}\n\n## Intermediate sources already authored (you may reference these by name)\n${authored || '(none yet)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite ${modelFile} now — ONE focused source. Purpose: ${plan.files[i].purpose}\nIt may reference the bases and the already-authored sources by name. Keep it to this one concern.`;
+    const r = await authorStage({
+      label: modelFile, modelFile, metaFile: `${stem}.yaml`, defaultExport: { name: stem, kind: 'source' },
+      model: opts.model, reasoningEffort: opts.reasoningEffort, system: sharedSystem, user, maxRounds, maxTokens: 36000, runId: opts.runId,
+    });
+    totalCost += r.cost;
+    if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `${modelFile}: ${r.diag}`, cost: totalCost };
+    authored += `### ${modelFile}\n${await readFile(path.join(MODELS_DIR, modelFile), 'utf8')}\n\n`;
+  }
+
+  // 4. Thin top-level dabstep.malloy: cross-cutting views/measures over the sources above.
+  const centralUser = `## Base sources\n${baseContents}\n\n## Intermediate sources (reference these by name)\n${authored || '(none)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite a THIN top-level dabstep.malloy: named views/measures so the questions are answerable by thin per-query Malloy on top of the sources above. Reuse the intermediate sources; do NOT restate their logic. Keep it small.`;
   const central = await authorStage({
     label: 'dabstep.malloy', modelFile: 'dabstep.malloy', metaFile: 'dabstep.yaml',
     defaultExport: { name: 'dabstep', kind: 'model' },
-    model: opts.model, reasoningEffort: opts.reasoningEffort, system: centralSystem, user: centralUser, maxRounds,
-    maxTokens: 36000, runId: opts.runId, // the central model is the largest output — avoid truncation
+    model: opts.model, reasoningEffort: opts.reasoningEffort, system: sharedSystem, user: centralUser, maxRounds,
+    maxTokens: 36000, runId: opts.runId,
   });
   totalCost += central.cost;
   if (!central.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `dabstep: ${central.diag}`, cost: totalCost };

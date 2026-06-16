@@ -1,14 +1,19 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { buildLocalDuckDB, LOCAL_DB_PATH } from './load.js';
+
+// Run against a STABLE fixture layer, not the live malloy/ dir (which changes
+// every layer-build) — so these tests are deterministic across rebuilds.
+const FIXTURE_MODELS = fileURLToPath(new URL('./__fixtures__/malloy/models', import.meta.url));
 
 describe('MalloyRuntime (local DuckDB)', () => {
   let rt: MalloyRuntime;
 
   beforeAll(async () => {
     if (!existsSync(LOCAL_DB_PATH)) await buildLocalDuckDB();
-    rt = new MalloyRuntime();
+    rt = new MalloyRuntime({ modelsDir: FIXTURE_MODELS });
   }, 120_000);
 
   afterAll(async () => {

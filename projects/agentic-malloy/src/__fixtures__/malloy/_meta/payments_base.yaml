@@ -1,0 +1,7 @@
+file: payments_base.malloy
+domain: payments
+summary: Fixture payments base for tests.
+exports:
+  - name: payments_base
+    kind: source
+    summary: payments with transaction_count + total_eur measures
