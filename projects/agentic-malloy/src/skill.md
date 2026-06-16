@@ -23,6 +23,12 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 
 ## Malloy query syntax (common pitfalls)
 
+- **NEVER write `import`.** The whole semantic layer is ALREADY loaded — every
+  source from every model file is in scope. Just `run: <source> -> { ... }` and
+  reference sources by name. An `import` statement fails ("must compile via a URL").
+- **Do NOT redefine an existing field.** Sources already expose their columns,
+  dimensions, and measures by name (`get_file` to see them) — reusing one is just
+  referencing it; redefining a name fails with "Cannot redefine 'X'".
 - A query is `run: <source> -> { where: ... aggregate: ... group_by: ... }`.
 - **Backtick columns that collide with Malloy keywords** — notably `` `year` `` (a
   Malloy time function). `where: \`year\` = 2023` works; bare `year = 2023` fails with

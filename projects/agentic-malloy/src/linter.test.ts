@@ -44,6 +44,14 @@ describe('lintMalloy', () => {
     expect(fixedSrc).toMatch(/where: `year` = 2023/);
   });
 
+  it('strips import statements (layer is pre-loaded)', () => {
+    const src = 'import "dabstep.malloy"\nimport "c3_transaction_fees.malloy"\nrun: txn -> { aggregate: total_fees }';
+    const { fixedSrc, fixes } = lintMalloy(src, new Set(['txn', 'total_fees']));
+    expect(fixedSrc).not.toMatch(/import/);
+    expect(fixedSrc.trim().startsWith('run:')).toBe(true);
+    expect(fixes.some((f) => f.includes('import'))).toBe(true);
+  });
+
   it('leaves a clean query unchanged', () => {
     const src = 'run: payments_base -> { aggregate: transaction_count }';
     const { fixedSrc, fixes } = lintMalloy(src, SYMBOLS);
