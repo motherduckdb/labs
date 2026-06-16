@@ -45,6 +45,49 @@ async function fetchWithOneRetry(url: string, init: RequestInit, onRetry?: (m: s
   }
 }
 
+/** Single non-streaming completion (text only). Used by layer-build. */
+export async function complete(params: {
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  maxTokens?: number;
+  reasoningEffort?: string;
+}): Promise<{ text: string; promptTokens: number; completionTokens: number; cost?: number }> {
+  const body: Record<string, unknown> = {
+    model: params.model,
+    messages: [
+      { role: 'system', content: params.systemPrompt },
+      { role: 'user', content: params.userPrompt },
+    ],
+    max_tokens: params.maxTokens ?? 32000,
+    temperature: 0,
+    usage: { include: true },
+  };
+  if (params.reasoningEffort && params.reasoningEffort !== 'off') body.reasoning = { effort: params.reasoningEffort };
+
+  const res = await fetchWithOneRetry('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'X-Title': 'agentic-malloy',
+      'HTTP-Referer': 'https://github.com/motherduckdb/labs',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`OpenRouter error ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+  };
+  return {
+    text: json.choices?.[0]?.message?.content ?? '',
+    promptTokens: json.usage?.prompt_tokens ?? 0,
+    completionTokens: json.usage?.completion_tokens ?? 0,
+    cost: json.usage?.cost,
+  };
+}
+
 export async function streamChatCompletion(params: {
   model: string;
   messages: ChatMessage[];

@@ -79,7 +79,10 @@ emitter, and the CLI (`load` / `malloy-preflight` / `evaluate` / `summary`).
 
 ## What's next
 
-- A **model-authored** `layer-build` pass that writes the real `malloy/` layer from
-  the manual + 26 train Q/A (the current `payments_base.malloy` is throwaway/smoke).
-- First live `evaluate` runs → iterate the layer/skill to 26/26 on the train split.
+`layer-build` is wired (`asm-malloy layer-build --model opus`): an expensive-tier
+model reads the manual + 26 train Q/A + schema and writes the real `malloy/` layer,
+then it's compile-validated with a repair loop. Needs a key to run.
+
+- Run `layer-build` to author the real layer (current `payments_base.malloy` is
+  throwaway/smoke), then first live `evaluate` → iterate to 26/26 on the train split.
 - Phase 2 (optimization) + Phase 3 (held-out) per the plan.

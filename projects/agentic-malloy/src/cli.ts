@@ -18,6 +18,7 @@ import { createMCPClient, getExplorationTools } from './mcp-client.js';
 import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
 import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
+import { buildLayer } from './layer-build.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -263,6 +264,21 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   console.log(`controllog: ${path.join(RESULTS_DIR, 'controllog')}`);
 }
 
+async function cmdLayerBuild(flags: Record<string, string | boolean>) {
+  const model = resolveModel((flags.model as string) || 'opus');
+  const includeManual = flags['no-manual'] ? false : true;
+  const reasoning = (flags.reasoning as string) || 'medium';
+  const res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 3) });
+  if (res.ok) {
+    console.log(`\n✓ layer built in ${res.rounds} round(s) · hash ${res.malloyModelHash}`);
+    console.log(`  files: ${res.files.join(', ')}`);
+    console.log(`  (model_authored; manual_included=${includeManual})`);
+  } else {
+    console.error(`\n✗ layer-build failed after ${res.rounds} rounds. Last diagnostics:\n${res.diagnostics}`);
+    process.exit(1);
+  }
+}
+
 async function cmdSummary(file: string) {
   const rows = (await readFile(file, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
   const correct = rows.filter((r) => r.is_correct).length;
@@ -281,12 +297,15 @@ async function main() {
       return cmdLoad();
     case 'malloy-preflight':
       return cmdPreflight();
+    case 'layer-build':
+      return cmdLayerBuild(flags);
     case 'evaluate':
       return cmdEvaluate(flags);
     case 'summary':
       return cmdSummary(rest[0]);
     default:
-      console.log('usage: asm-malloy <load|malloy-preflight|evaluate|summary> [flags]');
+      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|evaluate|summary> [flags]');
+      console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3]');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
       console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N');
   }
