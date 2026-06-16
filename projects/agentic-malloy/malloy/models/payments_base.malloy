@@ -1,0 +1,9 @@
+// Bring-up model (throwaway / run_class:smoke). The REAL semantic layer is
+// produced by the model-authored `layer-build` pass — do not treat this as the
+// experiment's layer. One entity, minimal measures, no joins (per Lloyd's
+// source-per-entity convention).
+source: payments_base is duckdb.table('payments') extend {
+  measure:
+    transaction_count is count()
+    total_eur is eur_amount.sum()
+}
