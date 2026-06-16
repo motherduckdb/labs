@@ -1,0 +1,15 @@
+source: acquirer_countries_base is duckdb.table('acquirer_countries') extend {
+
+  // ---- Derived dimensions (new names only) ----
+  dimension: country_region is
+    pick 'Europe'        when country_code = 'NL' | 'BE' | 'LU' | 'FR' | 'DE' | 'ES' | 'IT' | 'GB' | 'IE' | 'SE' | 'NO' | 'DK' | 'FI' | 'PT' | 'AT' | 'CH' | 'PL'
+    pick 'North America' when country_code = 'US' | 'CA' | 'MX'
+    pick 'LATAM'         when country_code = 'BR' | 'AR' | 'CL' | 'CO' | 'PE'
+    pick 'APAC'          when country_code = 'JP' | 'CN' | 'KR' | 'AU' | 'NZ' | 'SG' | 'HK' | 'IN'
+    else 'Other'
+
+  // ---- Measures ----
+  measure: row_count is count()
+  measure: acquirer_row_count is count() { where: acquirer != null }
+  measure: country_row_count is count() { where: country_code != null }
+}

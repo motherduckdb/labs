@@ -1,8 +1,15 @@
-file: payments_base.malloy
-domain: payments
-summary: One row per transaction. Authoritative source for counts, volume, fraud, customers.
-exports:
-  - name: payments_base
-    kind: source
-    summary: The payments table with transaction_count and total_eur measures.
-provides_for: [transaction_count, total_volume]
+_meta:
+  file: payments_base.malloy
+  domain: payments
+  summary: Base source over the payments table with transaction volume, authorization, fraud, cross-border, credit/debit, and ACI-mix measures plus derived buckets (no joins).
+  exports:
+    - name: payments_base
+      kind: source
+      summary: Payments transactions enriched with derived dimensions (is_intracountry, amount_tier, aci_description, time_of_day_bucket, card-present flags) and KPI measures (authorization_rate, fraud_rate, cross_border_rate, etc.).
+  provides_for:
+    - payments transaction analytics
+    - authorization and refusal rate analysis
+    - fraud and chargeback monitoring
+    - cross-border vs intracountry analysis
+    - ACI / transaction-type mix analysis
+    - join base for fees enrichment

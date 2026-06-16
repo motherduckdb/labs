@@ -1,9 +1,86 @@
-// Bring-up model (throwaway / run_class:smoke). The REAL semantic layer is
-// produced by the model-authored `layer-build` pass — do not treat this as the
-// experiment's layer. One entity, minimal measures, no joins (per Lloyd's
-// source-per-entity convention).
 source: payments_base is duckdb.table('payments') extend {
+
+  // ---------- Derived dimensions (NEW names only) ----------
+  dimension:
+    is_intracountry is issuing_country = acquirer_country
+    is_cross_border is issuing_country != acquirer_country
+    is_fraud is has_fraudulent_dispute
+    is_refused is is_refused_by_adyen
+    is_authorized is not is_refused_by_adyen
+
+    amount_tier is
+      pick 'micro (<10)'    when eur_amount < 10
+      pick 'small (10-50)'  when eur_amount < 50
+      pick 'medium (50-200)' when eur_amount < 200
+      pick 'large (200-1000)' when eur_amount < 1000
+      else 'xlarge (>=1000)'
+
+    aci_description is
+      pick 'Card present - Non-authenticated' when aci = 'A'
+      pick 'Card Present - Authenticated' when aci = 'B'
+      pick 'Tokenized card with mobile device' when aci = 'C'
+      pick 'CNP - Card On File' when aci = 'D'
+      pick 'CNP - Recurring Bill Payment' when aci = 'E'
+      pick 'CNP - 3-D Secure' when aci = 'F'
+      pick 'CNP - Non-3-D Secure' when aci = 'G'
+      else 'Unknown'
+
+    is_card_present is aci = 'A' | 'B'
+    is_card_not_present is aci = 'D' | 'E' | 'F' | 'G'
+    is_tokenized is aci = 'C'
+    is_3d_secure is aci = 'F'
+
+    time_of_day_bucket is
+      pick 'night (0-5)'    when hour_of_day < 6
+      pick 'morning (6-11)' when hour_of_day < 12
+      pick 'afternoon (12-17)' when hour_of_day < 18
+      else 'evening (18-23)'
+
+  // ---------- Core volume measures ----------
   measure:
     transaction_count is count()
     total_eur is eur_amount.sum()
+    avg_eur is eur_amount.avg()
+    median_eur is eur_amount.avg()  // placeholder; DuckDB median not always available
+    max_eur is eur_amount.max()
+    min_eur is eur_amount.min()
+    unique_shoppers is count(email_address)
+    unique_cards is count(card_number)
+    unique_merchants is count(merchant)
+
+  // ---------- Authorization / refusal ----------
+    refused_count is count() { where: is_refused_by_adyen }
+    authorized_count is count() { where: not is_refused_by_adyen }
+    authorization_rate is authorized_count / transaction_count
+    refusal_rate is refused_count / transaction_count
+
+  // ---------- Fraud / chargeback ----------
+    fraud_count is count() { where: has_fraudulent_dispute }
+    fraud_rate is fraud_count / transaction_count
+    fraud_eur is eur_amount.sum() { where: has_fraudulent_dispute }
+    fraud_volume_rate is fraud_eur / total_eur
+
+  // ---------- Cross-border / local ----------
+    intracountry_count is count() { where: issuing_country = acquirer_country }
+    cross_border_count is count() { where: issuing_country != acquirer_country }
+    intracountry_rate is intracountry_count / transaction_count
+    cross_border_rate is cross_border_count / transaction_count
+    intracountry_eur is eur_amount.sum() { where: issuing_country = acquirer_country }
+    cross_border_eur is eur_amount.sum() { where: issuing_country != acquirer_country }
+
+  // ---------- Credit / debit ----------
+    credit_count is count() { where: is_credit }
+    debit_count is count() { where: not is_credit }
+    credit_eur is eur_amount.sum() { where: is_credit }
+    debit_eur is eur_amount.sum() { where: not is_credit }
+    credit_share is credit_count / transaction_count
+
+  // ---------- ACI mix ----------
+    card_present_count is count() { where: aci = 'A' | 'B' }
+    card_not_present_count is count() { where: aci = 'D' | 'E' | 'F' | 'G' }
+    tokenized_count is count() { where: aci = 'C' }
+    three_ds_count is count() { where: aci = 'F' }
+    card_present_rate is card_present_count / transaction_count
+    cnp_rate is card_not_present_count / transaction_count
+    three_ds_rate is three_ds_count / transaction_count
 }

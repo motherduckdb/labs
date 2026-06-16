@@ -1,0 +1,15 @@
+{
+  "malloy_provenance": "model_authored",
+  "malloy_model_hash": "9a69896ed6e45bb0",
+  "manual_included": true,
+  "authoring_model": "anthropic/claude-opus-4.7",
+  "built_at": "2026-06-16T20:11:12.971Z",
+  "files": [
+    "acquirer_countries_base.malloy",
+    "dabstep.malloy",
+    "fees_base.malloy",
+    "merchant_category_codes_base.malloy",
+    "merchants_base.malloy",
+    "payments_base.malloy"
+  ]
+}

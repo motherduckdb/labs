@@ -1,0 +1,262 @@
+// dabstep.malloy
+// Central analytical layer over payments, fees, merchants, MCC, acquirer_countries.
+// All the fee-matching logic lives in the `txn` source's join_many to `fees`.
+
+//-----------------------------------------------------------------------
+// 1. Enriched transaction source with fee join
+//-----------------------------------------------------------------------
+
+source: txn is duckdb.sql("""
+  WITH monthly_stats AS (
+    SELECT
+      merchant,
+      year,
+      MONTH(MAKE_DATE(year, 1, 1) + INTERVAL (day_of_year - 1) DAY) AS month,
+      SUM(eur_amount) AS total_eur_amount,
+      SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) AS fraud_eur_amount,
+      CASE
+        WHEN SUM(eur_amount) < 100000   THEN '<100k'
+        WHEN SUM(eur_amount) < 1000000  THEN '100k-1m'
+        WHEN SUM(eur_amount) < 5000000  THEN '1m-5m'
+        ELSE '>5m'
+      END AS volume_range,
+      CASE
+        WHEN SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) / NULLIF(SUM(eur_amount),0) * 100 < 7.2 THEN '<7.2%'
+        WHEN SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) / NULLIF(SUM(eur_amount),0) * 100 < 7.7 THEN '7.2%-7.7%'
+        WHEN SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) / NULLIF(SUM(eur_amount),0) * 100 < 8.3 THEN '7.7%-8.3%'
+        ELSE '>8.3%'
+      END AS fraud_level_range
+    FROM payments
+    GROUP BY merchant, year, month
+  ),
+  mp AS (
+    SELECT
+      m.merchant,
+      m.account_type,
+      m.merchant_category_code AS mcc,
+      m.capture_delay AS raw_capture_delay,
+      CASE
+        WHEN m.capture_delay = 'immediate' THEN 'immediate'
+        WHEN m.capture_delay = 'manual'    THEN 'manual'
+        WHEN TRY_CAST(m.capture_delay AS INTEGER) IS NULL THEN m.capture_delay
+        WHEN TRY_CAST(m.capture_delay AS INTEGER) < 3 THEN '<3'
+        WHEN TRY_CAST(m.capture_delay AS INTEGER) BETWEEN 3 AND 5 THEN '3-5'
+        WHEN TRY_CAST(m.capture_delay AS INTEGER) > 5 THEN '>5'
+        ELSE m.capture_delay
+      END AS capture_delay_range
+    FROM merchants m
+  )
+  SELECT
+    p.psp_reference,
+    p.merchant,
+    p.card_scheme,
+    p.year,
+    p.day_of_year,
+    p.hour_of_day,
+    p.minute_of_hour,
+    p.is_credit,
+    p.eur_amount,
+    p.ip_country,
+    p.issuing_country,
+    p.acquirer_country,
+    p.ip_address,
+    p.email_address,
+    p.card_number,
+    p.shopper_interaction,
+    p.card_bin,
+    p.has_fraudulent_dispute,
+    p.is_refused_by_adyen,
+    p.aci,
+    MONTH(MAKE_DATE(p.year,1,1) + INTERVAL (p.day_of_year-1) DAY) AS month,
+    (p.issuing_country = p.acquirer_country) AS intracountry,
+    mp.account_type,
+    mp.mcc AS merchant_category_code,
+    mp.raw_capture_delay,
+    mp.capture_delay_range,
+    ms.volume_range,
+    ms.fraud_level_range,
+    ms.total_eur_amount AS monthly_total_volume,
+    ms.fraud_eur_amount AS monthly_fraud_volume
+  FROM payments p
+  JOIN mp ON mp.merchant = p.merchant
+  JOIN monthly_stats ms
+    ON ms.merchant = p.merchant
+   AND ms.year = p.year
+   AND ms.month = MONTH(MAKE_DATE(p.year,1,1) + INTERVAL (p.day_of_year-1) DAY)
+""") extend {
+
+  // Fee join: a fee row matches when each dimension is null/empty or contains
+  // the transaction's value. ALL matching fee rules apply additively.
+  join_many: fees is duckdb.table('fees') on
+        (fees.card_scheme is null or fees.card_scheme = card_scheme)
+    and (fees.is_credit  is null or fees.is_credit  = is_credit)
+    and (fees.intracountry is null or (fees.intracountry != 0) = intracountry)
+    and (len!number(fees.aci) = 0 or list_contains!boolean(fees.aci, aci))
+    and (len!number(fees.account_type) = 0 or list_contains!boolean(fees.account_type, account_type))
+    and (len!number(fees.merchant_category_code) = 0
+         or list_contains!boolean(fees.merchant_category_code, merchant_category_code))
+    and (fees.capture_delay is null or fees.capture_delay = capture_delay_range)
+    and (fees.monthly_volume is null or fees.monthly_volume = volume_range)
+    and (fees.monthly_fraud_level is null or fees.monthly_fraud_level = fraud_level_range)
+
+  //-------------------------------------------------------------------
+  // Derived dimensions on the transaction (new names)
+  //-------------------------------------------------------------------
+  dimension:
+    is_intracountry is intracountry
+    is_fraud is has_fraudulent_dispute
+    is_refused is is_refused_by_adyen
+    fee_per_txn is fees.fixed_amount + fees.rate / 10000.0 * eur_amount
+
+  //-------------------------------------------------------------------
+  // Measures
+  //-------------------------------------------------------------------
+  measure:
+    transaction_count is count()
+    total_eur is eur_amount.sum()
+    avg_eur is eur_amount.avg()
+    fraud_count is count() { where: has_fraudulent_dispute }
+    fraud_eur is eur_amount.sum() { where: has_fraudulent_dispute }
+
+    // Per-transaction expanded fee rows; sum is total fees paid.
+    total_fees is fees.sum(fees.fixed_amount + fees.rate / 10000.0 * eur_amount)
+
+    // Number of distinct fee rules that touched any selected transaction.
+    matched_fee_rule_count is fees.count()
+    matched_fee_id_count is count(fees.ID)
+}
+
+//-----------------------------------------------------------------------
+// 2. Pure fee-rule source: lets us answer "what rules match X" without
+//    needing a transaction.
+//-----------------------------------------------------------------------
+
+source: fees is duckdb.table('fees') extend {
+
+  dimension:
+    rate_fraction is rate / 10000.0
+    rate_pct is rate / 100.0
+    aci_size is len!number(aci)
+    account_type_size is len!number(account_type)
+    mcc_size is len!number(merchant_category_code)
+    applies_to_all_aci is len!number(aci) = 0
+    applies_to_all_account_types is len!number(account_type) = 0
+    applies_to_all_mcc is len!number(merchant_category_code) = 0
+
+  measure:
+    rule_count is count()
+    avg_fixed_amount is fixed_amount.avg()
+    avg_rate is rate.avg()
+    // Average fee on a 100 EUR transaction (any-matching average across rules).
+    avg_fee_on_100 is avg(fixed_amount + rate * 100.0 / 10000.0)
+}
+
+//-----------------------------------------------------------------------
+// 3. "Hypothetical fee" source: cross every fee rule with a single
+//    hypothetical transaction profile.  Used for "in the average scenario
+//    which card scheme would be cheapest for a 50 EUR transaction" -style
+//    questions and "what is the most expensive MCC" -style questions.
+//-----------------------------------------------------------------------
+
+source: fee_rules is duckdb.sql("""
+  SELECT
+    f.ID,
+    f.card_scheme,
+    f.account_type,
+    f.capture_delay,
+    f.monthly_fraud_level,
+    f.monthly_volume,
+    f.merchant_category_code,
+    f.is_credit,
+    f.aci,
+    f.fixed_amount,
+    f.rate,
+    f.intracountry,
+    UNNEST(CASE WHEN f.aci IS NULL OR len(f.aci)=0
+                THEN ['A','B','C','D','E','F','G']
+                ELSE f.aci END) AS aci_value,
+    UNNEST(CASE WHEN f.account_type IS NULL OR len(f.account_type)=0
+                THEN ['R','D','H','F','S','O']
+                ELSE f.account_type END) AS account_type_value
+  FROM fees f
+""") extend {
+  dimension:
+    rate_fraction is rate / 10000.0
+    fee_on_50    is fixed_amount + rate * 50.0   / 10000.0
+    fee_on_100   is fixed_amount + rate * 100.0  / 10000.0
+    fee_on_1000  is fixed_amount + rate * 1000.0 / 10000.0
+    fee_on_4321  is fixed_amount + rate * 4321.0 / 10000.0
+    fee_on_50000 is fixed_amount + rate * 50000.0/ 10000.0
+
+  measure:
+    rule_count is count()
+    avg_fee_on_50    is fee_on_50.avg()
+    avg_fee_on_100   is fee_on_100.avg()
+    avg_fee_on_1000  is fee_on_1000.avg()
+    avg_fee_on_4321  is fee_on_4321.avg()
+    avg_fee_on_50000 is fee_on_50000.avg()
+}
+
+//-----------------------------------------------------------------------
+// 4. Per-MCC fee scenario: explode merchant_category_code list.
+//-----------------------------------------------------------------------
+
+source: fees_by_mcc is duckdb.sql("""
+  SELECT
+    f.ID,
+    f.card_scheme,
+    f.is_credit,
+    f.aci,
+    f.account_type,
+    f.fixed_amount,
+    f.rate,
+    UNNEST(f.merchant_category_code) AS mcc
+  FROM fees f
+  WHERE f.merchant_category_code IS NOT NULL AND len(f.merchant_category_code) > 0
+""") extend {
+  dimension:
+    fee_on_50000 is fixed_amount + rate * 50000.0 / 10000.0
+    fee_on_1000  is fixed_amount + rate * 1000.0  / 10000.0
+    fee_on_100   is fixed_amount + rate * 100.0   / 10000.0
+
+  measure:
+    avg_fee_on_50000 is fee_on_50000.avg()
+    avg_fee_on_1000  is fee_on_1000.avg()
+    avg_fee_on_100   is fee_on_100.avg()
+    rule_count is count()
+}
+
+//-----------------------------------------------------------------------
+// 5. Per-ACI fee scenario (already exploded in fee_rules.aci_value).
+//-----------------------------------------------------------------------
+
+source: fees_by_account_type is fee_rules
+
+source: fees_by_aci is fee_rules
+
+//-----------------------------------------------------------------------
+// 6. Merchants registry (re-export for joining)
+//-----------------------------------------------------------------------
+
+source: merchants is duckdb.table('merchants') extend {
+  dimension:
+    account_type_label is
+      pick 'Enterprise - Retail'      when account_type = 'R'
+      pick 'Enterprise - Digital'     when account_type = 'D'
+      pick 'Enterprise - Hospitality' when account_type = 'H'
+      pick 'Platform - Franchise'     when account_type = 'F'
+      pick 'Platform - SaaS'          when account_type = 'S'
+      pick 'Other'                    when account_type = 'O'
+      else 'Unknown'
+
+  measure: merchant_count is count()
+}
+
+//-----------------------------------------------------------------------
+// 7. MCC lookup (re-export)
+//-----------------------------------------------------------------------
+
+source: mcc_lookup is duckdb.table('merchant_category_codes') extend {
+  dimension: mcc_num is mcc::number
+  measure: mcc_count is count()
+}

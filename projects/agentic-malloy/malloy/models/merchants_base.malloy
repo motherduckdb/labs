@@ -1,0 +1,105 @@
+// merchants_base.malloy
+// Base source for the DuckDB `merchants` table.
+// Per Lloyd Tabb's convention: one base source, no joins, just
+// useful dimensions and measures derived from the raw columns.
+
+source: merchants_base is duckdb.table('merchants') extend {
+
+  //--------------------------------------------------------------------
+  // Derived dimensions (NEW names only — never redefine raw columns)
+  //--------------------------------------------------------------------
+
+  // Human-readable label for the account_type code (see Manual §2).
+  dimension: account_type_label is
+    pick 'Enterprise - Retail'      when account_type = 'R'
+    pick 'Enterprise - Digital'     when account_type = 'D'
+    pick 'Enterprise - Hospitality' when account_type = 'H'
+    pick 'Platform - Franchise'     when account_type = 'F'
+    pick 'Platform - SaaS'          when account_type = 'S'
+    pick 'Other'                    when account_type = 'O'
+    else 'Unknown'
+
+  // High-level grouping: Enterprise vs Platform vs Other.
+  dimension: account_segment is
+    pick 'Enterprise' when account_type = 'R' | 'D' | 'H'
+    pick 'Platform'   when account_type = 'F' | 'S'
+    else 'Other'
+
+  // Capture-delay bucket / speed (faster capture = more expensive — Manual §5).
+  dimension: capture_speed is
+    pick 'Immediate'   when capture_delay = 'immediate'
+    pick 'Fast (<3d)'  when capture_delay = '<3'
+    pick 'Standard (3-5d)' when capture_delay = '3-5'
+    pick 'Slow (>5d)'  when capture_delay = '>5'
+    pick 'Manual'      when capture_delay = 'manual'
+    else 'Unknown'
+
+  // True for "fast" capture configurations (typically pricier per Manual §5).
+  dimension: is_fast_capture is
+    capture_delay = 'immediate' | '<3'
+
+  // True if the merchant settles within 24h (Manual §5.1.5 best practice).
+  dimension: is_timely_settlement is
+    capture_delay = 'immediate' | '<3' | '3-5'
+
+  // Number of acquirers configured for this merchant.
+  // Typed raw escape is required for DuckDB list functions.
+  dimension: acquirer_count is len!number(acquirer)
+
+  // True if the merchant routes through multiple acquirers (local-acquiring
+  // strategy, see Manual §5.1.1).
+  dimension: is_multi_acquirer is len!number(acquirer) > 1
+
+  // MCC two-digit category prefix (Manual §3).
+  dimension: mcc_category_prefix is
+    floor(merchant_category_code / 100)
+
+  // Coarse MCC industry bucket based on the standard ISO 18245 ranges.
+  dimension: mcc_industry_group is
+    pick 'Agricultural Services' when merchant_category_code >= 1 and merchant_category_code < 1500
+    pick 'Contracted Services'   when merchant_category_code >= 1500 and merchant_category_code < 3000
+    pick 'Airlines'              when merchant_category_code >= 3000 and merchant_category_code < 3300
+    pick 'Car Rental'            when merchant_category_code >= 3300 and merchant_category_code < 3500
+    pick 'Lodging'               when merchant_category_code >= 3500 and merchant_category_code < 4000
+    pick 'Transportation'        when merchant_category_code >= 4000 and merchant_category_code < 4800
+    pick 'Utilities / Telecom'   when merchant_category_code >= 4800 and merchant_category_code < 5000
+    pick 'Retail Outlets'        when merchant_category_code >= 5000 and merchant_category_code < 5600
+    pick 'Clothing Stores'       when merchant_category_code >= 5600 and merchant_category_code < 5700
+    pick 'Miscellaneous Stores'  when merchant_category_code >= 5700 and merchant_category_code < 7000
+    pick 'Business Services'     when merchant_category_code >= 7000 and merchant_category_code < 8000
+    pick 'Professional / Membership' when merchant_category_code >= 8000 and merchant_category_code < 9000
+    pick 'Government'            when merchant_category_code >= 9000 and merchant_category_code < 10000
+    else 'Unknown'
+
+  //--------------------------------------------------------------------
+  // Measures
+  //--------------------------------------------------------------------
+
+  // Number of merchant rows (this table is a registry — one row per merchant).
+  measure: merchant_count is count()
+
+  // Number of distinct merchants (defensive — same as merchant_count if PK).
+  measure: distinct_merchant_count is count(merchant)
+
+  // Number of distinct MCCs covered by the population.
+  measure: distinct_mcc_count is count(merchant_category_code)
+
+  // Number of distinct account types represented.
+  measure: distinct_account_type_count is count(account_type)
+
+  // Average number of acquirers per merchant (acquirer diversity).
+  measure: avg_acquirer_count is avg(len!number(acquirer))
+
+  // Total acquirer relationships across all merchants.
+  measure: total_acquirer_relationships is sum(len!number(acquirer))
+
+  // Share of merchants using more than one acquirer.
+  measure: multi_acquirer_merchant_count is count() {
+    where: len!number(acquirer) > 1
+  }
+
+  // Share of merchants on fast capture (potentially higher fee tier).
+  measure: fast_capture_merchant_count is count() {
+    where: capture_delay = 'immediate' | '<3'
+  }
+}

@@ -59,7 +59,7 @@ export async function complete(params: {
       { role: 'system', content: params.systemPrompt },
       { role: 'user', content: params.userPrompt },
     ],
-    max_tokens: params.maxTokens ?? 32000,
+    max_tokens: params.maxTokens ?? 36000,
     temperature: 0,
     usage: { include: true },
   };
@@ -99,7 +99,7 @@ export async function streamChatCompletion(params: {
   provider?: string;
   onFetchRetry?: (m: string) => void;
 }): Promise<ReadableStream<Uint8Array>> {
-  const { model, messages, tools, systemPrompt, temperature = 0, maxTokens = 16384, reasoningEffort, provider, onFetchRetry } = params;
+  const { model, messages, tools, systemPrompt, temperature = 0, maxTokens = 36000, reasoningEffort, provider, onFetchRetry } = params;
 
   const openaiMessages: Array<Record<string, unknown>> = [{ role: 'system', content: systemPrompt }];
   for (const msg of messages) {

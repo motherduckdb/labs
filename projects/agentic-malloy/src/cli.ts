@@ -335,7 +335,7 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   const model = resolveModel((flags.model as string) || 'opus');
   const includeManual = flags['no-manual'] ? false : true;
   const reasoning = (flags.reasoning as string) || 'medium';
-  const res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 3) });
+  const res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 3), centralOnly: !!flags['central-only'] });
   if (res.ok) {
     console.log(`\n✓ layer built · hash ${res.malloyModelHash} · $${res.cost.toFixed(4)}`);
     console.log(`  files: ${res.files.join(', ')}`);

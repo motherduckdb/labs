@@ -59,7 +59,14 @@ export class MalloyRuntime {
   /** Concatenate all model files into one compilation unit (cached). */
   async loadModelText(force = false): Promise<string> {
     if (this.modelText !== null && !force) return this.modelText;
-    const files = (await readdir(this.modelsDir)).filter((f) => f.endsWith('.malloy')).sort();
+    // Malloy compiles these as ONE unit and needs definitions before use, so the
+    // entity `*_base.malloy` sources must precede the central model that joins
+    // them (e.g. dabstep.malloy). Plain alphabetical order would put dabstep
+    // before fees_base — "Reference to undefined object 'fees_base'".
+    const all = (await readdir(this.modelsDir)).filter((f) => f.endsWith('.malloy'));
+    const bases = all.filter((f) => f.endsWith('_base.malloy')).sort();
+    const rest = all.filter((f) => !f.endsWith('_base.malloy')).sort();
+    const files = [...bases, ...rest];
     const parts: string[] = [];
     for (const f of files) {
       const body = await readFile(path.join(this.modelsDir, f), 'utf8');

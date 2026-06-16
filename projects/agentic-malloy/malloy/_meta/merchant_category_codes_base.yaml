@@ -1,0 +1,22 @@
+_meta:
+  file: merchant_category_codes_base.malloy
+  domain: payments
+  summary: >
+    Base source over the merchant_category_codes lookup table. Each row is one
+    four-digit Merchant Category Code (MCC) with its description. Adds a numeric
+    form of the MCC (for joining to payments.mcc), category/subcategory prefix
+    splits, a coarse industry_group bucket based on standard ISO 18245 ranges,
+    and boolean flags for common segments (hospitality, airline, fuel,
+    healthcare, education, government) referenced in the Merchant Manual.
+  exports:
+    - name: merchant_category_codes_base
+      kind: source
+      summary: >
+        MCC lookup. Dimensions: mcc, description, mcc_num, mcc_category_prefix,
+        mcc_subcategory_suffix, industry_group, mcc_label, plus is_hospitality /
+        is_airline / is_fuel / is_healthcare / is_education / is_government
+        flags. Measures: mcc_count, distinct_mcc_count, distinct_industry_count.
+  provides_for:
+    - "payments: enrich transactions with merchant category description and industry_group via join on mcc"
+    - "fees: explain which MCC list a fee rule applies to"
+    - "reporting: group transaction volume / fraud rates by industry_group"

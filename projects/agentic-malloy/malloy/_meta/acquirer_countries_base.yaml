@@ -1,0 +1,11 @@
+file: acquirer_countries_base.malloy
+domain: payments
+summary: Base source over the acquirer_countries lookup table mapping each acquirer to the country (ISO code) in which it operates. Useful for joining acquirer→country onto payments to evaluate intracountry vs cross-border routing per the Merchant Manual §5.1.1.
+exports:
+  - name: acquirer_countries_base
+    kind: source
+    summary: Lookup of acquirer to country_code with a derived country_region dimension and row counts.
+provides_for:
+  - "intracountry vs cross-border classification (joins payments.acquirer_country to issuing_country)"
+  - "regional grouping of acquirers (Europe / North America / LATAM / APAC / Other)"
+  - "acquirer coverage analysis by country/region"

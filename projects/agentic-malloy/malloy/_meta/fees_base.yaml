@@ -1,0 +1,18 @@
+file: fees_base.malloy
+domain: payments
+summary: |
+  Base Malloy source over the DuckDB "fees" table — one row per fee RULE.
+  Adds derived dimensions (capture-speed bucket, intracountry / credit labels,
+  fixed-amount and rate tiers, an example fee on a EUR 100 transaction) plus
+  rule-count, fixed-amount and rate measures. No joins.
+exports:
+  - name: fees_base
+    kind: source
+    summary: Fee-rule catalog with rule_count, avg/min/max fixed_amount, rate tiers, and channel/credit/intracountry flags.
+provides_for:
+  - fees rule catalog
+  - fee rule statistics
+  - fixed_amount and rate distributions
+  - capture delay analysis
+  - intracountry vs cross-border rules
+  - credit vs debit rules
