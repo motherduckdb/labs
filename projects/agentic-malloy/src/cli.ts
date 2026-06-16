@@ -186,7 +186,8 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   }
 
   const skill = await readFile(SKILL_PATH, 'utf8');
-  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n===============================`;
+  const primer = await readFile(path.join(REPO_ROOT, 'docs', 'malloy', 'malloy-primer.md'), 'utf8');
+  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}\n===============================`;
 
   await mkdir(RESULTS_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T', 'T').slice(0, 15) + 'Z';
@@ -342,7 +343,18 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   const model = resolveModel((flags.model as string) || 'opus');
   const includeManual = flags['no-manual'] ? false : true;
   const reasoning = (flags.reasoning as string) || 'medium';
-  const res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 3), centralOnly: !!flags['central-only'] });
+
+  // Wrap in a controllog session so the build is observable (model exchanges +
+  // compile checks) in the dive's "Build" tab. Flushed to results/controllog/.
+  cl.init({ project: PROJECT_ID, logDir: RESULTS_DIR, agentId: 'agent:asm-malloy-builder' });
+  const session = cl.createSession();
+  const runId = cl.newId();
+  let res!: Awaited<ReturnType<typeof buildLayer>>;
+  await cl.runInSession(session, async () => {
+    res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 3), centralOnly: !!flags['central-only'], runId });
+  });
+  await cl.flushSession(session);
+  console.log(`  build run_id ${runId} logged to results/controllog (upload to view in the dive's Build tab)`);
   if (res.ok) {
     console.log(`\n✓ layer built · hash ${res.malloyModelHash} · $${res.cost.toFixed(4)}`);
     console.log(`  files: ${res.files.join(', ')}`);

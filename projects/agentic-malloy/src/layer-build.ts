@@ -20,6 +20,7 @@ import { DuckDBInstance } from '@duckdb/node-api';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { LOCAL_DB_PATH, buildLocalDuckDB } from './load.js';
+import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = path.join(REPO_ROOT, 'data');
@@ -59,18 +60,21 @@ async function trainQA(includeAnswers: boolean): Promise<string> {
     .join('\n');
 }
 
-const MALLOY_RULES = `CRITICAL Malloy-on-DuckDB rules:
-- Reference a table with duckdb.table('payments') — by NAME, never a file path.
-- Do NOT redefine an existing table column as a dimension/measure. Every column in the schema below is ALREADY queryable by its own name; \`dimension: merchant is ...\` when the table has a \`merchant\` column fails with "Cannot redefine 'merchant'". Only ADD derived fields with NEW names (e.g. is_intracountry, amount_tier).
-- Do NOT write bare square-bracket list literals like \`['A','B']\` or \`col in ['A','B']\` — Malloy rejects them ("no viable alternative at input '['"). Use \`col = 'A' | 'B'\` for set membership, and the typed raw escapes below for list-typed COLUMNS.
-- DuckDB list/SQL functions need a TYPED raw escape or Malloy infers the array type and errors: use len!number(fees.aci) = 0 and list_contains!boolean(fees.aci, aci). Plain len()/list_contains() will NOT compile.
-- For NULL use \`is null\` / \`is not null\` — NEVER \`= null\` / \`!= null\` (Malloy rejects them).
-- Prefer pushing awkward SQL (CASE bucketing, window/group enrichment, ::casts) into a duckdb.sql("...") source block rather than fighting Malloy syntax. Malloy views use \`view: name is { group_by: ...; aggregate: ... }\`.
-- All files are compiled as ONE unit (concatenated), so do NOT use import statements — every source is visible to every other file.
+const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'malloy');
+async function readDoc(name: string): Promise<string> {
+  return readFile(path.join(DOCS_DIR, name), 'utf8');
+}
+
+// DuckDB-specifics the primer doesn't cover + the Malloy-first rule + output format.
+const DUCKDB_NOTES = `Malloy-on-DuckDB specifics (in addition to the primer above):
+- Reference a table by NAME: \`duckdb.table('payments')\` — never a file path. The model files compile as ONE unit (concatenated), so do NOT use \`import\`; every source sees every other.
+- Do NOT redefine an existing table column as a dimension/measure (e.g. \`dimension: merchant is ...\` when a \`merchant\` column exists → "Cannot redefine"). Only ADD derived fields with NEW names.
+- DuckDB list/array functions need a TYPED raw escape (Malloy can't type them): \`len!number(fees.aci) = 0\`, \`list_contains!boolean(fees.aci, aci)\`. There is no native list-membership operator — use these for list-typed columns.
+- MALLOY-FIRST (important): express joins, group-bys, filters, and aggregates in MALLOY — \`join_one\`/\`join_many\`, \`view:\`, \`nest:\`, filtered aggregates. Do NOT write joins or group-bys inside \`duckdb.sql(...)\`. Use a \`duckdb.sql("...")\` source ONLY for logic Malloy genuinely cannot express, and keep it minimal.
 
 Output EXACTLY two fenced blocks and nothing else:
 1. A \`\`\`malloy block: the file contents.
-2. A \`\`\`yaml block: the _meta sidecar with TOP-LEVEL keys (do NOT nest them under a \`_meta:\` key): file, domain, summary, exports (list of {name, kind, summary}), provides_for (list of strings).`;
+2. A \`\`\`yaml block: the _meta sidecar with TOP-LEVEL keys (do NOT nest under a \`_meta:\` key): file, domain, summary, exports (list of {name, kind, summary}), provides_for (list of strings).`;
 
 // ---------------------------------------------------------------------------
 // Parsing + filesystem
@@ -159,10 +163,12 @@ async function authorStage(opts: {
   user: string;
   maxRounds: number;
   maxTokens?: number;
+  runId?: string; // when set, emit controllog build events (model exchanges + compile checks)
 }): Promise<StageResult> {
   const agg = { cost: 0, promptTokens: 0, completionTokens: 0 };
   let repair: string | undefined;
   for (let round = 1; round <= opts.maxRounds; round++) {
+    const t0 = Date.now();
     const resp = await complete({
       model: opts.model,
       systemPrompt: opts.system,
@@ -170,11 +176,17 @@ async function authorStage(opts: {
       reasoningEffort: opts.reasoningEffort,
       maxTokens: opts.maxTokens ?? 36000,
     });
+    const wallMs = Date.now() - t0;
     agg.cost += resp.cost ?? 0;
     agg.promptTokens += resp.promptTokens;
     agg.completionTokens += resp.completionTokens;
 
     const { malloy, meta } = extractBlocks(resp.text);
+    if (opts.runId) {
+      const ex = cl.newId();
+      cl.modelPrompt({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: opts.label, round } });
+      cl.modelCompletion({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: opts.label, round, malloy: malloy?.slice(0, 6000) ?? null } });
+    }
     if (!malloy) {
       repair = 'You did not return a ```malloy fenced block. Return exactly one ```malloy block and one ```yaml block.';
       continue;
@@ -185,7 +197,13 @@ async function authorStage(opts: {
       `file: ${opts.modelFile}\ndomain: ${opts.modelFile.replace(/_base\.malloy$|\.malloy$/, '')}\nsummary: (auto)\nexports:\n  - name: ${opts.defaultExport.name}\n    kind: ${opts.defaultExport.kind}\n    summary: (auto)\n`;
     await writeFile(path.join(META_DIR, opts.metaFile), metaYaml + (metaYaml.endsWith('\n') ? '' : '\n'));
 
+    const cv0 = Date.now();
     const { ok, diag } = await validateModel();
+    if (opts.runId) {
+      const callId = cl.newId();
+      cl.toolCall({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, arguments: { round }, model: opts.model });
+      cl.toolResult({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, ok, durationMs: Date.now() - cv0, model: opts.model, output: ok ? 'ok' : diag.slice(0, 1500) });
+    }
     if (ok) {
       console.log(`  ✓ ${opts.label} (round ${round}, $${agg.cost.toFixed(4)})`);
       return { ok: true, ...agg };
@@ -195,16 +213,6 @@ async function authorStage(opts: {
   }
   return { ok: false, diag: repair, ...agg };
 }
-
-// TASK-GENERAL Malloy structural syntax only — NO solved query logic and NO
-// eval-derived patterns. (The dataset's actual fee rules / formula / bucketing come
-// from the manual, an allowed input; the model must derive the modeling itself.)
-const MALLOY_STRUCTURE = `Malloy structural syntax (general — the modeling itself is yours to derive from the manual + schema):
-- A source extends a table/query: \`source: s is duckdb.table('t') extend { dimension: ...; measure: ... }\`.
-- A many-to-one or matching join: \`join_many: other is OTHER_SOURCE on <boolean condition over fields of both sides>\`. The condition may use ANDs/ORs and the typed raw escapes above for list columns.
-- A measure that aggregates a joined source's fields: \`measure: m is other.sum(<expr over other.* and this side>)\`.
-- A reusable query lives on the source as \`view: name is { where: ...; group_by: ...; aggregate: ... }\`.
-- When a transformation is awkward in pure Malloy (multi-step CTEs, window/group enrichment, casts), wrap that SQL in a \`duckdb.sql("...")\` source and extend it.`;
 
 // ---------------------------------------------------------------------------
 // Orchestration
@@ -225,10 +233,18 @@ export async function buildLayer(opts: {
   maxRounds?: number;
   reasoningEffort?: string;
   centralOnly?: boolean; // reuse existing *_base.malloy, only (re)author dabstep.malloy
+  runId?: string; // controllog build-run id (emits build events when set)
 }): Promise<LayerBuildResult> {
   if (!existsSync(LOCAL_DB_PATH)) {
     console.log('local compile DB missing — building data/dabstep.duckdb …');
     await buildLocalDuckDB();
+  }
+  if (opts.runId) {
+    cl.runMetadata({
+      runId: opts.runId,
+      resolvedConfig: { phase: 'build', model: opts.model, include_manual: opts.includeManual !== false, central_only: !!opts.centralOnly, reasoning: opts.reasoningEffort ?? null },
+      agentName: 'agent:asm-malloy-builder', datasetName: 'agentic_malloy', datasetVersion: 'layer-build',
+    });
   }
   const schema = await schemaByTable();
   const manual = opts.includeManual === false ? '(omitted — manual-ablation run)' : await readFile(path.join(DATA_DIR, 'dabstep', 'context', 'manual.md'), 'utf8');
@@ -245,14 +261,17 @@ export async function buildLayer(opts: {
     console.log(`layer-build (model=${opts.model}) — incremental, ${TABLES.length} bases + central\n`);
   }
 
+  const primer = await readDoc('malloy-primer.md');
+  const discovery = await readDoc('relationship-discovery.md');
+
   // 1. Entity bases (independent: measures + dimensions, NO joins).
   for (const t of opts.centralOnly ? [] : TABLES) {
-    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table "${t}", per Lloyd Tabb's convention: a source named ${t}_base over duckdb.table('${t}') with useful measures + dimensions and NO join logic.\n\n${MALLOY_RULES}`;
+    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table "${t}": a source named ${t}_base over duckdb.table('${t}') with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}`;
     const user = `## Table "${t}" schema (DuckDB)\n${schema[t]}\n\n## The Merchant Manual (for terminology + which measures matter)\n${manual}\n\nWrite ${t}_base.malloy now (source named ${t}_base, measures + dimensions, no joins).`;
     const r = await authorStage({
       label: `${t}_base.malloy`, modelFile: `${t}_base.malloy`, metaFile: `${t}_base.yaml`,
       defaultExport: { name: `${t}_base`, kind: 'source' },
-      model: opts.model, reasoningEffort: opts.reasoningEffort, system, user, maxRounds,
+      model: opts.model, reasoningEffort: opts.reasoningEffort, system, user, maxRounds, runId: opts.runId,
     });
     totalCost += r.cost;
     if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `${t}_base: ${r.diag}`, cost: totalCost };
@@ -260,13 +279,13 @@ export async function buildLayer(opts: {
 
   // 2. Central model: joins (directionality from cardinality) + views for the question shapes.
   const baseContents = (await Promise.all(TABLES.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(MODELS_DIR, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
-  const centralSystem = `You are a Malloy expert writing the CENTRAL model dabstep.malloy: it extends the base sources with joins (directionality inferred from cardinality) and named views/measures for the common analytical questions. Reuse the base sources' measures; keep per-query Malloy thin.\n\nThe fee questions are the hardest. DERIVE the fee model yourself from the manual's fee section and the schema — how a transaction matches fee rules, how the fee is computed, and how the dynamic dimensions are bucketed are all defined in the manual provided below. Do not assume a pattern; model what the manual specifies.\n\n${MALLOY_STRUCTURE}\n\n${MALLOY_RULES}`;
+  const centralSystem = `You are a Malloy expert writing the CENTRAL model dabstep.malloy: it extends the base sources with joins (cardinality inferred per the discovery guide) and named views/measures for the common analytical questions. Reuse the base sources' measures; keep per-query Malloy thin.\n\nThe fee questions are the hardest. DERIVE the fee model yourself from the manual's fee section and the schema — how a transaction matches fee rules, how the fee is computed, and how the dynamic dimensions are bucketed are all defined in the manual provided below. Do not assume a pattern; model what the manual specifies. Express the joins and the per-merchant/per-month bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\n=== MALLOY PRIMER ===\n${primer}\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}\n\n${DUCKDB_NOTES}`;
   const centralUser = `## The base sources already authored (visible to your file)\n${baseContents}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite dabstep.malloy now: joins + views/measures so the questions above are answerable by thin per-query Malloy on top of this layer.`;
   const central = await authorStage({
     label: 'dabstep.malloy', modelFile: 'dabstep.malloy', metaFile: 'dabstep.yaml',
     defaultExport: { name: 'dabstep', kind: 'model' },
     model: opts.model, reasoningEffort: opts.reasoningEffort, system: centralSystem, user: centralUser, maxRounds,
-    maxTokens: 36000, // the central model is the largest output — avoid truncation
+    maxTokens: 36000, runId: opts.runId, // the central model is the largest output — avoid truncation
   });
   totalCost += central.cost;
   if (!central.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `dabstep: ${central.diag}`, cost: totalCost };

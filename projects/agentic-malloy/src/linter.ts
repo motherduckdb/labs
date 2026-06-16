@@ -61,6 +61,37 @@ export function lintMalloy(src: string, symbols: Set<string>): LintResult {
     re.lastIndex = 0;
   }
 
+  // 3b. Trivial SQL→Malloy operator rewrites (complementary-linter Group 3).
+  const opFixes: Array<{ re: RegExp; to: string; note: string }> = [
+    { re: /(?<![=!<>])==(?!=)/g, to: '=', note: '== -> =' },
+    { re: /&&/g, to: ' and ', note: '&& -> and' },
+    { re: /\|\|/g, to: ' or ', note: '|| -> or' },
+    { re: /\bcount\(\s*\*\s*\)/gi, to: 'count()', note: 'count(*) -> count()' },
+  ];
+  for (const { re, to, note } of opFixes) {
+    if (re.test(out)) {
+      out = out.replace(re, to);
+      fixes.push(note);
+    }
+    re.lastIndex = 0;
+  }
+  // count(distinct x) -> count(x) — count(expr) is already distinct in Malloy.
+  out = out.replace(/\bcount\(\s*distinct\s+([^)]+)\)/gi, (_m, inner) => {
+    fixes.push('count(distinct x) -> count(x)');
+    return `count(${String(inner).trim()})`;
+  });
+
+  // 3c. Backtick reserved/time-keyword columns that are real fields (the marquee
+  //     case: a bare `year` aborts the parse). Only words that are KNOWN symbols.
+  const RESERVED = new Set(['year', 'month', 'quarter', 'week', 'day', 'hour', 'minute', 'second', 'date', 'time']);
+  out = out.replace(/(?<![`\w.])([a-z_][\w]*)(?![`\w])/g, (tok) => {
+    if (RESERVED.has(tok) && symbols.has(tok)) {
+      fixes.push(`backticked reserved column \`${tok}\``);
+      return `\`${tok}\``;
+    }
+    return tok;
+  });
+
   // 4. Identifier casing: a bare token that case-insensitively matches exactly
   //    one known symbol but differs in case -> canonical casing.
   if (symbols.size) {
