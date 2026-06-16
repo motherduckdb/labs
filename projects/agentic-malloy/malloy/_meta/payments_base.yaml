@@ -1,15 +1,13 @@
-_meta:
-  file: payments_base.malloy
-  domain: payments
-  summary: Base source over the payments table with transaction volume, authorization, fraud, cross-border, credit/debit, and ACI-mix measures plus derived buckets (no joins).
-  exports:
-    - name: payments_base
-      kind: source
-      summary: Payments transactions enriched with derived dimensions (is_intracountry, amount_tier, aci_description, time_of_day_bucket, card-present flags) and KPI measures (authorization_rate, fraud_rate, cross_border_rate, etc.).
-  provides_for:
-    - payments transaction analytics
-    - authorization and refusal rate analysis
-    - fraud and chargeback monitoring
-    - cross-border vs intracountry analysis
-    - ACI / transaction-type mix analysis
-    - join base for fees enrichment
+file: payments_base.malloy
+domain: payments
+summary: Base semantic model over the `payments` table — adds derived dimensions (transaction date, ACI descriptions, channel flags, geo flags, amount/time buckets) and core measures for volume, monetary totals, authorization rate, refusal rate, fraud rate, credit share, and cross-border vs local acquiring splits. No joins.
+exports:
+  - name: payments_base
+    kind: source
+    summary: Per-transaction payments source with measures (counts, volumes, fraud/refusal/authorization rates, cross-border splits) and dimensions (transaction_date, aci_description, is_intracountry, amount_bucket, time_of_day, is_card_present/CNP, is_3ds_authenticated).
+provides_for:
+  - payment processing analytics
+  - fraud-rate and authorization-rate KPI tracking
+  - cross-border vs local acquiring analysis
+  - ACI / channel mix analysis
+  - merchant volume and average ticket analysis

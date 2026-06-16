@@ -351,7 +351,7 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   const runId = cl.newId();
   let res!: Awaited<ReturnType<typeof buildLayer>>;
   await cl.runInSession(session, async () => {
-    res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 3), centralOnly: !!flags['central-only'], runId });
+    res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 5), centralOnly: !!flags['central-only'], runId });
   });
   await cl.flushSession(session);
   console.log(`  build run_id ${runId} logged to results/controllog (upload to view in the dive's Build tab)`);

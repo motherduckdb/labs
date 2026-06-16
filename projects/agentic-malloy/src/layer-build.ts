@@ -69,7 +69,7 @@ async function readDoc(name: string): Promise<string> {
 const DUCKDB_NOTES = `Malloy-on-DuckDB specifics (in addition to the primer above):
 - Reference a table by NAME: \`duckdb.table('payments')\` — never a file path. The model files compile as ONE unit (concatenated), so do NOT use \`import\`; every source sees every other.
 - Do NOT redefine an existing table column as a dimension/measure (e.g. \`dimension: merchant is ...\` when a \`merchant\` column exists → "Cannot redefine"). Only ADD derived fields with NEW names.
-- DuckDB list/array functions need a TYPED raw escape (Malloy can't type them): \`len!number(fees.aci) = 0\`, \`list_contains!boolean(fees.aci, aci)\`. There is no native list-membership operator — use these for list-typed columns.
+- ANY DuckDB SQL function the primer doesn't list needs the TYPED raw escape \`fn!returntype(args)\` — e.g. \`list_contains!boolean(fees.aci, aci)\`, \`len!number(fees.aci)\`, \`lpad!string(x, 3, '0')\`, \`strftime!string(d, '%Y')\`, \`make_date!date(y, m, d)\`. Plain \`lpad(...)\`/\`strftime(...)\` fail with "Unknown function". There is no native list-membership operator — use \`list_contains!boolean\` for list columns. Prefer Malloy-native date ops (\`@2023\`, \`.month\`, \`::date\`) over SQL date formatting where possible.
 - MALLOY-FIRST (important): express joins, group-bys, filters, and aggregates in MALLOY — \`join_one\`/\`join_many\`, \`view:\`, \`nest:\`, filtered aggregates. Do NOT write joins or group-bys inside \`duckdb.sql(...)\`. Use a \`duckdb.sql("...")\` source ONLY for logic Malloy genuinely cannot express, and keep it minimal.
 
 Output EXACTLY two fenced blocks and nothing else:
@@ -79,6 +79,19 @@ Output EXACTLY two fenced blocks and nothing else:
 // ---------------------------------------------------------------------------
 // Parsing + filesystem
 // ---------------------------------------------------------------------------
+
+/** Parse a JSON array of {old,new} search/replace edits from a repair response. */
+function parseEdits(text: string): Array<{ old: string; new: string }> {
+  const m = text.match(/\[[\s\S]*\]/);
+  try {
+    const arr = JSON.parse(m ? m[0] : text) as Array<{ old?: unknown; new?: unknown }>;
+    return arr
+      .filter((e) => e && typeof e.old === 'string' && typeof e.new === 'string')
+      .map((e) => ({ old: e.old as string, new: e.new as string }));
+  } catch {
+    return [];
+  }
+}
 
 function extractBlocks(text: string): { malloy?: string; meta?: string } {
   // 1. Tagged ```malloy block (case-insensitive).
@@ -166,52 +179,108 @@ async function authorStage(opts: {
   runId?: string; // when set, emit controllog build events (model exchanges + compile checks)
 }): Promise<StageResult> {
   const agg = { cost: 0, promptTokens: 0, completionTokens: 0 };
-  let repair: string | undefined;
+  let diag: string | undefined; // last compile error
+  let current: string | null = null; // last-written malloy (for edit rounds)
+  let metaWritten = false;
+  let forceFull = false; // set when an edit round produced no applicable edits
+
   for (let round = 1; round <= opts.maxRounds; round++) {
+    const editMode = round > 1 && current !== null && !forceFull;
+    forceFull = false;
     const t0 = Date.now();
-    const resp = await complete({
-      model: opts.model,
-      systemPrompt: opts.system,
-      userPrompt: repair ? `${opts.user}\n\n## Your previous attempt failed — FIX and re-emit the full file:\n${repair}` : opts.user,
-      reasoningEffort: opts.reasoningEffort,
-      maxTokens: opts.maxTokens ?? 36000,
-    });
+
+    let resp;
+    let mode: 'full' | 'edit';
+    if (editMode) {
+      mode = 'edit';
+      resp = await complete({
+        model: opts.model,
+        systemPrompt: opts.system,
+        userPrompt:
+          `The file ${opts.modelFile} below FAILED to compile. Make the MINIMAL edits that fix ONLY the listed errors — do NOT rewrite, reorder, or restructure anything else.\n\n` +
+          `=== current ${opts.modelFile} ===\n${current}\n\n=== compiler errors ===\n${diag}\n\n` +
+          `Return ONLY a JSON array of edits: [{"old":"<text copied VERBATIM from the file, unique>","new":"<replacement>"}]. ` +
+          `Each "old" must appear exactly once in the file. Follow the Malloy rules above (typed raw escapes fn!returntype, \`is null\` not \`= null\`, etc.).`,
+        reasoningEffort: opts.reasoningEffort,
+        maxTokens: 8000,
+      });
+    } else {
+      mode = 'full';
+      resp = await complete({
+        model: opts.model,
+        systemPrompt: opts.system,
+        userPrompt: diag ? `${opts.user}\n\n## Your previous attempt failed to compile — re-emit a corrected full file:\n${diag}` : opts.user,
+        reasoningEffort: opts.reasoningEffort,
+        maxTokens: opts.maxTokens ?? 36000,
+      });
+    }
     const wallMs = Date.now() - t0;
     agg.cost += resp.cost ?? 0;
     agg.promptTokens += resp.promptTokens;
     agg.completionTokens += resp.completionTokens;
 
-    const { malloy, meta } = extractBlocks(resp.text);
+    // Produce the candidate malloy for this round.
+    let malloy: string | undefined;
+    let meta: string | undefined;
+    if (mode === 'edit') {
+      const edits = parseEdits(resp.text);
+      let patched: string = current as string;
+      let applied = 0;
+      for (const e of edits) {
+        const i = patched.indexOf(e.old);
+        if (i >= 0) {
+          patched = patched.slice(0, i) + e.new + patched.slice(i + e.old.length);
+          applied++;
+        }
+      }
+      if (applied === 0) {
+        console.log(`  … ${opts.label} round ${round}: no edits applied — full re-emit next round`);
+        forceFull = true;
+        continue; // diag unchanged; next round is full
+      }
+      console.log(`  … ${opts.label} round ${round}: applied ${applied}/${edits.length} edit(s)`);
+      malloy = patched;
+    } else {
+      ({ malloy, meta } = extractBlocks(resp.text));
+    }
+
     if (opts.runId) {
       const ex = cl.newId();
-      cl.modelPrompt({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: opts.label, round } });
-      cl.modelCompletion({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: opts.label, round, malloy: malloy?.slice(0, 6000) ?? null } });
+      cl.modelPrompt({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode } });
+      cl.modelCompletion({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode, malloy: malloy?.slice(0, 6000) ?? null } });
     }
+
     if (!malloy) {
-      repair = 'You did not return a ```malloy fenced block. Return exactly one ```malloy block and one ```yaml block.';
+      diag = 'You did not return a ```malloy fenced block. Return exactly one ```malloy block and one ```yaml block.';
       continue;
     }
     await writeFile(path.join(MODELS_DIR, opts.modelFile), malloy + '\n');
-    const metaYaml =
-      meta ??
-      `file: ${opts.modelFile}\ndomain: ${opts.modelFile.replace(/_base\.malloy$|\.malloy$/, '')}\nsummary: (auto)\nexports:\n  - name: ${opts.defaultExport.name}\n    kind: ${opts.defaultExport.kind}\n    summary: (auto)\n`;
-    await writeFile(path.join(META_DIR, opts.metaFile), metaYaml + (metaYaml.endsWith('\n') ? '' : '\n'));
+    current = malloy;
+    if (!metaWritten) {
+      const metaYaml =
+        meta ??
+        `file: ${opts.modelFile}\ndomain: ${opts.modelFile.replace(/_base\.malloy$|\.malloy$/, '')}\nsummary: (auto)\nexports:\n  - name: ${opts.defaultExport.name}\n    kind: ${opts.defaultExport.kind}\n    summary: (auto)\n`;
+      await writeFile(path.join(META_DIR, opts.metaFile), metaYaml + (metaYaml.endsWith('\n') ? '' : '\n'));
+      metaWritten = true;
+    } else if (meta) {
+      await writeFile(path.join(META_DIR, opts.metaFile), meta + (meta.endsWith('\n') ? '' : '\n'));
+    }
 
     const cv0 = Date.now();
-    const { ok, diag } = await validateModel();
+    const v = await validateModel();
     if (opts.runId) {
       const callId = cl.newId();
-      cl.toolCall({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, arguments: { round }, model: opts.model });
-      cl.toolResult({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, ok, durationMs: Date.now() - cv0, model: opts.model, output: ok ? 'ok' : diag.slice(0, 1500) });
+      cl.toolCall({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, arguments: { round, mode }, model: opts.model });
+      cl.toolResult({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, ok: v.ok, durationMs: Date.now() - cv0, model: opts.model, output: v.ok ? 'ok' : v.diag.slice(0, 1500) });
     }
-    if (ok) {
-      console.log(`  ✓ ${opts.label} (round ${round}, $${agg.cost.toFixed(4)})`);
+    if (v.ok) {
+      console.log(`  ✓ ${opts.label} (round ${round}, ${mode}, $${agg.cost.toFixed(4)})`);
       return { ok: true, ...agg };
     }
-    console.log(`  ✗ ${opts.label} round ${round} compile error:\n${diag.split('\n').map((l) => '      ' + l).join('\n')}`);
-    repair = diag;
+    console.log(`  ✗ ${opts.label} round ${round} (${mode}) compile error:\n${v.diag.split('\n').slice(0, 6).map((l) => '      ' + l).join('\n')}`);
+    diag = v.diag;
   }
-  return { ok: false, diag: repair, ...agg };
+  return { ok: false, diag, ...agg };
 }
 
 /** Ask the model to decompose the central layer into a small set of focused
