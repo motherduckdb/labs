@@ -9,7 +9,7 @@ import { readFile, mkdir, writeFile, appendFile } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildLocalDuckDB, LOCAL_DB_PATH } from './load.js';
+import { buildLocalDuckDB, buildMotherDuckDB, LOCAL_DB_PATH } from './load.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { MalloyStore } from './malloy-store.js';
 import { buildSymbolSet } from './linter.js';
@@ -80,7 +80,14 @@ async function loadQuestions(split: string): Promise<Question[]> {
   return trainIds.map((id) => byId.get(String(id))).filter((q): q is Question => !!q);
 }
 
-async function cmdLoad() {
+async function cmdLoad(flags: Record<string, string | boolean>) {
+  if (flags.motherduck) {
+    const database = (flags.database as string) || process.env.MD_DATABASE || 'agentic_malloy';
+    console.log(`Building MotherDuck database ${database} …`);
+    const counts = await buildMotherDuckDB(database);
+    for (const [t, n] of Object.entries(counts)) console.log(`  ${t.padEnd(26)} ${n.toLocaleString()}`);
+    return;
+  }
   console.log(`Building ${LOCAL_DB_PATH} …`);
   const counts = await buildLocalDuckDB();
   for (const [t, n] of Object.entries(counts)) console.log(`  ${t.padEnd(26)} ${n.toLocaleString()}`);
@@ -111,10 +118,8 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const maxFixerTurns = Number(flags['max-fixer-turns'] ?? 6);
   const reasoning = (flags.reasoning as string) || 'low';
   const concurrency = Number(flags.concurrency ?? 4);
-  // Defaults to the baseline's existing MotherDuck DB (identical data, already
-  // loaded) so a live run needs no separate MotherDuck build. Override with
-  // --database / MD_DATABASE once an agentic_malloy DB is built.
-  const database = (flags.database as string) || process.env.MD_DATABASE || 'agentic_sql_claude';
+  // The agentic_malloy MotherDuck DB is built by `load --motherduck`.
+  const database = (flags.database as string) || process.env.MD_DATABASE || 'agentic_malloy';
   const limit = flags.limit ? Number(flags.limit) : undefined;
 
   let questions: Question[];
@@ -128,7 +133,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   }
 
   const skill = await readFile(SKILL_PATH, 'utf8');
-  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\n============ SKILL ============\n${skill}\n===============================`;
+  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n===============================`;
 
   await mkdir(RESULTS_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T', 'T').slice(0, 15) + 'Z';
@@ -289,12 +294,21 @@ async function cmdSummary(file: string) {
   console.log('breakdown:', JSON.stringify(byCat));
 }
 
+function loadDotEnv(): void {
+  try {
+    process.loadEnvFile(path.join(REPO_ROOT, '.env'));
+  } catch {
+    /* no .env — rely on the ambient environment */
+  }
+}
+
 async function main() {
+  loadDotEnv();
   const [cmd, ...rest] = process.argv.slice(2);
   const flags = parseFlags(rest);
   switch (cmd) {
     case 'load':
-      return cmdLoad();
+      return cmdLoad(flags);
     case 'malloy-preflight':
       return cmdPreflight();
     case 'layer-build':

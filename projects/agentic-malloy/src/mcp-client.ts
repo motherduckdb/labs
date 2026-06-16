@@ -106,8 +106,12 @@ export async function runSqlPositional(
   sql: string,
   database?: string,
 ): Promise<unknown[][]> {
-  const args: Record<string, unknown> = { query: sql };
-  if (database) args.database = database;
+  // Production MotherDuck MCP `query` requires database + sql + new_fragments.
+  const args: Record<string, unknown> = {
+    database: database ?? process.env.MD_DATABASE ?? 'agentic_sql_claude',
+    sql,
+    new_fragments: [],
+  };
   const result = await client.callTool({ name: 'query', arguments: args });
   if (result.isError === true) {
     const msg = Array.isArray(result.content)
@@ -115,11 +119,9 @@ export async function runSqlPositional(
       : 'query failed';
     throw new Error(msg);
   }
-  const sc = result.structuredContent as Record<string, unknown> | undefined;
-  // MCP query returns rows as objects keyed by column; convert to positional
-  // arrays preserving column order from the first row's keys.
-  const rowObjs = (sc && Array.isArray(sc.rows) ? sc.rows : []) as Array<Record<string, unknown>>;
-  if (rowObjs.length === 0) return [];
-  const cols = Object.keys(rowObjs[0]);
-  return rowObjs.map((r) => cols.map((c) => r[c]));
+  const sc = result.structuredContent as { rows?: unknown[] } | undefined;
+  // The MotherDuck MCP `query` returns rows already as positional arrays
+  // ({columns, rows: [[v0, v1], ...]}) — exactly score.py's shape.
+  if (sc && Array.isArray(sc.rows)) return sc.rows as unknown[][];
+  return [];
 }

@@ -92,9 +92,13 @@ function rowsToText(rows: unknown[][], cols?: string[]): string {
 export async function dispatchTool(deps: ToolDeps, name: string, args: Record<string, unknown>): Promise<DispatchResult> {
   const { client, runtime, store, symbols, state, database } = deps;
 
-  // MCP exploration tools.
+  // MCP exploration tools. Inject the database + new_fragments defaults so the
+  // model can't omit the production query tool's required fields.
   if (ALLOWED_TOOLS.has(name)) {
-    const res = await callMcpTool(client, name, args);
+    const mcpArgs: Record<string, unknown> = { ...args };
+    if (database && mcpArgs.database === undefined) mcpArgs.database = database;
+    if (name === 'query' && mcpArgs.new_fragments === undefined) mcpArgs.new_fragments = [];
+    const res = await callMcpTool(client, name, mcpArgs);
     return { content: res.text, isError: res.isError };
   }
 
