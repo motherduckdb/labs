@@ -100,13 +100,18 @@ function normCell(v: unknown): string {
   return Number.isFinite(n) && String(v).trim() !== '' ? n.toPrecision(10) : String(v);
 }
 
-/** Multiset equality over all cells — local (objects) vs MotherDuck (positional). */
+/** Row/column-shape equality: local (objects) vs MotherDuck (positional). Both come
+ *  from the SAME compiled SQL, so column order matches; we compare each row as an
+ *  ordered tuple of cells, as a multiset of rows (result order may differ). A row
+ *  [1,2] will NOT match [2,1], and column/row counts must agree — not a flat blob. */
 function rowsetsMatch(local: Record<string, unknown>[], md: unknown[][]): boolean {
   if (local.length !== md.length) return false;
-  const localTokens = local.flatMap((r) => Object.values(r).map(normCell)).sort();
-  const mdTokens = md.flatMap((r) => r.map(normCell)).sort();
-  if (localTokens.length !== mdTokens.length) return false;
-  return localTokens.every((t, i) => t === mdTokens[i]);
+  const rowKey = (cells: unknown[]) => JSON.stringify(cells.map(normCell));
+  const a = local.map((r) => rowKey(Object.values(r))).sort();
+  const b = md.map((r) => rowKey(r)).sort();
+  // column-count check (first row) — a shape mismatch must fail.
+  if (local.length > 0 && Object.values(local[0]).length !== (md[0]?.length ?? -1)) return false;
+  return a.every((x, i) => x === b[i]);
 }
 
 export async function dispatchTool(deps: ToolDeps, name: string, args: Record<string, unknown>): Promise<DispatchResult> {

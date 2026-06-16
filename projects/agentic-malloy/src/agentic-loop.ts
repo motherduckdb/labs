@@ -235,7 +235,9 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
       }
       cl.toolResult({ taskId, runId, name: call.name, callId, ok: !result.isError, durationMs: Date.now() - ts, model: activeModel, output: result.content.slice(0, 2000) });
       toolResults.push({ type: 'tool_result', tool_use_id: callId, content: result.content, ...(result.isError && { is_error: true }) });
-      if (result.isError) anyError = true;
+      // Only Malloy-authoring failures count toward escalation — an exploration
+      // query/list_columns error is normal iteration, not a "stuck author".
+      if (result.isError && (call.name === 'run_malloy' || call.name === 'submit_answer')) anyError = true;
       opts.onEvent?.({ kind: 'tool', detail: { name: call.name, ok: !result.isError } });
     }
     messages.push({ role: 'user', content: toolResults });

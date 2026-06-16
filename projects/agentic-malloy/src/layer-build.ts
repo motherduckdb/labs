@@ -70,7 +70,7 @@ const MALLOY_RULES = `CRITICAL Malloy-on-DuckDB rules:
 
 Output EXACTLY two fenced blocks and nothing else:
 1. A \`\`\`malloy block: the file contents.
-2. A \`\`\`yaml block: the _meta sidecar with keys: file, domain, summary, exports (list of {name, kind, summary}), provides_for (list of strings).`;
+2. A \`\`\`yaml block: the _meta sidecar with TOP-LEVEL keys (do NOT nest them under a \`_meta:\` key): file, domain, summary, exports (list of {name, kind, summary}), provides_for (list of strings).`;
 
 // ---------------------------------------------------------------------------
 // Parsing + filesystem
@@ -115,11 +115,23 @@ async function validateModel(): Promise<{ ok: boolean; diag: string }> {
 }
 
 export async function hashLayerOnDisk(): Promise<string> {
-  const files = (await readdir(MODELS_DIR)).filter((f) => f.endsWith('.malloy')).sort();
   const h = createHash('sha256');
-  for (const f of files) {
-    h.update(f);
+  // Hash BOTH the .malloy models AND their _meta/*.yaml sidecars — the sidecars
+  // carry routing/provenance metadata, so a hand-edit there must change the hash too.
+  const models = (await readdir(MODELS_DIR)).filter((f) => f.endsWith('.malloy')).sort();
+  for (const f of models) {
+    h.update(`models/${f}`);
     h.update(await readFile(path.join(MODELS_DIR, f), 'utf8'));
+  }
+  let metaFiles: string[] = [];
+  try {
+    metaFiles = (await readdir(META_DIR)).filter((f) => f.endsWith('.yaml')).sort();
+  } catch {
+    /* no _meta dir */
+  }
+  for (const f of metaFiles) {
+    h.update(`_meta/${f}`);
+    h.update(await readFile(path.join(META_DIR, f), 'utf8'));
   }
   return h.digest('hex').slice(0, 16);
 }
@@ -291,16 +303,20 @@ export async function buildLayer(opts: {
   if (!central.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `dabstep: ${central.diag}`, cost: totalCost };
 
   // 3. Provenance marker (so only a model-authored layer can back an official run).
+  // --central-only REUSES existing base files (which may have been hand-edited), so it
+  // cannot honestly claim the whole layer is freshly model-authored — mark it
+  // `central_only` so the official gate refuses it. Only a full build stamps model_authored.
   const hash = await hashLayerOnDisk();
   const files = (await readdir(MODELS_DIR)).filter((f) => f.endsWith('.malloy')).sort();
   await writeFile(
     PROVENANCE_PATH,
     JSON.stringify(
       {
-        malloy_provenance: 'model_authored',
+        malloy_provenance: opts.centralOnly ? 'central_only' : 'model_authored',
         malloy_model_hash: hash,
         manual_included: opts.includeManual !== false,
         authoring_model: opts.model,
+        central_only: !!opts.centralOnly,
         built_at: new Date().toISOString(),
         files,
       },

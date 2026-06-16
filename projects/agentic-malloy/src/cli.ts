@@ -153,12 +153,18 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     throw new Error(`--run-class must be 'smoke' or 'official' (got '${runClass}')`);
   }
   const prov = await resolveProvenance();
-  if (runClass === 'official' && prov.malloy_provenance !== 'model_authored') {
-    throw new Error(
-      `Refusing an OFFICIAL run on a ${prov.malloy_provenance} layer. ` +
-        `The official 26/26 must run on a model-authored layer — run \`layer-build\` first ` +
-        `and don't hand-edit malloy/ (provenance: ${prov.reason}).`,
-    );
+  if (runClass === 'official') {
+    // The official 26/26 must be: a model-authored layer (built WITH the manual)
+    // answered by the canonical sonnet-author / opus-fixer tiering. Anything else
+    // is a smoke/experiment run and cannot back the claim.
+    const reasons: string[] = [];
+    if (prov.malloy_provenance !== 'model_authored') reasons.push(`layer is ${prov.malloy_provenance} (${prov.reason}) — run a full \`layer-build\``);
+    if (prov.manual_included !== true) reasons.push(`layer built without the manual (manual_included=${prov.manual_included})`);
+    if (author !== resolveModel('sonnet')) reasons.push(`author must be sonnet (got ${author})`);
+    if (fixer !== resolveModel('opus')) reasons.push(`fixer must be opus (got ${fixer})`);
+    if (reasons.length) {
+      throw new Error(`Refusing an OFFICIAL run:\n  - ${reasons.join('\n  - ')}\nUse --run-class smoke for experiments.`);
+    }
   }
   const escalateAfter = Number(flags['escalate-after'] ?? 2);
   const maxAuthorTurns = Number(flags['max-author-turns'] ?? 20);

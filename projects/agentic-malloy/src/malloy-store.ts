@@ -49,7 +49,10 @@ export class MalloyStore {
       const metaPath = path.join(this.metaDir, file.replace(/\.malloy$/, '.yaml'));
       let meta: Partial<FileMeta> = {};
       try {
-        meta = (parseYaml(await readFile(metaPath, 'utf8')) as Partial<FileMeta>) ?? {};
+        const parsed = (parseYaml(await readFile(metaPath, 'utf8')) as Record<string, unknown>) ?? {};
+        // Models sometimes wrap the sidecar under a top-level `_meta:` key; unwrap it
+        // so domain/exports are read (otherwise the file falls out of its domain).
+        meta = (parsed._meta && typeof parsed._meta === 'object' ? parsed._meta : parsed) as Partial<FileMeta>;
       } catch {
         // No sidecar yet — synthesize a minimal one so the file is still navigable.
       }
