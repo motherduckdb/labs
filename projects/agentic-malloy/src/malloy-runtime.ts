@@ -42,6 +42,10 @@ export interface RunResult {
 export interface ModelInventory {
   sources: string[];
   fieldsBySource: Record<string, string[]>;
+  /** Per source, the names of its VIEWS (query fields) — the surfaces worth
+   *  smoke-executing at build time (they exercise joins/measures, so they catch
+   *  binder/scope errors that compile but fail at execution). */
+  viewsBySource: Record<string, string[]>;
 }
 
 export class MalloyRuntime {
@@ -137,11 +141,15 @@ export class MalloyRuntime {
     const compiled = await this.runtime.loadModel(model).getModel();
     const sources: string[] = [];
     const fieldsBySource: Record<string, string[]> = {};
+    const viewsBySource: Record<string, string[]> = {};
     for (const explore of compiled.explores) {
       sources.push(explore.name);
       fieldsBySource[explore.name] = explore.allFields.map((f) => f.name);
+      viewsBySource[explore.name] = explore.allFields
+        .filter((f) => typeof (f as { isQueryField?: () => boolean }).isQueryField === 'function' && (f as { isQueryField: () => boolean }).isQueryField())
+        .map((f) => f.name);
     }
-    return { sources, fieldsBySource };
+    return { sources, fieldsBySource, viewsBySource };
   }
 
   async close(): Promise<void> {

@@ -148,8 +148,18 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
 
   if (name === 'get_file') {
     const files = Array.isArray(args.files) ? (args.files as string[]) : [];
-    for (const f of files) if (!state.filesRead.includes(f)) state.filesRead.push(f);
-    return { content: store.getFile(files), isError: false };
+    // Files are STATIC for a task — re-reading one wastes a turn (and tokens) and
+    // never helps (a layer error isn't fixed by re-reading). Serve only files not
+    // already read; if all were already provided, return a short stub instead of
+    // the full content again.
+    const fresh = files.filter((f) => !state.filesRead.includes(f));
+    const already = files.filter((f) => state.filesRead.includes(f));
+    for (const f of fresh) state.filesRead.push(f);
+    if (!fresh.length) {
+      return { content: `Already provided earlier this task (files don't change): ${already.join(', ')}. Scroll up; do not re-read.`, isError: false };
+    }
+    const note = already.length ? `(skipping already-read: ${already.join(', ')})\n` : '';
+    return { content: note + store.getFile(fresh), isError: false };
   }
 
   if (name === 'malloy_lint') {

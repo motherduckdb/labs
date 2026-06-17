@@ -10,6 +10,11 @@ You can then make <source>.malloy for interesting tables to querys with join log
 ## SQL → Malloy gotchas (the things to get right)
 - **NEVER write `import`.** When the model is provided pre-loaded, every source is already in scope — just `run: <source> -> { ... }`. An `import` line always fails, and when it is the FIRST line the compiler mis-reports it as `mismatched input '='` on a later (innocent) line — if you see that error, delete any `import` first.
 - **List/array columns**: test emptiness with `len!number(col) = 0`, NEVER `is null` (an empty list is not NULL, so `is null` silently matches nothing). Membership is `list_contains!boolean(col, x)` and the element type must match the list's element type (cast if needed). There is no native list-membership operator, and `cardinality()` is for MAPs — use `len!number`.
+- **Dates are dates, not strings/ints.** A truncated/`::date` column filters with the apply operator + a date literal: `transaction_date ? @2023-02` (a coarse literal is a range = the whole month), or a range `? @2023-01 to @2023-04`. NEVER `month = '2023-02'` (→ "Cannot compare a date to a string") or `month = 2` (→ "Cannot compare a date to a number").
+- **Refine a saved view with `+ {…}`**, not juxtaposition: `run: src -> view_name + { where: … limit: 10 }`. Bare `view_name { … }` fails ("no viable alternative at input '{'").
+- **Aggregate filters go in `having:`, never `where:`** (`where:` is pre-aggregation only → "Aggregate expressions are not allowed in where").
+- **Every stage is reduce (`group_by`+`aggregate`), project (`select`), or a named view** — a bare `{ limit: 10 }` with none of those fails ("Can't determine view type").
+- **No SQL inside aggregates**: no `ORDER BY` in an aggregate call, and you can't `string_agg` a scalar you're also projecting — collect in one stage, aggregate in the next.
 - `is` names things, NEVER `as`. Equality is `=`, NEVER `==`.
 - Logical `and` / `or` / `not` — NEVER `&&` / `||` / `!`.
 - `count()` (no `count(*)`); `count(expr)` is ALREADY distinct (don't write `count(distinct x)`).

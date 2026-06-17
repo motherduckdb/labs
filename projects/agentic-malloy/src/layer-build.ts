@@ -149,6 +149,8 @@ MODELING DISCIPLINE — verify against the data, never trust prose alone (these 
 - CATEGORICAL MATCH BY EQUALITY: when you derive/bucket a value to compare (string-equality) against a categorical column, your output labels MUST be EXACTLY that column's distinct values from the profile. NEVER infer the set of buckets from a single documented example — reproduce the full observed domain. If a fact column's raw domain differs from the rule column's domain (the profile shows two different sets), you must transform/bucket the fact value to the rule's exact strings before matching.
 - QUALIFY JOIN KEYS: if more than one joined table exposes the same column name, reference it qualified (\`some_source.col\`, not bare \`col\`) or you get a binder/scope error that only surfaces at EXECUTION, not at compile. After authoring a source with joins, mentally run a query THROUGH the join, not just a compile check.
 - JOIN_MANY DOUBLE-COUNTS: a \`join_many\` multiplies each base row by the number of matched rows on the other side. Define the per-match measure at the joined grain — \`joined.sum(<expr combining joined columns and base columns>)\` — and NEVER re-aggregate a base-grain column (a volume, a count, an amount) after a join_many, or it is multiplied by the match count. State in the source's _meta which measures are base-grain vs match-grain.
+- JOIN_MANY ON-CLAUSE SCOPE (critical, causes execution-only failures): a \`join_many ... on\` predicate must reference ONLY columns local to the two sources being joined. Do NOT reference a column reached through ANOTHER join (e.g. a pass-through \`dimension: x is other_join.col\`, or a dimension defined on a source you \`extend\`ed that itself pulls from a join_one). It often COMPILES but the generated SQL references an out-of-scope alias and FAILS AT EXECUTION ("Referenced table … not found"). FIX: first materialize every attribute the match needs as a LOCAL dimension on the fact source at its own grain, then build the fan-out \`join_many\` referencing only those local columns. Keep the fan-out exactly ONE join level deep.
+- A VIEW THAT COMPILES IS NOT DONE — IT MUST EXECUTE. Every view/measure you author will be run end-to-end at build time; one that compiles but errors at execution (binder/scope) is a FAILED build and will be sent back to you to fix. Author each source so a query through its joins actually returns rows.
 
 Output EXACTLY two fenced blocks and nothing else:
 1. A \`\`\`malloy block: the file contents.
@@ -196,10 +198,43 @@ async function clearLayer(): Promise<void> {
   }
 }
 
-async function validateModel(): Promise<{ ok: boolean; diag: string }> {
+/** Source names declared in a model file — targets the execution smoke test at
+ *  the sources this file actually introduces (not inherited ones). */
+function sourceNamesIn(src: string): string[] {
+  return [...src.matchAll(/^[ \t]*source:[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]+is\b/gm)].map((m) => m[1]);
+}
+
+/**
+ * Compile-check the whole model (describe), AND — when a just-authored file is
+ * given — EXECUTE every view of the source(s) that file introduces. A view can
+ * COMPILE but fail at execution (e.g. a `join_many ... on` predicate that
+ * references another join's alias compiles to SQL with an out-of-scope table →
+ * DuckDB "Referenced table not found"). Compile-only validation shipped exactly
+ * that class of bug, leaving every fee view unusable at answer time. The first
+ * execution failure is returned as a diagnostic so the repair loop fixes it.
+ */
+async function validateModel(modelFile?: string): Promise<{ ok: boolean; diag: string }> {
   const rt = new MalloyRuntime();
   try {
-    await rt.describe();
+    const inv = await rt.describe(); // compile check (throws on compile error)
+    if (modelFile && existsSync(path.join(MODELS_DIR, modelFile))) {
+      const mine = new Set(sourceNamesIn(await readFile(path.join(MODELS_DIR, modelFile), 'utf8')));
+      for (const s of inv.sources) {
+        if (!mine.has(s)) continue;
+        for (const view of inv.viewsBySource[s] ?? []) {
+          const r = await rt.run(`run: ${s} -> ${view}`, 1);
+          if (!r.ok) {
+            return {
+              ok: false,
+              diag:
+                `The view \`${s} -> ${view}\` COMPILES but FAILS TO EXECUTE — a view that cannot run is unusable. ` +
+                `This usually means a \`join_many ... on\` predicate references a column reached through ANOTHER join (an alias that drops out of SQL scope). ` +
+                `Fix the source so this query runs:\n${(r.diagnostics ?? []).map((d) => d.message).join('\n')}`,
+            };
+          }
+        }
+      }
+    }
     return { ok: true, diag: '' };
   } catch (e) {
     const problems = (e as { problems?: Array<{ message: string }> })?.problems;
@@ -352,7 +387,7 @@ async function authorStage(opts: {
     }
 
     const cv0 = Date.now();
-    const v = await validateModel();
+    const v = await validateModel(opts.modelFile); // compile + execute the file's views
     if (opts.runId) {
       const callId = cl.newId();
       cl.toolCall({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, arguments: { round, mode }, model: opts.model });

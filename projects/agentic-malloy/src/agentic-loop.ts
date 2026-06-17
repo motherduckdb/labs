@@ -75,6 +75,20 @@ const AUTHOR_RECOVERY_INSTRUCTION =
   'Do NOT explain — call submit_answer now with the Malloy whose compiled-SQL result IS the answer. ' +
   'Reuse the work above.';
 
+// Shown once when run_malloy/submit_answer fails with the SAME error twice in a
+// row — the agent is looping, usually on a layer defect it cannot fix by editing
+// its query. Steer it off the dead view to the SQL-backed fallback. Generic.
+const SAME_ERROR_STEER =
+  'That run_malloy attempt failed with the SAME error as your previous one — re-running or re-reading layer files will NOT fix it. ' +
+  'If the error is inside the COMPILED SQL (e.g. a binder/scope error like "Referenced table ... not found"), it is a defect in the central layer view, not in your query — stop using that view. ' +
+  'Instead: use the `query` (SQL) tool ONCE to compute the answer directly, then call submit_answer with self-contained Malloy that does NOT depend on the failing view — e.g. `run: duckdb.sql("""<your SQL>""") -> { ... }`.';
+
+/** Collapse an error message to a signature (drop digits/aliases/punctuation) so
+ *  "table m_0 not found" and "table mm_1 not found" compare equal. */
+function normErrSig(s: string): string {
+  return s.toLowerCase().replace(/[^a-z]+/g, ' ').trim().slice(0, 120);
+}
+
 interface ParsedTurn {
   assistantBlocks: ContentBlock[];
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
@@ -188,6 +202,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   let streamFailureReason: string | null = null;
   let authorRecoveryUsed = false; // the author's one forced submit-now turn
   let retryCount = 0;
+  let prevMalloyErrSig: string | null = null; // last turn's run_malloy/submit error signature
   const usage: TaskUsage = { promptTokens: 0, completionTokens: 0, cost: 0, cachedTokens: 0, cacheWriteTokens: 0 };
   // Hard ceiling only; each role is bounded separately below so the expensive
   // fixer can never run past --max-fixer-turns regardless of when it escalated.
@@ -275,6 +290,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     messages.push({ role: 'assistant', content: parsed.assistantBlocks });
     const toolResults: ContentBlock[] = [];
     let anyError = false;
+    let malloyErr: string | null = null; // the run_malloy/submit_answer error this turn
     for (const call of parsed.toolCalls) {
       toolCallCount++;
       const callId = call.id || cl.newId();
@@ -290,10 +306,20 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
       toolResults.push({ type: 'tool_result', tool_use_id: callId, content: result.content, ...(result.isError && { is_error: true }) });
       // Only Malloy-authoring failures count toward escalation — an exploration
       // query/list_columns error is normal iteration, not a "stuck author".
-      if (result.isError && (call.name === 'run_malloy' || call.name === 'submit_answer')) anyError = true;
+      if (result.isError && (call.name === 'run_malloy' || call.name === 'submit_answer')) { anyError = true; malloyErr = result.content; }
       opts.onEvent?.({ kind: 'tool', detail: { name: call.name, ok: !result.isError } });
     }
     messages.push({ role: 'user', content: toolResults });
+
+    // Repeated-IDENTICAL Malloy error → the agent is looping (often on a layer
+    // binder/scope bug it can't fix by rewriting). Steer it ONCE to the SQL
+    // fallback instead of letting it burn turns re-running the same thing.
+    const errSig = malloyErr ? normErrSig(malloyErr) : null;
+    if (errSig && errSig === prevMalloyErrSig) {
+      messages.push({ role: 'user', content: SAME_ERROR_STEER });
+      opts.onEvent?.({ kind: 'repeat_error_steer', detail: errSig.slice(0, 80) });
+    }
+    prevMalloyErrSig = errSig;
 
     if (deps.state.submitted) break;
 

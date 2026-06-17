@@ -9,8 +9,9 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 
 1. **Browse the layer first.** `list_malloy_files()` → domains; then
    `list_malloy_files(domains=[...])` → the files + their exported sources/queries;
-   then `get_file([...])` to read the Malloy you'll build on. Reuse the central
-   sources/measures — don't re-derive logic the layer already encodes.
+   then `get_file([...])` (read every file you'll need in ONE call). Files are
+   static — never re-read a file; reuse the central sources/measures rather than
+   re-deriving logic the layer encodes.
 2. **Explore the data if needed** with `query`, `list_tables`, `list_columns`,
    `search_catalog`, `ask_docs_question` (MotherDuck MCP). Exploration only.
 3. **Author per-query Malloy** that points at the central model. Keep it thin —
@@ -18,6 +19,12 @@ Plain SQL tools are for *exploration only* and never produce the answer.
    the layer provides.
 4. **Iterate with `run_malloy`** (lint → compile → run on MotherDuck). Read the
    compiled SQL and the rows; fix compile diagnostics before resubmitting.
+   **If a named layer view/measure ERRORS AT RUNTIME** (a binder/scope error such
+   as `Referenced table … not found`, i.e. the error is in the compiled SQL, not
+   your source text), that view is a layer defect you cannot fix here — do NOT
+   retry it or re-read layer files. Pivot ONCE: use `query` (SQL) to compute the
+   value, then submit self-contained Malloy (`run: duckdb.sql("""…""") -> { … }`)
+   that doesn't depend on the broken view.
 5. **`submit_answer(source=...)`** with the Malloy whose result IS the answer.
    Select exactly the asked value(s) — no extra columns, labels, or prose.
 
