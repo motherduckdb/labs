@@ -114,7 +114,10 @@ export class MalloyRuntime {
 
   /** Compile + run the query against the connection (MotherDuck for eval, local for
    *  tests). Returns rows as objects. This is Malloy-native execution — the answer
-   *  runs on the same engine it compiled against, so no cross-engine SQL skew. */
+   *  runs on the same engine it compiled against, so no cross-engine SQL skew.
+   *  `rowLimit` caps exploration output (default 50). The SCORED answer must pass
+   *  a large explicit cap (see ANSWER_ROW_LIMIT) — Malloy's own default caps at 50,
+   *  which silently truncates list answers (a 155-row answer was being cut to 50). */
   async run(querySrc: string, rowLimit = 50): Promise<RunResult> {
     try {
       const model = await this.loadModelText();

@@ -32,6 +32,10 @@ export function newRunState(): RunState {
   return { submitted: false, filesRead: [], lintFixesTotal: 0 };
 }
 
+// The scored answer must not be row-capped (Malloy/exploration default is 50).
+// Large enough to cover any factoid list answer (and the full largest table).
+const ANSWER_ROW_LIMIT = 1_000_000;
+
 /** MotherDuck/DuckDB returns counts and other integers as JS BigInt, which
  *  JSON.stringify cannot serialize (it throws) — breaking the score-client and
  *  results-JSONL writes. Convert BigInt to a plain number when it fits a safe
@@ -175,8 +179,10 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols);
     state.lintFixesTotal += fixes.length;
     // Run via Malloy's native runtime (MotherDuck for eval) — same engine for
-    // compile + execute, so the generated SQL always binds.
-    const r = await runtime.run(fixedSrc);
+    // compile + execute, so the generated SQL always binds. The scored answer
+    // must return ALL rows: a 50-row cap silently truncates list answers (a
+    // 155-id answer was being cut to 50). Use a large explicit cap.
+    const r = await runtime.run(fixedSrc, ANSWER_ROW_LIMIT);
     if (!r.ok) return { content: fmtDiagnostics(r.diagnostics) + '\nThe answer was NOT recorded — fix and resubmit.', isError: true };
     const cols = r.rows!.length ? Object.keys(r.rows![0]) : [];
     state.submitted = true;
