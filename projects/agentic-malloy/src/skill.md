@@ -86,6 +86,17 @@ Plain SQL tools are for *exploration only* and never produce the answer.
   so an unmatched outer-join row can't appear as a stray value, and cast integer ids
   to int (`id::int`) so they don't render as `12.0`. Verify the row count against an
   exploratory `count(*)`.
+- **"List all" / ties: filter by the VALUE, never `limit 1` or `rank()=1`.** When a
+  question says "list all" or "if there are ties", `limit 1`/`rank()=1` keep ONE
+  arbitrary row and silently drop the ties. Instead compute the extremum and return
+  every row at it (find the max/min, then `having: value >= <max>` / `where: value = <min>`).
+- **Window functions need an explicit `order_by` in the SAME stage.** A `calculate:`
+  `rank()`/`row_number()` with no `order_by` ranks in an undefined order — you'll pick
+  an arbitrary row. Always `order_by` the ranked measure in that stage.
+- **"Move/steer/switch to a DIFFERENT X" excludes the CURRENT value.** When a question
+  asks to move something to a *different* X (a different ACI, scheme, …), the candidate
+  set must exclude the current value — add `target != current` (e.g. `target_aci != aci`).
+  Never return the current value as the "different" choice.
 - A concept the data/manual does not define → `Not Applicable`. An empty result
   set for a real metric → the empty string, not `Not Applicable` (and a NULL inside a
   list is a bug to filter out, not a value to emit).
