@@ -8,6 +8,8 @@ These tables shouldn't have any join logic in them but should contain measures a
 You can then make <source>.malloy for interesting tables to querys with join logic and views for the common queries.
 
 ## SQL → Malloy gotchas (the things to get right)
+- **NEVER write `import`.** When the model is provided pre-loaded, every source is already in scope — just `run: <source> -> { ... }`. An `import` line always fails, and when it is the FIRST line the compiler mis-reports it as `mismatched input '='` on a later (innocent) line — if you see that error, delete any `import` first.
+- **List/array columns**: test emptiness with `len!number(col) = 0`, NEVER `is null` (an empty list is not NULL, so `is null` silently matches nothing). Membership is `list_contains!boolean(col, x)` and the element type must match the list's element type (cast if needed). There is no native list-membership operator, and `cardinality()` is for MAPs — use `len!number`.
 - `is` names things, NEVER `as`. Equality is `=`, NEVER `==`.
 - Logical `and` / `or` / `not` — NEVER `&&` / `||` / `!`.
 - `count()` (no `count(*)`); `count(expr)` is ALREADY distinct (don't write `count(distinct x)`).

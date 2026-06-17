@@ -26,9 +26,11 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 - **NEVER write `import`.** The whole semantic layer is ALREADY loaded — every
   source from every model file is in scope. Just `run: <source> -> { ... }` and
   reference sources by name. An `import` statement fails ("must compile via a URL").
-- **Do NOT redefine an existing field.** Sources already expose their columns,
-  dimensions, and measures by name (`get_file` to see them) — reusing one is just
-  referencing it; redefining a name fails with "Cannot redefine 'X'".
+- **Do NOT redefine ANYTHING the layer already exports** — not just columns, but
+  also sources and named queries. Reusing a name means *referencing* it; never paste
+  a `source: …`/`query: …`/`dimension: …` that re-declares an existing name (fails
+  with "Cannot redefine 'X'"). Don't reuse export names like `result`/`txn`/`fee_rules`
+  as your output query name either. `get_file` to see what's already defined.
 - A query is `run: <source> -> { where: ... aggregate: ... group_by: ... }`.
 - **Backtick columns that collide with Malloy keywords** — notably `` `year` `` (a
   Malloy time function). `where: \`year\` = 2023` works; bare `year = 2023` fails with
@@ -43,15 +45,30 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 
 - DuckDB list/SQL functions need the typed raw escape: `len!number(fees.aci) = 0`,
   `list_contains!boolean(fees.aci, aci)`. The compiler will tell you when a
-  function is unknown.
+  function is unknown. (`cardinality()` is for MAPs — use `len!number(...)` for lists;
+  list-element types must match when you test membership, so cast if needed.)
+- **List columns: the "applies to all" wildcard is the EMPTY list, not NULL** —
+  `len!number(col)=0` is the wildcard test; `is null` is always false for these and
+  silently matches nothing. (Scalar columns do use NULL.)
 - Fee questions are the hard ones: a transaction matches MANY fee rules and ALL
-  matching fees are summed (no "most specific wins"); an empty list / NULL in a
-  fee dimension matches anything. The central layer encodes this — reuse it.
+  matching fees are summed (no "most specific wins"). The central layer encodes this —
+  reuse its measures/views, don't rebuild the matching yourself.
+- **A matching/fee measure that returns 0 (or implausibly small) over rows you know
+  exist is a red flag**, not an answer — suspect a wildcard/encoding or tier-domain
+  mismatch, probe the keys, and re-check before submitting.
 
 ## Answer format (the validator is strict)
 
-- Return ONLY what is asked. "Which ACI?" → one letter, not `{scheme}:{fee}`.
+- **Final stage selects ONLY the asked value(s).** After you find the answer with a
+  ranked/grouped query, add a final `select:` (or project) that drops the measure you
+  sorted by, counts, and labels. "Which X?" → exactly one column (X), one row.
 - Apply the exact rounding stated, inside the Malloy/SQL.
-- Match the guideline's separators/brackets/case exactly.
+- Match the guideline's separators/brackets/case exactly — re-read the guideline
+  verbatim before submitting and check value count, type, delimiter, and brackets.
+- **List answers: filter phantom rows and fix types.** Add `where: <key> is not null`
+  so an unmatched outer-join row can't appear as a stray value, and cast integer ids
+  to int (`id::int`) so they don't render as `12.0`. Verify the row count against an
+  exploratory `count(*)`.
 - A concept the data/manual does not define → `Not Applicable`. An empty result
-  set for a real metric → the empty string, not `Not Applicable`.
+  set for a real metric → the empty string, not `Not Applicable` (and a NULL inside a
+  list is a bug to filter out, not a value to emit).

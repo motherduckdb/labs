@@ -49,6 +49,77 @@ async function schemaByTable(): Promise<Record<string, string>> {
   return out;
 }
 
+/**
+ * Dataset-agnostic COLUMN PROFILE: for every column of every table, report the
+ * facts a modeler must verify before writing joins/filters — the truth the
+ * build model otherwise can't see (it gets only schema + prose docs). For each
+ * column: data type, NULL count, and either its full DISTINCT domain (when
+ * low-cardinality — the values a categorical match must reproduce exactly), or
+ * a numeric range, or a few samples. For LIST/ARRAY columns, the NULL-vs-empty
+ * split — because "applies to all" is usually the empty list, not NULL, and that
+ * distinction silently breaks wildcard predicates. Nothing here is task- or
+ * DABstep-specific; it's a generic data dictionary computed from the data.
+ */
+const LOWCARD_MAX = 40; // ≤ this many distinct → enumerate the full domain
+const NUMERIC_TYPES = /^(BIGINT|HUGEINT|INTEGER|SMALLINT|TINYINT|UBIGINT|UINTEGER|USMALLINT|UTINYINT|DOUBLE|FLOAT|REAL|DECIMAL|NUMERIC)/i;
+function fmtVal(v: unknown): string {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'bigint') return v.toString();
+  if (typeof v === 'string') return `'${v}'`;
+  return String(v);
+}
+export async function columnProfiles(tables: string[] = TABLES, dbPath: string = LOCAL_DB_PATH): Promise<Record<string, string>> {
+  const instance = await DuckDBInstance.create(dbPath);
+  const conn = await instance.connect();
+  const num = (v: unknown) => Number(v as number | bigint);
+  const out: Record<string, string> = {};
+  try {
+    for (const t of tables) {
+      const total = num((await conn.runAndReadAll(`SELECT count(*) c FROM ${t}`)).getRowObjects()[0].c);
+      const cols = (await conn.runAndReadAll(`DESCRIBE ${t}`)).getRowObjects();
+      const lines: string[] = [];
+      for (const c of cols) {
+        const name = String(c.column_name);
+        const type = String(c.column_type);
+        const qn = `"${name.replace(/"/g, '""')}"`;
+        try {
+          if (type.includes('[]') || /^(LIST|ARRAY)/i.test(type)) {
+            // LIST/ARRAY: the wildcard-encoding question (NULL vs empty list).
+            const r = (await conn.runAndReadAll(
+              `SELECT count(*) FILTER (WHERE ${qn} IS NULL) AS n_null, count(*) FILTER (WHERE ${qn} IS NOT NULL AND len(${qn})=0) AS n_empty FROM ${t}`,
+            )).getRowObjects()[0];
+            const samp = (await conn.runAndReadAll(
+              `SELECT DISTINCT ${qn} v FROM ${t} WHERE ${qn} IS NOT NULL AND len(${qn})>0 LIMIT 3`,
+            )).getRowObjects().map((x) => JSON.stringify((x.v as { items?: unknown })?.items ?? x.v, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)));
+            lines.push(`  ${name} ${type} — LIST: NULL=${num(r.n_null)}, empty[]=${num(r.n_empty)} (empty list = "applies to all"); e.g. ${samp.join(' | ') || '(none)'}`);
+          } else {
+            const agg = (await conn.runAndReadAll(`SELECT count(DISTINCT ${qn}) d, count(*) FILTER (WHERE ${qn} IS NULL) n FROM ${t}`)).getRowObjects()[0];
+            const distinct = num(agg.d);
+            const nulls = num(agg.n);
+            const nullNote = nulls ? ` (+ ${nulls} NULL)` : '';
+            if (distinct <= LOWCARD_MAX) {
+              const vals = (await conn.runAndReadAll(`SELECT DISTINCT ${qn} v FROM ${t} WHERE ${qn} IS NOT NULL ORDER BY 1`)).getRowObjects().map((x) => fmtVal(x.v));
+              lines.push(`  ${name} ${type} — ${distinct} distinct${nullNote}: {${vals.join(', ')}}`);
+            } else if (NUMERIC_TYPES.test(type)) {
+              const mm = (await conn.runAndReadAll(`SELECT min(${qn}) lo, max(${qn}) hi FROM ${t}`)).getRowObjects()[0];
+              lines.push(`  ${name} ${type} — ${distinct} distinct${nullNote}, range [${fmtVal(mm.lo)} .. ${fmtVal(mm.hi)}]`);
+            } else {
+              const samp = (await conn.runAndReadAll(`SELECT DISTINCT ${qn} v FROM ${t} WHERE ${qn} IS NOT NULL LIMIT 4`)).getRowObjects().map((x) => fmtVal(x.v));
+              lines.push(`  ${name} ${type} — ${distinct} distinct${nullNote}; e.g. ${samp.join(', ')}`);
+            }
+          }
+        } catch {
+          lines.push(`  ${name} ${type} — (profile unavailable)`);
+        }
+      }
+      out[t] = `(${total.toLocaleString()} rows)\n${lines.join('\n')}`;
+    }
+  } finally {
+    conn.closeSync();
+  }
+  return out;
+}
+
 async function trainQA(includeAnswers: boolean): Promise<string> {
   const trainIds: string[] = JSON.parse(await readFile(path.join(DATA_DIR, 'split.json'), 'utf8')).train_ids;
   const ids = new Set(trainIds.map(String));
@@ -71,6 +142,13 @@ const DUCKDB_NOTES = `Malloy-on-DuckDB specifics (in addition to the primer abov
 - Do NOT redefine an existing table column as a dimension/measure (e.g. \`dimension: merchant is ...\` when a \`merchant\` column exists → "Cannot redefine"). Only ADD derived fields with NEW names.
 - ANY DuckDB SQL function the primer doesn't list needs the TYPED raw escape \`fn!returntype(args)\` — e.g. \`list_contains!boolean(fees.aci, aci)\`, \`len!number(fees.aci)\`, \`lpad!string(x, 3, '0')\`, \`strftime!string(d, '%Y')\`, \`make_date!date(y, m, d)\`. Plain \`lpad(...)\`/\`strftime(...)\` fail with "Unknown function". There is no native list-membership operator — use \`list_contains!boolean\` for list columns. Prefer Malloy-native date ops (\`@2023\`, \`.month\`, \`::date\`) over SQL date formatting where possible.
 - MALLOY-FIRST (important): express joins, group-bys, filters, and aggregates in MALLOY — \`join_one\`/\`join_many\`, \`view:\`, \`nest:\`, filtered aggregates. Do NOT write joins or group-bys inside \`duckdb.sql(...)\`. Use a \`duckdb.sql("...")\` source ONLY for logic Malloy genuinely cannot express, and keep it minimal.
+
+MODELING DISCIPLINE — verify against the data, never trust prose alone (these are general principles; apply them to ANY dataset):
+- A COLUMN PROFILE (per-column type, NULL count, and either the full DISTINCT domain, a numeric range, or samples; for list columns the NULL-vs-empty split) is given for every table below. It is GROUND TRUTH — when the prose docs and the profile disagree about encoding or domain, the profile wins.
+- WILDCARD / "applies to all" is a PHYSICAL-ENCODING question, not a prose one. Check the profile: a list/array column almost always encodes "all" as the EMPTY list (\`len!number(col)=0\`), NOT null; a scalar uses NULL. Write the wildcard branch to match what the data actually stores — \`len!number(col)=0 or list_contains!boolean(col, x)\` for a list field, \`col is null or col = x\` for a scalar — and put a wildcard branch on EVERY match field (one unguarded equality silently drops all wildcard rows for that field).
+- CATEGORICAL MATCH BY EQUALITY: when you derive/bucket a value to compare (string-equality) against a categorical column, your output labels MUST be EXACTLY that column's distinct values from the profile. NEVER infer the set of buckets from a single documented example — reproduce the full observed domain. If a fact column's raw domain differs from the rule column's domain (the profile shows two different sets), you must transform/bucket the fact value to the rule's exact strings before matching.
+- QUALIFY JOIN KEYS: if more than one joined table exposes the same column name, reference it qualified (\`some_source.col\`, not bare \`col\`) or you get a binder/scope error that only surfaces at EXECUTION, not at compile. After authoring a source with joins, mentally run a query THROUGH the join, not just a compile check.
+- JOIN_MANY DOUBLE-COUNTS: a \`join_many\` multiplies each base row by the number of matched rows on the other side. Define the per-match measure at the joined grain — \`joined.sum(<expr combining joined columns and base columns>)\` — and NEVER re-aggregate a base-grain column (a volume, a count, an amount) after a join_many, or it is multiplied by the match count. State in the source's _meta which measures are base-grain vs match-grain.
 
 Output EXACTLY two fenced blocks and nothing else:
 1. A \`\`\`malloy block: the file contents.
@@ -287,10 +365,10 @@ async function authorStage(opts: {
  *  source files (model-derived, dependency-first). Returns [] on parse failure
  *  (caller then authors a single dabstep.malloy). */
 async function planCentral(opts: {
-  model: string; reasoningEffort?: string; baseContents: string; manual: string; qa: string; runId?: string;
+  model: string; reasoningEffort?: string; baseContents: string; manual: string; qa: string; profiles: string; runId?: string;
 }): Promise<{ files: { file: string; purpose: string }[]; cost: number }> {
   const system = `You are planning the CENTRAL files of a Malloy semantic layer (the base sources, one per table, already exist). Decompose the joins, the fee model, and the analytical needs into a SMALL set (1–5) of FOCUSED intermediate source files — each a \`<name>.malloy\` — so NO single file is huge (each must comfortably fit in one model response) and lineage is clean. Order them DEPENDENCY-FIRST (a later file may reference earlier ones + the bases). Do NOT include the base files. Do NOT include the top-level dabstep.malloy (it is added automatically last). Return ONLY a JSON array: [{"file":"<name>.malloy","purpose":"<one line>"}, ...].`;
-  const user = `## Base sources\n${opts.baseContents}\n\n## The Merchant Manual\n${opts.manual}\n\n## Train questions the layer must support\n${opts.qa}\n\nPlan the intermediate source files now (JSON array only).`;
+  const user = `## Base sources\n${opts.baseContents}\n\n## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## The Merchant Manual\n${opts.manual}\n\n## Train questions the layer must support\n${opts.qa}\n\nPlan the intermediate source files now (JSON array only).`;
   const t0 = Date.now();
   const resp = await complete({ model: opts.model, systemPrompt: system, userPrompt: user, reasoningEffort: opts.reasoningEffort, maxTokens: 4000 });
   if (opts.runId) {
@@ -344,6 +422,8 @@ export async function buildLayer(opts: {
     });
   }
   const schema = await schemaByTable();
+  const profile = await columnProfiles();
+  const allProfiles = TABLES.map((t) => `### ${t}\n${profile[t]}`).join('\n\n');
   const manual = opts.includeManual === false ? '(omitted — manual-ablation run)' : await readFile(path.join(DATA_DIR, 'dabstep', 'context', 'manual.md'), 'utf8');
   const qa = await trainQA(opts.includeAnswers ?? true);
   const maxRounds = opts.maxRounds ?? 3;
@@ -364,7 +444,7 @@ export async function buildLayer(opts: {
   // 1. Entity bases (independent: measures + dimensions, NO joins).
   for (const t of opts.centralOnly ? [] : TABLES) {
     const system = `You are a Malloy expert writing ONE base source file for the DuckDB table "${t}": a source named ${t}_base over duckdb.table('${t}') with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}`;
-    const user = `## Table "${t}" schema (DuckDB)\n${schema[t]}\n\n## The Merchant Manual (for terminology + which measures matter)\n${manual}\n\nWrite ${t}_base.malloy now (source named ${t}_base, measures + dimensions, no joins).`;
+    const user = `## Table "${t}" schema (DuckDB)\n${schema[t]}\n\n## Column profile for "${t}" (ACTUAL values in the data — ground truth)\n${profile[t]}\n\n## The Merchant Manual (for terminology + which measures matter)\n${manual}\n\nWrite ${t}_base.malloy now (source named ${t}_base, measures + dimensions, no joins).`;
     const r = await authorStage({
       label: `${t}_base.malloy`, modelFile: `${t}_base.malloy`, metaFile: `${t}_base.yaml`,
       defaultExport: { name: `${t}_base`, kind: 'source' },
@@ -378,9 +458,9 @@ export async function buildLayer(opts: {
   //    intermediate source files so no single file blows past the output-token cap
   //    (and lineage stays clean). Then author each one-at-a-time, then a thin top-level.
   const baseContents = (await Promise.all(TABLES.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(MODELS_DIR, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
-  const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nThe fee questions are the hardest. DERIVE the fee model yourself from the manual's fee section + the schema — matching, formula, and dynamic-dimension bucketing are all defined there. Express joins and per-merchant/per-month bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\n=== MALLOY PRIMER ===\n${primer}\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}\n\n${DUCKDB_NOTES}`;
+  const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nThe hardest questions need a fact-row × rule-row match with multi-rule fan-out. DERIVE that model yourself from the manual + the SCHEMA + the COLUMN PROFILE below — matching predicates, formula, and any dynamic bucketing follow from the actual encodings (lists vs scalars, the real categorical domains), not the prose alone. Express joins and bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\nDESIGN FOR THIN ANSWERS: expose the analytical results as NAMED views/measures on the central source so each question is answered by a thin filter+select on top — the answering agent should never need to restate a join or a matching predicate. Identify the hardest recurring question shape and guarantee one named, end-to-end measure/view that answers it directly. A matching/aggregating measure that returns 0 or empty over rows you know exist is a BUG (usually a wildcard-encoding or domain mismatch — recheck against the profile), not an answer.\n\n=== MALLOY PRIMER ===\n${primer}\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}\n\n${DUCKDB_NOTES}`;
 
-  const plan = await planCentral({ model: opts.model, reasoningEffort: opts.reasoningEffort, baseContents, manual, qa, runId: opts.runId });
+  const plan = await planCentral({ model: opts.model, reasoningEffort: opts.reasoningEffort, baseContents, manual, qa, profiles: allProfiles, runId: opts.runId });
   totalCost += plan.cost;
   console.log(`  central plan: ${plan.files.length} file(s) — ${plan.files.map((f) => f.file).join(', ') || '(none → single dabstep.malloy)'}`);
 
@@ -390,7 +470,7 @@ export async function buildLayer(opts: {
   for (let i = 0; i < plan.files.length; i++) {
     const stem = `c${i + 1}_${plan.files[i].file.replace(/\.malloy$/, '').replace(/[^a-z0-9_]/gi, '_')}`;
     const modelFile = `${stem}.malloy`;
-    const user = `## Base sources\n${baseContents}\n\n## Intermediate sources already authored (you may reference these by name)\n${authored || '(none yet)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite ${modelFile} now — ONE focused source. Purpose: ${plan.files[i].purpose}\nIt may reference the bases and the already-authored sources by name. Keep it to this one concern.`;
+    const user = `## Base sources\n${baseContents}\n\n## Column profiles (actual encodings + domains — ground truth; prefer over prose)\n${allProfiles}\n\n## Intermediate sources already authored (you may reference these by name)\n${authored || '(none yet)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite ${modelFile} now — ONE focused source. Purpose: ${plan.files[i].purpose}\nIt may reference the bases and the already-authored sources by name. Keep it to this one concern.`;
     const r = await authorStage({
       label: modelFile, modelFile, metaFile: `${stem}.yaml`, defaultExport: { name: stem, kind: 'source' },
       model: opts.model, reasoningEffort: opts.reasoningEffort, system: sharedSystem, user, maxRounds, maxTokens: 36000, runId: opts.runId,
@@ -401,7 +481,7 @@ export async function buildLayer(opts: {
   }
 
   // 4. Thin top-level dabstep.malloy: cross-cutting views/measures over the sources above.
-  const centralUser = `## Base sources\n${baseContents}\n\n## Intermediate sources (reference these by name)\n${authored || '(none)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite a THIN top-level dabstep.malloy: named views/measures so the questions are answerable by thin per-query Malloy on top of the sources above. Reuse the intermediate sources; do NOT restate their logic. Keep it small.`;
+  const centralUser = `## Base sources\n${baseContents}\n\n## Column profiles (actual encodings + domains — ground truth; prefer over prose)\n${allProfiles}\n\n## Intermediate sources (reference these by name)\n${authored || '(none)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite a THIN top-level dabstep.malloy: named views/measures so the questions are answerable by thin per-query Malloy on top of the sources above. Reuse the intermediate sources; do NOT restate their logic. Keep it small.`;
   const central = await authorStage({
     label: 'dabstep.malloy', modelFile: 'dabstep.malloy', metaFile: 'dabstep.yaml',
     defaultExport: { name: 'dabstep', kind: 'model' },
