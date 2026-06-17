@@ -50,8 +50,24 @@ export class MalloyRuntime {
   private modelText: string | null = null;
   private modelsDir: string;
 
-  constructor(opts: { dbPath?: string; modelsDir?: string } = {}) {
-    this.connection = new DuckDBConnection('duckdb', opts.dbPath ?? LOCAL_DB_PATH);
+  /**
+   * `databasePath`:
+   *   - `md:<db>` → Malloy connects to MotherDuck (compiles AND runs there, via the
+   *     motherduck extension). This is the path the EVAL uses, so the answer executes
+   *     on the same engine it compiled against — no local→MotherDuck SQL skew.
+   *   - a local file (default `data/dabstep.duckdb`) → used for fast build-time compile
+   *     validation and credential-free tests. Unqualified `duckdb.table('payments')`
+   *     resolves in BOTH (local file + md:<db> default catalog), so one layer works for both.
+   */
+  constructor(opts: { databasePath?: string; modelsDir?: string } = {}) {
+    const databasePath = opts.databasePath ?? LOCAL_DB_PATH;
+    const isMd = databasePath.startsWith('md:');
+    if (isMd && process.env.MOTHERDUCK_TOKEN) process.env.motherduck_token = process.env.MOTHERDUCK_TOKEN;
+    this.connection = new DuckDBConnection({
+      name: 'duckdb',
+      databasePath,
+      ...(isMd ? { additionalExtensions: ['motherduck'] } : {}),
+    });
     this.runtime = new SingleConnectionRuntime({ connection: this.connection });
     this.modelsDir = opts.modelsDir ?? MODELS_DIR;
   }
@@ -96,8 +112,10 @@ export class MalloyRuntime {
     }
   }
 
-  /** Compile + run locally (for the translation-check; NOT the scored path). */
-  async runLocal(querySrc: string, rowLimit = 50): Promise<RunResult> {
+  /** Compile + run the query against the connection (MotherDuck for eval, local for
+   *  tests). Returns rows as objects. This is Malloy-native execution — the answer
+   *  runs on the same engine it compiled against, so no cross-engine SQL skew. */
+  async run(querySrc: string, rowLimit = 50): Promise<RunResult> {
     try {
       const model = await this.loadModelText();
       const runnable = this.runtime.loadModel(model).loadQuery(querySrc);

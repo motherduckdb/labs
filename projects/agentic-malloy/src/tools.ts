@@ -3,14 +3,14 @@
  *   - MCP exploration tools (query/list_tables/list_columns/search_catalog/
  *     ask_docs_question) — SQL exploration on MotherDuck, never the final answer.
  *   - Malloy layer tools (list_malloy_files, get_file, malloy_lint, run_malloy).
- *   - submit_answer — the scored path: lint -> compile -> execute on MotherDuck.
+ *   - submit_answer — the scored path: lint -> Malloy run on MotherDuck.
  *
- * All Malloy execution of compiled SQL happens on MotherDuck via MCP (all-MD
- * substrate); Malloy only COMPILES against the local DuckDB. submit_answer
- * latches finalRows (positional, for score.py) only on success.
+ * Malloy runs via its NATIVE runtime connected to MotherDuck (the runtime
+ * compiles AND executes there) — same engine, no local→MotherDuck SQL skew.
+ * submit_answer latches finalRows (positional, for score.py) only on success.
  */
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { ALLOWED_TOOLS, callMcpTool, runSqlPositional } from './mcp-client.js';
+import { ALLOWED_TOOLS, callMcpTool } from './mcp-client.js';
 import type { MalloyRuntime } from './malloy-runtime.js';
 import type { MalloyStore } from './malloy-store.js';
 import { lintMalloy } from './linter.js';
@@ -150,45 +150,31 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
   if (name === 'run_malloy') {
     const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols);
     state.lintFixesTotal += fixes.length;
-    const c = await runtime.compile(fixedSrc);
-    if (!c.ok) return { content: fmtDiagnostics(c.diagnostics), isError: true };
-    try {
-      const rows = await runSqlPositional(client, c.sql!, database);
-      const note = fixes.length ? `[lint applied: ${fixes.join('; ')}]\n` : '';
-      return { content: `${note}${rowsToText(rows.slice(0, 50))}`, isError: false };
-    } catch (e) {
-      return { content: `Execution error on MotherDuck: ${e instanceof Error ? e.message : String(e)}`, isError: true };
-    }
+    // Run via Malloy's native runtime (connected to MotherDuck for eval) — compile
+    // and execute on the SAME engine, so no cross-engine SQL skew.
+    const r = await runtime.run(fixedSrc, 50);
+    if (!r.ok) return { content: fmtDiagnostics(r.diagnostics), isError: true };
+    const cols = r.rows!.length ? Object.keys(r.rows![0]) : [];
+    const arrays = r.rows!.map((o) => cols.map((cn) => o[cn]));
+    const note = fixes.length ? `[lint applied: ${fixes.join('; ')}]\n` : '';
+    return { content: `${note}${rowsToText(arrays, cols)}`, isError: false };
   }
 
   if (name === 'submit_answer') {
     if (state.submitted) return { content: 'ERROR: answer already submitted', isError: true };
     const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols);
     state.lintFixesTotal += fixes.length;
-    const c = await runtime.compile(fixedSrc);
-    if (!c.ok) return { content: fmtDiagnostics(c.diagnostics) + '\nThe answer was NOT recorded — fix and resubmit.', isError: true };
-    try {
-      const rows = await runSqlPositional(client, c.sql!, database);
-      state.submitted = true;
-      state.finalMalloy = fixedSrc;
-      state.finalCompiledSql = c.sql!;
-      state.finalRows = rows;
-      // Translation-check (warning only): the same compiled query must agree on
-      // the local DuckDB. A mismatch flags DuckDB/MotherDuck skew; scoring still
-      // uses the MotherDuck result.
-      try {
-        const local = await runtime.runLocal(fixedSrc);
-        state.translationMatch = local.ok && local.rows ? rowsetsMatch(local.rows as Record<string, unknown>[], rows) : null;
-      } catch {
-        state.translationMatch = null;
-      }
-      return { content: `Submitted. ${rows.length} row(s).`, isError: false };
-    } catch (e) {
-      return {
-        content: `Compiled SQL failed on MotherDuck: ${e instanceof Error ? e.message : String(e)}\nThe answer was NOT recorded — fix and resubmit.`,
-        isError: true,
-      };
-    }
+    // Run via Malloy's native runtime (MotherDuck for eval) — same engine for
+    // compile + execute, so the generated SQL always binds.
+    const r = await runtime.run(fixedSrc);
+    if (!r.ok) return { content: fmtDiagnostics(r.diagnostics) + '\nThe answer was NOT recorded — fix and resubmit.', isError: true };
+    const cols = r.rows!.length ? Object.keys(r.rows![0]) : [];
+    state.submitted = true;
+    state.finalMalloy = fixedSrc;
+    state.finalCompiledSql = r.sql;
+    state.finalRows = r.rows!.map((o) => cols.map((cn) => o[cn])); // positional for score.py
+    state.translationMatch = null; // executed locally; MotherDuck cross-check deferred (engine skew known)
+    return { content: `Submitted. ${r.rows!.length} row(s).`, isError: false };
   }
 
   return { content: `Unknown tool: ${name}`, isError: true };

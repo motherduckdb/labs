@@ -134,7 +134,7 @@ async function cmdPreflight() {
     console.error(c.diagnostics);
     process.exit(1);
   }
-  const r = await rt.runLocal(q);
+  const r = await rt.run(q);
   console.log('local run rows =', JSON.stringify(r.rows));
   await rt.close();
   console.log('PREFLIGHT OK');
@@ -199,7 +199,9 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
 
   const store = new MalloyStore();
   await store.load();
-  const runtime = new MalloyRuntime();
+  // The eval's Malloy runtime connects to MotherDuck — compiles AND runs the
+  // answer there (Malloy-native), so no local→MotherDuck SQL skew. Same data.
+  const runtime = new MalloyRuntime({ databasePath: `md:${database}` });
   const symbols = buildSymbolSet(await runtime.describe());
   const scorer = new ScoreClient();
 

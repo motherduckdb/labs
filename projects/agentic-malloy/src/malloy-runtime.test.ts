@@ -27,7 +27,7 @@ describe('MalloyRuntime (local DuckDB)', () => {
   });
 
   it('runs locally and returns the row count', async () => {
-    const r = await rt.runLocal('run: payments_base -> { aggregate: transaction_count }');
+    const r = await rt.run('run: payments_base -> { aggregate: transaction_count }');
     expect(r.ok).toBe(true);
     expect(Number((r.rows![0] as { transaction_count: number }).transaction_count)).toBe(138236);
   });
