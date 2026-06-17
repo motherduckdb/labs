@@ -149,7 +149,7 @@ MODELING DISCIPLINE — verify against the data, never trust prose alone (these 
 - CATEGORICAL MATCH BY EQUALITY: when you derive/bucket a value to compare (string-equality) against a categorical column, your output labels MUST be EXACTLY that column's distinct values from the profile. NEVER infer the set of buckets from a single documented example — reproduce the full observed domain. If a fact column's raw domain differs from the rule column's domain (the profile shows two different sets), you must transform/bucket the fact value to the rule's exact strings before matching.
 - QUALIFY JOIN KEYS: if more than one joined table exposes the same column name, reference it qualified (\`some_source.col\`, not bare \`col\`) or you get a binder/scope error that only surfaces at EXECUTION, not at compile. After authoring a source with joins, mentally run a query THROUGH the join, not just a compile check.
 - JOIN_MANY DOUBLE-COUNTS: a \`join_many\` multiplies each base row by the number of matched rows on the other side. Define the per-match measure at the joined grain — \`joined.sum(<expr combining joined columns and base columns>)\` — and NEVER re-aggregate a base-grain column (a volume, a count, an amount) after a join_many, or it is multiplied by the match count. State in the source's _meta which measures are base-grain vs match-grain.
-- JOIN_MANY ON-CLAUSE SCOPE (critical, causes execution-only failures): a \`join_many ... on\` predicate must reference ONLY columns local to the two sources being joined. Do NOT reference a column reached through ANOTHER join (e.g. a pass-through \`dimension: x is other_join.col\`, or a dimension defined on a source you \`extend\`ed that itself pulls from a join_one). It often COMPILES but the generated SQL references an out-of-scope alias and FAILS AT EXECUTION ("Referenced table … not found"). FIX: first materialize every attribute the match needs as a LOCAL dimension on the fact source at its own grain, then build the fan-out \`join_many\` referencing only those local columns. Keep the fan-out exactly ONE join level deep.
+- JOIN_MANY ON-CLAUSE SCOPE (critical, causes execution-only failures): a \`join_many ... on\` predicate must reference ONLY columns physically present on the two sources being joined. Do NOT reference a column reached through ANOTHER join — including a pass-through \`dimension: x is other_join.col\`. A pass-through dimension is just an ALIAS for the joined column, NOT a real column; it often COMPILES but the generated SQL references an out-of-scope alias and FAILS AT EXECUTION ("Referenced table … not found"). FIX (use this exact shape for fact×rule matching): (1) build an enriched fact source with a PROJECTION that turns the needed joined attributes into REAL local columns — \`source: enriched is fact_base extend { join_one: m is dim ... } -> { select: *, acct_type is m.account_type, mcc is m.merchant_category_code, ... }\`; (2) then \`source: matched is enriched extend { join_many: rules on (len!number(rules.x)=0 or list_contains!boolean(rules.x, acct_type)) and ... }\` referencing ONLY \`enriched\`'s local columns. Keep the fan-out exactly ONE join level deep.
 - A VIEW THAT COMPILES IS NOT DONE — IT MUST EXECUTE. Every view/measure you author will be run end-to-end at build time; one that compiles but errors at execution (binder/scope) is a FAILED build and will be sent back to you to fix. Author each source so a query through its joins actually returns rows.
 
 Output EXACTLY two fenced blocks and nothing else:
@@ -228,8 +228,9 @@ async function validateModel(modelFile?: string): Promise<{ ok: boolean; diag: s
               ok: false,
               diag:
                 `The view \`${s} -> ${view}\` COMPILES but FAILS TO EXECUTE — a view that cannot run is unusable. ` +
-                `This usually means a \`join_many ... on\` predicate references a column reached through ANOTHER join (an alias that drops out of SQL scope). ` +
-                `Fix the source so this query runs:\n${(r.diagnostics ?? []).map((d) => d.message).join('\n')}`,
+                `Cause: a \`join_many ... on\` predicate references attributes reached through ANOTHER join (e.g. a pass-through \`dimension: x is m.col\`). At SQL-gen that alias drops out of scope ("Referenced table not found"). ` +
+                `A pass-through dimension is NOT enough — it is just an alias for the joined column. You must MATERIALIZE those attributes as REAL columns BEFORE the fan-out: build the fact source with a PROJECTION that selects them, e.g. \`source: enriched is base extend { join_one: m is ... } -> { select: *, acct_type is m.account_type, mcc is m.merchant_category_code, ... }\` (now they are local columns of \`enriched\`), THEN do \`source: matched is enriched extend { join_many: rules on ... rules.x = acct_type ... }\` referencing ONLY local columns. Keep the fan-out one join level deep. ` +
+                `Re-author the file with this structure. Execution error:\n${(r.diagnostics ?? []).map((d) => d.message).join('\n')}`,
             };
           }
         }
@@ -397,8 +398,11 @@ async function authorStage(opts: {
       console.log(`  ✓ ${opts.label} (round ${round}, ${mode}, $${agg.cost.toFixed(4)})`);
       return { ok: true, ...agg };
     }
-    console.log(`  ✗ ${opts.label} round ${round} (${mode}) compile error:\n${v.diag.split('\n').slice(0, 6).map((l) => '      ' + l).join('\n')}`);
+    console.log(`  ✗ ${opts.label} round ${round} (${mode}) error:\n${v.diag.split('\n').slice(0, 6).map((l) => '      ' + l).join('\n')}`);
     diag = v.diag;
+    // An EXECUTION/binder failure needs RESTRUCTURING (move logic across sources),
+    // which atomic edits can't do — force a full re-author next round.
+    if (v.diag.includes('FAILS TO EXECUTE')) forceFull = true;
   }
   return { ok: false, diag, ...agg };
 }

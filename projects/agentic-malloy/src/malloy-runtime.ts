@@ -48,6 +48,62 @@ export interface ModelInventory {
   viewsBySource: Record<string, string[]>;
 }
 
+/**
+ * Order model files so every source is defined before it's referenced (Malloy
+ * compiles them as one concatenated unit and needs definition-before-use). We
+ * parse each file's `source:`/`query:` definitions, build a file→file dependency
+ * graph from cross-file references, and topologically sort it (Kahn's). Ties
+ * break stably (bases first, then name). On a dependency CYCLE we fall back to a
+ * bases-first alphabetical order. Exported for testing.
+ */
+export function orderModelFilesByDependency(files: string[], bodyOf: Record<string, string>): string[] {
+  const defRe = /(?:^|\n)[ \t]*(?:source|query):[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]+is\b/g;
+  const definerOf = new Map<string, string>(); // source name -> file that defines it
+  const definedIn = new Map<string, Set<string>>(); // file -> names it defines
+  for (const f of files) {
+    const names = new Set<string>();
+    for (const m of (bodyOf[f] ?? '').matchAll(defRe)) {
+      names.add(m[1]);
+      if (!definerOf.has(m[1])) definerOf.set(m[1], f);
+    }
+    definedIn.set(f, names);
+  }
+  // file -> set of files it depends on (references a source defined elsewhere).
+  const deps = new Map<string, Set<string>>();
+  for (const f of files) {
+    const own = definedIn.get(f)!;
+    const d = new Set<string>();
+    for (const [name, def] of definerOf) {
+      if (def === f || own.has(name)) continue;
+      if (new RegExp(`\\b${name}\\b`).test(bodyOf[f] ?? '')) d.add(def);
+    }
+    deps.set(f, d);
+  }
+  const rank = (f: string) => (f.endsWith('_base.malloy') ? 0 : 1); // bases first
+  const cmp = (a: string, b: string) => rank(a) - rank(b) || a.localeCompare(b);
+  const indeg = new Map(files.map((f) => [f, deps.get(f)!.size]));
+  const ready = files.filter((f) => indeg.get(f) === 0).sort(cmp);
+  const order: string[] = [];
+  while (ready.length) {
+    const f = ready.shift()!;
+    order.push(f);
+    for (const g of files) {
+      if (deps.get(g)!.has(f)) {
+        indeg.set(g, indeg.get(g)! - 1);
+        if (indeg.get(g) === 0) {
+          ready.push(g);
+          ready.sort(cmp);
+        }
+      }
+    }
+  }
+  if (order.length !== files.length) {
+    // Dependency cycle — fall back to the stable bases-first heuristic.
+    return [...files.filter((f) => rank(f) === 0).sort(), ...files.filter((f) => rank(f) === 1).sort()];
+  }
+  return order;
+}
+
 export class MalloyRuntime {
   private connection: DuckDBConnection;
   private runtime: Runtime;
@@ -79,21 +135,19 @@ export class MalloyRuntime {
   /** Concatenate all model files into one compilation unit (cached). */
   async loadModelText(force = false): Promise<string> {
     if (this.modelText !== null && !force) return this.modelText;
-    // Malloy compiles these as ONE unit and needs definitions before use, so the
-    // entity `*_base.malloy` sources must precede the central model that joins
-    // them (e.g. dabstep.malloy). Plain alphabetical order would put dabstep
-    // before fees_base — "Reference to undefined object 'fees_base'".
+    // Malloy compiles these as ONE unit and needs definition-before-use, so files
+    // must be concatenated in DEPENDENCY order (a source defined before any source
+    // that references it) — per the Malloy docs the single highest-value ordering
+    // rule. We topologically sort by actual source references rather than relying
+    // on a naming convention (alphabetical/`cN_` prefix), which is fragile.
     const all = (await readdir(this.modelsDir)).filter((f) => f.endsWith('.malloy'));
-    const bases = all.filter((f) => f.endsWith('_base.malloy')).sort();
-    const rest = all.filter((f) => !f.endsWith('_base.malloy')).sort();
-    const files = [...bases, ...rest];
-    const parts: string[] = [];
-    for (const f of files) {
-      const body = await readFile(path.join(this.modelsDir, f), 'utf8');
+    const bodyOf: Record<string, string> = {};
+    for (const f of all) {
       // Strip `import "..."` lines — everything is one unit here.
-      parts.push(`// === ${f} ===\n${body.replace(/^\s*import\s+["'][^"']+["'];?\s*$/gm, '')}`);
+      bodyOf[f] = (await readFile(path.join(this.modelsDir, f), 'utf8')).replace(/^\s*import\s+["'][^"']+["'];?\s*$/gm, '');
     }
-    this.modelText = parts.join('\n\n');
+    const files = orderModelFilesByDependency(all, bodyOf);
+    this.modelText = files.map((f) => `// === ${f} ===\n${bodyOf[f]}`).join('\n\n');
     return this.modelText;
   }
 
