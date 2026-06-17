@@ -93,10 +93,13 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 - **Window functions need an explicit `order_by` in the SAME stage.** A `calculate:`
   `rank()`/`row_number()` with no `order_by` ranks in an undefined order — you'll pick
   an arbitrary row. Always `order_by` the ranked measure in that stage.
-- **"Move/steer/switch to a DIFFERENT X" excludes the CURRENT value.** When a question
-  asks to move something to a *different* X (a different ACI, scheme, …), the candidate
-  set must exclude the current value — add `target != current` (e.g. `target_aci != aci`).
-  Never return the current value as the "different" choice.
+- **"Move/steer/switch to a DIFFERENT X" excludes the CURRENT value — and the current
+  value usually looks CHEAPEST.** When a question asks to move something to a *different*
+  X (a different ACI, scheme, …), the candidate set the layer gives you INCLUDES the
+  current X, and "moving to itself" is a no-op that comes out cheapest — so a naive
+  `order_by cost asc / limit 1` returns the CURRENT value, which is always wrong. You
+  MUST exclude the current first: `having: target_aci != aci` (or filter out the entity's
+  current/most-common value), THEN pick the cheapest of what remains.
 - A concept the data/manual does not define → `Not Applicable`. An empty result
   set for a real metric → the empty string, not `Not Applicable` (and a NULL inside a
   list is a bug to filter out, not a value to emit).
