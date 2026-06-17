@@ -59,7 +59,14 @@ Plain SQL tools are for *exploration only* and never produce the answer.
   list-element types must match when you test membership, so cast if needed.)
 - **List columns: the "applies to all" wildcard is the EMPTY list, not NULL** —
   `len!number(col)=0` is the wildcard test; `is null` is always false for these and
-  silently matches nothing. (Scalar columns do use NULL.)
+  silently matches nothing.
+- **Scalar columns: the "applies to all" wildcard IS NULL.** When you select the
+  rule rows that APPLY to a given value, a rule whose scalar field is NULL applies
+  to *every* value — so filter with `(field = value or field is null)`, NEVER bare
+  `field = value`. Bare equality silently drops the wildcard rules and under-counts
+  (e.g. `card_scheme='NexPay' and is_credit = true` MISSES the `is_credit is null`
+  rules that also apply to credit). This mirrors the empty-list rule for list fields:
+  every scalar match field needs its `or … is null` branch.
 - Fee questions are the hard ones: a transaction matches MANY fee rules and ALL
   matching fees are summed (no "most specific wins"). The central layer encodes this —
   reuse its measures/views, don't rebuild the matching yourself.
