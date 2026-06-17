@@ -316,6 +316,10 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
         error: dispatchErr, ts: new Date().toISOString(),
       };
       await appendFile(outPath, JSON.stringify(row) + '\n');
+      // Flush controllog per task so a mid-run crash preserves the telemetry of
+      // everything completed so far (a buffer-until-end flush previously lost the
+      // whole run's events when an exception skipped the final flushSession).
+      await cl.flushSession(session);
 
       completed++;
       if (scoreResp.is_correct) correct++;
@@ -330,9 +334,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
       }
     };
     await Promise.all(Array.from({ length: Math.min(concurrency, questions.length) }, () => worker()));
-  });
-
-  await cl.flushSession(session);
+  }).finally(() => cl.flushSession(session)); // always flush, even if the run throws mid-way
   await runtime.close();
   scorer.close();
 

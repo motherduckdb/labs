@@ -248,14 +248,23 @@ export function runMetadata(args: {
   return payload;
 }
 
+/**
+ * Append buffered events/postings to disk and DRAIN what was written, so this
+ * is safe to call repeatedly (e.g. once per task) for crash-durable telemetry —
+ * a mid-run crash then preserves everything emitted before it, instead of
+ * discarding the whole in-memory buffer. Splicing only the rows we serialized
+ * keeps any events emitted concurrently during the await for the next flush.
+ */
 export async function flushSession(session: Session): Promise<void> {
   if (session.events.length === 0 && session.postings.length === 0) return;
   const dir = path.join(baseLogDir, 'controllog');
   await mkdir(dir, { recursive: true });
-  if (session.events.length) {
-    await appendFile(path.join(dir, 'events.jsonl'), session.events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const events = session.events.splice(0, session.events.length);
+  const postings = session.postings.splice(0, session.postings.length);
+  if (events.length) {
+    await appendFile(path.join(dir, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
   }
-  if (session.postings.length) {
-    await appendFile(path.join(dir, 'postings.jsonl'), session.postings.map((p) => JSON.stringify(p)).join('\n') + '\n');
+  if (postings.length) {
+    await appendFile(path.join(dir, 'postings.jsonl'), postings.map((p) => JSON.stringify(p)).join('\n') + '\n');
   }
 }
