@@ -28,22 +28,42 @@ export interface ScoreResult {
   gold_answer: string;
 }
 
+/** A scorer failure (sidecar couldn't start, exited, or stdin write failed).
+ *  Thrown by score() so the per-task path can record a score_error outcome
+ *  instead of letting an unhandled rejection abort the pool. */
+export class ScoreClientError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScoreClientError';
+  }
+}
+
 export class ScoreClient {
   private proc: ChildProcessWithoutNullStreams;
   private nextId = 1;
   private pending = new Map<number, { resolve: (r: ScoreResult) => void; reject: (e: Error) => void }>();
   private buffer = '';
+  /** Set once the child can no longer serve requests (spawn error or exit). */
+  private deadReason: string | null = null;
 
   constructor(pythonBin = process.env.PYTHON_BIN || 'python3') {
     this.proc = spawn(pythonBin, [SIDECAR], { cwd: path.dirname(SIDECAR) });
     this.proc.stdout.setEncoding('utf8');
     this.proc.stdout.on('data', (chunk: string) => this.onData(chunk));
     this.proc.stderr.on('data', (d) => console.error('[scorer]', d.toString().trimEnd()));
-    this.proc.on('exit', (code) => {
-      const err = new Error(`scoring sidecar exited (code ${code})`);
-      for (const { reject } of this.pending.values()) reject(err);
-      this.pending.clear();
-    });
+    // A failed spawn (e.g. python3 missing) emits 'error', not 'exit' — mark
+    // dead and reject in-flight requests so score() rejects deterministically.
+    this.proc.on('error', (e) => this.markDead(`scoring sidecar failed to start: ${e.message}`));
+    this.proc.on('exit', (code, signal) =>
+      this.markDead(`scoring sidecar exited (code ${code}${signal ? `, signal ${signal}` : ''})`),
+    );
+  }
+
+  private markDead(reason: string): void {
+    if (this.deadReason === null) this.deadReason = reason;
+    const err = new ScoreClientError(reason);
+    for (const { reject } of this.pending.values()) reject(err);
+    this.pending.clear();
   }
 
   private onData(chunk: string): void {
@@ -69,6 +89,9 @@ export class ScoreClient {
   }
 
   score(req: ScoreRequest): Promise<ScoreResult> {
+    // If the sidecar already died, reject immediately — don't hang on a pending
+    // reply that will never come.
+    if (this.deadReason !== null) return Promise.reject(new ScoreClientError(this.deadReason));
     const id = this.nextId++;
     // Defensive: never let a stray BigInt (MotherDuck returns counts as BigInt)
     // throw here and abort the whole run — rows are normalized upstream, but
@@ -78,7 +101,19 @@ export class ScoreClient {
     );
     return new Promise<ScoreResult>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      this.proc.stdin.write(payload + '\n');
+      // A write to a closed/broken stdin pipe can throw synchronously or emit
+      // an error — surface it as a ScoreClientError for the per-task path.
+      try {
+        this.proc.stdin.write(payload + '\n', (err) => {
+          if (err) {
+            this.pending.delete(id);
+            reject(new ScoreClientError(`scoring sidecar write failed: ${err.message}`));
+          }
+        });
+      } catch (e) {
+        this.pending.delete(id);
+        reject(new ScoreClientError(`scoring sidecar write threw: ${e instanceof Error ? e.message : String(e)}`));
+      }
     });
   }
 

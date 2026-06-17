@@ -46,12 +46,29 @@ export interface TaskResult {
   authorModel: string;
   fixerModel: string;
   hitLimit: boolean;
+  /** Set when the loop ended because a model stream failed (transport/setup),
+   *  so the harness can distinguish a real stream failure from a plain
+   *  turns-exhausted hit-limit. null when no stream failure occurred. */
+  streamFailureReason: string | null;
+  /** True if the author was given its one forced submit-now recovery turn. */
+  authorRecoveryUsed: boolean;
+  /** Total OpenRouter stream-setup retries across all turns (telemetry). */
+  retryCount: number;
 }
 
 const FIXER_INSTRUCTION =
   'You are the senior fixer. The author got stuck (repeated Malloy compile/execution errors or ran out of turns). ' +
   'Review the conversation and the diagnostics above, then write CORRECT Malloy and call submit_answer. ' +
   'Prefer reusing the central layer; keep the per-query Malloy minimal.';
+
+// Before escalating terminal prose to the expensive fixer, give the SAME author
+// one forced recovery turn: it already has the working context, so the common
+// "stopped without submitting" case is usually a missing tool call, not a hard
+// authoring failure. Only if recovery still doesn't submit do we hand off.
+const AUTHOR_RECOVERY_INSTRUCTION =
+  'You stopped without calling submit_answer, so nothing was recorded and this scores zero. ' +
+  'Do NOT explain — call submit_answer now with the Malloy whose compiled-SQL result IS the answer. ' +
+  'Reuse the work above.';
 
 interface ParsedTurn {
   assistantBlocks: ContentBlock[];
@@ -66,14 +83,18 @@ async function streamOneTurn(opts: {
   tools: ToolSchema[];
   systemPrompt: string;
   reasoningEffort?: string;
+  onRetryCount?: (n: number) => void;
 }): Promise<ParsedTurn> {
+  const retryReport = { retryCount: 0 };
   const stream = await streamChatCompletion({
     model: opts.model,
     messages: opts.messages,
     tools: opts.tools,
     systemPrompt: opts.systemPrompt,
     reasoningEffort: opts.reasoningEffort,
+    retryReport,
   });
+  opts.onRetryCount?.(retryReport.retryCount);
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -153,6 +174,9 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   let authorTurns = 0;
   let fixerTurns = 0;
   let toolCallCount = 0;
+  let streamFailureReason: string | null = null;
+  let authorRecoveryUsed = false; // the author's one forced submit-now turn
+  let retryCount = 0;
   const usage: TaskUsage = { promptTokens: 0, completionTokens: 0, cost: 0 };
   // Hard ceiling only; each role is bounded separately below so the expensive
   // fixer can never run past --max-fixer-turns regardless of when it escalated.
@@ -192,9 +216,13 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
         tools: opts.toolSchemas,
         systemPrompt: opts.systemPrompt,
         reasoningEffort: opts.reasoningEffort,
+        onRetryCount: (n) => { retryCount += n; },
       });
     } catch (e) {
-      opts.onEvent?.({ kind: 'stream_error', detail: e instanceof Error ? e.message : String(e) });
+      // A stream-setup failure that survived the retry policy. Record the reason
+      // so the harness reports it as a stream failure, not a generic hit-limit.
+      streamFailureReason = e instanceof Error ? e.message : String(e);
+      opts.onEvent?.({ kind: 'stream_error', detail: streamFailureReason });
       break;
     }
     const wallMs = Date.now() - t0;
@@ -211,9 +239,20 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     });
 
     if (parsed.toolCalls.length === 0) {
-      // Terminal text without a submission. Nudge once via escalation if author.
+      // Terminal text without a submission. The author gets ONE forced
+      // submit-now recovery turn FIRST (it already has the context, so this is
+      // usually just a missing tool call) — only if that still fails do we
+      // escalate to the expensive fixer. The fixer's own terminal prose ends
+      // the loop.
       if (!deps.state.submitted && role === 'author') {
-        escalate('author produced terminal text without submitting');
+        if (!authorRecoveryUsed) {
+          authorRecoveryUsed = true;
+          messages.push({ role: 'assistant', content: parsed.assistantBlocks });
+          messages.push({ role: 'user', content: AUTHOR_RECOVERY_INSTRUCTION });
+          opts.onEvent?.({ kind: 'author_recovery', detail: 'terminal text — forced submit-now' });
+          continue;
+        }
+        escalate('author produced terminal text without submitting (after recovery)');
         continue;
       }
       break;
@@ -264,5 +303,8 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     authorModel: opts.authorModel,
     fixerModel: opts.fixerModel,
     hitLimit,
+    streamFailureReason,
+    authorRecoveryUsed,
+    retryCount,
   };
 }
