@@ -82,6 +82,14 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 - Apply the exact rounding stated, inside the Malloy/SQL.
 - Match the guideline's separators/brackets/case exactly — re-read the guideline
   verbatim before submitting and check value count, type, delimiter, and brackets.
+- **A list answer is submitted as ROWS — never build a joined string.** For "list the
+  X" / comma-separated answers, the final stage is just `select: X` returning ONE VALUE
+  PER ROW; the validator joins the rows into the comma list for you. Once a `run_malloy`
+  returns the values as rows, you are DONE — call `submit_answer` with that exact query.
+  Do NOT try to concatenate them into a single cell with `string_agg` / `array_to_string`
+  / `concat` — it is unnecessary AND `string_agg` over a scalar fails with "Cannot use a
+  scalar field in an aggregate operation". (A list of IDs = `-> { select: id; order_by: id }`,
+  submitted directly — nothing more.)
 - **List answers: filter phantom rows and fix types.** Add `where: <key> is not null`
   so an unmatched outer-join row can't appear as a stray value, and cast integer ids
   to int (`id::int`) so they don't render as `12.0`. Verify the row count against an
