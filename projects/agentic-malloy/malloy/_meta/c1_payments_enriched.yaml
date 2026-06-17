@@ -1,0 +1,37 @@
+file: c1_payments_enriched.malloy
+domain: payments
+summary: |
+  Payments joined to the merchant dimension and to the MCC reference table.
+  Exposes the merchant-side attributes that fee rules match on — account_type,
+  capture_delay_rule (mapped to the fee-rule vocabulary '<3' / '3-5' / '>5' /
+  'immediate' / 'manual'), merchant_mcc (INT, matching fees.merchant_category_code
+  element type), plus mcc_description / mcc_industry_group for reporting.
+  Intracountry / acquirer_country already live on payments_base and are inherited
+  as-is. This source intentionally stops short of fanning out to fee rules — the
+  fee-matching fan-out is the responsibility of a downstream source that first
+  re-projects these pass-through attributes into real local columns.
+exports:
+  - name: payments_enriched
+    kind: source
+    summary: |
+      Payments + merchants + MCC reference. Adds account_type, account_type_label,
+      business_channel, merchant_mcc (INT), merchant_mcc_str, capture_delay_raw,
+      capture_delay_rule, mcc_description, mcc_industry_group, acquirer_region.
+      All measures from payments_base remain available (transaction_count,
+      total_eur, fraud_count, fraud_eur, authorization_rate, fraud_rate, …).
+  - name: by_merchant
+    kind: view
+    summary: Per-merchant volume / fraud breakdown with account-type + capture-delay context.
+  - name: by_merchant_and_card_scheme
+    kind: view
+    summary: Per-merchant × card-scheme volume + fraud counts.
+  - name: by_account_type
+    kind: view
+    summary: Aggregates by merchant account_type (R/D/H/F/S).
+  - name: by_mcc
+    kind: view
+    summary: Aggregates by merchant MCC, with MCC description.
+provides_for:
+  - "Any question needing merchant attributes alongside a transaction (account_type, capture_delay_rule, merchant MCC, MCC description)."
+  - "The base layer underneath the downstream fee-rule fan-out source (which will project these pass-through dimensions into real local columns before join_many to fees)."
+  - "Per-merchant / per-card-scheme / per-MCC / per-account-type reporting in 2023."

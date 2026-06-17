@@ -1,0 +1,86 @@
+file: c3_fee_assignment.malloy
+domain: fee assignment — fact × rule matching with per-pair fee
+summary: |
+  Central source that matches every 2023 transaction (payments_enriched +
+  merchant_monthly_context buckets) against every fee rule (fees_base) whose
+  criteria it satisfies, and exposes the per-pair fee
+      fee = fixed_amount + rate * eur_amount / 10000
+  as named end-to-end views/measures so questions about "which rules apply",
+  "what did merchant X pay", and "what would change if we steered card scheme"
+  reduce to a thin filter + select on top.
+
+  Implementation notes:
+    - fee_match_facts PROJECTS every matching attribute (acct_type,
+      merchant_mcc_int, capture_delay_rule_local, monthly_volume_bucket_local,
+      monthly_fraud_bucket_local, etc.) as a REAL local column BEFORE the
+      join_many fan-out — this is what the prior compile-but-fail attempt
+      was missing.
+    - Wildcards follow the actual encodings from the column profile:
+      list columns (account_type / merchant_category_code / aci) wildcard
+      via empty list  (len!number(col)=0); scalar columns wildcard via NULL.
+    - Asymmetric aggregates after join_many are qualified with `rules.*` so
+      Malloy computes them at the (txn × rule) pair grain.
+    - count(psp_reference) = distinct txn count (count(expr) is already
+      DISTINCT per the primer); count() = pair count.
+exports:
+  - name: fee_match_facts
+    kind: source
+    summary: Flat per-transaction source with every matching attribute materialized as a real local column (acct_type, merchant_mcc_int, capture_delay_rule_local, monthly_volume_bucket_local, monthly_fraud_bucket_local, month_num, …).
+  - name: fee_match
+    kind: source
+    summary: fee_match_facts × fees_base via join_many on the full Manual §5 predicate. Per-pair fee dimension and total_fee_eur / matched_volume_eur / pair_count / txn_count measures.
+  - name: fee_match.applicable_rules_by_merchant_year
+    kind: view
+    summary: Distinct rule IDs that fired for each merchant in 2023 (answers "applicable fee IDs for merchant X in 2023").
+  - name: fee_match.applicable_rules_by_merchant_month
+    kind: view
+    summary: Distinct rule IDs per (merchant, month_num) in 2023 — answers "applicable fee IDs in <month> 2023".
+  - name: fee_match.applicable_rules_by_merchant_day
+    kind: view
+    summary: Distinct rule IDs per (merchant, day_of_year) — answers "applicable fee IDs on day N of 2023".
+  - name: fee_match.merchants_affected_by_rule
+    kind: view
+    summary: Merchants affected by each rule ID in 2023 (answers "which merchants were affected by Fee ID X").
+  - name: fee_match.total_fees_by_merchant_year
+    kind: view
+    summary: Total fees in EUR each merchant paid in 2023.
+  - name: fee_match.total_fees_by_merchant_month
+    kind: view
+    summary: Total fees in EUR per (merchant, month_num) — answers "fees paid in December 2023".
+  - name: fee_match.total_fees_by_merchant_day
+    kind: view
+    summary: Total fees in EUR per (merchant, day_of_year) — answers "fees on the Nth of 2023".
+  - name: fee_match.total_fees_by_merchant_card_scheme
+    kind: view
+    summary: Total fees per (merchant, card_scheme) under the actual card scheme each transaction used.
+  - name: fee_match.total_fees_by_merchant_month_card_scheme
+    kind: view
+    summary: Monthly version of total_fees_by_merchant_card_scheme — answers "in <month>, which card scheme drove max/min fees".
+  - name: fee_match.total_fees_by_merchant_aci
+    kind: view
+    summary: Total fees per (merchant, aci) for the year.
+  - name: fee_match.total_fees_by_merchant_month_aci
+    kind: view
+    summary: Total fees per (merchant, month_num, aci) — supports steering toward a different ACI.
+  - name: fee_match.matched_volume_by_merchant_year_rule
+    kind: view
+    summary: Matched eur_amount + current rate/fixed for every (merchant, rule) — used to compute delta of a rule-rate override as (new_rate - rate) * matched_volume_eur / 10000.
+  - name: fee_match.matched_volume_by_merchant_month_rule
+    kind: view
+    summary: Monthly version of matched_volume_by_merchant_year_rule.
+  - name: fee_match_any_scheme
+    kind: source
+    summary: Same fact × rule join as fee_match but with the card_scheme equality DROPPED — for "if all traffic steered to scheme X, what would the merchant pay".
+  - name: fee_match_any_scheme.total_fees_by_merchant_year_steered_scheme
+    kind: view
+    summary: Total fees per (merchant, rules.card_scheme) if all transactions had been steered to that scheme in 2023.
+  - name: fee_match_any_scheme.total_fees_by_merchant_month_steered_scheme
+    kind: view
+    summary: Monthly version — answers "in <month>, which scheme should merchant X steer to for min/max fees".
+provides_for:
+  - "applicable fee IDs by merchant / month / day"
+  - "merchants affected by a given fee rule"
+  - "total fees paid in EUR by merchant, by month, by day, by card scheme, by ACI"
+  - "what-if: total fees if traffic steered to a different card scheme"
+  - "what-if: delta from changing a rule's rate (matched_volume × Δrate / 10000)"
+  - "fee per (transaction × matched rule) pair via pair_fee_eur"

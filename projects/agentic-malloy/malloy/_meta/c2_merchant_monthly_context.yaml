@@ -1,0 +1,39 @@
+file: c2_merchant_monthly_context.malloy
+domain: payments
+summary: |
+  Per-merchant per-natural-month aggregate context derived from
+  payments_enriched.  Computes the EUR volume and fraud-EUR for each
+  (merchant, month) and BUCKETS them into the exact rule-shaped strings
+  used by the fees table: monthly_volume ∈
+  {'<100k','100k-1m','1m-5m','>5m'} and monthly_fraud_level ∈
+  {'<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'}.  Exposed as a real source
+  with primary key merchant_month_key = concat(merchant,'|',month_num)
+  so downstream fact×rule matchers can join_one this and pick up the
+  buckets without restating the bucketing.  Month is derived
+  arithmetically from day_of_year using the 2023 (non-leap)
+  month-boundary table — this DELIBERATELY avoids date_add/make_date+
+  interval, which fail at execution under DuckDB.
+exports:
+  - name: merchant_monthly_context
+    kind: source
+    summary: |
+      One row per (merchant, month_num) with: monthly_txn_count,
+      monthly_fraud_count, monthly_volume_eur, monthly_fraud_eur,
+      monthly_fraud_ratio, monthly_volume_bucket, monthly_fraud_bucket,
+      txn_month_str ('2023-MM'), and the join key merchant_month_key.
+  - name: merchant_monthly_context.listing
+    kind: view
+    summary: Long-format listing of every (merchant, month) row with its bucket strings.
+  - name: merchant_monthly_context.by_volume_bucket
+    kind: view
+    summary: Count of merchant-months falling in each monthly_volume bucket.
+  - name: merchant_monthly_context.by_fraud_bucket
+    kind: view
+    summary: Count of merchant-months falling in each monthly_fraud_level bucket.
+  - name: merchant_monthly_context.merchant_year_summary
+    kind: view
+    summary: Roll-up across the 12 months per merchant — total volume / fraud / avg monthly bucket inputs.
+provides_for:
+  - rule-matching fact×rule fan-out (supplies monthly_volume + monthly_fraud_level buckets)
+  - merchant monthly volume / fraud KPIs
+  - downstream fee total computations that need the rule-shaped context per transaction's month

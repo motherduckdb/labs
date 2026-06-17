@@ -1,20 +1,54 @@
 file: merchant_category_codes_base.malloy
-domain: payments / merchant classification
+domain: Reference / lookup table — Merchant Category Codes (MCC) per ISO 18245, used to classify merchants by business type.
 summary: |
-  Base source for the merchant_category_codes lookup (769 rows): maps a
-  4-digit MCC string to a description. Adds a numeric mcc_num for joining
-  to fee-rule MCC arrays (which use integers), a two-digit category prefix,
-  and basic count measures. No joins.
+  Base source over the merchant_category_codes table (769 rows, one per 4-digit
+  MCC). Exposes the raw mcc/description columns plus derived dimensions:
+  mcc_int (numeric form for joining against fee-rule MCC lists),
+  mcc_category_prefix / mcc_subcategory_suffix (first two / last two digits),
+  and mcc_industry_group (coarse ISO 18245 industry bucket). Measures are
+  simple counts. No joins — this file is the leaf reference source; richer
+  models can join_one onto it via mcc or mcc_int.
 exports:
   - name: merchant_category_codes_base
     kind: source
-    summary: |
-      Per-MCC lookup. Dimensions: mcc (raw 4-digit string, PK-like),
-      mcc_num (integer form), description, description_lower,
-      mcc_category_prefix (first 2 digits). Measures: mcc_count,
-      distinct_descriptions, distinct_categories. All measures are
-      base-grain (one row per MCC).
+    summary: Base source for the MCC reference table with derived dimensions and counts.
+  - name: mcc_int
+    kind: dimension
+    summary: MCC cast to a number — use when joining against fee rules whose merchant_category_code lists are integer-typed.
+  - name: mcc_category_prefix
+    kind: dimension
+    summary: First two digits of the MCC (broad category per the manual).
+  - name: mcc_subcategory_suffix
+    kind: dimension
+    summary: Last two digits of the MCC (subcategory within the broad category).
+  - name: mcc_industry_group
+    kind: dimension
+    summary: Coarse ISO 18245 industry bucket derived from the numeric MCC range (Airlines, Lodging, Retail, etc.).
+  - name: mcc_count
+    kind: measure
+    summary: Row count — number of MCCs in scope.
+  - name: distinct_mcc_count
+    kind: measure
+    summary: Distinct count of mcc values.
+  - name: distinct_description_count
+    kind: measure
+    summary: Distinct count of description values.
+  - name: min_mcc
+    kind: measure
+    summary: Minimum numeric MCC in scope.
+  - name: max_mcc
+    kind: measure
+    summary: Maximum numeric MCC in scope.
+  - name: by_industry_group
+    kind: view
+    summary: MCC counts grouped by derived industry group.
+  - name: by_category_prefix
+    kind: view
+    summary: MCC counts grouped by the two-digit category prefix.
+  - name: listing
+    kind: view
+    summary: Plain listing of mcc, description, and industry group ordered by MCC.
 provides_for:
-  - "Resolving an MCC code to its industry description"
-  - "Joining to fees rules whose merchant_category_code list contains an integer MCC (use mcc_num)"
-  - "Grouping merchants/transactions by MCC category prefix"
+  - merchant_category_codes
+  - mcc lookup / enrichment
+  - fee rule MCC matching (via mcc_int against fees.merchant_category_code list)

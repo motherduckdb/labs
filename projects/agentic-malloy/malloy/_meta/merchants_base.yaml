@@ -1,22 +1,19 @@
 file: merchants_base.malloy
 domain: payments
 summary: |
-  Base source over the `merchants` reference table (30 merchants in this
-  snapshot). Exposes raw columns plus derived dimensions that align with the
-  Merchant Manual: human-readable account-type labels, an account segment
-  (Enterprise vs Platform), a capture_delay band that matches the fee-rule
-  bands ('<3','3-5','>5','immediate','manual'), MCC as string, and
-  acquirer-list helpers (count, applies-to-all, multi-acquirer). All measures
-  are symmetric counts/averages so they remain correct under later joins.
+  Base source over the `merchants` reference table (30 rows, one per merchant).
+  Adds human-readable labels for account_type (per Merchant Manual §2), a
+  business-channel rollup (Enterprise vs Platform), capture-delay helpers that
+  bucket raw values ('1','2','7','immediate','manual') into the vocabulary used
+  by the fee rules ('<3','3-5','>5','immediate','manual'), acquirer-list helpers
+  (count / has-any / is-multi using len!number, since the profile shows no NULLs
+  and no empty lists), and basic count measures. No joins — downstream sources
+  build join logic on top of this.
 exports:
   - name: merchants_base
     kind: source
-    summary: |
-      One row per merchant. Use for merchant-level lookups and as the right
-      side of join_one from transaction-grain sources. No joins defined here.
+    summary: Per-merchant reference data with labels, capture-delay buckets, acquirer helpers, and count measures.
 provides_for:
-  - "Merchant attribute lookups (account_type, MCC, capture_delay, acquirer list)"
-  - "Account-type / segment breakdowns of merchant counts"
-  - "Capture-delay banding aligned with fee-rule bands"
-  - "Acquirer-list shape diagnostics (multi-acquirer, applies-to-all)"
-  - "Right-hand side of join_one from payments/transactions sources keyed on merchant"
+  - "merchant lookup and labeling (account_type → human label, business channel)"
+  - "fee-rule matching keys: account_type, merchant_category_code, capture_delay_rule"
+  - "merchant segmentation by channel / MCC / capture timing"

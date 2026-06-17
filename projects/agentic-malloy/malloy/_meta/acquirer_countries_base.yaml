@@ -1,12 +1,11 @@
 file: acquirer_countries_base.malloy
 domain: payments
-summary: Base source over the acquirer_countries lookup table mapping each acquirer (8 distinct: bank_of_springfield, dagoberts_geldpakhuis, dagoberts_vault, gringotts, lehman_brothers, medici, tellsons_bank, the_savings_and_loan_bank) to its operating country_code (5 distinct: FR, GB, IT, NL, US). Used to determine acquirer country for local-vs-cross-border (intracountry) fee logic.
+summary: Base source for the acquirer_countries lookup, mapping each acquirer to its ISO-2 country code. Provides country-name and region dimensions used downstream to classify intracountry vs international transactions.
 exports:
   - name: acquirer_countries_base
     kind: source
-    summary: Lookup of acquirer -> country_code with derived country_name, european/US flags, and per-country/per-acquirer rollup views. No joins; safe to use as a join target keyed on acquirer.
+    summary: One row per (acquirer, country_code) mapping. 8 acquirers across 5 countries (FR, GB, IT, NL, US). Adds country_name, region, and is_eurozone dimensions plus basic count measures.
 provides_for:
-  - "Resolving an acquirer's country_code to compare against issuer country (intracountry flag for fee rules)"
-  - "Counting acquirers per country / countries per acquirer"
-  - "Filtering transactions or payment volumes to European vs US acquirers"
-  - "Joining onto a payments/transactions fact source via acquirer to enrich with country"
+  - acquirer -> country lookup
+  - intracountry vs international classification (join target on acquirer)
+  - regional / Eurozone segmentation of acquirers

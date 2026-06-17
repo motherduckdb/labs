@@ -1,158 +1,104 @@
 // payments_base.malloy
-// Base source over the raw `payments` table.
-// NO joins here — only dimensions + measures derived from columns of `payments`.
-//
-// Grain: one row per payment attempt (psp_reference is unique — 138,236 distinct).
-// All amounts are in EUR. year is constant 2023 in the data.
+// Base source over the raw payments table. NO joins here — only
+// dimensions and measures derived from columns in this table.
+// Domain notes (from column profile + Merchant Manual):
+//   - year is always 2023; day_of_year ∈ [1..365] → derive a real date.
+//   - aci ∈ {A..G} per the ACI section of the manual.
+//   - shopper_interaction ∈ {Ecommerce, POS}.
+//   - "intracountry" (per fee rules) ≡ issuing_country = acquirer_country.
 
 source: payments_base is duckdb.table('payments') extend {
-
   primary_key: psp_reference
 
-  // ---------------------------------------------------------------
-  // DIMENSIONS — derived only (raw columns are already visible)
-  // ---------------------------------------------------------------
-
-  // Synthetic transaction date built from year + day_of_year (2023 only in data).
+  //
+  // ── Derived time dimensions ─────────────────────────────────────────
+  //
+  // day_of_year + year → real DATE; 2023-01-01 + (day_of_year - 1) days.
   dimension: transaction_date is
-    (@2023-01-01 + (day_of_year - 1) day)::date
+    date_add!date(make_date!date(`year`, 1, 1), day_of_year - 1, 'day')
 
   dimension: transaction_month is transaction_date.month
   dimension: transaction_quarter is transaction_date.quarter
   dimension: transaction_week is transaction_date.week
+  dimension: day_of_week is dayofweek!number(transaction_date)
 
-  // Hour bucket label
-  dimension: time_of_day is
+  dimension: time_of_day_bucket is
     pick 'night'   when hour_of_day < 6
     pick 'morning' when hour_of_day < 12
     pick 'afternoon' when hour_of_day < 18
     else 'evening'
 
-  // Channel: Ecommerce vs POS already exists as shopper_interaction.
-  // Local vs cross-border acquiring (manual §5.1.1: local = issuer country == acquirer country).
+  //
+  // ── Derived business dimensions ─────────────────────────────────────
+  //
+  // Local acquiring per manual §5.1.1: issuer country = acquirer country.
   dimension: is_intracountry is issuing_country = acquirer_country
-  dimension: acquiring_scope is
-    pick 'domestic' when issuing_country = acquirer_country
-    else 'cross_border'
+  dimension: is_crossborder is issuing_country != acquirer_country
 
-  // IP/issuer mismatch — a common fraud signal.
+  // IP vs issuing country mismatch — a fraud signal.
   dimension: ip_issuer_mismatch is
     ip_country is not null and ip_country != issuing_country
 
-  // Credit vs debit label
-  dimension: credit_or_debit is
-    pick 'credit' when is_credit
-    else 'debit'
-
-  // ACI human-readable label (manual §4)
+  // ACI human label per manual §4.
   dimension: aci_label is
     pick 'Card present - Non-authenticated'        when aci = 'A'
-    pick 'Card present - Authenticated'            when aci = 'B'
+    pick 'Card Present - Authenticated'            when aci = 'B'
     pick 'Tokenized card with mobile device'       when aci = 'C'
     pick 'Card Not Present - Card On File'         when aci = 'D'
-    pick 'Card Not Present - Recurring Bill'       when aci = 'E'
+    pick 'Card Not Present - Recurring Bill Pmt'   when aci = 'E'
     pick 'Card Not Present - 3-D Secure'           when aci = 'F'
     pick 'Card Not Present - Non-3-D Secure'       when aci = 'G'
     else 'Unknown'
 
-  // Coarse ACI grouping: card-present vs card-not-present
-  dimension: aci_channel is
-    pick 'card_present'     when aci = 'A' | 'B'
-    pick 'tokenized_mobile' when aci = 'C'
-    pick 'card_not_present' when aci = 'D' | 'E' | 'F' | 'G'
-    else 'unknown'
+  // Card-present vs card-not-present grouping by ACI.
+  dimension: is_card_present is aci = 'A' or aci = 'B'
+  dimension: is_card_not_present is aci = 'D' or aci = 'E' or aci = 'F' or aci = 'G'
+  dimension: is_3d_secure is aci = 'F'
 
-  // Eur amount buckets (range 0.50 .. 4811.76)
-  dimension: amount_bucket is
-    pick 'micro (<10)'      when eur_amount < 10
-    pick 'small (10-50)'    when eur_amount < 50
-    pick 'medium (50-250)'  when eur_amount < 250
-    pick 'large (250-1000)' when eur_amount < 1000
-    else 'xlarge (1000+)'
+  // Outcome flags
+  dimension: is_successful is not is_refused_by_adyen
+  dimension: credit_or_debit is pick 'credit' when is_credit else 'debit'
 
-  // ---------------------------------------------------------------
-  // MEASURES
-  // ---------------------------------------------------------------
-
+  //
+  // ── Volume / count measures ─────────────────────────────────────────
+  //
   measure: transaction_count is count()
-  measure: distinct_shoppers is count(email_address)
-  measure: distinct_cards    is count(card_number)
-  measure: distinct_ips      is count(ip_address)
-  measure: distinct_merchants is count(merchant)
+  measure: unique_shoppers is count(email_address)
+  measure: unique_cards is count(card_number)
+  measure: unique_ips is count(ip_address)
 
-  // Money — symmetric within this single source.
-  measure: total_eur     is eur_amount.sum()
-  measure: avg_eur       is eur_amount.avg()
-  measure: min_eur       is eur_amount.min()
-  measure: max_eur       is eur_amount.max()
+  measure: total_eur is eur_amount.sum()
+  measure: avg_eur is eur_amount.avg()
+  measure: median_eur is eur_amount.avg()
+  measure: max_eur is eur_amount.max()
+  measure: min_eur is eur_amount.min()
 
-  // Counts of outcomes
-  measure: fraud_count is count() { where: has_fraudulent_dispute }
+  //
+  // ── Outcome-segmented counts/volumes (filtered aggregates) ─────────
+  //
   measure: refused_count is count() { where: is_refused_by_adyen }
   measure: approved_count is count() { where: not is_refused_by_adyen }
+  measure: fraud_count   is count() { where: has_fraudulent_dispute }
 
-  measure: fraud_eur is eur_amount.sum() { where: has_fraudulent_dispute }
-  measure: refused_eur is eur_amount.sum() { where: is_refused_by_adyen }
+  measure: refused_eur  is eur_amount.sum() { where: is_refused_by_adyen }
+  measure: approved_eur is eur_amount.sum() { where: not is_refused_by_adyen }
+  measure: fraud_eur    is eur_amount.sum() { where: has_fraudulent_dispute }
 
-  // Rates — defined as fractions of total (0..1). Format at display time.
-  measure: fraud_rate is fraud_count / transaction_count
-  measure: refusal_rate is refused_count / transaction_count
-  measure: authorization_rate is approved_count / transaction_count
+  //
+  // ── Rates (KPIs from manual §8.2) ──────────────────────────────────
+  //
+  measure: authorization_rate is approved_count / count()      // higher is better
+  measure: refusal_rate       is refused_count  / count()
+  measure: fraud_rate         is fraud_count    / count()      // by count
+  measure: fraud_volume_rate  is fraud_eur / nullif!number(total_eur, 0)  // by € (manual §7)
 
-  // Volume-weighted fraud rate (manual §7: "ratio of fraudulent volume over total volume").
-  measure: fraud_volume_rate is fraud_eur / total_eur
-
-  // Channel-specific helpers
-  measure: ecom_count is count() { where: shopper_interaction = 'Ecommerce' }
-  measure: pos_count  is count() { where: shopper_interaction = 'POS' }
-  measure: credit_count is count() { where: is_credit }
-  measure: debit_count  is count() { where: not is_credit }
-
-  measure: domestic_count is count() { where: issuing_country = acquirer_country }
-  measure: cross_border_count is count() { where: issuing_country != acquirer_country }
-  measure: cross_border_rate is cross_border_count / transaction_count
-
-  // ---------------------------------------------------------------
-  // Handy reusable views
-  // ---------------------------------------------------------------
-
-  view: by_merchant is {
-    group_by: merchant
-    aggregate:
-      transaction_count
-      total_eur
-      fraud_rate
-      refusal_rate
-    order_by: transaction_count desc
-  }
-
-  view: by_card_scheme is {
-    group_by: card_scheme
-    aggregate: transaction_count, total_eur, fraud_rate
-    order_by: transaction_count desc
-  }
-
-  view: by_aci is {
-    group_by: aci, aci_label
-    aggregate: transaction_count, total_eur, fraud_rate, refusal_rate
-    order_by: transaction_count desc
-  }
-
-  view: by_month is {
-    group_by: transaction_month
-    aggregate: transaction_count, total_eur, fraud_rate
-    order_by: transaction_month
-  }
-
-  view: by_hour is {
-    group_by: hour_of_day
-    aggregate: transaction_count, total_eur, fraud_rate
-    order_by: hour_of_day
-  }
-
-  view: by_country_pair is {
-    group_by: issuing_country, acquirer_country
-    aggregate: transaction_count, total_eur, fraud_rate
-    order_by: transaction_count desc
-  }
+  //
+  // ── Mix measures ───────────────────────────────────────────────────
+  //
+  measure: credit_count       is count() { where: is_credit }
+  measure: credit_share       is credit_count / count()
+  measure: intracountry_count is count() { where: is_intracountry }
+  measure: intracountry_share is intracountry_count / count()
+  measure: ecommerce_count    is count() { where: shopper_interaction = 'Ecommerce' }
+  measure: ecommerce_share    is ecommerce_count / count()
 }

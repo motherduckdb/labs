@@ -1,168 +1,161 @@
 // dabstep.malloy
-// Thin top-level layer over c1..c4. Adds the few extras the train questions
-// need that the intermediates don't already expose:
-//   * an MCC counter-factual fee join (`fees_any_mcc`) for "what if merchant
-//     had MCC=X" questions
-//   * per-candidate-ACI measures (A..G) so ACI steering is a single aggregate
-//   * fees × candidate-MCC and fees × candidate-ACI enumerations for the
-//     fees-only "most expensive MCC / ACI at value V" questions
+// Thin top-level layer. The hard fact×rule fan-out is already in
+// c3_fee_assignment (`fee_match`, `fee_match_any_scheme`) and the
+// monthly bucketing in c2_merchant_monthly_context. This file only
+// adds the small set of NAMED views needed to thinly answer the
+// remaining shapes:
+//
+//   • "Average scenario across all rules" cost lenses at fixed tx values
+//     (Q1290, Q1417, Q1507, Q1520, Q1593 — and Q1475 via direct fees_base
+//     filter using its wildcard semantics).
+//   • Unnested-by-MCC rule view ("most expensive MCC", Q1442).
+//   • Unnested-by-ACI rule view ("most expensive ACI", Q1451).
+//   • Steer-fraud-to-different-ACI what-if (Q2767, Q2703).
+//
+// Already covered by existing views (do NOT restate):
+//   fee_match.applicable_rules_by_merchant_year / _month / _day
+//                                       → Q1744, Q1808, Q1685, Q2524
+//   fee_match.total_fees_by_merchant_year / _month / _day / _card_scheme / _aci
+//                                       → Q1711, Q1746, Q1834
+//   fee_match.matched_volume_by_merchant_year_rule / _month_rule
+//                                       → Q2463, Q2490 (rate-change delta)
+//   fee_match_any_scheme.total_fees_by_merchant_year_steered_scheme / _month_…
+//                                       → Q2762, Q2587, Q2634, Q2765
+//   payments_enriched (group_by: issuing_country)
+//                                       → Q347
 
-source: dabstep is c4_fee_application extend {
 
-  //── MCC counterfactual: same payment, pretend its merchant MCC = X ────
-  // Drops the MCC predicate from the fee match. Filter by candidate MCC via
-  //   { where: list_contains!boolean(fees_any_mcc.merchant_category_code, X)
-  //            or len!number(fees_any_mcc.merchant_category_code) = 0 }
-  join_many: fees_any_mcc is fees_base on
-        fees_any_mcc.card_scheme = card_scheme
-    and (len!number(fees_any_mcc.account_type) = 0
-         or list_contains!boolean(fees_any_mcc.account_type, merchant_account_type))
-    and (fees_any_mcc.capture_delay is null
-         or fees_any_mcc.capture_delay = merchant_capture_delay_band)
-    and (fees_any_mcc.monthly_fraud_level is null
-         or fees_any_mcc.monthly_fraud_level = mm.monthly_fraud_level_band)
-    and (fees_any_mcc.monthly_volume is null
-         or fees_any_mcc.monthly_volume = mm.monthly_volume_band)
-    and (fees_any_mcc.is_credit is null or fees_any_mcc.is_credit = is_credit)
-    and (len!number(fees_any_mcc.aci) = 0
-         or list_contains!boolean(fees_any_mcc.aci, aci))
-    and (fees_any_mcc.intracountry is null
-         or fees_any_mcc.intracountry = intracountry_flag)
+// ── 1. Rule-only "average scenario" cost lens ─────────────────────────
+//   "In the average scenario, which card scheme is cheapest/most expensive
+//    for a transaction value of X EUR?"  →  group_by card_scheme, take avg
+//    over the unfiltered rule set.
 
-  measure: mcc_scenario_fee is
-    fees_any_mcc.sum(fees_any_mcc.fixed_amount
-                     + fees_any_mcc.rate * eur_amount / 10000)
-  measure: mcc_scenario_match_count is fees_any_mcc.count()
+source: rules_lens is fees_base extend {
+  dimension: fee_50eur    is fixed_amount + rate * 50.0    / 10000.0
+  dimension: fee_100eur   is fixed_amount + rate * 100.0   / 10000.0
+  dimension: fee_1000eur  is fixed_amount + rate * 1000.0  / 10000.0
+  dimension: fee_4321eur  is fixed_amount + rate * 4321.0  / 10000.0
+  dimension: fee_50000eur is fixed_amount + rate * 50000.0 / 10000.0
+  measure: avg_fee_50eur    is fee_50eur.avg()
+  measure: avg_fee_100eur   is fee_100eur.avg()
+  measure: avg_fee_1000eur  is fee_1000eur.avg()
+  measure: avg_fee_4321eur  is fee_4321eur.avg()
+  measure: avg_fee_50000eur is fee_50000eur.avg()
 
-  //── ACI steering: one measure per candidate ACI (A..G) ────────────────
-  // Filter the row set first (e.g. where: merchant='X' and has_fraudulent_dispute
-  // and transaction_date ? @2023-02), then read the 7 measures via
-  // `aci_scenarios` and pick the minimum / maximum.
-  measure: aci_scenario_fee_A is
-    fees_any_aci.sum(fees_any_aci.fixed_amount + fees_any_aci.rate * eur_amount / 10000)
-    { where: list_contains!boolean(fees_any_aci.aci, 'A')
-             or len!number(fees_any_aci.aci) = 0 }
-  measure: aci_scenario_fee_B is
-    fees_any_aci.sum(fees_any_aci.fixed_amount + fees_any_aci.rate * eur_amount / 10000)
-    { where: list_contains!boolean(fees_any_aci.aci, 'B')
-             or len!number(fees_any_aci.aci) = 0 }
-  measure: aci_scenario_fee_C is
-    fees_any_aci.sum(fees_any_aci.fixed_amount + fees_any_aci.rate * eur_amount / 10000)
-    { where: list_contains!boolean(fees_any_aci.aci, 'C')
-             or len!number(fees_any_aci.aci) = 0 }
-  measure: aci_scenario_fee_D is
-    fees_any_aci.sum(fees_any_aci.fixed_amount + fees_any_aci.rate * eur_amount / 10000)
-    { where: list_contains!boolean(fees_any_aci.aci, 'D')
-             or len!number(fees_any_aci.aci) = 0 }
-  measure: aci_scenario_fee_E is
-    fees_any_aci.sum(fees_any_aci.fixed_amount + fees_any_aci.rate * eur_amount / 10000)
-    { where: list_contains!boolean(fees_any_aci.aci, 'E')
-             or len!number(fees_any_aci.aci) = 0 }
-  measure: aci_scenario_fee_F is
-    fees_any_aci.sum(fees_any_aci.fixed_amount + fees_any_aci.rate * eur_amount / 10000)
-    { where: list_contains!boolean(fees_any_aci.aci, 'F')
-             or len!number(fees_any_aci.aci) = 0 }
-  measure: aci_scenario_fee_G is
-    fees_any_aci.sum(fees_any_aci.fixed_amount + fees_any_aci.rate * eur_amount / 10000)
-    { where: list_contains!boolean(fees_any_aci.aci, 'G')
-             or len!number(fees_any_aci.aci) = 0 }
-
-  view: aci_scenarios is {
-    aggregate:
-      aci_scenario_fee_A
-      aci_scenario_fee_B
-      aci_scenario_fee_C
-      aci_scenario_fee_D
-      aci_scenario_fee_E
-      aci_scenario_fee_F
-      aci_scenario_fee_G
-  }
-
-  view: aci_scenarios_by_merchant is {
-    group_by: merchant
-    aggregate:
-      aci_scenario_fee_A
-      aci_scenario_fee_B
-      aci_scenario_fee_C
-      aci_scenario_fee_D
-      aci_scenario_fee_E
-      aci_scenario_fee_F
-      aci_scenario_fee_G
+  view: by_card_scheme_avg_fee is {
+    group_by:  card_scheme
+    aggregate: rule_count,
+               avg_fee_50eur, avg_fee_100eur, avg_fee_1000eur,
+               avg_fee_4321eur, avg_fee_50000eur
+    order_by:  card_scheme
   }
 }
 
-//── Per-candidate MCC enumeration (fees-only) ──────────────────────────────
-// One row per (candidate-MCC, applicable-rule). Group by mcc and read
-// e.g. avg_fee_on_50000_eur to find the most/least expensive MCC for a
-// given transaction value.
-source: fees_per_mcc is duckdb.sql("""
-  select
-    m.mcc::bigint  as mcc,
-    m.description  as mcc_description,
-    f.ID           as rule_id,
-    f.card_scheme,
-    f.is_credit,
-    f.fixed_amount,
-    f.rate
-  from merchant_category_codes m
-  cross join fees f
-  where len(f.merchant_category_code) = 0
-     or list_contains(f.merchant_category_code, m.mcc::bigint)
+
+// ── 2. Rules unnested by MCC (so MCCs can be group-by'd as scalars). ──
+//   Q1442 "most expensive MCC for a 50 000 EUR transaction".
+
+source: rules_per_mcc is duckdb.sql("""
+  SELECT
+    f.ID, f.card_scheme, f.account_type, f.capture_delay,
+    f.monthly_fraud_level, f.monthly_volume, f.is_credit, f.aci,
+    f.fixed_amount, f.rate, f.intracountry,
+    unnest(f.merchant_category_code) AS mcc
+  FROM fees f
+  WHERE len(f.merchant_category_code) > 0
 """) extend {
-  measure: rule_count        is count()
-  measure: avg_fixed_amount  is fixed_amount.avg()
-  measure: avg_rate          is rate.avg()
-  measure: avg_fee_on_100_eur   is avg(fixed_amount + rate * 100   / 10000)
-  measure: avg_fee_on_1000_eur  is avg(fixed_amount + rate * 1000  / 10000)
-  measure: avg_fee_on_50000_eur is avg(fixed_amount + rate * 50000 / 10000)
+  dimension: fee_100eur   is fixed_amount + rate * 100.0   / 10000.0
+  dimension: fee_1000eur  is fixed_amount + rate * 1000.0  / 10000.0
+  dimension: fee_50000eur is fixed_amount + rate * 50000.0 / 10000.0
+  measure: rule_count       is count()
+  measure: avg_fee_100eur   is fee_100eur.avg()
+  measure: avg_fee_1000eur  is fee_1000eur.avg()
+  measure: avg_fee_50000eur is fee_50000eur.avg()
 
-  view: by_mcc is {
-    group_by: mcc, mcc_description
-    aggregate: rule_count, avg_fixed_amount, avg_rate
-    order_by: mcc
-  }
-
-  view: most_expensive_mcc_50000 is {
-    group_by: mcc, mcc_description
-    aggregate: avg_fee_on_50000_eur, rule_count
-    order_by: avg_fee_on_50000_eur desc
+  view: by_mcc_avg_fee is {
+    group_by:  mcc
+    aggregate: rule_count, avg_fee_100eur, avg_fee_1000eur, avg_fee_50000eur
+    order_by:  avg_fee_50000eur desc
   }
 }
 
-//── Per-candidate ACI enumeration (fees-only) ──────────────────────────────
-// One row per (candidate-ACI, applicable-rule). Group by aci (+ optional
-// filters on card_scheme/is_credit/etc.) to rank ACIs by fee at a given
-// transaction value.
-source: fees_per_aci is duckdb.sql("""
-  with aci_codes as (select unnest(['A','B','C','D','E','F','G']) as aci)
-  select
-    a.aci,
-    f.ID as rule_id,
-    f.card_scheme,
-    f.is_credit,
-    f.intracountry,
-    f.fixed_amount,
-    f.rate
-  from aci_codes a
-  cross join fees f
-  where len(f.aci) = 0 or list_contains(f.aci, a.aci)
-""") extend {
-  measure: rule_count        is count()
-  measure: avg_fixed_amount  is fixed_amount.avg()
-  measure: avg_rate          is rate.avg()
-  measure: avg_fee_on_100_eur  is avg(fixed_amount + rate * 100  / 10000)
-  measure: avg_fee_on_1000_eur is avg(fixed_amount + rate * 1000 / 10000)
 
-  view: by_aci is {
-    group_by: aci
-    aggregate: rule_count, avg_fixed_amount, avg_rate
-    order_by: aci
+// ── 3. Rules unnested by ACI (so ACI codes can be group-by'd). ────────
+//   Q1451 "most expensive ACI for credit GlobalCard 100 EUR".
+
+source: rules_per_aci is duckdb.sql("""
+  SELECT
+    f.ID, f.card_scheme, f.account_type, f.capture_delay,
+    f.monthly_fraud_level, f.monthly_volume, f.is_credit,
+    f.merchant_category_code,
+    f.fixed_amount, f.rate, f.intracountry,
+    unnest(f.aci) AS aci_value
+  FROM fees f
+  WHERE len(f.aci) > 0
+""") extend {
+  dimension: fee_100eur   is fixed_amount + rate * 100.0   / 10000.0
+  dimension: fee_1000eur  is fixed_amount + rate * 1000.0  / 10000.0
+  measure: rule_count       is count()
+  measure: avg_fee_100eur   is fee_100eur.avg()
+  measure: avg_fee_1000eur  is fee_1000eur.avg()
+
+  view: by_aci_avg_fee is {
+    group_by:  aci_value
+    aggregate: rule_count, avg_fee_100eur, avg_fee_1000eur
+    order_by:  aci_value
+  }
+}
+
+
+// ── 4. What-if: STEER fraudulent transactions to a DIFFERENT ACI. ─────
+//   For Q2767 / Q2703: drop the ACI predicate on the fact×rule match and
+//   instead cross each fact with the 7 candidate ACI values; require each
+//   rule to apply to that target ACI (wildcard list ⇒ matches all).
+//   Caller restricts to has_fraudulent_dispute + their time window, then
+//   picks the target_aci with the smallest total_fee_eur.
+
+source: aci_options is duckdb.sql("""
+  SELECT 'A' AS target_aci UNION ALL SELECT 'B' UNION ALL SELECT 'C' UNION ALL
+  SELECT 'D' UNION ALL SELECT 'E' UNION ALL SELECT 'F' UNION ALL SELECT 'G'
+""")
+
+source: fee_match_steer_aci is fee_match_facts extend {
+  join_cross: aci_pick is aci_options
+
+  join_many: rules is fees_base on
+        rules.card_scheme = card_scheme
+    and (rules.is_credit is null or rules.is_credit = is_credit)
+    and (rules.intracountry is null
+         or (rules.intracountry = 1 and is_intracountry)
+         or (rules.intracountry = 0 and not is_intracountry))
+    and (rules.capture_delay is null
+         or rules.capture_delay = capture_delay_rule_local)
+    and (rules.monthly_volume is null
+         or rules.monthly_volume = monthly_volume_bucket_local)
+    and (rules.monthly_fraud_level is null
+         or rules.monthly_fraud_level = monthly_fraud_bucket_local)
+    and (len!number(rules.account_type) = 0
+         or list_contains!boolean(rules.account_type, acct_type))
+    and (len!number(rules.merchant_category_code) = 0
+         or list_contains!boolean(rules.merchant_category_code, merchant_mcc_int))
+    and (len!number(rules.aci) = 0
+         or list_contains!boolean(rules.aci, aci_pick.target_aci))
+
+  measure: total_fee_eur is
+    rules.sum(rules.fixed_amount + rules.rate * eur_amount / 10000.0)
+  measure: txn_count is count(psp_reference)
+
+  view: fraud_steered_to_aci_by_merchant_year is {
+    where:    `year` = 2023 and has_fraudulent_dispute
+    group_by: merchant, target_aci is aci_pick.target_aci
+    aggregate: total_fee_eur, txn_count
+    order_by: merchant, target_aci
   }
 
-  view: by_aci_credit_globalcard_100 is {
-    where: card_scheme = 'GlobalCard' and (is_credit is null or is_credit = true)
-    group_by: aci
-    aggregate: avg_fee_on_100_eur
-    order_by: avg_fee_on_100_eur desc
+  view: fraud_steered_to_aci_by_merchant_month is {
+    where:    `year` = 2023 and has_fraudulent_dispute
+    group_by: merchant, month_num, target_aci is aci_pick.target_aci
+    aggregate: total_fee_eur, txn_count
+    order_by: merchant, month_num, target_aci
   }
 }

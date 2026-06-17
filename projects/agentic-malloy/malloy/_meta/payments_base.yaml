@@ -1,21 +1,26 @@
 file: payments_base.malloy
-domain: Payment processing transactions (Adyen-style); one row per payment attempt with outcome, channel, geography, card, and fraud flags.
+domain: payments
 summary: |
-  Base source `payments_base` over duckdb.table('payments'). Grain = one payment
-  attempt keyed by psp_reference (138,236 distinct rows; year fixed at 2023).
-  Adds derived dimensions (synthetic transaction_date from day_of_year, time-of-day
-  bucket, intracountry flag, IP/issuer mismatch flag, ACI human labels, amount
-  buckets, credit/debit label) and core measures (transaction_count, total_eur,
-  fraud_count/rate, refusal_rate, authorization_rate, volume-weighted fraud rate,
-  channel & domestic splits). No joins — fee-rule lookup and any cross-table logic
-  belong in a downstream `payments.malloy`.
+  Base source over the raw `payments` DuckDB table. Adds derived time
+  dimensions (a real transaction_date built from year + day_of_year, plus
+  month/quarter/week and a time-of-day bucket), business dimensions
+  aligned to the Merchant Manual (intracountry vs crossborder per
+  §5.1.1, ACI human labels and card-present / CNP / 3-D Secure flags per
+  §4, IP-vs-issuer mismatch, success flag, credit/debit), and a full
+  measure set: volume counts, € totals/avg/median, outcome-segmented
+  filtered aggregates, and the KPI rates from §8.2 (authorization rate,
+  refusal rate, fraud rate by count, fraud volume rate by €). No joins.
 exports:
   - name: payments_base
     kind: source
-    summary: Base payments source with dimensions + measures, primary_key psp_reference, no joins.
+    summary: |
+      Per-transaction grain (primary_key psp_reference). All measures are
+      base-grain; safe to aggregate directly. Use this as the root for
+      any payments-fee or fraud analysis source that joins fee rules or
+      merchant attributes.
 provides_for:
-  - payments overview / KPI dashboards (transaction_count, total_eur, fraud_rate, authorization_rate)
-  - segmenting by merchant, card_scheme, aci, shopper_interaction, country pair
-  - time-series analysis by transaction_date / month / hour_of_day
-  - downstream sources that join fee rules (fees.json) on card_scheme, aci, is_credit, intracountry, merchant attributes
-  - fraud / refusal analysis and cross-border vs domestic acquiring comparisons
+  - "payments KPIs: authorization rate, refusal rate, fraud rate (by count and by €)"
+  - "Volume & mix analyses by merchant, card_scheme, aci, device_type, shopper_interaction, country"
+  - "Time-series over transaction_date / month / quarter / hour_of_day"
+  - "Local vs cross-border acquiring analysis (is_intracountry)"
+  - "Foundation for fee-rule joins (downstream sources)"
