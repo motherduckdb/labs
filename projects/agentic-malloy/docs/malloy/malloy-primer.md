@@ -58,6 +58,8 @@ source: order_items is duckdb.table('ecomm.main.order_items') extend {
   join_one: dest is airports with destination   // orig.full_name, dest.full_name
   ```
 - ORDER MATTERS: define a source BEFORE any source that references it (dim/leaf tables first, fact tables last). `primary_key`/`on` column casing must match the table.
+- **`join_many ... on` may reference ONLY columns physically on the two joined sources** — NOT a column reached through another join (incl. a pass-through `dimension: x is other_join.col`, which is just an alias). Doing so often COMPILES but FAILS AT EXECUTION (`Referenced table "…_0" not found`). To match a fact against a rule table on attributes that come from a dimension join: first MATERIALIZE them as real columns via a projection — `source: enriched is fact extend { join_one: m is dim ... } -> { select: *, acct is m.account_type, ... }` — then `join_many` on `enriched`'s local columns. Keep a fan-out exactly ONE join level deep.
+- **`join_many` double-counts base-grain aggregates**: it multiplies each base row by the number of matched rows, so a `sum`/`count` of a BASE column is inflated by the match count. Define the per-match measure at the joined grain (`joined.sum(<expr over joined + base cols>)`); aggregate base-grain metrics BEFORE the fan-out (or `count(distinct base_key)`).
 
 ## Queries
 ```malloy
