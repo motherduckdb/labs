@@ -9,7 +9,7 @@
  * same conversation. Tokens/cost accrue across both; controllog tags each
  * exchange + tool call with role + model.
  */
-import { streamChatCompletion, type ChatMessage, type ContentBlock, type ToolSchema } from './llm-client.js';
+import { streamChatCompletion, parseCacheTokens, type ChatMessage, type ContentBlock, type ToolSchema } from './llm-client.js';
 import { dispatchTool, type ToolDeps } from './tools.js';
 import * as cl from './controllog.js';
 
@@ -25,6 +25,7 @@ export interface RunTaskOpts {
   maxAuthorTurns: number;
   maxFixerTurns: number;
   reasoningEffort?: string;
+  provider?: string; // pin OpenRouter to a single upstream provider
   taskId: string;
   runId: string;
   onEvent?: (e: { kind: string; detail?: unknown }) => void;
@@ -34,6 +35,10 @@ export interface TaskUsage {
   promptTokens: number;
   completionTokens: number;
   cost: number;
+  /** Prompt tokens served from cache (cache HIT) across all turns. */
+  cachedTokens: number;
+  /** Prompt tokens written to cache (cache WRITE) across all turns. */
+  cacheWriteTokens: number;
 }
 export interface TaskResult {
   submitted: boolean;
@@ -74,15 +79,16 @@ interface ParsedTurn {
   assistantBlocks: ContentBlock[];
   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
   text: string;
-  usage: { promptTokens: number; completionTokens: number; cost?: number };
+  usage: { promptTokens: number; completionTokens: number; cost?: number; cachedTokens: number; cacheWriteTokens: number };
 }
 
-async function streamOneTurn(opts: {
+export async function streamOneTurn(opts: {
   model: string;
   messages: ChatMessage[];
   tools: ToolSchema[];
   systemPrompt: string;
   reasoningEffort?: string;
+  provider?: string;
   onRetryCount?: (n: number) => void;
 }): Promise<ParsedTurn> {
   const retryReport = { retryCount: 0 };
@@ -92,6 +98,7 @@ async function streamOneTurn(opts: {
     tools: opts.tools,
     systemPrompt: opts.systemPrompt,
     reasoningEffort: opts.reasoningEffort,
+    provider: opts.provider,
     retryReport,
   });
   opts.onRetryCount?.(retryReport.retryCount);
@@ -100,7 +107,7 @@ async function streamOneTurn(opts: {
   let buffer = '';
   let text = '';
   const pending = new Map<number, { id: string; name: string; args: string }>();
-  const usage = { promptTokens: 0, completionTokens: 0, cost: undefined as number | undefined };
+  const usage = { promptTokens: 0, completionTokens: 0, cost: undefined as number | undefined, cachedTokens: 0, cacheWriteTokens: 0 };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -123,6 +130,10 @@ async function streamOneTurn(opts: {
         usage.completionTokens = chunk.usage.completion_tokens || 0;
         if (typeof chunk.usage.cost === 'number') usage.cost = chunk.usage.cost;
         else if (chunk.usage.cost_details?.upstream_inference_cost) usage.cost = chunk.usage.cost_details.upstream_inference_cost;
+        // Cache telemetry (cache HIT/WRITE) from the final usage chunk.
+        const ct = parseCacheTokens(chunk.usage);
+        usage.cachedTokens = ct.cachedTokens;
+        usage.cacheWriteTokens = ct.cacheWriteTokens;
       }
       const choice = chunk.choices?.[0];
       if (!choice) continue;
@@ -177,7 +188,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   let streamFailureReason: string | null = null;
   let authorRecoveryUsed = false; // the author's one forced submit-now turn
   let retryCount = 0;
-  const usage: TaskUsage = { promptTokens: 0, completionTokens: 0, cost: 0 };
+  const usage: TaskUsage = { promptTokens: 0, completionTokens: 0, cost: 0, cachedTokens: 0, cacheWriteTokens: 0 };
   // Hard ceiling only; each role is bounded separately below so the expensive
   // fixer can never run past --max-fixer-turns regardless of when it escalated.
   const HARD_CAP = opts.maxAuthorTurns + opts.maxFixerTurns;
@@ -216,6 +227,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
         tools: opts.toolSchemas,
         systemPrompt: opts.systemPrompt,
         reasoningEffort: opts.reasoningEffort,
+        provider: opts.provider,
         onRetryCount: (n) => { retryCount += n; },
       });
     } catch (e) {
@@ -230,12 +242,14 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     usage.promptTokens += parsed.usage.promptTokens;
     usage.completionTokens += parsed.usage.completionTokens;
     if (parsed.usage.cost) usage.cost += parsed.usage.cost;
+    usage.cachedTokens += parsed.usage.cachedTokens;
+    usage.cacheWriteTokens += parsed.usage.cacheWriteTokens;
 
     cl.modelPrompt({ taskId, runId, provider: 'openrouter', model: activeModel, promptTokens: parsed.usage.promptTokens, exchangeId, role, payload: { turn } });
     cl.modelCompletion({
       taskId, runId, provider: 'openrouter', model: activeModel,
       completionTokens: parsed.usage.completionTokens, wallMs, exchangeId, costMoney: parsed.usage.cost, role,
-      payload: { turn, has_tool_use: parsed.toolCalls.length > 0 },
+      payload: { turn, has_tool_use: parsed.toolCalls.length > 0, cached_tokens: parsed.usage.cachedTokens, cache_write_tokens: parsed.usage.cacheWriteTokens },
     });
 
     if (parsed.toolCalls.length === 0) {

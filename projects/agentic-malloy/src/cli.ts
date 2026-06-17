@@ -176,6 +176,7 @@ export interface EvalTaskCtx {
   maxAuthorTurns: number;
   maxFixerTurns: number;
   reasoning: string;
+  provider?: string; // pinned OpenRouter upstream provider (or undefined)
   runClass: string;
   prov: Provenance;
   runId: string;
@@ -227,7 +228,7 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
         toolSchemas: buildToolSchemas(deps), deps,
         authorModel: ctx.author, fixerModel: ctx.fixer,
         escalateAfter: ctx.escalateAfter, maxAuthorTurns: ctx.maxAuthorTurns, maxFixerTurns: ctx.maxFixerTurns,
-        reasoningEffort: ctx.reasoning, taskId: tid, runId: ctx.runId,
+        reasoningEffort: ctx.reasoning, provider: ctx.provider, taskId: tid, runId: ctx.runId,
       });
     } catch (e) {
       failureStage = 'agent_loop';
@@ -320,6 +321,8 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
       files_read: state.filesRead, lint_fixes: state.lintFixesTotal,
       duration_ms: elapsedMs, cost_usd: result?.usage.cost ?? 0,
       input_tokens: result?.usage.promptTokens ?? 0, output_tokens: result?.usage.completionTokens ?? 0,
+      cached_tokens: result?.usage.cachedTokens ?? 0, cache_write_tokens: result?.usage.cacheWriteTokens ?? 0,
+      provider: ctx.provider ?? null,
       error_description: dispatchErr, ...failureFields,
     },
   });
@@ -333,6 +336,7 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
     escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
     files_read: state.filesRead, lint_fixes: state.lintFixesTotal, elapsed_s: +(elapsedMs / 1000).toFixed(2),
     cost_usd: result?.usage.cost ?? 0, prompt_tokens: result?.usage.promptTokens ?? 0, completion_tokens: result?.usage.completionTokens ?? 0,
+    cached_tokens: result?.usage.cachedTokens ?? 0, cache_write_tokens: result?.usage.cacheWriteTokens ?? 0, provider: ctx.provider ?? null,
     error: dispatchErr, ...failureFields, ts: new Date().toISOString(),
   };
 
@@ -379,6 +383,9 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const maxAuthorTurns = Number(flags['max-author-turns'] ?? 20);
   const maxFixerTurns = Number(flags['max-fixer-turns'] ?? 6);
   const reasoning = (flags.reasoning as string) || 'low';
+  // Pin OpenRouter to one upstream provider (e.g. "anthropic") — flag wins, else
+  // the OPENROUTER_PROVIDER env, else unset (OpenRouter's default routing).
+  const provider = (flags.provider as string) || process.env.OPENROUTER_PROVIDER || undefined;
   const concurrency = Number(flags.concurrency ?? 4);
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error(`--concurrency must be an integer >= 1 (got '${flags.concurrency}')`);
@@ -418,7 +425,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const symbols = buildSymbolSet(await runtime.describe());
   const scorer = new ScoreClient();
 
-  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency}`);
+  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency}${provider ? ` · provider=${provider}` : ''}`);
 
   let correct = 0;
   let completed = 0;
@@ -435,7 +442,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
 
   const ctx: EvalTaskCtx = {
     systemPrompt, runtime, store, symbols, scorer, database,
-    author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, reasoning,
+    author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, reasoning, provider,
     runClass, prov, runId, split,
   };
 
@@ -454,6 +461,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
           max_author_turns: maxAuthorTurns,
           max_fixer_turns: maxFixerTurns,
           reasoning,
+          provider: provider ?? null,
           substrate: 'motherduck',
           malloy_runtime: 'node-inprocess',
           malloy_model_hash: prov.malloy_model_hash,
@@ -501,6 +509,7 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   const model = resolveModel((flags.model as string) || 'opus');
   const includeManual = flags['no-manual'] ? false : true;
   const reasoning = (flags.reasoning as string) || 'medium';
+  const provider = (flags.provider as string) || process.env.OPENROUTER_PROVIDER || undefined;
 
   // Wrap in a controllog session so the build is observable (model exchanges +
   // compile checks) in the dive's "Build" tab. Flushed to results/controllog/.
@@ -509,7 +518,7 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   const runId = cl.newId();
   let res!: Awaited<ReturnType<typeof buildLayer>>;
   await cl.runInSession(session, async () => {
-    res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 5), centralOnly: !!flags['central-only'], runId });
+    res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 5), centralOnly: !!flags['central-only'], provider, runId });
   });
   await cl.flushSession(session);
   console.log(`  build run_id ${runId} logged to results/controllog (upload to view in the dive's Build tab)`);
@@ -570,9 +579,10 @@ async function main() {
     default:
       console.log('usage: asm-malloy <load|malloy-preflight|layer-build|evaluate|upload|summary> [flags]');
       console.log('  load [--motherduck --database agentic_malloy]');
-      console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3]');
+      console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3] [--provider anthropic]');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
-      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N');
+      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic]');
+      console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
       console.log('  upload [--database agentic_malloy_logs]   # controllog JSONL -> MotherDuck for the dive');
   }
 }

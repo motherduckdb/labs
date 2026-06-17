@@ -241,6 +241,8 @@ interface StageResult {
   cost: number;
   promptTokens: number;
   completionTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
 }
 
 async function authorStage(opts: {
@@ -250,13 +252,14 @@ async function authorStage(opts: {
   defaultExport: { name: string; kind: string };
   model: string;
   reasoningEffort?: string;
+  provider?: string;
   system: string;
   user: string;
   maxRounds: number;
   maxTokens?: number;
   runId?: string; // when set, emit controllog build events (model exchanges + compile checks)
 }): Promise<StageResult> {
-  const agg = { cost: 0, promptTokens: 0, completionTokens: 0 };
+  const agg = { cost: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0 };
   let diag: string | undefined; // last compile error
   let current: string | null = null; // last-written malloy (for edit rounds)
   let metaWritten = false;
@@ -280,6 +283,7 @@ async function authorStage(opts: {
           `Return ONLY a JSON array of edits: [{"old":"<text copied VERBATIM from the file, unique>","new":"<replacement>"}]. ` +
           `Each "old" must appear exactly once in the file. Follow the Malloy rules above (typed raw escapes fn!returntype, \`is null\` not \`= null\`, etc.).`,
         reasoningEffort: opts.reasoningEffort,
+        provider: opts.provider,
         maxTokens: 8000,
       });
     } else {
@@ -289,6 +293,7 @@ async function authorStage(opts: {
         systemPrompt: opts.system,
         userPrompt: diag ? `${opts.user}\n\n## Your previous attempt failed to compile — re-emit a corrected full file:\n${diag}` : opts.user,
         reasoningEffort: opts.reasoningEffort,
+        provider: opts.provider,
         maxTokens: opts.maxTokens ?? 36000,
       });
     }
@@ -296,6 +301,8 @@ async function authorStage(opts: {
     agg.cost += resp.cost ?? 0;
     agg.promptTokens += resp.promptTokens;
     agg.completionTokens += resp.completionTokens;
+    agg.cachedTokens += resp.cachedTokens;
+    agg.cacheWriteTokens += resp.cacheWriteTokens;
 
     // Produce the candidate malloy for this round.
     let malloy: string | undefined;
@@ -325,7 +332,7 @@ async function authorStage(opts: {
     if (opts.runId) {
       const ex = cl.newId();
       cl.modelPrompt({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode } });
-      cl.modelCompletion({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode, malloy: malloy?.slice(0, 6000) ?? null } });
+      cl.modelCompletion({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode, malloy: malloy?.slice(0, 6000) ?? null, cached_tokens: resp.cachedTokens, cache_write_tokens: resp.cacheWriteTokens } });
     }
 
     if (!malloy) {
@@ -365,16 +372,16 @@ async function authorStage(opts: {
  *  source files (model-derived, dependency-first). Returns [] on parse failure
  *  (caller then authors a single dabstep.malloy). */
 async function planCentral(opts: {
-  model: string; reasoningEffort?: string; baseContents: string; manual: string; qa: string; profiles: string; runId?: string;
+  model: string; reasoningEffort?: string; provider?: string; baseContents: string; manual: string; qa: string; profiles: string; runId?: string;
 }): Promise<{ files: { file: string; purpose: string }[]; cost: number }> {
   const system = `You are planning the CENTRAL files of a Malloy semantic layer (the base sources, one per table, already exist). Decompose the joins, the fee model, and the analytical needs into a SMALL set (1–5) of FOCUSED intermediate source files — each a \`<name>.malloy\` — so NO single file is huge (each must comfortably fit in one model response) and lineage is clean. Order them DEPENDENCY-FIRST (a later file may reference earlier ones + the bases). Do NOT include the base files. Do NOT include the top-level dabstep.malloy (it is added automatically last). Return ONLY a JSON array: [{"file":"<name>.malloy","purpose":"<one line>"}, ...].`;
   const user = `## Base sources\n${opts.baseContents}\n\n## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## The Merchant Manual\n${opts.manual}\n\n## Train questions the layer must support\n${opts.qa}\n\nPlan the intermediate source files now (JSON array only).`;
   const t0 = Date.now();
-  const resp = await complete({ model: opts.model, systemPrompt: system, userPrompt: user, reasoningEffort: opts.reasoningEffort, maxTokens: 4000 });
+  const resp = await complete({ model: opts.model, systemPrompt: system, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 4000 });
   if (opts.runId) {
     const ex = cl.newId();
     cl.modelPrompt({ taskId: '__plan__', runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: '__plan__', round: 1 } });
-    cl.modelCompletion({ taskId: '__plan__', runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs: Date.now() - t0, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: '__plan__', round: 1, malloy: resp.text.slice(0, 4000) } });
+    cl.modelCompletion({ taskId: '__plan__', runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs: Date.now() - t0, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: '__plan__', round: 1, malloy: resp.text.slice(0, 4000), cached_tokens: resp.cachedTokens, cache_write_tokens: resp.cacheWriteTokens } });
   }
   try {
     const m = resp.text.match(/\[[\s\S]*\]/);
@@ -408,6 +415,7 @@ export async function buildLayer(opts: {
   maxRounds?: number;
   reasoningEffort?: string;
   centralOnly?: boolean; // reuse existing *_base.malloy, only (re)author dabstep.malloy
+  provider?: string; // pin OpenRouter to a single upstream provider
   runId?: string; // controllog build-run id (emits build events when set)
 }): Promise<LayerBuildResult> {
   if (!existsSync(LOCAL_DB_PATH)) {
@@ -417,7 +425,7 @@ export async function buildLayer(opts: {
   if (opts.runId) {
     cl.runMetadata({
       runId: opts.runId,
-      resolvedConfig: { phase: 'build', model: opts.model, include_manual: opts.includeManual !== false, central_only: !!opts.centralOnly, reasoning: opts.reasoningEffort ?? null },
+      resolvedConfig: { phase: 'build', model: opts.model, include_manual: opts.includeManual !== false, central_only: !!opts.centralOnly, reasoning: opts.reasoningEffort ?? null, provider: opts.provider ?? null },
       agentName: 'agent:asm-malloy-builder', datasetName: 'agentic_malloy', datasetVersion: 'layer-build',
     });
   }
@@ -448,7 +456,7 @@ export async function buildLayer(opts: {
     const r = await authorStage({
       label: `${t}_base.malloy`, modelFile: `${t}_base.malloy`, metaFile: `${t}_base.yaml`,
       defaultExport: { name: `${t}_base`, kind: 'source' },
-      model: opts.model, reasoningEffort: opts.reasoningEffort, system, user, maxRounds, runId: opts.runId,
+      model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, system, user, maxRounds, runId: opts.runId,
     });
     totalCost += r.cost;
     if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `${t}_base: ${r.diag}`, cost: totalCost };
@@ -460,7 +468,7 @@ export async function buildLayer(opts: {
   const baseContents = (await Promise.all(TABLES.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(MODELS_DIR, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
   const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nThe hardest questions need a fact-row × rule-row match with multi-rule fan-out. DERIVE that model yourself from the manual + the SCHEMA + the COLUMN PROFILE below — matching predicates, formula, and any dynamic bucketing follow from the actual encodings (lists vs scalars, the real categorical domains), not the prose alone. Express joins and bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\nDESIGN FOR THIN ANSWERS: expose the analytical results as NAMED views/measures on the central source so each question is answered by a thin filter+select on top — the answering agent should never need to restate a join or a matching predicate. Identify the hardest recurring question shape and guarantee one named, end-to-end measure/view that answers it directly. A matching/aggregating measure that returns 0 or empty over rows you know exist is a BUG (usually a wildcard-encoding or domain mismatch — recheck against the profile), not an answer.\n\n=== MALLOY PRIMER ===\n${primer}\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}\n\n${DUCKDB_NOTES}`;
 
-  const plan = await planCentral({ model: opts.model, reasoningEffort: opts.reasoningEffort, baseContents, manual, qa, profiles: allProfiles, runId: opts.runId });
+  const plan = await planCentral({ model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, baseContents, manual, qa, profiles: allProfiles, runId: opts.runId });
   totalCost += plan.cost;
   console.log(`  central plan: ${plan.files.length} file(s) — ${plan.files.map((f) => f.file).join(', ') || '(none → single dabstep.malloy)'}`);
 
@@ -473,7 +481,7 @@ export async function buildLayer(opts: {
     const user = `## Base sources\n${baseContents}\n\n## Column profiles (actual encodings + domains — ground truth; prefer over prose)\n${allProfiles}\n\n## Intermediate sources already authored (you may reference these by name)\n${authored || '(none yet)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite ${modelFile} now — ONE focused source. Purpose: ${plan.files[i].purpose}\nIt may reference the bases and the already-authored sources by name. Keep it to this one concern.`;
     const r = await authorStage({
       label: modelFile, modelFile, metaFile: `${stem}.yaml`, defaultExport: { name: stem, kind: 'source' },
-      model: opts.model, reasoningEffort: opts.reasoningEffort, system: sharedSystem, user, maxRounds, maxTokens: 36000, runId: opts.runId,
+      model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, system: sharedSystem, user, maxRounds, maxTokens: 36000, runId: opts.runId,
     });
     totalCost += r.cost;
     if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `${modelFile}: ${r.diag}`, cost: totalCost };
@@ -485,7 +493,7 @@ export async function buildLayer(opts: {
   const central = await authorStage({
     label: 'dabstep.malloy', modelFile: 'dabstep.malloy', metaFile: 'dabstep.yaml',
     defaultExport: { name: 'dabstep', kind: 'model' },
-    model: opts.model, reasoningEffort: opts.reasoningEffort, system: sharedSystem, user: centralUser, maxRounds,
+    model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, system: sharedSystem, user: centralUser, maxRounds,
     maxTokens: 36000, runId: opts.runId,
   });
   totalCost += central.cost;

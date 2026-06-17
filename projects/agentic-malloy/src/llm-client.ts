@@ -28,6 +28,66 @@ export interface ToolSchema {
   input_schema: Record<string, unknown>;
 }
 
+// --- Anthropic prompt caching (OpenRouter) -----------------------------------
+// Anthropic models via OpenRouter need EXPLICIT cache_control breakpoints or
+// prompt caching never kicks in (OpenAI/Gemini cache automatically). We mark the
+// system prompt (the static SKILL/primer preamble) and the latest message so the
+// preamble AND the growing tool-call history both hit cache on the next turn.
+
+/** True for Anthropic/Claude model ids (the only ones needing explicit cache_control). */
+export function isAnthropicModel(model: string): boolean {
+  const m = model.toLowerCase();
+  return m.includes('anthropic') || m.includes('claude');
+}
+
+/** Put `cache_control: { type: 'ephemeral' }` on a message's LAST content block.
+ *  String content becomes a single text block; an existing block array gets the
+ *  flag on its final block. Returns a NEW message; the input is not mutated. */
+function withCacheControl(msg: Record<string, unknown>): Record<string, unknown> {
+  const content = msg.content;
+  if (typeof content === 'string') {
+    return { ...msg, content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }] };
+  }
+  if (Array.isArray(content) && content.length) {
+    const blocks = content.slice();
+    blocks[blocks.length - 1] = { ...(blocks[blocks.length - 1] as Record<string, unknown>), cache_control: { type: 'ephemeral' } };
+    return { ...msg, content: blocks };
+  }
+  return msg;
+}
+
+/** Mark cache breakpoints on the system message and the latest message. Returns a
+ *  NEW array (inputs untouched). Caller should only apply this for Anthropic models. */
+export function addAnthropicCacheBreakpoints(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  if (!messages.length) return messages;
+  const sysIdx = messages.findIndex((m) => m.role === 'system');
+  const lastIdx = messages.length - 1;
+  return messages.map((m, i) => (i === sysIdx || i === lastIdx ? withCacheControl(m) : m));
+}
+
+export interface CacheTokens {
+  cachedTokens: number; // prompt tokens served from cache (a cache HIT)
+  cacheWriteTokens: number; // prompt tokens written to cache (a cache WRITE)
+}
+
+/** Pull cache token counts out of an OpenRouter `usage` object (both streamed and
+ *  non-streamed share the shape). Missing fields → 0. */
+export function parseCacheTokens(usage: unknown): CacheTokens {
+  const d = (usage as { prompt_tokens_details?: { cached_tokens?: unknown; cache_write_tokens?: unknown } } | undefined)?.prompt_tokens_details;
+  return {
+    cachedTokens: Number(d?.cached_tokens ?? 0) || 0,
+    cacheWriteTokens: Number(d?.cache_write_tokens ?? 0) || 0,
+  };
+}
+
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_HEADERS = () => ({
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+  'X-Title': 'agentic-malloy',
+  'HTTP-Referer': 'https://github.com/motherduckdb/labs',
+});
+
 // --- OpenRouter retry/backoff policy -----------------------------------------
 // One reusable policy for BOTH streaming and non-streaming calls: retry 429,
 // 408, 5xx, network errors (TypeError from fetch), and retryable stream-setup
@@ -124,27 +184,27 @@ export async function complete(params: {
   userPrompt: string;
   maxTokens?: number;
   reasoningEffort?: string;
-}): Promise<{ text: string; promptTokens: number; completionTokens: number; cost?: number }> {
+  provider?: string; // pin OpenRouter to a single upstream provider
+}): Promise<{ text: string; promptTokens: number; completionTokens: number; cost?: number } & CacheTokens> {
+  let messages: Array<Record<string, unknown>> = [
+    { role: 'system', content: params.systemPrompt },
+    { role: 'user', content: params.userPrompt },
+  ];
+  // Anthropic models need explicit cache_control breakpoints via OpenRouter.
+  if (isAnthropicModel(params.model)) messages = addAnthropicCacheBreakpoints(messages);
   const body: Record<string, unknown> = {
     model: params.model,
-    messages: [
-      { role: 'system', content: params.systemPrompt },
-      { role: 'user', content: params.userPrompt },
-    ],
+    messages,
     max_tokens: params.maxTokens ?? 36000,
     temperature: 0,
     usage: { include: true },
   };
   if (params.reasoningEffort && params.reasoningEffort !== 'off') body.reasoning = { effort: params.reasoningEffort };
+  if (params.provider) body.provider = { order: [params.provider] };
 
-  const res = await fetchWithRetry('https://openrouter.ai/api/v1/chat/completions', {
+  const res = await fetchWithRetry(OPENROUTER_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      'X-Title': 'agentic-malloy',
-      'HTTP-Referer': 'https://github.com/motherduckdb/labs',
-    },
+    headers: OPENROUTER_HEADERS(),
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`OpenRouter error ${res.status}: ${await res.text()}`);
@@ -157,6 +217,7 @@ export async function complete(params: {
     promptTokens: json.usage?.prompt_tokens ?? 0,
     completionTokens: json.usage?.completion_tokens ?? 0,
     cost: json.usage?.cost,
+    ...parseCacheTokens(json.usage),
   };
 }
 
@@ -215,9 +276,12 @@ export async function streamChatCompletion(params: {
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
 
+  // Anthropic models need explicit cache_control breakpoints via OpenRouter.
+  const finalMessages = isAnthropicModel(model) ? addAnthropicCacheBreakpoints(openaiMessages) : openaiMessages;
+
   const body: Record<string, unknown> = {
     model,
-    messages: openaiMessages,
+    messages: finalMessages,
     max_tokens: maxTokens,
     temperature,
     stream: true,
@@ -228,17 +292,8 @@ export async function streamChatCompletion(params: {
   if (provider) body.provider = { order: [provider] };
 
   const response = await fetchWithRetry(
-    'https://openrouter.ai/api/v1/chat/completions',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'X-Title': 'agentic-malloy',
-        'HTTP-Referer': 'https://github.com/motherduckdb/labs',
-      },
-      body: JSON.stringify(body),
-    },
+    OPENROUTER_URL,
+    { method: 'POST', headers: OPENROUTER_HEADERS(), body: JSON.stringify(body) },
     { onRetry: onFetchRetry, report: retryReport },
   );
   if (!response.ok) {
