@@ -85,6 +85,33 @@ honest:
   **rerun `layer-build`** — then re-run `evaluate`. Hand-edits make the run
   `human_edited` and disqualify it from the official 26/26.
 
+## `layer-improve` — targeted, model-driven layer repair (stays model_authored)
+
+`asm-malloy layer-improve --from results/<run>.jsonl` is the MODEL-driven (never
+human) complement to the rule above: it triages a run's misses and edits the layer
+**only** for genuine structural defects, keeping provenance `model_authored`.
+
+- **Triage (the hard part).** For each `is_correct:false` row it re-runs the
+  submitted Malloy through the runtime and smoke-runs each named layer view it
+  referenced. A pure classifier (`classifyMiss`) decides, from that evidence alone:
+  a NAMED layer view that errors / is wrongly empty on its own ⇒ **layer** defect;
+  a query that re-runs fine but returns the wrong rows ⇒ **skill** (the agent's
+  inline filter/field/grain); no submission ⇒ **answering** (turn budget). Only
+  layer-suspected misses get a model verdict (which may downgrade to skill).
+- **No leakage.** A repair prompt sees only the failing Malloy, exec diagnostics,
+  "this view returns 0/errors", the column profile, and the manual — **never the
+  gold answer**, and it must not tune to a train value. Fixes are general
+  (join scope, wildcard/domain handling, grain), exactly like `layer-build`.
+- **Don't regress.** Edits are minimal atomic `{old,new}` patches, re-validated by
+  the same P0 gate (compile + execute every view). If the post-edit all-views gate
+  fails, **every edit is rolled back** and provenance is left untouched.
+- **Honest / idempotent.** When no miss is a structural layer defect (the common
+  case — the current layer is clean), it edits nothing, leaves the hash/provenance
+  untouched, and reports where each fix belongs (skill / prompt / model-capability).
+  On a successful edit it re-hashes, re-stamps `model_authored` with an
+  `improve_lineage` (from/to hash, round, edited files, source run), and emits a
+  controllog build run. `--re-eval` then re-runs the same task-ids to measure.
+
 ## Harness status
 
 End-to-end harness wired and unit-verified (all but a live eval, which needs

@@ -19,6 +19,7 @@ import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
 import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
 import { buildLayer, hashLayerOnDisk, PROVENANCE_PATH } from './layer-build.js';
+import { improveLayer } from './layer-improve.js';
 import { uploadControllog } from './upload.js';
 import { runPool, makeSerializedWriter } from './pool.js';
 import * as cl from './controllog.js';
@@ -560,6 +561,49 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   }
 }
 
+async function cmdLayerImprove(flags: Record<string, string | boolean>) {
+  const fromFlag = flags.from as string | undefined;
+  if (!fromFlag) throw new Error('layer-improve needs --from <results.jsonl> (an eval run to triage).');
+  const fromPath = path.isAbsolute(fromFlag) ? fromFlag : path.join(REPO_ROOT, fromFlag);
+  const model = resolveModel((flags.model as string) || 'opus');
+  const reasoning = (flags.reasoning as string) || 'medium';
+  const provider = (flags.provider as string) || process.env.OPENROUTER_PROVIDER || undefined;
+  const maxRounds = Number(flags['max-rounds'] ?? 4);
+  // Default: triage + validate against the LOCAL compile DB (credential-free,
+  // same data, matches the build gate). --md re-executes against MotherDuck.
+  const motherduckDb = flags.md ? ((flags.database as string) || process.env.MD_DATABASE || 'agentic_malloy') : undefined;
+
+  // Wrap in a controllog session so the improve pass shows in the dive's Build tab.
+  cl.init({ project: PROJECT_ID, logDir: RESULTS_DIR, agentId: 'agent:asm-malloy-builder' });
+  const session = cl.createSession();
+  const runId = cl.newId();
+  let res!: Awaited<ReturnType<typeof improveLayer>>;
+  await cl.runInSession(session, async () => {
+    res = await improveLayer({ fromPath, model, reasoningEffort: reasoning, provider, maxRounds, motherduckDb, runId });
+  });
+  await cl.flushSession(session);
+
+  console.log(`\n${res.summary}`);
+  console.log(`\n  cost $${res.cost.toFixed(4)} · improve run_id ${runId} logged to results/controllog`);
+  if (!res.ok) {
+    console.error(`\n✗ layer-improve did not complete cleanly: ${res.diagnostics}`);
+    process.exit(1);
+  }
+
+  // --re-eval: only meaningful when edits were applied. Re-run the SAME task-ids
+  // the --from run covered (passers + fixed) so both the fix AND no-regression
+  // are measured. A no-op edit set means nothing changed — skip.
+  if (flags['re-eval']) {
+    if (!res.editsApplied) {
+      console.log(`\n--re-eval skipped: no layer edits were applied (nothing changed to measure).`);
+      return;
+    }
+    const ids = (await readFile(fromPath, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => String((JSON.parse(l) as { task_id: unknown }).task_id));
+    console.log(`\n▶ re-evaluating ${ids.length} task-id(s) from ${path.basename(fromPath)} to measure the improvement …`);
+    await cmdEvaluate({ ...flags, 'task-id': ids.join(','), from: undefined as unknown as string });
+  }
+}
+
 async function cmdUpload(flags: Record<string, string | boolean>) {
   const database = (flags.database as string) || process.env.CONTROLLOG_DB || 'agentic_malloy_logs';
   console.log(`Uploading controllog → MotherDuck ${database}.main.{events,postings} …`);
@@ -598,6 +642,8 @@ async function main() {
       return cmdPreflight();
     case 'layer-build':
       return cmdLayerBuild(flags);
+    case 'layer-improve':
+      return cmdLayerImprove(flags);
     case 'evaluate':
       return cmdEvaluate(flags);
     case 'upload':
@@ -605,9 +651,12 @@ async function main() {
     case 'summary':
       return cmdSummary(rest[0]);
     default:
-      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|evaluate|upload|summary> [flags]');
+      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|layer-improve|evaluate|upload|summary> [flags]');
       console.log('  load [--motherduck --database agentic_malloy]');
       console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3] [--provider anthropic]');
+      console.log('  layer-improve --from results/RUN.jsonl [--model opus --reasoning medium --max-rounds 4] \\');
+      console.log('           [--provider anthropic] [--md [--database agentic_malloy]] [--re-eval --author sonnet --fixer opus --run-class official]');
+      console.log('           (triages a run\'s misses: edits the layer ONLY for structural defects, never tunes to a gold answer)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
       console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
