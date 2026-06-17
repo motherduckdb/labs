@@ -39,6 +39,9 @@ Plain SQL tools are for *exploration only* and never produce the answer.
   with "Cannot redefine 'X'"). Don't reuse export names like `result`/`txn`/`fee_rules`
   as your output query name either. `get_file` to see what's already defined.
 - A query is `run: <source> -> { where: ... aggregate: ... group_by: ... }`.
+- **Filtering on an AGGREGATE uses `having:`, NEVER `where:`.** `where:` is
+  pre-aggregation (row filters only); a measure/aggregate in `where:` fails with
+  "Aggregate expressions are not allowed in where". Use `having: total_fee > 100`.
 - **Backtick columns that collide with Malloy keywords** — notably `` `year` `` (a
   Malloy time function). `where: \`year\` = 2023` works; bare `year = 2023` fails with
   "mismatched input '='".
