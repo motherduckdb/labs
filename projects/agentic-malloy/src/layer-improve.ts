@@ -42,8 +42,19 @@ import {
   DATA_DIR,
 } from './layer-build.js';
 import * as cl from './controllog.js';
+import {
+  loadControllog,
+  correlateRun,
+  taskTrace,
+  toolErrorStats,
+  answerShape,
+  DEFAULT_CONTROLLOG_DIR,
+  type TaskTrace,
+  type ToolErrorStat,
+} from './run-log.js';
 
 const TABLES = ['payments', 'fees', 'merchants', 'acquirer_countries', 'merchant_category_codes'];
+const SKILL_PATH = path.join(MODELS_DIR, '..', '..', 'src', 'skill.md');
 
 // ---------------------------------------------------------------------------
 // Miss rows (the --from JSONL shape) — see cli.ts runEvalTask's `row`.
@@ -395,61 +406,175 @@ export function evidenceBlock(a: MissAnalysis, cls: MissClassification): string 
 }
 
 // ---------------------------------------------------------------------------
-// Model triage verdict (only for layer-SUSPECTED misses) — may downgrade.
+// Trace evidence (the MANNER-of-failure inputs) — derived from the run's tool
+// trace, structural-only (NO gold answer).
 // ---------------------------------------------------------------------------
 
-export interface TriageVerdict {
+/** Summarize one task's tool trace for a model prompt — the agent's OWN actions
+ *  (tool calls, args, ok/error), how it explored the layer, and its answer shape.
+ *  No gold answer; the predicted answer is the agent's own output. */
+export function traceBlock(trace: TaskTrace | null, predicted: unknown, usedNamedView: boolean): string {
+  const shape = answerShape(predicted);
+  const lines: string[] = [];
+  if (trace) {
+    lines.push(`Tool-call trace (the agent's own actions, in order):`);
+    for (const s of trace.steps) {
+      const a = s.args !== undefined ? ` ${JSON.stringify(s.args).slice(0, 120)}` : '';
+      const out = !s.ok ? `: ${(s.output ?? '').slice(0, 160)}` : '';
+      lines.push(`  ${s.name}${a} -> ${s.ok ? 'ok' : 'ERROR'}${out}`);
+    }
+    lines.push(`Explored the layer (list_malloy_files/get_file): ${trace.exploredLayer ? 'yes' : 'NO'}. run_malloy errors: ${trace.runMalloyErrors}. submit errors: ${trace.submitErrors}.`);
+  } else {
+    lines.push(`(no tool trace available for this task — judging from the submitted Malloy + answer shape only)`);
+  }
+  lines.push(`Reused a NAMED layer view/measure in the final answer: ${usedNamedView ? 'yes' : 'NO'}.`);
+  lines.push(`Submitted answer shape: ${shape.kind}${shape.count > 1 ? ` (${shape.count} items)` : ''}.`);
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Model verdict per miss: WHERE the fix belongs (owner) + the MANNER of failure
+// + a recommended fix. Structural evidence + trace only — NO gold answer.
+// ---------------------------------------------------------------------------
+
+export type FailureManner =
+  | 'overspecified' // answer too broad/precise vs. the question (extra rows/columns/precision)
+  | 'underspecified' // answer too narrow vs. the question (missing rows/dimensions)
+  | 'hallucination' // invented entities/fields/values not in the data or layer
+  | 'layer_not_used' // the layer had an answer-shaped view but the agent wrote raw/inline instead
+  | 'wrong_logic' // correct shape, wrong computation (filter/grain/ranking/missed wildcard)
+  | 'gave_up' // never submitted (turn budget / thrash)
+  | 'other';
+
+export interface MissVerdict {
   owner: MissOwner;
+  manner: FailureManner;
   file: string | null;
-  defect: string;
+  defect: string; // one-line STRUCTURAL defect, only when owner==='layer'
+  fix: { kind: 'skill' | 'linter' | 'layer' | 'model'; detail: string };
   rationale: string;
 }
 
-const TRIAGE_SYSTEM = `You are triaging a FAILED data question against a Malloy semantic layer. Decide WHERE the fix belongs:
-- "layer": a STRUCTURAL defect in a layer source/view itself (it errors at execution, or a matching/aggregating view returns 0/empty over rows that exist, or it computes at the wrong grain). The fix is a minimal edit to the layer file, justified ONLY by the manual + the data's actual encodings — NOT by any specific answer value.
-- "skill": the layer is fine; the answering agent wrote the wrong per-query Malloy (under-filtered, wrong field, wrong grain, missed a wildcard branch, bad inline syntax) or never submitted. The fix belongs in the answering SKILL / prompt, not the layer.
-- "model": neither — a model-capability / reasoning gap on a hard compositional question that no layer or skill edit cleanly fixes.
+const MISS_SYSTEM = `You are triaging a FAILED data question answered against a Malloy semantic layer. You must report (a) the MANNER of failure, (b) WHERE the fix belongs, and (c) the fix.
 
-You are given STRUCTURAL evidence only (failing Malloy, execution diagnostics, per-view probes, the column profile, the manual). You are NOT given the gold answer and MUST NOT ask for it or tune anything to a value. A layer verdict is justified ONLY when a NAMED layer view, exercised on its own, is itself broken (errors or is wrongly empty/at the wrong grain). If the submitted query runs and returns rows and the wrongness is in the agent's own filter/field/ranking, that is "skill", not "layer".
+(a) manner — exactly one of:
+- "overspecified": the answer is broader / more precise than asked (extra rows, extra columns, too many decimals, a list where one value was wanted).
+- "underspecified": the answer is narrower than asked (missing rows/dimensions, one value where a list was wanted, dropped a category).
+- "hallucination": the answer (or the Malloy) references entities, fields, columns, or values that do not exist in the data or the layer.
+- "layer_not_used": the layer already exposes an answer-shaped view/measure for this question, but the agent ignored it and hand-wrote raw/inline logic (or never opened the right file).
+- "wrong_logic": right shape, wrong computation — a wrong filter, wrong grain, wrong ranking, or a missed wildcard/NULL branch in the agent's OWN inline query.
+- "gave_up": the agent never submitted (ran out of turns / thrashed).
+- "other".
 
-Return ONLY a JSON object: {"owner":"layer|skill|model","file":"<implicated .malloy file or null>","defect":"<one-sentence structural description, or empty>","rationale":"<one sentence>"}.`;
+(b) owner — where the fix belongs:
+- "layer": a STRUCTURAL defect in a layer source/view itself (errors at execution, or a matching/aggregating view is wrongly empty over rows that exist, or wrong grain). Justified ONLY when a NAMED layer view, run on its own, is itself broken — never because the agent's own inline query was wrong.
+- "skill": the layer is fine; fix the answering SKILL/prompt (the agent under-filtered, used the wrong field/grain, missed a wildcard, didn't reuse an existing view, or wrote bad inline Malloy).
+- "model": a model-capability/reasoning gap on a hard compositional question that no layer or skill edit cleanly fixes.
 
-export async function triageVerdict(opts: {
+(c) fix.kind ∈ {skill, linter, layer, model} with a one-line GENERAL detail (a reusable rule — NEVER a DABstep-specific fact or a target value).
+
+CONSTRAINTS: you are given STRUCTURAL evidence and the agent's own trace ONLY. You are NOT given the gold answer and MUST NOT tune anything to a value. If the submitted query runs and returns rows and the wrongness is in the agent's own filter/field/ranking, the owner is "skill", not "layer".
+
+Return ONLY JSON: {"manner":"...","owner":"layer|skill|model","file":"<implicated .malloy file or null>","defect":"<one-line structural defect or empty>","fix":{"kind":"skill|linter|layer|model","detail":"<general rule>"},"rationale":"<one sentence>"}.`;
+
+interface ModelCallMeta {
+  cost: number;
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens: number;
+  raw: string;
+}
+
+export async function missVerdict(opts: {
   evidence: string;
-  implicatedFileSrc: string;
-  implicatedFile: string;
+  trace: string;
+  implicatedFileSrc: string | null;
+  implicatedFile: string | null;
   profiles: string;
   manual: string;
   model: string;
   reasoningEffort?: string;
   provider?: string;
-}): Promise<TriageVerdict & { cost: number; promptTokens: number; completionTokens: number; cachedTokens: number; cacheWriteTokens: number; raw: string }> {
-  const user = `## Failure evidence (structural — NO gold answer)\n${opts.evidence}\n\n## The implicated layer file \`${opts.implicatedFile}\`\n\`\`\`malloy\n${opts.implicatedFileSrc}\n\`\`\`\n\n## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## The Merchant Manual\n${opts.manual}\n\nReturn the triage JSON now.`;
+}): Promise<MissVerdict & ModelCallMeta> {
+  const fileBlock = opts.implicatedFile && opts.implicatedFileSrc
+    ? `## The implicated layer file \`${opts.implicatedFile}\`\n\`\`\`malloy\n${opts.implicatedFileSrc}\n\`\`\`\n\n`
+    : '';
+  const user = `## Failure evidence (structural — NO gold answer)\n${opts.evidence}\n\n## The agent's run trace\n${opts.trace}\n\n${fileBlock}## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## The Merchant Manual\n${opts.manual}\n\nReturn the triage JSON now.`;
   const resp = await complete({
     model: opts.model,
-    systemPrompt: TRIAGE_SYSTEM,
+    systemPrompt: MISS_SYSTEM,
     userPrompt: user,
     reasoningEffort: opts.reasoningEffort,
     provider: opts.provider,
-    maxTokens: 2000,
+    maxTokens: 2500,
   });
-  let v: TriageVerdict = { owner: 'skill', file: opts.implicatedFile, defect: '', rationale: 'parse failure → defaulted to skill (no layer edit)' };
+  const meta: ModelCallMeta = { cost: resp.cost ?? 0, promptTokens: resp.promptTokens, completionTokens: resp.completionTokens, cachedTokens: resp.cachedTokens, cacheWriteTokens: resp.cacheWriteTokens, raw: resp.text };
+  // Safe default: skill / other, no layer edit.
+  let v: MissVerdict = { owner: 'skill', manner: 'other', file: opts.implicatedFile, defect: '', fix: { kind: 'skill', detail: '' }, rationale: 'parse failure → defaulted to skill (no layer edit)' };
   try {
     const m = resp.text.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(m ? m[0] : resp.text) as Partial<TriageVerdict>;
+    const parsed = JSON.parse(m ? m[0] : resp.text) as Partial<MissVerdict>;
     const owner = parsed.owner;
-    if (owner === 'layer' || owner === 'skill' || owner === 'model') {
-      v = {
-        owner,
-        file: typeof parsed.file === 'string' && parsed.file ? parsed.file : opts.implicatedFile,
-        defect: String(parsed.defect ?? ''),
-        rationale: String(parsed.rationale ?? ''),
-      };
-    }
+    const manner = parsed.manner;
+    const fix = parsed.fix as MissVerdict['fix'] | undefined;
+    v = {
+      owner: owner === 'layer' || owner === 'skill' || owner === 'model' || owner === 'answering' ? owner : 'skill',
+      manner: (['overspecified', 'underspecified', 'hallucination', 'layer_not_used', 'wrong_logic', 'gave_up', 'other'] as FailureManner[]).includes(manner as FailureManner) ? (manner as FailureManner) : 'other',
+      file: typeof parsed.file === 'string' && parsed.file ? parsed.file : opts.implicatedFile,
+      defect: String(parsed.defect ?? ''),
+      fix: { kind: fix && ['skill', 'linter', 'layer', 'model'].includes(fix.kind) ? fix.kind : 'skill', detail: String(fix?.detail ?? '') },
+      rationale: String(parsed.rationale ?? ''),
+    };
   } catch {
-    /* keep the safe skill default */
+    /* keep the safe default */
   }
-  return { ...v, cost: resp.cost ?? 0, promptTokens: resp.promptTokens, completionTokens: resp.completionTokens, cachedTokens: resp.cachedTokens, cacheWriteTokens: resp.cacheWriteTokens, raw: resp.text };
+  return { ...v, ...meta };
+}
+
+// ---------------------------------------------------------------------------
+// Tool-error meta-analysis: a tool that errors too often (>15%) gets a model
+// diagnosis of the SYSTEMIC cause + where the fix belongs.
+// ---------------------------------------------------------------------------
+
+export interface ToolDiagnosis {
+  cause: string;
+  fixKind: 'skill' | 'linter' | 'layer' | 'unknown';
+  detail: string; // a GENERAL rule (no DABstep facts)
+  file: string | null; // layer file, only when fixKind==='layer'
+}
+
+const TOOL_DIAG_SYSTEM = `A tool in an LLM data-analysis loop is FAILING TOO OFTEN across a run. Given the tool's role and a sample of its error outputs, diagnose the SYSTEMIC cause and say where the durable fix belongs:
+- "skill": the answering prompt/SKILL should teach the agent to avoid this (e.g. "don't use select: in a grouping query", "filter wildcard rules with (col = x or col is null)").
+- "linter": a deterministic pre-submit transform should auto-fix it (e.g. strip stray \`import\` lines, normalize a known function name).
+- "layer": a layer view/source is itself broken and the agent keeps tripping on it (rare).
+The detail MUST be a GENERAL, reusable rule — never a dataset-specific fact or a target answer value.
+Return ONLY JSON: {"cause":"<one line>","fixKind":"skill|linter|layer|unknown","detail":"<general rule>","file":"<layer .malloy file or null>"}.`;
+
+export async function diagnoseToolError(opts: {
+  stat: ToolErrorStat;
+  manual: string;
+  model: string;
+  reasoningEffort?: string;
+  provider?: string;
+}): Promise<ToolDiagnosis & ModelCallMeta> {
+  const user = `## Tool failing too often\nTool: ${opts.stat.tool}\nError rate: ${(opts.stat.rate * 100).toFixed(1)}% (${opts.stat.errors}/${opts.stat.calls} calls)\n\n## Sample error outputs\n${opts.stat.samples.map((s, i) => `${i + 1}. ${s}`).join('\n') || '(none captured)'}\n\nDiagnose the systemic cause and the fix location. Return the JSON now.`;
+  const resp = await complete({ model: opts.model, systemPrompt: TOOL_DIAG_SYSTEM, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 1200 });
+  const meta: ModelCallMeta = { cost: resp.cost ?? 0, promptTokens: resp.promptTokens, completionTokens: resp.completionTokens, cachedTokens: resp.cachedTokens, cacheWriteTokens: resp.cacheWriteTokens, raw: resp.text };
+  let d: ToolDiagnosis = { cause: '', fixKind: 'unknown', detail: '', file: null };
+  try {
+    const m = resp.text.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(m ? m[0] : resp.text) as Partial<ToolDiagnosis>;
+    d = {
+      cause: String(parsed.cause ?? ''),
+      fixKind: ['skill', 'linter', 'layer', 'unknown'].includes(parsed.fixKind as string) ? (parsed.fixKind as ToolDiagnosis['fixKind']) : 'unknown',
+      detail: String(parsed.detail ?? ''),
+      file: typeof parsed.file === 'string' && parsed.file ? parsed.file : null,
+    };
+  } catch {
+    /* keep unknown */
+  }
+  return { ...d, ...meta };
 }
 
 // ---------------------------------------------------------------------------
@@ -659,10 +784,21 @@ export interface MissReport {
   taskId: string;
   category: MissCategory;
   owner: MissOwner;
+  /** the MANNER of failure (over/under-specified, hallucination, layer-not-used, …). */
+  manner: FailureManner;
   implicatedFiles: string[];
   note: string;
-  /** model triage rationale (layer-suspected misses only). */
-  verdict?: TriageVerdict;
+  rationale: string;
+  /** the model's recommended fix (kind + a general rule). */
+  fix?: { kind: 'skill' | 'linter' | 'layer' | 'model'; detail: string };
+  /** trace-derived signals (when a controllog trace was correlated). */
+  trace?: { exploredLayer: boolean; usedNamedView: boolean; runMalloyErrors: number; toolCalls: number };
+}
+
+export interface ToolHealthFinding extends ToolErrorStat {
+  diagnosis?: ToolDiagnosis;
+  /** how the finding was acted on. */
+  action: 'routed_to_layer_repair' | 'recommended_skill_fix' | 'applied_skill_fix' | 'recommended_linter_fix' | 'reported_only';
 }
 
 export interface ImproveResult {
@@ -672,10 +808,32 @@ export interface ImproveResult {
   toHash: string;
   editedFiles: string[];
   misses: MissReport[];
+  /** run-level tool-error meta-analysis (flagged tools first). */
+  toolHealth: ToolHealthFinding[];
+  /** controllog correlation: how many of the run's rows we could trace. */
+  trace: { runId: string | null; matched: number; total: number };
+  /** any skill.md rule appended (under --apply-skill-fixes). */
+  skillFixesApplied: string[];
   cost: number;
   /** human-readable summary of where each miss belongs. */
   summary: string;
   diagnostics?: string;
+}
+
+/** Deterministic manner when no model verdict is taken (e.g. --no-manner on a
+ *  clearly-skill miss). Coarser than the model's label, but honest. */
+function deterministicManner(cls: MissClassification): FailureManner {
+  switch (cls.category) {
+    case 'no_submission':
+      return 'gave_up';
+    case 'layer_view_error':
+    case 'layer_view_empty':
+    case 'query_compile_error':
+    case 'query_wrong_answer':
+      return 'wrong_logic';
+    default:
+      return 'other';
+  }
 }
 
 export async function improveLayer(opts: {
@@ -686,31 +844,49 @@ export async function improveLayer(opts: {
   maxRounds?: number;
   /** connect the runtime to MotherDuck (md:<db>) instead of the local compile DB. */
   motherduckDb?: string;
+  /** analyze the MANNER of every miss via the trace (default true). Off → model
+   *  call only for layer-suspected misses (the cheap deterministic-only path). */
+  manner?: boolean;
+  /** append general robustness rules diagnosed from tool errors to src/skill.md. */
+  applySkillFixes?: boolean;
+  /** flag a tool when its error rate exceeds this (default 0.15). */
+  toolErrorThreshold?: number;
+  controllogDir?: string;
   runId?: string;
 }): Promise<ImproveResult> {
   const maxRounds = opts.maxRounds ?? 4;
+  const mannerEnabled = opts.manner !== false;
   const fromHash = await hashLayerOnDisk();
   const databasePath = opts.motherduckDb ? `md:${opts.motherduckDb}` : undefined;
 
   if (opts.runId) {
     cl.runMetadata({
       runId: opts.runId,
-      resolvedConfig: { phase: 'improve', model: opts.model, from: path.basename(opts.fromPath), from_hash: fromHash, provider: opts.provider ?? null, reasoning: opts.reasoningEffort ?? null, substrate: opts.motherduckDb ? 'motherduck' : 'local' },
+      resolvedConfig: { phase: 'improve', model: opts.model, from: path.basename(opts.fromPath), from_hash: fromHash, provider: opts.provider ?? null, reasoning: opts.reasoningEffort ?? null, substrate: opts.motherduckDb ? 'motherduck' : 'local', manner: mannerEnabled, apply_skill_fixes: !!opts.applySkillFixes },
       agentName: 'agent:asm-malloy-builder', datasetName: 'agentic_malloy', datasetVersion: 'layer-improve',
     });
   }
 
   const misses = await readMisses(opts.fromPath);
-  if (!misses.length) {
-    return { ok: true, editsApplied: false, fromHash, toHash: fromHash, editedFiles: [], misses: [], cost: 0, summary: 'No incorrect rows in the run — nothing to improve.' };
-  }
+  const emptyResult = (summary: string): ImproveResult => ({ ok: true, editsApplied: false, fromHash, toHash: fromHash, editedFiles: [], misses: [], toolHealth: [], trace: { runId: null, matched: 0, total: misses.length }, skillFixesApplied: [], cost: 0, summary });
+  if (!misses.length) return emptyResult('No incorrect rows in the run — nothing to improve.');
 
-  // Build the index + view→source map (needs one compiled describe()).
+  // Correlate the run to its controllog so we can read the per-task tool TRACE
+  // (the manner-of-failure evidence) + the run-level tool-error rates. Best
+  // effort: a low match → trace is omitted and we judge from the JSONL alone.
+  const allRows = (await readFile(opts.fromPath, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as MissRow);
+  const events = await loadControllog(opts.controllogDir ?? DEFAULT_CONTROLLOG_DIR);
+  const corr = correlateRun(events, allRows);
+  const runId = corr.runId;
+  console.log(`  trace: ${runId ? `run ${runId.slice(0, 13)} (${corr.matched}/${corr.total} rows matched)` : 'no matching controllog run — JSONL-only evidence'}`);
+
   const index = await loadLayerIndex();
   const rt = new MalloyRuntime(databasePath ? { databasePath } : {});
   let totalCost = 0;
   const reports: MissReport[] = [];
   const editedFiles: string[] = [];
+  const skillFixesApplied: string[] = [];
+  let toolHealth: ToolHealthFinding[] = [];
   let diagnostics: string | undefined;
 
   try {
@@ -718,17 +894,6 @@ export async function improveLayer(opts: {
     const viewToSource = new Map<string, string>();
     for (const s of inv.sources) for (const v of inv.viewsBySource[s] ?? []) if (!viewToSource.has(v)) viewToSource.set(v, s);
 
-    // 1. Analyze + deterministically classify every miss.
-    const analyses: { a: MissAnalysis; cls: MissClassification }[] = [];
-    for (const row of misses) {
-      const a = await analyzeMiss(row, rt, index, viewToSource);
-      const cls = classifyMiss(a);
-      analyses.push({ a, cls });
-      console.log(`  miss ${a.taskId}: ${cls.category} → ${cls.suggestedOwner}${cls.layerSuspected ? ' (layer-suspected)' : ''}`);
-    }
-
-    // 2. Model verdict ONLY on layer-suspected misses; collect confirmed-layer
-    //    defects grouped by file. Everything else is reported, never edited.
     const profile = await columnProfiles();
     const profiles = TABLES.map((t) => `### ${t}\n${profile[t]}`).join('\n\n');
     const manual = existsSync(path.join(DATA_DIR, 'dabstep', 'context', 'manual.md'))
@@ -736,17 +901,30 @@ export async function improveLayer(opts: {
       : '(manual unavailable)';
     const primer = await readDoc('malloy-primer.md');
 
+    // 1. Per miss: deterministic classify + (model) MANNER/owner/fix verdict.
+    //    A layer EDIT is gated on BOTH the deterministic structural probe
+    //    (layerSuspected: a named view broke/empty) AND the model owner==='layer'
+    //    — the model cannot conjure a layer defect the data doesn't show.
     const defectsByFile = new Map<string, string[]>();
-    for (const { a, cls } of analyses) {
-      let verdict: TriageVerdict | undefined;
+    for (const row of misses) {
+      const a = await analyzeMiss(row, rt, index, viewToSource);
+      const cls = classifyMiss(a);
+      const trace = runId ? taskTrace(events, runId, a.taskId) : null;
+      const usedNamedView = a.malloySource ? referencedViews(a.malloySource, index).length > 0 : false;
+      console.log(`  miss ${a.taskId}: ${cls.category} → ${cls.suggestedOwner}${cls.layerSuspected ? ' (layer-suspected)' : ''}`);
+
       let owner: MissOwner = cls.suggestedOwner;
+      let manner: FailureManner = deterministicManner(cls);
+      let rationale = cls.note;
+      let fix: MissReport['fix'];
       let file = cls.implicatedFiles[0] ?? null;
 
-      if (cls.layerSuspected && file && existsSync(path.join(MODELS_DIR, file))) {
-        const v = await triageVerdict({
+      if (mannerEnabled || cls.layerSuspected) {
+        const v = await missVerdict({
           evidence: evidenceBlock(a, cls),
-          implicatedFileSrc: await readFile(path.join(MODELS_DIR, file), 'utf8'),
+          trace: traceBlock(trace, a.predictedAnswer, usedNamedView),
           implicatedFile: file,
+          implicatedFileSrc: file && existsSync(path.join(MODELS_DIR, file)) ? await readFile(path.join(MODELS_DIR, file), 'utf8') : null,
           profiles,
           manual,
           model: opts.model,
@@ -754,17 +932,67 @@ export async function improveLayer(opts: {
           provider: opts.provider,
         });
         totalCost += v.cost;
-        verdict = { owner: v.owner, file: v.file, defect: v.defect, rationale: v.rationale };
         owner = v.owner;
+        manner = v.manner;
+        rationale = v.rationale || cls.note;
+        fix = v.fix;
         if (v.owner === 'layer' && v.file && existsSync(path.join(MODELS_DIR, v.file))) file = v.file;
-        console.log(`    triage ${a.taskId}: model says ${v.owner}${v.owner === 'layer' ? ` (${file})` : ''} — ${v.rationale}`);
-        if (v.owner === 'layer' && file) {
+        console.log(`    verdict ${a.taskId}: manner=${v.manner} owner=${v.owner}${v.owner === 'layer' ? ` (${file})` : ''} — ${v.rationale}`);
+
+        // Layer edit only when the deterministic probe AND the model agree.
+        if (cls.layerSuspected && v.owner === 'layer' && file) {
           const list = defectsByFile.get(file) ?? [];
           list.push(`### Miss ${a.taskId}\n${evidenceBlock(a, cls)}\nModel-confirmed defect: ${v.defect}`);
           defectsByFile.set(file, list);
         }
+        if (opts.runId && fix && fix.kind !== 'layer') {
+          cl.event({ kind: 'improvement_recommendation', taskId: a.taskId, agentId: 'agent:asm-malloy-builder', runId: opts.runId, payload: { source: 'miss', manner, owner, fix_kind: fix.kind, detail: fix.detail, rationale } });
+        }
       }
-      reports.push({ taskId: a.taskId, category: cls.category, owner, implicatedFiles: cls.implicatedFiles, note: cls.note, verdict });
+
+      reports.push({
+        taskId: a.taskId, category: cls.category, owner, manner, implicatedFiles: cls.implicatedFiles, note: cls.note, rationale, fix,
+        trace: trace ? { exploredLayer: trace.exploredLayer, usedNamedView, runMalloyErrors: trace.runMalloyErrors, toolCalls: trace.toolCalls } : undefined,
+      });
+    }
+
+    // 2. Tool-error META-ANALYSIS: any tool failing > threshold gets a model
+    //    diagnosis. A layer-cause (a broken view) routes into the repair path;
+    //    skill/linter causes become recommendations (optionally applied to skill.md).
+    if (runId) {
+      const stats = toolErrorStats(events, runId, { threshold: opts.toolErrorThreshold ?? 0.15 });
+      const flagged = stats.filter((s) => s.flagged);
+      console.log(`  tool-error meta-analysis (run ${runId.slice(0, 13)}): ${flagged.length} tool(s) over ${(100 * (opts.toolErrorThreshold ?? 0.15)).toFixed(0)}% error rate${flagged.length ? ': ' + flagged.map((s) => `${s.tool} ${(s.rate * 100).toFixed(0)}%`).join(', ') : ''}`);
+      toolHealth = stats.map((s) => ({ ...s, action: 'reported_only' as ToolHealthFinding['action'] }));
+      for (const finding of toolHealth) {
+        if (!finding.flagged) continue;
+        const d = await diagnoseToolError({ stat: finding, manual, model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider });
+        totalCost += d.cost;
+        finding.diagnosis = { cause: d.cause, fixKind: d.fixKind, detail: d.detail, file: d.file };
+        console.log(`    diagnose ${finding.tool}: ${d.fixKind} — ${d.cause}`);
+
+        // Route a LAYER cause into repair only if the named file actually has a
+        // currently-broken view (structural corroboration) — never edit a clean
+        // file on a tool-error guess.
+        if (d.fixKind === 'layer' && d.file && existsSync(path.join(MODELS_DIR, d.file)) && !(await validateModel(d.file)).ok) {
+          const list = defectsByFile.get(d.file) ?? [];
+          list.push(`### Recurring tool error (${finding.tool}, ${(finding.rate * 100).toFixed(0)}% of calls)\nCause: ${d.cause}\nSample errors:\n${finding.samples.map((x) => '  - ' + x).join('\n')}`);
+          defectsByFile.set(d.file, list);
+          finding.action = 'routed_to_layer_repair';
+        } else if (d.fixKind === 'skill' && opts.applySkillFixes && d.detail) {
+          await appendSkillRule(d.detail, `${finding.tool} errored ${(finding.rate * 100).toFixed(0)}% of the time: ${d.cause}`);
+          skillFixesApplied.push(d.detail);
+          finding.action = 'applied_skill_fix';
+        } else if (d.fixKind === 'skill') {
+          finding.action = 'recommended_skill_fix';
+        } else if (d.fixKind === 'linter') {
+          finding.action = 'recommended_linter_fix';
+        }
+        if (opts.runId) {
+          cl.event({ kind: 'improvement_recommendation', taskId: finding.tool, agentId: 'agent:asm-malloy-builder', runId: opts.runId, payload: { source: 'tool', tool: finding.tool, error_rate: finding.rate, calls: finding.calls, errors: finding.errors, fix_kind: d.fixKind, cause: d.cause, detail: d.detail, action: finding.action } });
+        }
+      }
+      if (opts.runId) cl.event({ kind: 'tool_health', agentId: 'agent:asm-malloy-builder', runId: opts.runId, payload: { stats: toolHealth.map((s) => ({ tool: s.tool, calls: s.calls, errors: s.errors, rate: s.rate, flagged: s.flagged, action: s.action })) } });
     }
 
     // 3. Repair each implicated file (one coherent pass per file), behind a
@@ -833,8 +1061,11 @@ export async function improveLayer(opts: {
       toHash,
       editedFiles,
       misses: reports,
+      toolHealth,
+      trace: corr,
+      skillFixesApplied,
       cost: totalCost,
-      summary: renderSummary(reports, editedFiles, fromHash, toHash, diagnostics),
+      summary: renderSummary(reports, toolHealth, editedFiles, skillFixesApplied, fromHash, toHash, diagnostics),
       diagnostics,
     };
   } finally {
@@ -842,19 +1073,55 @@ export async function improveLayer(opts: {
   }
 }
 
-function renderSummary(reports: MissReport[], editedFiles: string[], fromHash: string, toHash: string, diagnostics?: string): string {
+/** Append a GENERAL robustness rule (diagnosed from a recurring tool error) to a
+ *  clearly-marked section of src/skill.md. The skill is a tunable prompt, NOT the
+ *  layer — editing it does not affect malloy_provenance. Deduped by rule text. */
+async function appendSkillRule(rule: string, because: string): Promise<void> {
+  let skill = '';
+  try {
+    skill = await readFile(SKILL_PATH, 'utf8');
+  } catch {
+    return; // no skill.md → nothing to append to
+  }
+  if (skill.includes(rule.trim())) return; // already present
+  const HEADER = '## Auto-added robustness rules (layer-improve)';
+  const bullet = `- ${rule.trim()}  _(why: ${because})_`;
+  const next = skill.includes(HEADER) ? `${skill.trimEnd()}\n${bullet}\n` : `${skill.trimEnd()}\n\n${HEADER}\n${bullet}\n`;
+  await writeFile(SKILL_PATH, next);
+}
+
+const MANNER_LABEL: Record<FailureManner, string> = {
+  overspecified: 'over-specified', underspecified: 'under-specified', hallucination: 'hallucination',
+  layer_not_used: 'layer-not-used', wrong_logic: 'wrong-logic', gave_up: 'gave-up', other: 'other',
+};
+
+function renderSummary(reports: MissReport[], toolHealth: ToolHealthFinding[], editedFiles: string[], skillFixesApplied: string[], fromHash: string, toHash: string, diagnostics?: string): string {
   const lines: string[] = [];
   const byOwner = (o: MissOwner) => reports.filter((r) => r.owner === o);
-  lines.push(`Triaged ${reports.length} miss(es):`);
+  lines.push(`Triaged ${reports.length} miss(es) — owner · manner:`);
   for (const o of ['layer', 'skill', 'answering', 'model'] as MissOwner[]) {
     const rs = byOwner(o);
     if (!rs.length) continue;
     lines.push(`  ${o}: ${rs.map((r) => r.taskId).join(', ')}`);
     for (const r of rs) {
       const where = r.implicatedFiles.length ? ` [${r.implicatedFiles.join(', ')}]` : '';
-      lines.push(`    - ${r.taskId} (${r.category})${where}: ${r.verdict?.rationale || r.note}`);
+      const fix = r.fix && r.fix.kind !== 'layer' && r.fix.detail ? `  → ${r.fix.kind}: ${r.fix.detail}` : '';
+      lines.push(`    - ${r.taskId} · ${MANNER_LABEL[r.manner]} (${r.category})${where}: ${r.rationale}${fix}`);
     }
   }
+
+  const flagged = toolHealth.filter((s) => s.flagged);
+  if (flagged.length) {
+    lines.push(`\nTool-error meta-analysis — ${flagged.length} tool(s) over the error-rate threshold:`);
+    for (const s of flagged) {
+      lines.push(`  ${s.tool}: ${(s.rate * 100).toFixed(0)}% (${s.errors}/${s.calls})${s.diagnosis ? ` — ${s.diagnosis.fixKind}: ${s.diagnosis.cause}` : ''} [${s.action}]`);
+      if (s.diagnosis?.detail) lines.push(`     fix: ${s.diagnosis.detail}`);
+    }
+  } else if (toolHealth.length) {
+    lines.push(`\nTool-error meta-analysis: no tool over the error-rate threshold.`);
+  }
+  if (skillFixesApplied.length) lines.push(`\nApplied ${skillFixesApplied.length} robustness rule(s) to src/skill.md.`);
+
   if (editedFiles.length) {
     lines.push(`\nEdited (model_authored preserved): ${editedFiles.join(', ')}`);
     lines.push(`Layer hash ${fromHash} → ${toHash}. Re-run evaluate to measure.`);

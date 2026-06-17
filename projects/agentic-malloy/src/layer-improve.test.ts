@@ -15,10 +15,12 @@ import {
   identifiersIn,
   classifyMiss,
   evidenceBlock,
+  traceBlock,
   analyzeMiss,
   type MissAnalysis,
   type MissClassification,
 } from './layer-improve.js';
+import type { TaskTrace } from './run-log.js';
 import type { MalloyRuntime } from './malloy-runtime.js';
 
 // A miniature layer mirroring the real f2163373 structure: a lens source in
@@ -180,5 +182,27 @@ describe('no leakage', () => {
     expect(ev).toContain('avg fee for NexPay'); // the question (intent) is allowed
     expect(ev).toContain('5.757053'); // the agent's OWN predicted output is structural evidence
     expect(ev).not.toContain('5.715872'); // the GOLD answer must never appear
+  });
+
+  it('the trace block surfaces the agent actions + answer shape but never the gold', () => {
+    const trace: TaskTrace = {
+      taskId: '1290',
+      steps: [
+        { name: 'list_malloy_files', ok: true, args: {} },
+        { name: 'run_malloy', ok: false, output: 'compile error' },
+        { name: 'submit_answer', ok: true, args: { source: 'run: rules_lens -> {}' } },
+      ],
+      exploredLayer: true,
+      runMalloyErrors: 1,
+      submitErrors: 0,
+      toolCalls: 3,
+    };
+    const tb = traceBlock(trace, '5.757053', true);
+    expect(tb).toContain('list_malloy_files');
+    expect(tb).toContain('run_malloy');
+    expect(tb).toContain('Explored the layer');
+    expect(tb).toContain('Reused a NAMED layer view');
+    expect(tb).toContain('scalar'); // answer-shape signal (shape only, not the value)
+    expect(tb).not.toContain('5.715872'); // gold never enters the trace evidence
   });
 });

@@ -572,6 +572,12 @@ async function cmdLayerImprove(flags: Record<string, string | boolean>) {
   // Default: triage + validate against the LOCAL compile DB (credential-free,
   // same data, matches the build gate). --md re-executes against MotherDuck.
   const motherduckDb = flags.md ? ((flags.database as string) || process.env.MD_DATABASE || 'agentic_malloy') : undefined;
+  // --no-manner skips the per-miss failure-MANNER model call (cheaper; model
+  // call then fires only for layer-suspected misses). --apply-skill-fixes lets a
+  // diagnosed tool-error rule be appended to src/skill.md.
+  const manner = !flags['no-manner'];
+  const applySkillFixes = !!flags['apply-skill-fixes'];
+  const toolErrorThreshold = flags['tool-error-threshold'] ? Number(flags['tool-error-threshold']) : undefined;
 
   // Wrap in a controllog session so the improve pass shows in the dive's Build tab.
   cl.init({ project: PROJECT_ID, logDir: RESULTS_DIR, agentId: 'agent:asm-malloy-builder' });
@@ -579,7 +585,7 @@ async function cmdLayerImprove(flags: Record<string, string | boolean>) {
   const runId = cl.newId();
   let res!: Awaited<ReturnType<typeof improveLayer>>;
   await cl.runInSession(session, async () => {
-    res = await improveLayer({ fromPath, model, reasoningEffort: reasoning, provider, maxRounds, motherduckDb, runId });
+    res = await improveLayer({ fromPath, model, reasoningEffort: reasoning, provider, maxRounds, motherduckDb, manner, applySkillFixes, toolErrorThreshold, controllogDir: path.join(RESULTS_DIR, 'controllog'), runId });
   });
   await cl.flushSession(session);
 
@@ -655,8 +661,10 @@ async function main() {
       console.log('  load [--motherduck --database agentic_malloy]');
       console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3] [--provider anthropic]');
       console.log('  layer-improve --from results/RUN.jsonl [--model opus --reasoning medium --max-rounds 4] \\');
-      console.log('           [--provider anthropic] [--md [--database agentic_malloy]] [--re-eval --author sonnet --fixer opus --run-class official]');
-      console.log('           (triages a run\'s misses: edits the layer ONLY for structural defects, never tunes to a gold answer)');
+      console.log('           [--provider anthropic] [--md [--database agentic_malloy]] [--no-manner] [--apply-skill-fixes] \\');
+      console.log('           [--tool-error-threshold 0.15] [--re-eval --author sonnet --fixer opus --run-class official]');
+      console.log('           (triages a run\'s misses by MANNER of failure + runs a tool-error meta-analysis;');
+      console.log('            edits the layer ONLY for structural defects, never tunes to a gold answer)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
       console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');

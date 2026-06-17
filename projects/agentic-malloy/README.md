@@ -96,8 +96,23 @@ human) complement to the rule above: it triages a run's misses and edits the lay
   referenced. A pure classifier (`classifyMiss`) decides, from that evidence alone:
   a NAMED layer view that errors / is wrongly empty on its own ⇒ **layer** defect;
   a query that re-runs fine but returns the wrong rows ⇒ **skill** (the agent's
-  inline filter/field/grain); no submission ⇒ **answering** (turn budget). Only
-  layer-suspected misses get a model verdict (which may downgrade to skill).
+  inline filter/field/grain); no submission ⇒ **answering** (turn budget). A layer
+  EDIT requires BOTH this structural probe AND a model verdict of `layer`.
+- **Manner of failure (from the logs).** It correlates the run to its controllog
+  (by `(task_id, submitted Malloy)`), pulls each miss's **tool trace**, and a model
+  verdict labels *how* it failed — `overspecified` · `underspecified` ·
+  `hallucination` · `layer_not_used` (the right view existed but the agent
+  hand-wrote raw Malloy) · `wrong_logic` · `gave_up` — with a recommended fix
+  (`skill` / `linter` / `layer` / `model`). The answer **shape** (scalar vs. list
+  vs. bracketed-list) and "did it reuse a named view" feed over/under-specification
+  reasoning — all gold-free (`--no-manner` restores the cheap deterministic-only path).
+- **Tool-error meta-analysis.** It aggregates the run's per-tool error rate; any
+  tool over **15%** (`--tool-error-threshold`) gets a model diagnosis of the
+  *systemic* cause + where the durable fix belongs. A layer-cause routes into the
+  repair path (only if a view is actually broken); skill/linter causes become
+  precise recommendations — and `--apply-skill-fixes` appends the general rule to a
+  marked section of `src/skill.md` (the skill is a tunable prompt, not the layer, so
+  this doesn't touch `malloy_provenance`).
 - **No leakage.** A repair prompt sees only the failing Malloy, exec diagnostics,
   "this view returns 0/errors", the column profile, and the manual — **never the
   gold answer**, and it must not tune to a train value. Fixes are general
