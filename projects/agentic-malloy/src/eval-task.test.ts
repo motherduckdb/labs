@@ -22,7 +22,7 @@ function fakeTaskResult(over: Partial<TaskResult> = {}): TaskResult {
     submitted: true, escalated: false, escalationReason: null, authorTurns: 1, fixerTurns: 0,
     toolCallCount: 1, usage: { promptTokens: 1, completionTokens: 1, cost: 0, cachedTokens: 0, cacheWriteTokens: 0 },
     authorModel: 'a', fixerModel: 'f', hitLimit: false, streamFailureReason: null,
-    authorRecoveryUsed: false, retryCount: 0, ...over,
+    authorRecoveryUsed: false, retryCount: 0, trace: [], ...over,
   };
 }
 

@@ -334,6 +334,9 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
       input_tokens: result?.usage.promptTokens ?? 0, output_tokens: result?.usage.completionTokens ?? 0,
       cached_tokens: result?.usage.cachedTokens ?? 0, cache_write_tokens: result?.usage.cacheWriteTokens ?? 0,
       provider: ctx.provider ?? null,
+      // Full bundled conversation so the dive renders the COMPLETE trace (model
+      // text + reasoning + every call/result), matching the Eval Explorer design.
+      raw_response: { messages: result?.trace ?? [] },
       error_description: dispatchErr, ...failureFields,
     },
   });

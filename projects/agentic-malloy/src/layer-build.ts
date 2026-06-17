@@ -373,7 +373,7 @@ async function authorStage(opts: {
     if (opts.runId) {
       const ex = cl.newId();
       cl.modelPrompt({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode } });
-      cl.modelCompletion({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode, malloy: malloy?.slice(0, 6000) ?? null, cached_tokens: resp.cachedTokens, cache_write_tokens: resp.cacheWriteTokens } });
+      cl.modelCompletion({ taskId: opts.label, runId: opts.runId, provider: 'openrouter', model: opts.model, completionTokens: resp.completionTokens, wallMs, exchangeId: ex, costMoney: resp.cost, role: 'builder', payload: { phase: 'build', stage: opts.label, round, mode, malloy: malloy?.slice(0, 6000) ?? null, response: resp.text.slice(0, 8000), cached_tokens: resp.cachedTokens, cache_write_tokens: resp.cacheWriteTokens } });
     }
 
     if (!malloy) {

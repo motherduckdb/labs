@@ -59,6 +59,21 @@ export interface TaskResult {
   authorRecoveryUsed: boolean;
   /** Total OpenRouter stream-setup retries across all turns (telemetry). */
   retryCount: number;
+  /** The full bundled conversation (OpenAI Responses-item shape: user / message /
+   *  function_call / function_call_output) so the dive can render the COMPLETE
+   *  trace — model text + reasoning + every call/result — not just tool I/O. */
+  trace: TraceItem[];
+}
+
+/** One conversation item, matching the reference dive's `raw_response.messages`. */
+export interface TraceItem {
+  step: 'user' | 'message' | 'function_call' | 'function_call_output';
+  role?: string; // author | fixer (for message/function_call)
+  name?: string; // tool name (function_call / output)
+  arguments?: string; // JSON args (function_call)
+  output?: string; // tool result text (function_call_output)
+  content?: string; // message / user text
+  status?: 'ok' | 'error'; // function_call_output
 }
 
 const FIXER_INSTRUCTION =
@@ -184,12 +199,10 @@ export async function streamOneTurn(opts: {
 
 export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   const { deps, taskId, runId } = opts;
-  const messages: ChatMessage[] = [
-    {
-      role: 'user',
-      content: `Question: ${opts.question}\n\nGuidelines: ${opts.guidelines || '(none)'}\n\nFollow the skill: browse the Malloy layer, then author Malloy and submit_answer. The answer must be Malloy.`,
-    },
-  ];
+  const taskPrompt = `Question: ${opts.question}\n\nGuidelines: ${opts.guidelines || '(none)'}\n\nFollow the skill: browse the Malloy layer, then author Malloy and submit_answer. The answer must be Malloy.`;
+  const messages: ChatMessage[] = [{ role: 'user', content: taskPrompt }];
+  // Full bundled conversation for the dive's complete trace view (not just tool I/O).
+  const trace: TraceItem[] = [{ step: 'user', content: taskPrompt }];
 
   let activeModel = opts.authorModel;
   let role: 'author' | 'fixer' = 'author';
@@ -266,6 +279,9 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
       completionTokens: parsed.usage.completionTokens, wallMs, exchangeId, costMoney: parsed.usage.cost, role,
       payload: { turn, has_tool_use: parsed.toolCalls.length > 0, cached_tokens: parsed.usage.cachedTokens, cache_write_tokens: parsed.usage.cacheWriteTokens },
     });
+    // Bundle the assistant's own text (the reasoning/narrative the tool-events
+    // reconstruction can't show) into the trace.
+    if (parsed.text.trim()) trace.push({ step: 'message', role, content: parsed.text.trim() });
 
     if (parsed.toolCalls.length === 0) {
       // Terminal text without a submission. The author gets ONE forced
@@ -295,6 +311,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
       toolCallCount++;
       const callId = call.id || cl.newId();
       cl.toolCall({ taskId, runId, name: call.name, callId, arguments: call.input, model: activeModel });
+      trace.push({ step: 'function_call', role, name: call.name, arguments: JSON.stringify(call.input) });
       const ts = Date.now();
       let result;
       try {
@@ -303,6 +320,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
         result = { content: `Error: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
       cl.toolResult({ taskId, runId, name: call.name, callId, ok: !result.isError, durationMs: Date.now() - ts, model: activeModel, output: result.content.slice(0, 2000) });
+      trace.push({ step: 'function_call_output', name: call.name, output: result.content.slice(0, 2000), status: result.isError ? 'error' : 'ok' });
       toolResults.push({ type: 'tool_result', tool_use_id: callId, content: result.content, ...(result.isError && { is_error: true }) });
       // Only Malloy-authoring failures count toward escalation — an exploration
       // query/list_columns error is normal iteration, not a "stuck author".
@@ -346,5 +364,6 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     streamFailureReason,
     authorRecoveryUsed,
     retryCount,
+    trace,
   };
 }
