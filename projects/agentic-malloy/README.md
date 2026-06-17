@@ -110,9 +110,10 @@ human) complement to the rule above: it triages a run's misses and edits the lay
   tool over **15%** (`--tool-error-threshold`) gets a model diagnosis of the
   *systemic* cause + where the durable fix belongs. A layer-cause routes into the
   repair path (only if a view is actually broken); skill/linter causes become
-  precise recommendations — and `--apply-skill-fixes` appends the general rule to a
-  marked section of `src/skill.md` (the skill is a tunable prompt, not the layer, so
-  this doesn't touch `malloy_provenance`).
+  precise recommendations. A diagnosed `skill` rule is appended to a marked section
+  of `src/skill.md` **by default** (it only ever fires for a tool over the >15%
+  threshold, so it stays sparing) — `--no-apply-skill-fixes` to only recommend. The
+  skill is a tunable prompt, not the layer, so this never touches `malloy_provenance`.
 - **No leakage.** A repair prompt sees only the failing Malloy, exec diagnostics,
   "this view returns 0/errors", the column profile, and the manual — **never the
   gold answer**, and it must not tune to a train value. Fixes are general
