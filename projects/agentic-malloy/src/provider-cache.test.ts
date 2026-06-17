@@ -1,7 +1,7 @@
 /**
  * Provider pinning + Anthropic prompt caching. Mocks globalThis.fetch to capture
- * the OpenRouter request body (never hits the network) and asserts: provider.order
- * is present when configured; Claude requests carry cache_control breakpoints;
+ * the OpenRouter request body (never hits the network) and asserts: provider
+ * routing is pinned when configured; Claude requests carry cache_control breakpoints;
  * non-Claude requests do not; and cached/write token counts from the usage object
  * (non-streamed via complete(), streamed via streamOneTurn) are surfaced.
  */
@@ -34,10 +34,10 @@ function jsonRes(usage: Record<string, unknown>): Response {
 }
 
 describe('provider pinning', () => {
-  it('adds provider.order to the streaming request body when provider is set', async () => {
+  it('pins provider routing on the streaming request body when provider is set', async () => {
     const bodies = captureFetch(() => sse([]));
     await streamChatCompletion({ model: 'anthropic/claude-sonnet-4.6', messages: [{ role: 'user', content: 'hi' }], systemPrompt: 'sys', provider: 'anthropic' });
-    expect(bodies[0].provider).toEqual({ order: ['anthropic'] });
+    expect(bodies[0].provider).toEqual({ order: ['anthropic'], allow_fallbacks: false });
   });
 
   it('omits provider when none is configured', async () => {
@@ -46,10 +46,10 @@ describe('provider pinning', () => {
     expect(bodies[0].provider).toBeUndefined();
   });
 
-  it('adds provider.order to the non-streaming complete() body when set', async () => {
+  it('pins provider routing on the non-streaming complete() body when set', async () => {
     const bodies = captureFetch(() => jsonRes({ prompt_tokens: 1, completion_tokens: 1 }));
     await complete({ model: 'anthropic/claude-opus-4.7', systemPrompt: 's', userPrompt: 'u', provider: 'anthropic' });
-    expect(bodies[0].provider).toEqual({ order: ['anthropic'] });
+    expect(bodies[0].provider).toEqual({ order: ['anthropic'], allow_fallbacks: false });
   });
 });
 

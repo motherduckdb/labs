@@ -6,8 +6,9 @@
  *   - submit_answer — the scored path: lint -> Malloy run on MotherDuck.
  *
  * Malloy runs via its NATIVE runtime connected to MotherDuck (the runtime
- * compiles AND executes there) — same engine, no local→MotherDuck SQL skew.
- * submit_answer latches finalRows (positional, for score.py) only on success.
+ * compiles AND executes there). submit_answer latches finalRows (positional, for
+ * score.py) only on success, then optionally runs the same Malloy locally as a
+ * warning-only translation diagnostic.
  */
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { ALLOWED_TOOLS, callMcpTool } from './mcp-client.js';
@@ -49,6 +50,7 @@ function jsonSafeCell(v: unknown): unknown {
 export interface ToolDeps {
   client: Client;
   runtime: MalloyRuntime;
+  localRuntime?: MalloyRuntime;
   store: MalloyStore;
   symbols: Set<string>;
   database?: string;
@@ -129,7 +131,7 @@ function rowsetsMatch(local: Record<string, unknown>[], md: unknown[][]): boolea
 }
 
 export async function dispatchTool(deps: ToolDeps, name: string, args: Record<string, unknown>): Promise<DispatchResult> {
-  const { client, runtime, store, symbols, state, database } = deps;
+  const { client, runtime, localRuntime, store, symbols, state, database } = deps;
 
   // MCP exploration tools. Inject the database + new_fragments defaults so the
   // model can't omit the production query tool's required fields.
@@ -199,7 +201,16 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     state.finalMalloy = fixedSrc;
     state.finalCompiledSql = r.sql;
     state.finalRows = r.rows!.map((o) => cols.map((cn) => jsonSafeCell(o[cn]))); // positional for score.py (BigInt-safe)
-    state.translationMatch = null; // executed locally; MotherDuck cross-check deferred (engine skew known)
+    if (localRuntime) {
+      try {
+        const local = await localRuntime.run(fixedSrc, ANSWER_ROW_LIMIT);
+        state.translationMatch = local.ok ? rowsetsMatch(local.rows ?? [], state.finalRows) : null;
+      } catch {
+        state.translationMatch = null;
+      }
+    } else {
+      state.translationMatch = null;
+    }
     return { content: `Submitted. ${r.rows!.length} row(s).`, isError: false };
   }
 

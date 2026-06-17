@@ -80,6 +80,10 @@ export function parseCacheTokens(usage: unknown): CacheTokens {
   };
 }
 
+function pinnedProvider(provider: string): Record<string, unknown> {
+  return { order: [provider], allow_fallbacks: false };
+}
+
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_HEADERS = () => ({
   'Content-Type': 'application/json',
@@ -200,7 +204,7 @@ export async function complete(params: {
     usage: { include: true },
   };
   if (params.reasoningEffort && params.reasoningEffort !== 'off') body.reasoning = { effort: params.reasoningEffort };
-  if (params.provider) body.provider = { order: [params.provider] };
+  if (params.provider) body.provider = pinnedProvider(params.provider);
 
   const res = await fetchWithRetry(OPENROUTER_URL, {
     method: 'POST',
@@ -289,7 +293,7 @@ export async function streamChatCompletion(params: {
   };
   if (openaiTools && openaiTools.length) body.tools = openaiTools;
   if (reasoningEffort && reasoningEffort !== 'off') body.reasoning = { effort: reasoningEffort };
-  if (provider) body.provider = { order: [provider] };
+  if (provider) body.provider = pinnedProvider(provider);
 
   const response = await fetchWithRetry(
     OPENROUTER_URL,

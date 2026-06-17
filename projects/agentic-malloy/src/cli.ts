@@ -177,6 +177,7 @@ type Scorer = Pick<ScoreClient, 'score'>;
 export interface EvalTaskCtx {
   systemPrompt: string;
   runtime: MalloyRuntime;
+  localRuntime?: MalloyRuntime;
   store: MalloyStore;
   symbols: Set<string>;
   scorer: Scorer;
@@ -233,7 +234,16 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
   if (client) {
     try {
       const mcpTools = await discoverTools(client);
-      const deps: ToolDeps = { client, runtime: ctx.runtime, store: ctx.store, symbols: ctx.symbols, database: ctx.database, mcpTools, state };
+      const deps: ToolDeps = {
+        client,
+        runtime: ctx.runtime,
+        localRuntime: ctx.localRuntime,
+        store: ctx.store,
+        symbols: ctx.symbols,
+        database: ctx.database,
+        mcpTools,
+        state,
+      };
       result = await runTaskFn({
         question: q.question, guidelines: q.guidelines, systemPrompt: ctx.systemPrompt,
         toolSchemas: buildToolSchemas(deps), deps,
@@ -433,9 +443,12 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
 
   const store = new MalloyStore();
   await store.load();
-  // The eval's Malloy runtime connects to MotherDuck — compiles AND runs the
-  // answer there (Malloy-native), so no local→MotherDuck SQL skew. Same data.
+  // The eval's scored Malloy runtime connects to MotherDuck. A second local
+  // runtime is kept only for the warning-only translation_match diagnostic.
   const runtime = new MalloyRuntime({ databasePath: `md:${database}` });
+  // Warning-only translation diagnostic: run the same Malloy against the local
+  // DuckDB snapshot and compare the result shape to the scored MotherDuck rows.
+  const localRuntime = new MalloyRuntime();
   const symbols = buildSymbolSet(await runtime.describe());
   const scorer = new ScoreClient();
 
@@ -468,7 +481,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   });
 
   const ctx: EvalTaskCtx = {
-    systemPrompt, runtime, store, symbols, scorer, database,
+    systemPrompt, runtime, localRuntime, store, symbols, scorer, database,
     author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, reasoning, provider,
     runClass, prov, runId, split,
   };
@@ -524,6 +537,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   } finally {
     await cl.flushSession(session); // always flush, even if the run threw mid-way
     try { await runtime.close(); } catch { /* ignore */ }
+    try { await localRuntime.close(); } catch { /* ignore */ }
     try { scorer.close(); } catch { /* ignore */ }
   }
 
