@@ -67,6 +67,17 @@ function gitOutput(args: string): string | undefined {
   }
 }
 
+/**
+ * Uncommitted TRACKED changes within this project (staged + unstaged), scoped to
+ * REPO_ROOT and excluding untracked files — so transient `results/` logs, scratch
+ * scripts, and unrelated sibling projects do NOT count. This is the signal that
+ * actually answers "is this run reproducible from the recorded commit_sha".
+ */
+function gitDirtyTrackedFiles(): string[] {
+  const out = gitOutput('status --porcelain --untracked-files=no -- .');
+  return out ? out.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+}
+
 interface Provenance {
   malloy_provenance: 'model_authored' | 'human_edited';
   malloy_model_hash: string;
@@ -425,6 +436,19 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const symbols = buildSymbolSet(await runtime.describe());
   const scorer = new ScoreClient();
 
+  // Reproducibility: the recorded commit_sha only describes this run if the
+  // tracked code is committed. Warn loudly on uncommitted tracked changes (an
+  // official run that backs the claim should be clean).
+  const commitSha = gitOutput('rev-parse HEAD');
+  const dirtyFiles = gitDirtyTrackedFiles();
+  if (dirtyFiles.length) {
+    console.warn(`\n⚠️  ${dirtyFiles.length} uncommitted tracked change(s) — this run is NOT reproducible from commit ${commitSha?.slice(0, 8) ?? '(unknown)'}:`);
+    for (const f of dirtyFiles.slice(0, 20)) console.warn(`     ${f}`);
+    if (dirtyFiles.length > 20) console.warn(`     … and ${dirtyFiles.length - 20} more`);
+    if (runClass === 'official') console.warn(`   ▶ OFFICIAL run with a dirty tree — commit your changes for a reproducible result.`);
+    console.warn('');
+  }
+
   console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency}${provider ? ` · provider=${provider}` : ''}`);
 
   let correct = 0;
@@ -473,9 +497,10 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
           central_layer_chars: store.centralLayerChars(),
           authoring_model: prov.authoring_model,
         },
-        commitSha: gitOutput('rev-parse HEAD'),
+        commitSha,
         repo: gitOutput('config --get remote.origin.url'),
-        dirty: !!gitOutput('status --porcelain'),
+        dirty: dirtyFiles.length > 0, // uncommitted TRACKED code (not untracked logs/other projects)
+        dirtyFiles,
         agentName: AGENT_ID, datasetName: database, datasetVersion: split,
       });
 

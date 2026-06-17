@@ -229,7 +229,7 @@ export function utility(args: {
 
 export function runMetadata(args: {
   runId: string; resolvedConfig: Record<string, unknown>;
-  commitSha?: string; repo?: string; dirty?: boolean; agentName?: string;
+  commitSha?: string; repo?: string; dirty?: boolean; dirtyFiles?: string[]; agentName?: string;
   datasetName?: string; datasetVersion?: string; payload?: Record<string, unknown>;
 }): Record<string, unknown> {
   const configHash = stableHash(args.resolvedConfig);
@@ -239,7 +239,10 @@ export function runMetadata(args: {
     config_hash: configHash,
     ...(args.commitSha && { commit_sha: args.commitSha }),
     ...(args.repo && { repo: args.repo }),
+    // dirty = uncommitted TRACKED code changes in the project (NOT untracked
+    // logs/other projects) — i.e. "is this run reproducible from commit_sha".
     ...(args.dirty !== undefined && { dirty: args.dirty }),
+    ...(args.dirtyFiles && args.dirtyFiles.length > 0 && { dirty_files: args.dirtyFiles }),
     ...(args.agentName && { agent_name: args.agentName }),
     ...(args.datasetName && { dataset_name: args.datasetName }),
     ...(args.datasetVersion && { dataset_version: args.datasetVersion }),
