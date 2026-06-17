@@ -14,12 +14,13 @@ import { MalloyRuntime } from './malloy-runtime.js';
 import { MalloyStore } from './malloy-store.js';
 import { buildSymbolSet } from './linter.js';
 import { ScoreClient } from './score-client.js';
-import { createMCPClient, getExplorationTools } from './mcp-client.js';
+import { createMCPClient, getExplorationTools, mcpRetryCount } from './mcp-client.js';
 import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
 import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
 import { buildLayer, hashLayerOnDisk, PROVENANCE_PATH } from './layer-build.js';
 import { uploadControllog } from './upload.js';
+import { runPool, makeSerializedWriter } from './pool.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,7 +34,7 @@ const SKILL_PATH = path.join(REPO_ROOT, 'src', 'skill.md');
 const PROJECT_ID = 'agentic-malloy';
 const AGENT_ID = 'agent:asm-malloy';
 
-interface Question {
+export interface Question {
   task_id: string | number;
   question: string;
   guidelines?: string;
@@ -140,6 +141,214 @@ async function cmdPreflight() {
   console.log('PREFLIGHT OK');
 }
 
+/**
+ * The single per-question outcome. runEvalTask ALWAYS produces one of these and
+ * never throws out of the worker, so a failure in MCP setup, the agent loop, or
+ * scoring fails THAT question only — siblings keep running and every requested
+ * task id still yields exactly one JSONL row + one terminal controllog state.
+ */
+export interface EvalTaskOutcome {
+  taskId: string;
+  isCorrect: boolean;
+  correctness: string;
+  predictedAnswer: string | null;
+  row: Record<string, unknown>; // the JSONL row (written by the caller, serialized)
+  terminalState: 'DONE' | 'FAILED';
+  // failure metadata (mirrored into the JSONL row + controllog payloads)
+  failureStage: 'mcp_setup' | 'agent_loop' | 'scoring' | null;
+  failureKind: string | null;
+  escalated: boolean;
+}
+
+// Minimal scorer surface the task runner needs — lets tests inject a fake.
+type Scorer = Pick<ScoreClient, 'score'>;
+
+export interface EvalTaskCtx {
+  systemPrompt: string;
+  runtime: MalloyRuntime;
+  store: MalloyStore;
+  symbols: Set<string>;
+  scorer: Scorer;
+  database: string;
+  author: string;
+  fixer: string;
+  escalateAfter: number;
+  maxAuthorTurns: number;
+  maxFixerTurns: number;
+  reasoning: string;
+  runClass: string;
+  prov: Provenance;
+  runId: string;
+  split: string;
+  // Injectable seams (default to the real implementations) so the per-task
+  // containment path can be unit-tested without a live MCP/LLM.
+  createClient?: typeof createMCPClient;
+  discoverTools?: typeof getExplorationTools;
+  runTaskFn?: typeof runTask;
+}
+
+/**
+ * Run one question end-to-end (MCP client → tool discovery → agent loop →
+ * scoring → JSONL row + controllog terminal state) behind a SINGLE try/catch so
+ * any throw becomes an EvalTaskOutcome rather than a pool rejection. The MCP
+ * client is per-task (isolation) and always closed in a finally.
+ */
+export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTaskOutcome> {
+  const createClient = ctx.createClient ?? createMCPClient;
+  const discoverTools = ctx.discoverTools ?? getExplorationTools;
+  const runTaskFn = ctx.runTaskFn ?? runTask;
+  const tid = String(q.task_id);
+  const t0 = Date.now();
+  cl.stateMove({ taskId: tid, from: 'NEW', to: 'WIP', runId: ctx.runId });
+
+  const state = newRunState();
+  let result: Awaited<ReturnType<typeof runTask>> | null = null;
+  let failureStage: EvalTaskOutcome['failureStage'] = null;
+  let failureKind: string | null = null;
+  let dispatchErr: string | null = null;
+  let scoreError: string | null = null;
+  let mcpRetries = 0;
+
+  // --- MCP setup + agent loop --------------------------------------------------
+  let client: Awaited<ReturnType<typeof createMCPClient>> | null = null;
+  try {
+    client = await createClient(`${ctx.runId}:${tid}`);
+  } catch (e) {
+    failureStage = 'mcp_setup';
+    failureKind = 'mcp_connect_failed';
+    dispatchErr = e instanceof Error ? e.message : String(e);
+  }
+  if (client) {
+    try {
+      const mcpTools = await discoverTools(client);
+      const deps: ToolDeps = { client, runtime: ctx.runtime, store: ctx.store, symbols: ctx.symbols, database: ctx.database, mcpTools, state };
+      result = await runTaskFn({
+        question: q.question, guidelines: q.guidelines, systemPrompt: ctx.systemPrompt,
+        toolSchemas: buildToolSchemas(deps), deps,
+        authorModel: ctx.author, fixerModel: ctx.fixer,
+        escalateAfter: ctx.escalateAfter, maxAuthorTurns: ctx.maxAuthorTurns, maxFixerTurns: ctx.maxFixerTurns,
+        reasoningEffort: ctx.reasoning, taskId: tid, runId: ctx.runId,
+      });
+    } catch (e) {
+      failureStage = 'agent_loop';
+      failureKind = 'agent_loop_threw';
+      dispatchErr = e instanceof Error ? e.message : String(e);
+    } finally {
+      mcpRetries = mcpRetryCount(client);
+      try { await client.close(); } catch { /* ignore */ }
+    }
+  }
+
+  // A stream failure that ended the loop is a distinct, reportable failure.
+  if (result?.streamFailureReason) {
+    failureStage = failureStage ?? 'agent_loop';
+    failureKind = failureKind ?? 'stream_failure';
+    dispatchErr = dispatchErr ?? result.streamFailureReason;
+  }
+
+  const elapsedMs = Date.now() - t0;
+  const submitted = state.submitted;
+  const hitLimit = result?.hitLimit ?? true;
+
+  // --- scoring -----------------------------------------------------------------
+  // A scorer failure must NOT abort the pool: catch it, mark the question a
+  // scoring failure, and synthesize an error outcome so this row is still
+  // written and the task reaches a terminal controllog state.
+  let scoreResp: Awaited<ReturnType<ScoreClient['score']>>;
+  try {
+    scoreResp = await ctx.scorer.score({
+      rows: state.finalRows ?? null,
+      error: state.finalRows ? null : dispatchErr ?? 'no submission',
+      gold: q.answer ?? '',
+      guidelines: q.guidelines ?? null,
+      predicted_sql: state.finalCompiledSql ?? null,
+      hit_limit: hitLimit,
+    });
+  } catch (e) {
+    scoreError = e instanceof Error ? e.message : String(e);
+    failureStage = 'scoring';
+    failureKind = 'score_error';
+    scoreResp = {
+      is_correct: false, correctness: 'error', score: 0, match_source: 'score_error',
+      reason: scoreError, predicted_answer: null, gold_answer: q.answer ?? '',
+    };
+  }
+
+  const reward = scoreResp.is_correct ? 1 : 0;
+  // A task is DONE if it completed the loop AND scoring; otherwise FAILED.
+  const terminalState: 'DONE' | 'FAILED' = result && failureStage === null ? 'DONE' : 'FAILED';
+  const escalationReason = result?.escalationReason ?? null;
+
+  // Common failure fields, mirrored into both the controllog payload and the row.
+  const failureFields = {
+    failure_stage: failureStage,
+    failure_kind: failureKind,
+    submitted,
+    hit_limit: hitLimit,
+    retry_count: result?.retryCount ?? 0,
+    mcp_retry_count: mcpRetries,
+    score_error: scoreError,
+    escalation_reason: escalationReason,
+    author_recovery_used: result?.authorRecoveryUsed ?? false,
+  };
+
+  cl.stateMove({ taskId: tid, from: 'WIP', to: terminalState, runId: ctx.runId });
+  cl.utility({ taskId: tid, metric: 'reward', value: reward, runId: ctx.runId });
+  cl.event({
+    kind: 'task_complete', taskId: tid, agentId: AGENT_ID, runId: ctx.runId,
+    idempotencyKey: `${ctx.runId}:task:${tid}`,
+    payload: {
+      correctness: scoreResp.correctness, escalated: result?.escalated ?? false,
+      n_tool_calls: result?.toolCallCount ?? 0, duration_ms: elapsedMs, ...failureFields,
+    },
+  });
+  cl.event({
+    kind: 'evaluation_result', taskId: tid, agentId: AGENT_ID, runId: ctx.runId,
+    idempotencyKey: `${ctx.runId}:eval:${tid}`,
+    payload: {
+      question_id: tid, question_text: q.question, evidence: q.guidelines, level: q.level,
+      config_type: 'malloy', run_class: ctx.runClass, database: ctx.database, model: ctx.author,
+      author_model: ctx.author, fixer_model: ctx.fixer,
+      malloy_provenance: ctx.prov.malloy_provenance, malloy_model_hash: ctx.prov.malloy_model_hash,
+      malloy_source: state.finalMalloy ?? null, malloy_source_chars: state.finalMalloy?.length ?? 0,
+      compiled_sql: state.finalCompiledSql ?? null, compiled_sql_chars: state.finalCompiledSql?.length ?? 0,
+      translation_match: state.translationMatch ?? null,
+      predicted_result: scoreResp.predicted_answer, gold_result: q.answer,
+      is_correct: scoreResp.is_correct, correctness_level: scoreResp.correctness, match_source: scoreResp.match_source,
+      escalated: result?.escalated ?? false,
+      fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
+      files_read: state.filesRead, lint_fixes: state.lintFixesTotal,
+      duration_ms: elapsedMs, cost_usd: result?.usage.cost ?? 0,
+      input_tokens: result?.usage.promptTokens ?? 0, output_tokens: result?.usage.completionTokens ?? 0,
+      error_description: dispatchErr, ...failureFields,
+    },
+  });
+
+  const row: Record<string, unknown> = {
+    task_id: tid, level: q.level, split: ctx.split, author_model: ctx.author, fixer_model: ctx.fixer, run_class: ctx.runClass,
+    question: q.question, guidelines: q.guidelines, gold_answer: q.answer,
+    predicted_answer: scoreResp.predicted_answer, is_correct: scoreResp.is_correct, correctness: scoreResp.correctness,
+    match_source: scoreResp.match_source, malloy_source: state.finalMalloy ?? null, compiled_sql: state.finalCompiledSql ?? null,
+    translation_match: state.translationMatch ?? null,
+    escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
+    files_read: state.filesRead, lint_fixes: state.lintFixesTotal, elapsed_s: +(elapsedMs / 1000).toFixed(2),
+    cost_usd: result?.usage.cost ?? 0, prompt_tokens: result?.usage.promptTokens ?? 0, completion_tokens: result?.usage.completionTokens ?? 0,
+    error: dispatchErr, ...failureFields, ts: new Date().toISOString(),
+  };
+
+  return {
+    taskId: tid,
+    isCorrect: scoreResp.is_correct,
+    correctness: scoreResp.correctness,
+    predictedAnswer: scoreResp.predicted_answer,
+    row,
+    terminalState,
+    failureStage,
+    failureKind,
+    escalated: result?.escalated ?? false,
+  };
+}
+
 async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const split = (flags.split as string) || 'templates';
   const author = resolveModel((flags.author as string) || 'sonnet');
@@ -171,6 +380,9 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const maxFixerTurns = Number(flags['max-fixer-turns'] ?? 6);
   const reasoning = (flags.reasoning as string) || 'low';
   const concurrency = Number(flags.concurrency ?? 4);
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(`--concurrency must be an integer >= 1 (got '${flags.concurrency}')`);
+  }
   // The agentic_malloy MotherDuck DB is built by `load --motherduck`.
   const database = (flags.database as string) || process.env.MD_DATABASE || 'agentic_malloy';
   const limit = flags.limit ? Number(flags.limit) : undefined;
@@ -211,132 +423,73 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   let correct = 0;
   let completed = 0;
 
-  await cl.runInSession(session, async () => {
-    cl.runMetadata({
-      runId,
-      resolvedConfig: {
-        run_class: runClass,
-        author_model: author,
-        fixer_model: fixer,
-        escalate_after: escalateAfter,
-        max_author_turns: maxAuthorTurns,
-        max_fixer_turns: maxFixerTurns,
-        reasoning,
-        substrate: 'motherduck',
-        malloy_runtime: 'node-inprocess',
-        malloy_model_hash: prov.malloy_model_hash,
-        malloy_provenance: prov.malloy_provenance,
-        manual_included: prov.manual_included,
-        // (config_hash is derived from this object by runMetadata())
-        split,
-        database,
-        central_layer_chars: store.centralLayerChars(),
-        authoring_model: prov.authoring_model,
-      },
-      commitSha: gitOutput('rev-parse HEAD'),
-      repo: gitOutput('config --get remote.origin.url'),
-      dirty: !!gitOutput('status --porcelain'),
-      agentName: AGENT_ID, datasetName: database, datasetVersion: split,
-    });
+  // Serialize JSONL appends + per-task controllog flushes through one writer so
+  // concurrent tasks never interleave a half-written row or flush. Each task
+  // still writes exactly once; ordering across tasks is best-effort.
+  const writeRow = makeSerializedWriter(async (line: string) => {
+    await appendFile(outPath, line + '\n');
+    // Per-task flush keeps telemetry crash-durable (a mid-run crash preserves
+    // everything completed so far; the run-level finally is the backstop).
+    await cl.flushSession(session);
+  });
 
-    // Simple concurrency pool.
-    let idx = 0;
-    const runOne = async (q: Question): Promise<void> => {
-      const tid = String(q.task_id);
-      cl.stateMove({ taskId: tid, from: 'NEW', to: 'WIP', runId });
-      const client = await createMCPClient(`${runId}:${tid}`);
-      const t0 = Date.now();
-      let result: Awaited<ReturnType<typeof runTask>> | null = null;
-      let dispatchErr: string | null = null;
-      const state = newRunState();
-      try {
-        const mcpTools = await getExplorationTools(client);
-        const deps: ToolDeps = { client, runtime, store, symbols, database, mcpTools, state };
-        result = await runTask({
-          question: q.question, guidelines: q.guidelines, systemPrompt,
-          toolSchemas: buildToolSchemas(deps), deps,
-          authorModel: author, fixerModel: fixer, escalateAfter, maxAuthorTurns, maxFixerTurns,
-          reasoningEffort: reasoning, taskId: tid, runId,
-        });
-      } catch (e) {
-        dispatchErr = e instanceof Error ? e.message : String(e);
-      } finally {
-        await client.close();
-      }
-      const elapsedMs = Date.now() - t0;
+  const ctx: EvalTaskCtx = {
+    systemPrompt, runtime, store, symbols, scorer, database,
+    author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, reasoning,
+    runClass, prov, runId, split,
+  };
 
-      const scoreResp = await scorer.score({
-        rows: state.finalRows ?? null,
-        error: state.finalRows ? null : dispatchErr ?? 'no submission',
-        gold: q.answer ?? '',
-        guidelines: q.guidelines ?? null,
-        predicted_sql: state.finalCompiledSql ?? null,
-        hit_limit: result?.hitLimit ?? true,
-      });
-
-      const reward = scoreResp.is_correct ? 1 : 0;
-      cl.stateMove({ taskId: tid, from: 'WIP', to: result ? 'DONE' : 'FAILED', runId });
-      cl.utility({ taskId: tid, metric: 'reward', value: reward, runId });
-      cl.event({
-        kind: 'task_complete', taskId: tid, agentId: AGENT_ID, runId,
-        idempotencyKey: `${runId}:task:${tid}`,
-        payload: { correctness: scoreResp.correctness, escalated: result?.escalated ?? false, n_tool_calls: result?.toolCallCount ?? 0, duration_ms: elapsedMs },
-      });
-      cl.event({
-        kind: 'evaluation_result', taskId: tid, agentId: AGENT_ID, runId,
-        idempotencyKey: `${runId}:eval:${tid}`,
-        payload: {
-          question_id: tid, question_text: q.question, evidence: q.guidelines, level: q.level,
-          config_type: 'malloy', run_class: runClass, database, model: author,
-          author_model: author, fixer_model: fixer,
-          malloy_provenance: prov.malloy_provenance, malloy_model_hash: prov.malloy_model_hash,
-          malloy_source: state.finalMalloy ?? null, malloy_source_chars: state.finalMalloy?.length ?? 0,
-          compiled_sql: state.finalCompiledSql ?? null, compiled_sql_chars: state.finalCompiledSql?.length ?? 0,
-          translation_match: state.translationMatch ?? null,
-          predicted_result: scoreResp.predicted_answer, gold_result: q.answer,
-          is_correct: scoreResp.is_correct, correctness_level: scoreResp.correctness, match_source: scoreResp.match_source,
-          escalated: result?.escalated ?? false, escalation_reason: result?.escalationReason ?? null,
-          fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
-          files_read: state.filesRead, lint_fixes: state.lintFixesTotal,
-          duration_ms: elapsedMs, cost_usd: result?.usage.cost ?? 0,
-          input_tokens: result?.usage.promptTokens ?? 0, output_tokens: result?.usage.completionTokens ?? 0,
-          error_description: dispatchErr,
+  // Whole-run cleanup: ALWAYS flush controllog and close the runtime + scorer,
+  // even if the pool rejects (a runner bug) mid-run. Per-task MCP clients are
+  // closed inside runEvalTask, so nothing leaks if a worker is abandoned.
+  try {
+    await cl.runInSession(session, async () => {
+      cl.runMetadata({
+        runId,
+        resolvedConfig: {
+          run_class: runClass,
+          author_model: author,
+          fixer_model: fixer,
+          escalate_after: escalateAfter,
+          max_author_turns: maxAuthorTurns,
+          max_fixer_turns: maxFixerTurns,
+          reasoning,
+          substrate: 'motherduck',
+          malloy_runtime: 'node-inprocess',
+          malloy_model_hash: prov.malloy_model_hash,
+          malloy_provenance: prov.malloy_provenance,
+          manual_included: prov.manual_included,
+          // (config_hash is derived from this object by runMetadata())
+          split,
+          database,
+          central_layer_chars: store.centralLayerChars(),
+          authoring_model: prov.authoring_model,
         },
+        commitSha: gitOutput('rev-parse HEAD'),
+        repo: gitOutput('config --get remote.origin.url'),
+        dirty: !!gitOutput('status --porcelain'),
+        agentName: AGENT_ID, datasetName: database, datasetVersion: split,
       });
 
-      const row = {
-        task_id: tid, level: q.level, split, author_model: author, fixer_model: fixer, run_class: runClass,
-        question: q.question, guidelines: q.guidelines, gold_answer: q.answer,
-        predicted_answer: scoreResp.predicted_answer, is_correct: scoreResp.is_correct, correctness: scoreResp.correctness,
-        match_source: scoreResp.match_source, malloy_source: state.finalMalloy ?? null, compiled_sql: state.finalCompiledSql ?? null,
-        translation_match: state.translationMatch ?? null,
-        escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
-        files_read: state.filesRead, lint_fixes: state.lintFixesTotal, elapsed_s: +(elapsedMs / 1000).toFixed(2),
-        cost_usd: result?.usage.cost ?? 0, prompt_tokens: result?.usage.promptTokens ?? 0, completion_tokens: result?.usage.completionTokens ?? 0,
-        error: dispatchErr, ts: new Date().toISOString(),
-      };
-      await appendFile(outPath, JSON.stringify(row) + '\n');
-      // Flush controllog per task so a mid-run crash preserves the telemetry of
-      // everything completed so far (a buffer-until-end flush previously lost the
-      // whole run's events when an exception skipped the final flushSession).
-      await cl.flushSession(session);
-
-      completed++;
-      if (scoreResp.is_correct) correct++;
-      const mark = scoreResp.is_correct ? '✓' : scoreResp.correctness;
-      console.log(`  [${completed}/${questions.length}] ${tid} ${mark}: ${String(scoreResp.predicted_answer).slice(0, 40)}${result?.escalated ? '  (escalated)' : ''}`);
-    };
-
-    const worker = async () => {
-      while (idx < questions.length) {
-        const q = questions[idx++];
-        await runOne(q);
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, questions.length) }, () => worker()));
-  }).finally(() => cl.flushSession(session)); // always flush, even if the run throws mid-way
-  await runtime.close();
-  scorer.close();
+      // Bounded pool: each item runs the per-question runner (which NEVER throws
+      // out — it returns an EvalTaskOutcome), so one question's failure can't
+      // abort its siblings.
+      await runPool(questions, concurrency, async (q) => {
+        const outcome = await runEvalTask(q, ctx);
+        await writeRow(JSON.stringify(outcome.row));
+        completed++;
+        if (outcome.isCorrect) correct++;
+        const mark = outcome.isCorrect ? '✓' : outcome.correctness;
+        const fail = outcome.failureStage ? `  (${outcome.failureStage}:${outcome.failureKind})` : '';
+        console.log(`  [${completed}/${questions.length}] ${outcome.taskId} ${mark}: ${String(outcome.predictedAnswer).slice(0, 40)}${outcome.escalated ? '  (escalated)' : ''}${fail}`);
+        return outcome;
+      });
+    });
+  } finally {
+    await cl.flushSession(session); // always flush, even if the run threw mid-way
+    try { await runtime.close(); } catch { /* ignore */ }
+    try { scorer.close(); } catch { /* ignore */ }
+  }
 
   const pct = questions.length ? ((correct / questions.length) * 100).toFixed(1) : '0';
   console.log(`\naccuracy: ${correct}/${questions.length} = ${pct}%`);
@@ -424,7 +577,12 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Auto-run as the CLI entrypoint (bin/asm-malloy.ts imports this for its side
+// effect). Skip under vitest, which imports this module to unit-test the
+// exported per-task runner without invoking the CLI.
+if (!process.env.VITEST) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
