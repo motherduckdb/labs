@@ -32,6 +32,16 @@ export function newRunState(): RunState {
   return { submitted: false, filesRead: [], lintFixesTotal: 0 };
 }
 
+/** MotherDuck/DuckDB returns counts and other integers as JS BigInt, which
+ *  JSON.stringify cannot serialize (it throws) — breaking the score-client and
+ *  results-JSONL writes. Convert BigInt to a plain number when it fits a safe
+ *  integer (every DABstep count/sum does), else to a string. Leaves all other
+ *  cell types untouched. */
+function jsonSafeCell(v: unknown): unknown {
+  if (typeof v === 'bigint') return v >= -9007199254740991n && v <= 9007199254740991n ? Number(v) : v.toString();
+  return v;
+}
+
 export interface ToolDeps {
   client: Client;
   runtime: MalloyRuntime;
@@ -172,7 +182,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     state.submitted = true;
     state.finalMalloy = fixedSrc;
     state.finalCompiledSql = r.sql;
-    state.finalRows = r.rows!.map((o) => cols.map((cn) => o[cn])); // positional for score.py
+    state.finalRows = r.rows!.map((o) => cols.map((cn) => jsonSafeCell(o[cn]))); // positional for score.py (BigInt-safe)
     state.translationMatch = null; // executed locally; MotherDuck cross-check deferred (engine skew known)
     return { content: `Submitted. ${r.rows!.length} row(s).`, isError: false };
   }

@@ -178,7 +178,8 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   let questions: Question[];
   if (flags['task-id']) {
     const all = await loadQuestions('all');
-    questions = all.filter((q) => String(q.task_id) === String(flags['task-id']));
+    const want = new Set(String(flags['task-id']).split(',').map((s) => s.trim()).filter(Boolean));
+    questions = all.filter((q) => want.has(String(q.task_id)));
     if (!questions.length) throw new Error(`task-id ${flags['task-id']} not found`);
   } else {
     questions = await loadQuestions(split);

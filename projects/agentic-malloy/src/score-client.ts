@@ -70,7 +70,12 @@ export class ScoreClient {
 
   score(req: ScoreRequest): Promise<ScoreResult> {
     const id = this.nextId++;
-    const payload = JSON.stringify({ id, ...req });
+    // Defensive: never let a stray BigInt (MotherDuck returns counts as BigInt)
+    // throw here and abort the whole run — rows are normalized upstream, but
+    // guard anyway. Safe integers → number, larger → string.
+    const payload = JSON.stringify({ id, ...req }, (_k, v) =>
+      typeof v === 'bigint' ? (v >= -9007199254740991n && v <= 9007199254740991n ? Number(v) : v.toString()) : v,
+    );
     return new Promise<ScoreResult>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.proc.stdin.write(payload + '\n');
