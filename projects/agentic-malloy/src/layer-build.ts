@@ -224,13 +224,18 @@ async function validateModel(modelFile?: string): Promise<{ ok: boolean; diag: s
         for (const view of inv.viewsBySource[s] ?? []) {
           const r = await rt.run(`run: ${s} -> ${view}`, 1);
           if (!r.ok) {
+            const errText = (r.diagnostics ?? []).map((d) => d.message).join('\n');
+            // Only the binder/scope class points to the join_many materialization
+            // fix — other execution errors (bad function args, type mismatch, …)
+            // need their own fix, so lead with the ACTUAL error and only attach the
+            // join-scoping hint when the error actually looks like that class.
+            const isScopeBug = /referenced table .* not found|not in scope|undefined value|candidate tables/i.test(errText);
+            const hint = isScopeBug
+              ? ` This is a join-scope bug: a \`join_many ... on\` predicate references attributes reached through ANOTHER join (a pass-through \`dimension: x is m.col\` is just an alias and drops out of SQL scope). FIX: MATERIALIZE those attributes as REAL columns first via a projection — \`source: enriched is base extend { join_one: m is ... } -> { select: *, acct is m.account_type, ... }\` — then \`join_many\` on \`enriched\`'s local columns, one level deep.`
+              : '';
             return {
               ok: false,
-              diag:
-                `The view \`${s} -> ${view}\` COMPILES but FAILS TO EXECUTE — a view that cannot run is unusable. ` +
-                `Cause: a \`join_many ... on\` predicate references attributes reached through ANOTHER join (e.g. a pass-through \`dimension: x is m.col\`). At SQL-gen that alias drops out of scope ("Referenced table not found"). ` +
-                `A pass-through dimension is NOT enough — it is just an alias for the joined column. You must MATERIALIZE those attributes as REAL columns BEFORE the fan-out: build the fact source with a PROJECTION that selects them, e.g. \`source: enriched is base extend { join_one: m is ... } -> { select: *, acct_type is m.account_type, mcc is m.merchant_category_code, ... }\` (now they are local columns of \`enriched\`), THEN do \`source: matched is enriched extend { join_many: rules on ... rules.x = acct_type ... }\` referencing ONLY local columns. Keep the fan-out one join level deep. ` +
-                `Re-author the file with this structure. Execution error:\n${(r.diagnostics ?? []).map((d) => d.message).join('\n')}`,
+              diag: `The view \`${s} -> ${view}\` COMPILES but FAILS TO EXECUTE — a view that cannot run is unusable. Fix the source so this query runs.${hint}\nExecution error:\n${errText}`,
             };
           }
         }
