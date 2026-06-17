@@ -1,62 +1,26 @@
-// Base source for the merchant_category_codes lookup table.
-// One row per MCC (Merchant Category Code) with its human-readable description.
-// Per the Merchant Manual §3, the MCC is a 4-digit code assigned by card networks
-// to classify a merchant's business type. The first two digits indicate the
-// category, the last two the subcategory.
+// merchant_category_codes_base.malloy
+// Lookup table mapping 4-digit Merchant Category Codes (MCC) to their
+// human-readable industry/business descriptions. Per the Merchant Manual,
+// MCCs are 4-digit codes assigned by card schemes to classify merchant
+// business type and are referenced in fee rules (fees.merchant_category_code)
+// as integers, so we expose both the raw string mcc and a numeric form.
 
 source: merchant_category_codes_base is duckdb.table('merchant_category_codes') extend {
 
-  // ---- Dimensions ----------------------------------------------------------
+  // ---------- Dimensions ----------
 
-  // `mcc` and `description` already exist on the table; do not redefine.
+  // mcc as integer (fees.json stores merchant_category_code as integers, e.g. [8062, 8011, 8021])
+  dimension: mcc_num is mcc::number
 
-  // Numeric form of the MCC, useful when joining to fee rules whose
-  // `merchant_category_code` list is integer-typed (e.g. [8062, 8011, 8021]).
-  dimension: mcc_number is mcc::number
+  // First two digits = high-level MCC category per the manual
+  dimension: mcc_category_prefix is substr!string(mcc, 1, 2)
 
-  // First two digits = high-level category bucket.
-  dimension: mcc_category is substr!string(mcc, 1, 2)
+  // Short, lower-cased description for easier matching
+  dimension: description_lower is lower(description)
 
-  // Last two digits = subcategory within the category.
-  dimension: mcc_subcategory is substr!string(mcc, 3, 2)
-
-  // Convenience label combining code + description.
-  dimension: mcc_label is concat(mcc, ' - ', description)
-
-  // Coarse industry grouping based on the leading digit of the MCC.
-  // (Standard ISO 18245 / card-network blocks.)
-  dimension: mcc_industry_group is
-    pick 'Agriculture / Contracted Services' when mcc ~ r'^[01]'
-    pick 'Transportation'                    when mcc ~ r'^4'
-    pick 'Utilities / Retail Outlets'        when mcc ~ r'^5'
-    pick 'Clothing / Retail'                 when mcc ~ r'^56'
-    pick 'Business Services'                 when mcc ~ r'^7'
-    pick 'Professional Services / Membership' when mcc ~ r'^8'
-    pick 'Government'                        when mcc ~ r'^9'
-    else 'Other'
-
-  // ---- Measures ------------------------------------------------------------
+  // ---------- Measures ----------
 
   measure: mcc_count is count()
-  measure: distinct_mcc_count is count(mcc)
-  measure: distinct_category_count is count(mcc_category)
-
-  // ---- Views ---------------------------------------------------------------
-
-  view: by_industry_group is {
-    group_by: mcc_industry_group
-    aggregate: mcc_count
-    order_by: mcc_count desc
-  }
-
-  view: by_category is {
-    group_by: mcc_category
-    aggregate: mcc_count
-    order_by: mcc_count desc
-  }
-
-  view: catalog is {
-    select: mcc, description
-    order_by: mcc asc
-  }
+  measure: distinct_descriptions is count(description)
+  measure: distinct_categories is count(mcc_category_prefix)
 }

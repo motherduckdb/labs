@@ -1,0 +1,58 @@
+// c1_merchants.malloy
+// Merchants enriched with MCC description and (loosely) acquirer-country reference.
+// Grain: one row per merchant (30 rows). Safe symmetric aggregates.
+
+source: c1_merchants is merchants_base extend {
+
+  primary_key: merchant
+
+  // MCC lookup is N:1 (each merchant has exactly one MCC; mcc is unique in the lookup).
+  join_one: mcc_lookup is merchant_category_codes_base on
+    merchant_category_code = mcc_lookup.mcc_num
+
+  // ----------------------------------------------------------------
+  // Merchant-level convenience dimensions exposed for downstream use
+  // ----------------------------------------------------------------
+
+  // Surface the MCC description through the join.
+  dimension: mcc_description is mcc_lookup.description
+  dimension: mcc_description_lower is mcc_lookup.description_lower
+  dimension: mcc_category_prefix is mcc_lookup.mcc_category_prefix
+
+  // Acquirer list helpers (lifted to top level for convenience).
+  // The empty-list "applies to all" branch does not occur in this snapshot
+  // (every merchant has >=1 acquirer), but we keep semantics consistent.
+  dimension: first_acquirer is
+    pick null when len!number(acquirer) = 0
+    else list_extract!string(acquirer, 1)
+
+  // ----------------------------------------------------------------
+  // Reusable views
+  // ----------------------------------------------------------------
+
+  view: merchant_directory is {
+    select:
+      merchant
+      account_type
+      account_type_label
+      account_segment
+      capture_delay
+      capture_delay_band
+      merchant_category_code
+      mcc_description
+      acquirer
+    order_by: merchant
+  }
+
+  view: by_mcc_description is {
+    group_by: merchant_category_code, mcc_description
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+
+  view: by_account_type_and_capture is {
+    group_by: account_type_label, capture_delay_band
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+}

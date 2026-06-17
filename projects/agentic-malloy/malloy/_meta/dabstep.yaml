@@ -1,61 +1,66 @@
 file: dabstep.malloy
-domain: payments-fees
+domain: payments / fees — thin top-level layer
 summary: |
-  Thin top-level semantic layer over the payments/fees data set. Re-exports
-  the intermediate sources (c1_payments, c2_merchant_monthly,
-  c3_transaction_fees, c4_fee_scenarios + ACI/MCC explosions) under short
-  stable names, and adds a few composed views (fraud-fee-by-merchant-ACI,
-  fees-by-merchant×year×scheme, fees-by-merchant×month×scheme,
-  merchants-by-fee×year) so each train question reduces to a one-stage
-  Malloy query — no joins or fee-formula logic at the query site.
+  Adds the few extras on top of the c1..c4 intermediates that the train-question
+  set needs but the existing sources don't already cover, while preserving the
+  thin-answer principle: every question is one filter + select on a NAMED view
+  or measure here. Specifically: (1) an MCC counter-factual fee join
+  (`fees_any_mcc` + `mcc_scenario_fee`) for "what if merchant had MCC=X" deltas;
+  (2) per-candidate-ACI scenario measures `aci_scenario_fee_A..G` plus the
+  `aci_scenarios` / `aci_scenarios_by_merchant` views so ACI-steering questions
+  are one aggregate; (3) two small enumerated cross-join sources
+  (`fees_per_mcc`, `fees_per_aci`) that give per-candidate-MCC and
+  per-candidate-ACI average fees at a given transaction value — the only path
+  Malloy doesn't already give us for the "most expensive MCC / ACI" questions.
+  Everything else (fee_by_merchant_year/month/day, applicable_rule_ids_by_*,
+  scheme_scenarios_by_merchant, rule_breakdown, by_card_scheme on fees_base)
+  is already named on the intermediates.
 exports:
-  - name: payments
+  - name: dabstep
     kind: source
-    summary: Per-transaction payments enriched with merchant attributes (account_type, capture_delay, MCC, MCC description) and an intracountry int flag. Alias of c1_payments.
-  - name: merchant_months
+    summary: |
+      Extension of c4_fee_application. Adds the MCC counter-factual fee join
+      and per-ACI candidate scenario measures.
+  - name: dabstep.mcc_scenario_fee
+    kind: measure
+    summary: |
+      Total fee if the merchant's MCC were swapped to a candidate MCC. Add
+      `{ where: list_contains!boolean(fees_any_mcc.merchant_category_code, X)
+                or len!number(fees_any_mcc.merchant_category_code) = 0 }`
+      plus merchant + period filters to compare against `total_fee`.
+  - name: dabstep.aci_scenarios
+    kind: view
+    summary: |
+      Seven measures `aci_scenario_fee_A..G` in one row — total fee if all
+      filtered traffic were steered to that ACI. Filter the row set first
+      (e.g. has_fraudulent_dispute, merchant, transaction_month).
+  - name: dabstep.aci_scenarios_by_merchant
+    kind: view
+    summary: Same, grouped by merchant.
+  - name: fees_per_mcc
     kind: source
-    summary: One row per (merchant, year, month) with total/fraud EUR volume, monthly_volume_tier and monthly_fraud_level_tier matching the fees.json bucket strings. Alias of c2_merchant_monthly.
-  - name: txn_fees
+    summary: |
+      Cross-join of MCC reference × fee rules, filtered to applicable rules
+      (rule's MCC list contains the MCC or is wildcard). Group by mcc for
+      "most expensive MCC at V EUR" questions; exposes
+      avg_fee_on_{100,1000,50000}_eur and the most_expensive_mcc_50000 view.
+  - name: fees_per_aci
     kind: source
-    summary: Transaction × matched-fee-rule grain with the effective per-pair fee. Exposes total_fee_amount / avg_fee_amount / matched_pair_count plus views fees_by_merchant_year, _month, _scheme, _aci, applicable_fee_ids_by_merchant_year/_month/_day, fraud_fee_by_merchant_aci_month/_year, fees_by_merchant_year_scheme, fees_by_merchant_month_scheme, merchants_by_fee_year.
-  - name: scenarios
-    kind: source
-    summary: Rule-grain "average scenario" fees at canonical EUR values (50, 100, 1000, 4321, 50000); views by_scheme_at_50/100/1000/4321 and by_scheme_credit_at_1000. Filter via list_contains!boolean(account_type, 'H') etc.
-  - name: scenarios_by_aci
-    kind: source
-    summary: Fee rules exploded by ACI letter (NULL aci expanded to A..G); view by_aci_at_100_credit_globalcard for the credit-100-GlobalCard question.
-  - name: scenarios_by_mcc
-    kind: source
-    summary: Fee rules exploded by MCC number, joined to description; view by_mcc_at_50000 for "most expensive MCC for a 50 000 EUR transaction".
-  - name: fees
-    kind: source
-    summary: Raw fee-rules catalog (alias of fees_base) for direct fee-ID lookups (e.g. "fee IDs that apply to account_type=D and aci=F" via list_contains).
-  - name: merchants
-    kind: source
-    summary: Merchant directory (alias of merchants_base) — account_type, capture_delay, acquirer list, MCC.
-  - name: mcc
-    kind: source
-    summary: MCC catalog with descriptions (alias of merchant_category_codes_base) — used to resolve descriptions like "Taxicabs and Limousines" → 4121.
-  - name: acquirers
-    kind: source
-    summary: Acquirer-country directory (alias of acquirer_countries_base).
+    summary: |
+      Cross-join of ACI codes {A..G} × fee rules, filtered to applicable rules
+      (rule's ACI list contains the ACI or is wildcard). Group by aci with
+      optional card_scheme/is_credit filters for "most expensive ACI" Qs.
 provides_for:
-  - cheapest_card_scheme_average_scenario
-  - most_expensive_card_scheme_average_scenario
-  - average_fee_by_account_type_mcc_scheme_value
-  - most_expensive_aci_credit_globalcard_100
-  - most_expensive_mcc_at_50000
-  - fee_ids_by_account_type_and_aci
-  - applicable_fee_ids_by_merchant_year
-  - applicable_fee_ids_by_merchant_month
-  - applicable_fee_ids_by_merchant_day
-  - merchants_affected_by_fee_id_in_year
-  - total_fees_by_merchant_year
-  - total_fees_by_merchant_month
-  - total_fees_by_merchant_day
-  - steer_scheme_min_or_max_year
-  - steer_scheme_min_or_max_month
-  - move_fraud_to_cheaper_aci
-  - fee_delta_rate_change_scenario
-  - mcc_change_what_if_scenario
-  - avg_transaction_value_by_issuing_country
+  - "fee total by merchant for a year/month/day (use c4_fee_application views fee_by_merchant_year/month/day)"
+  - "applicable fee IDs for merchant in period (c4_fee_application.applicable_rule_ids_by_merchant[_month])"
+  - "which merchants are affected by a given fee ID (applicable_rule_ids_by_merchant + filter on rule_id)"
+  - "scheme steering — cheapest/most-expensive scheme per merchant per period (c4_fee_application.scheme_scenarios_by_merchant)"
+  - "ACI steering for (fraudulent) txns — cheapest ACI to incentivize (dabstep.aci_scenarios[_by_merchant] + where has_fraudulent_dispute)"
+  - "delta if a rule's rate changed (c4_fee_application.rule_breakdown gives rule_volume_eur; delta = (new_rate - old_rate) * rule_volume_eur / 10000)"
+  - "delta if a merchant's MCC had been different (dabstep.mcc_scenario_fee with list_contains filter on fees_any_mcc.merchant_category_code, vs total_fee)"
+  - "average fee per card scheme at a given txn value V (fees_base by_card_scheme: avg_fixed_amount + avg_rate*V/10000)"
+  - "average fee for account_type / MCC / credit / scheme combos (fees_base with wildcard-aware filters: (len!number(account_type)=0 or list_contains!boolean(account_type,'H')) etc.)"
+  - "most expensive MCC at txn value V (fees_per_mcc.most_expensive_mcc_50000 / by_mcc with avg_fee_on_*_eur)"
+  - "most expensive / cheapest ACI for credit X-scheme at V (fees_per_aci.by_aci_credit_globalcard_100 / by_aci with filters)"
+  - "fee IDs matching synthetic (account_type, aci) combos (fees_base + wildcard-aware filters)"
+  - "average transaction value by issuing_country / period for a merchant (payments_base / c2_payments group_by issuing_country)"

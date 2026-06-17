@@ -1,0 +1,47 @@
+file: c2_payments.malloy
+domain: payments
+summary: |
+  Canonical per-transaction fact source. Extends payments_base with a many-to-one
+  join to c1_merchants so every payment row carries merchant attributes
+  (account_type, capture_delay_band, mcc + mcc_description, acquirers) plus a
+  numeric intracountry_flag (0/1) encoded to match fees.intracountry exactly.
+  This is the source downstream files (fee-matching, per-merchant fee totals,
+  what-if rule changes) should build on so they never have to restate the
+  payments -> merchants join.
+exports:
+  - name: c2_payments
+    kind: source
+    summary: payments_base + merchant attributes via c1_merchants (join_one with merchant).
+  - name: intracountry_flag
+    kind: dimension
+    summary: 1.0 if issuing_country = acquirer_country else 0.0; matches fees.intracountry DOUBLE encoding for equality joins.
+  - name: merchant_account_type
+    kind: dimension
+    summary: Merchant account_type (D/F/H/R/S) — used to match fees.account_type list rules.
+  - name: merchant_capture_delay_band
+    kind: dimension
+    summary: Merchant capture delay bucketed into the fee-rule domain ('<3','3-5','>5','immediate','manual').
+  - name: merchant_mcc
+    kind: dimension
+    summary: Integer MCC of the merchant — used to match fees.merchant_category_code list rules.
+  - name: merchant_mcc_description
+    kind: dimension
+    summary: Human-readable MCC description from the MCC lookup.
+  - name: by_merchant_segment
+    kind: view
+    summary: Volume + fraud-rate by enterprise/platform segment and account_type_label.
+  - name: by_merchant_mcc
+    kind: view
+    summary: Volume + fraud-rate per merchant with MCC description.
+  - name: by_merchant_and_scheme
+    kind: view
+    summary: Per-merchant per-card-scheme transaction counts and rates.
+  - name: by_merchant_and_aci
+    kind: view
+    summary: Per-merchant per-ACI counts (used for ACI steering / fraud-reassignment what-ifs).
+provides_for:
+  - per-transaction analytics enriched with merchant attributes
+  - foundation for fee-rule matching (carries account_type, mcc, intracountry_flag, capture_delay_band, is_credit, aci, card_scheme on every payment row)
+  - per-merchant fee totals and what-if rule-change analyses
+  - ACI / card-scheme steering questions per merchant
+  - merchant + card_scheme + ACI breakdowns of fraud and refusal rates

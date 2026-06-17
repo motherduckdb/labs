@@ -1,0 +1,101 @@
+// c3_merchant_monthly.malloy
+// Per-merchant × per-month roll-up of payments, with the EXACT band labels
+// that fee rules encode in `fees.monthly_volume` and `fees.monthly_fraud_level`.
+//
+// Why this exists: fee rules are matched per (merchant, month). The matching
+// predicate compares merchant volume / fraud against bands stored as strings
+// ('<100k', '100k-1m', '1m-5m', '>5m'  and  '<7.2%', '7.2%-7.7%', '7.7%-8.3%', '>8.3%').
+// We bucket here, once, so downstream fee-matching is a plain equality.
+//
+// Grain: one row per (merchant, calendar month). 5 merchants × 12 months ≤ 60 rows.
+// All aggregates here are SYMMETRIC because c2_payments only adds join_one's.
+
+source: c3_merchant_monthly is c2_payments -> {
+  group_by:
+    merchant
+    transaction_month                  // month-truncated date from payments_base
+  aggregate:
+    // Monthly economics
+    monthly_total_eur   is total_eur
+    monthly_fraud_eur   is fraud_eur
+    monthly_txn_count   is transaction_count
+    monthly_fraud_count is fraud_count
+    monthly_refused_count is refused_count
+} extend {
+
+  // --------------------------------------------------------------------
+  // Derived metrics
+  // --------------------------------------------------------------------
+
+  // Fraud as a PERCENT (manual §7 + fee-band labels are written in %).
+  dimension: monthly_fraud_rate_pct is
+    pick 0 when monthly_total_eur = 0
+    else 100.0 * monthly_fraud_eur / monthly_total_eur
+
+  // Volume band — labels match fees.monthly_volume EXACTLY.
+  // Domain in fees: {'<100k','100k-1m','1m-5m','>5m'} (+ NULL = wildcard).
+  dimension: monthly_volume_band is
+    pick '<100k'   when monthly_total_eur < 100000
+    pick '100k-1m' when monthly_total_eur < 1000000
+    pick '1m-5m'   when monthly_total_eur < 5000000
+    else '>5m'
+
+  // Fraud-level band — labels match fees.monthly_fraud_level EXACTLY.
+  // Domain in fees: {'<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'} (+ NULL = wildcard).
+  dimension: monthly_fraud_level_band is
+    pick '<7.2%'     when monthly_fraud_rate_pct < 7.2
+    pick '7.2%-7.7%' when monthly_fraud_rate_pct < 7.7
+    pick '7.7%-8.3%' when monthly_fraud_rate_pct < 8.3
+    else '>8.3%'
+
+  // Calendar helpers so callers can filter without re-deriving them.
+  dimension: `year`  is year(transaction_month)
+  dimension: `month` is month(transaction_month)
+
+  // --------------------------------------------------------------------
+  // Measures (this is already a small roll-up table — symmetric only)
+  // --------------------------------------------------------------------
+
+  measure: row_count          is count()
+  measure: total_volume_eur   is monthly_total_eur.sum()
+  measure: total_fraud_eur    is monthly_fraud_eur.sum()
+  measure: total_txn_count    is monthly_txn_count.sum()
+  measure: total_fraud_count  is monthly_fraud_count.sum()
+
+  // --------------------------------------------------------------------
+  // Reusable views
+  // --------------------------------------------------------------------
+
+  // The canonical "what bands apply to this (merchant, month)?" lookup.
+  view: monthly_bands is {
+    select:
+      merchant
+      transaction_month
+      `year`
+      `month`
+      monthly_total_eur
+      monthly_fraud_eur
+      monthly_fraud_rate_pct
+      monthly_volume_band
+      monthly_fraud_level_band
+      monthly_txn_count
+      monthly_fraud_count
+    order_by: merchant, transaction_month
+  }
+
+  // Distribution check — useful when validating band assignment.
+  view: band_distribution is {
+    group_by: monthly_volume_band, monthly_fraud_level_band
+    aggregate: row_count, total_volume_eur, total_fraud_eur
+    order_by: monthly_volume_band, monthly_fraud_level_band
+  }
+
+  view: by_merchant_year is {
+    group_by: merchant, `year`
+    aggregate:
+      row_count
+      total_volume_eur
+      total_fraud_eur
+    order_by: merchant, `year`
+  }
+}

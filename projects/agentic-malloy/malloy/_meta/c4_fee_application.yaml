@@ -1,0 +1,89 @@
+file: c4_fee_application.malloy
+domain: fees
+summary: |
+  Cross-source fee model. Joins payments (via c2_payments + c3_merchant_monthly
+  bands) to fees_base with the full rule-matching predicate (card_scheme,
+  account_type list/wildcard, capture_delay band, monthly_volume + fraud-level
+  bands, MCC list/wildcard, is_credit, ACI list/wildcard, intracountry flag).
+  Each payment fans out to every matching rule; the per-match fee
+  fixed_amount + rate * eur_amount / 10000 is then summed at the
+  payment × matched-rule grain. Two additional join_manys (fees_any_scheme,
+  fees_any_aci) drop one predicate each to support "steer traffic to scheme X"
+  and "incentivize ACI X" counter-factuals via simple group_by.
+exports:
+  - name: c4_fee_application
+    kind: source
+    summary: |
+      Central fact for fee questions. Built on c2_payments; adds join_one to
+      c3_merchant_monthly (for monthly_volume_band / monthly_fraud_level_band)
+      and three join_many flavors to fees_base.
+  - name: total_fee
+    kind: measure
+    summary: |
+      THE answer to "how much fee did merchant M pay over period P".
+      Sum of fixed_amount + rate*eur_amount/10000 over every matched
+      (payment, fee-rule) pair under current filters.
+  - name: matched_rule_count
+    kind: measure
+    summary: Number of (payment × matched rule) pairs under current filters.
+  - name: distinct_matched_rule_ids
+    kind: measure
+    summary: Number of distinct fee-rule IDs matching the filtered payments.
+  - name: avg_fee_per_match
+    kind: measure
+    summary: Average per-pair fee across all matched (payment, rule) pairs.
+  - name: scheme_scenario_fee
+    kind: measure
+    summary: |
+      Counter-factual fee using the scheme-agnostic join. Group by
+      fees_any_scheme.card_scheme to compute "what would merchant pay if all
+      this traffic were routed via scheme X".
+  - name: aci_scenario_fee
+    kind: measure
+    summary: |
+      Counter-factual fee with the aci predicate dropped. Combine with a
+      where: list_contains(fees_any_aci.aci, 'X') or len(fees_any_aci.aci)=0
+      to compute "what if these txns used ACI X".
+  - name: applicable_rule_ids
+    kind: view
+    summary: Distinct list of fee IDs that match the filtered payments.
+  - name: applicable_rule_ids_by_merchant
+    kind: view
+    summary: Distinct fee IDs per merchant under current filters.
+  - name: applicable_rule_ids_by_merchant_month
+    kind: view
+    summary: Distinct fee IDs per (merchant, month) under current filters.
+  - name: fee_totals
+    kind: view
+    summary: total_fee + matched_rule_count grouped by merchant.
+  - name: fee_by_merchant_year
+    kind: view
+    summary: Annual fee total per merchant.
+  - name: fee_by_merchant_month
+    kind: view
+    summary: Monthly fee total per merchant.
+  - name: fee_by_merchant_day
+    kind: view
+    summary: Daily fee total per merchant (for day-of-year questions).
+  - name: rule_breakdown
+    kind: view
+    summary: |
+      Per fee-rule attribution under the current filter — match count,
+      summed fee, and summed eur volume. Use it to answer
+      "delta if rule X's rate changed to R".
+  - name: scheme_scenarios
+    kind: view
+    summary: |
+      For each candidate card_scheme, the total fee if all filtered traffic
+      were routed via that scheme. Answers "steer to which scheme to min/max
+      fees".
+  - name: scheme_scenarios_by_merchant
+    kind: view
+    summary: Same as scheme_scenarios, grouped by merchant.
+provides_for:
+  - "Total fees a merchant paid in a year / month / day (e.g. Belles_cookbook_store 2023)"
+  - "Applicable fee IDs for a merchant over year / month / specific day-of-year"
+  - "Per-rule fee contribution and delta-if-rate-changed analyses"
+  - "Card-scheme steering counter-factuals (min/max fee per scheme)"
+  - "ACI steering counter-factuals (filter fees_any_aci.aci membership)"
+  - "Fee impact of monthly volume / fraud band changes via c3 bands"

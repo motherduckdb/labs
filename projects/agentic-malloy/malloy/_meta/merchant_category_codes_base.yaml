@@ -1,11 +1,20 @@
 file: merchant_category_codes_base.malloy
-domain: Payments / Merchant reference data
-summary: Base source over the merchant_category_codes lookup table, exposing the raw MCC code and description plus derived category/subcategory/industry-group dimensions and simple count measures for use in joins from fees and transactions models.
+domain: payments / merchant classification
+summary: |
+  Base source for the merchant_category_codes lookup (769 rows): maps a
+  4-digit MCC string to a description. Adds a numeric mcc_num for joining
+  to fee-rule MCC arrays (which use integers), a two-digit category prefix,
+  and basic count measures. No joins.
 exports:
   - name: merchant_category_codes_base
     kind: source
-    summary: One row per 4-digit Merchant Category Code with description, numeric form, category/subcategory splits, an industry-group bucket, and count measures.
+    summary: |
+      Per-MCC lookup. Dimensions: mcc (raw 4-digit string, PK-like),
+      mcc_num (integer form), description, description_lower,
+      mcc_category_prefix (first 2 digits). Measures: mcc_count,
+      distinct_descriptions, distinct_categories. All measures are
+      base-grain (one row per MCC).
 provides_for:
-  - fees (lookup of MCC descriptions / category for fee rules whose merchant_category_code list references these codes)
-  - merchants (enrich merchant rows with human-readable MCC description and industry group)
-  - transactions (categorize transactions by merchant industry group)
+  - "Resolving an MCC code to its industry description"
+  - "Joining to fees rules whose merchant_category_code list contains an integer MCC (use mcc_num)"
+  - "Grouping merchants/transactions by MCC category prefix"

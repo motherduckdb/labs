@@ -1,19 +1,22 @@
 file: merchants_base.malloy
 domain: payments
 summary: |
-  Base Malloy source over the DuckDB `merchants` table. One row per merchant,
-  with derived dimensions for account type labels (per Merchant Manual §2),
-  capture-delay buckets (§5), MCC helpers (§3), and acquirer-count features,
-  plus basic count/avg measures and starter views (by account type, capture
-  delay, MCC, and an overview). No joins.
+  Base source over the `merchants` reference table (30 merchants in this
+  snapshot). Exposes raw columns plus derived dimensions that align with the
+  Merchant Manual: human-readable account-type labels, an account segment
+  (Enterprise vs Platform), a capture_delay band that matches the fee-rule
+  bands ('<3','3-5','>5','immediate','manual'), MCC as string, and
+  acquirer-list helpers (count, applies-to-all, multi-acquirer). All measures
+  are symmetric counts/averages so they remain correct under later joins.
 exports:
   - name: merchants_base
     kind: source
-    summary: Per-merchant configuration: name, capture_delay, acquirer list, MCC, account_type, with derived labels and counts.
+    summary: |
+      One row per merchant. Use for merchant-level lookups and as the right
+      side of join_one from transaction-grain sources. No joins defined here.
 provides_for:
-  - merchant lookups by name
-  - segmentation by account_type / account_segment
-  - capture-delay distribution analysis
-  - acquirer footprint (single vs multi-acquirer) analysis
-  - MCC distribution and category-prefix grouping
-  - join target for fee/payment fact tables on `merchant`
+  - "Merchant attribute lookups (account_type, MCC, capture_delay, acquirer list)"
+  - "Account-type / segment breakdowns of merchant counts"
+  - "Capture-delay banding aligned with fee-rule bands"
+  - "Acquirer-list shape diagnostics (multi-acquirer, applies-to-all)"
+  - "Right-hand side of join_one from payments/transactions sources keyed on merchant"

@@ -1,20 +1,35 @@
 file: fees_base.malloy
-domain: payments
+domain: payments / fee-rules
 summary: |
-  Base source over the `fees` table — the fee-rule catalog. Each row is a
-  pricing rule keyed by card scheme, account type(s), capture delay, monthly
-  fraud band, monthly volume band, MCC list, credit flag, ACI list and
-  intracountry flag, producing a (fixed_amount, rate) pair where the
-  effective fee is fixed_amount + rate * txn_value / 10000. NULL columns are
-  wildcards meaning "applies to all values of that field". Exposes readable
-  labels for the list columns, wildcard flags, a rule-specificity score, a
-  scope label (domestic/international/any), and measures over fixed amount,
-  rate (raw and percent), and the effective fee on a EUR 100 reference
-  transaction, plus segmentation views by scheme, capture delay, fraud band,
-  volume band, scope, credit flag and ACI.
+  Base source over the `fees` table (1 row = 1 fee rule). Exposes the raw
+  columns plus derived wildcard flags, readable labels for the numeric
+  intracountry flag and the credit flag, and the worked "fee on a €100
+  transaction" expression (fixed_amount + rate*100/10000) used as a
+  single comparable economic-impact dimension. All measures are
+  base-grain (rule-level counts/averages) — there are no joins in this
+  file, so nothing here can be double-counted.
 exports:
   - name: fees_base
     kind: source
-    summary: Fee-rule catalog with dimensions, wildcard flags, and fee/rate measures.
+    summary: |
+      Fee-rule rows from duckdb.table('fees'). Primary key ID. Encodes the
+      manual's wildcard semantics correctly: list columns
+      (account_type, merchant_category_code, aci) use the EMPTY list for
+      "applies to all" (never null in this dataset); scalar columns
+      (capture_delay, monthly_fraud_level, monthly_volume, is_credit,
+      intracountry) use NULL for "applies to all". Dimensions:
+      applies_to_all_* flags, intracountry_label, credit_label,
+      account_type_count / mcc_count / aci_count, fee_on_100_eur,
+      fee_on_10_eur. Measures: rule_count, avg/min/max/sum_fixed_amount,
+      avg/min/max_rate, avg/min/max_fee_on_100_eur, credit_rule_count,
+      debit_rule_count, credit_agnostic_rule_count,
+      intracountry_rule_count, international_rule_count,
+      geography_agnostic_rule_count, wildcard_*_rule_count. Views:
+      by_card_scheme, by_capture_delay, by_monthly_volume,
+      by_monthly_fraud_level, by_credit_and_intracountry,
+      most_expensive_rules.
 provides_for:
-  - fees
+  - "Browsing the fee-rule catalogue (counts and averages by card scheme, capture delay, monthly volume, monthly fraud band, credit flag, intracountry flag)."
+  - "Comparing the economic cost of rules via a single number (fee_on_100_eur / fee_on_10_eur)."
+  - "Identifying wildcard ('applies to all') rules per dimension."
+  - "Serving as the right-hand side of future joins from a transactions source that needs to look up the applicable fee rule (use the wildcard flags + list_contains!boolean on the list columns when writing the matching predicate)."

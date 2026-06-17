@@ -1,0 +1,222 @@
+// c4_fee_application.malloy
+// THE fee model: payment × fee-rule fan-out + per-pair fee computation.
+//
+// One row of the (logical) fact = (payment, matching-fee-rule). A payment
+// matches a fee rule when EVERY non-wildcard field on the rule equals the
+// corresponding fact value. Wildcard encoding follows the profile:
+//   - list columns (account_type, merchant_category_code, aci): empty list
+//   - scalar columns (capture_delay, monthly_fraud_level, monthly_volume,
+//     is_credit, intracountry): NULL
+//
+// Fee formula (per the Merchant Manual §5):
+//   fee = fixed_amount + rate * eur_amount / 10000
+//
+// We declare THREE join_manys to fees_base on the same source so that
+// counter-factual "what if" steering questions become a single group_by:
+//   - fees           : full match (the rule that actually applied)
+//   - fees_any_scheme: drop card_scheme   (reroute traffic to scheme X)
+//   - fees_any_aci   : drop aci           (incentivize shoppers to ACI X)
+//
+// _meta on aggregate locality
+//   payment-grain  (symmetric, safe at any grain):  transaction_count,
+//                  total_eur, fraud_count, ...  — inherited from c2_payments.
+//                  Always reference these via the payment side; do NOT
+//                  re-aggregate them after the fee fan-out.
+//   match-grain    (one row per payment × matched-rule):  matched_rule_count,
+//                  total_fee, scheme_scenario_fee, aci_scenario_fee. These
+//                  use `fees.<agg>` / `fees_any_*.<agg>` form so the
+//                  aggregate is pushed to the fees-side locality.
+
+source: c4_fee_application is c2_payments extend {
+
+  // ---------------------------------------------------------------------
+  // Merchant-month band lookup (N:1 — many payments per merchant-month)
+  // ---------------------------------------------------------------------
+  join_one: mm is c3_merchant_monthly on
+        merchant = mm.merchant
+    and transaction_month = mm.transaction_month
+
+  // Surface the bands at payment grain for both display and matching.
+  dimension: monthly_volume_band      is mm.monthly_volume_band
+  dimension: monthly_fraud_level_band is mm.monthly_fraud_level_band
+  dimension: monthly_total_eur        is mm.monthly_total_eur
+  dimension: monthly_fraud_rate_pct   is mm.monthly_fraud_rate_pct
+
+  // ---------------------------------------------------------------------
+  // FEE-RULE FAN-OUT (the matching predicate, in Malloy)
+  // ---------------------------------------------------------------------
+
+  // Full match — scheme + aci + every other condition.
+  join_many: fees is fees_base on
+        fees.card_scheme = card_scheme
+    and (len!number(fees.account_type) = 0
+         or list_contains!boolean(fees.account_type, merchant_account_type))
+    and (fees.capture_delay is null
+         or fees.capture_delay = merchant_capture_delay_band)
+    and (fees.monthly_fraud_level is null
+         or fees.monthly_fraud_level = mm.monthly_fraud_level_band)
+    and (fees.monthly_volume is null
+         or fees.monthly_volume = mm.monthly_volume_band)
+    and (len!number(fees.merchant_category_code) = 0
+         or list_contains!boolean(fees.merchant_category_code, merchant_mcc))
+    and (fees.is_credit is null or fees.is_credit = is_credit)
+    and (len!number(fees.aci) = 0 or list_contains!boolean(fees.aci, aci))
+    and (fees.intracountry is null or fees.intracountry = intracountry_flag)
+
+  // Scheme-agnostic match — for "steer traffic to scheme X" scenarios.
+  // Group by fees_any_scheme.card_scheme to see cost per candidate scheme.
+  join_many: fees_any_scheme is fees_base on
+        (len!number(fees_any_scheme.account_type) = 0
+         or list_contains!boolean(fees_any_scheme.account_type, merchant_account_type))
+    and (fees_any_scheme.capture_delay is null
+         or fees_any_scheme.capture_delay = merchant_capture_delay_band)
+    and (fees_any_scheme.monthly_fraud_level is null
+         or fees_any_scheme.monthly_fraud_level = mm.monthly_fraud_level_band)
+    and (fees_any_scheme.monthly_volume is null
+         or fees_any_scheme.monthly_volume = mm.monthly_volume_band)
+    and (len!number(fees_any_scheme.merchant_category_code) = 0
+         or list_contains!boolean(fees_any_scheme.merchant_category_code, merchant_mcc))
+    and (fees_any_scheme.is_credit is null or fees_any_scheme.is_credit = is_credit)
+    and (len!number(fees_any_scheme.aci) = 0
+         or list_contains!boolean(fees_any_scheme.aci, aci))
+    and (fees_any_scheme.intracountry is null
+         or fees_any_scheme.intracountry = intracountry_flag)
+
+  // ACI-agnostic match — for "move (fraud) txns to ACI X" scenarios.
+  // Filter on  list_contains(fees_any_aci.aci, X) or wildcard  per candidate X.
+  join_many: fees_any_aci is fees_base on
+        fees_any_aci.card_scheme = card_scheme
+    and (len!number(fees_any_aci.account_type) = 0
+         or list_contains!boolean(fees_any_aci.account_type, merchant_account_type))
+    and (fees_any_aci.capture_delay is null
+         or fees_any_aci.capture_delay = merchant_capture_delay_band)
+    and (fees_any_aci.monthly_fraud_level is null
+         or fees_any_aci.monthly_fraud_level = mm.monthly_fraud_level_band)
+    and (fees_any_aci.monthly_volume is null
+         or fees_any_aci.monthly_volume = mm.monthly_volume_band)
+    and (len!number(fees_any_aci.merchant_category_code) = 0
+         or list_contains!boolean(fees_any_aci.merchant_category_code, merchant_mcc))
+    and (fees_any_aci.is_credit is null or fees_any_aci.is_credit = is_credit)
+    and (fees_any_aci.intracountry is null
+         or fees_any_aci.intracountry = intracountry_flag)
+
+  // ---------------------------------------------------------------------
+  // MEASURES (match grain — already accounts for fan-out)
+  // ---------------------------------------------------------------------
+
+  // How many distinct fee rules match the filtered payments.
+  measure: matched_rule_count       is fees.count()
+  measure: distinct_matched_rule_ids is count(fees.ID)
+
+  // The actual fee paid: sum over every (payment × matched-rule) pair.
+  measure: total_fee is
+    fees.sum(fees.fixed_amount + fees.rate * eur_amount / 10000)
+
+  measure: avg_fee_per_match is
+    fees.avg(fees.fixed_amount + fees.rate * eur_amount / 10000)
+
+  measure: max_fee_per_match is
+    max(fees.fixed_amount + fees.rate * eur_amount / 10000)
+
+  measure: min_fee_per_match is
+    min(fees.fixed_amount + fees.rate * eur_amount / 10000)
+
+  // ---- Counter-factuals ----
+
+  // Scheme-steering: total fee if traffic were rerouted to fees_any_scheme.card_scheme.
+  measure: scheme_scenario_fee is
+    fees_any_scheme.sum(fees_any_scheme.fixed_amount
+                        + fees_any_scheme.rate * eur_amount / 10000)
+  measure: scheme_scenario_match_count is fees_any_scheme.count()
+
+  // ACI-steering: total fee with the aci predicate dropped. Add a filter like
+  //   { where: list_contains!boolean(fees_any_aci.aci, 'E')
+  //            or len!number(fees_any_aci.aci) = 0 }
+  // to ask "what would I pay if all (fraud) txns used ACI = 'E'".
+  measure: aci_scenario_fee is
+    fees_any_aci.sum(fees_any_aci.fixed_amount
+                     + fees_any_aci.rate * eur_amount / 10000)
+  measure: aci_scenario_match_count is fees_any_aci.count()
+
+  // ---------------------------------------------------------------------
+  // VIEWS — thin answers to the recurring question shapes
+  // ---------------------------------------------------------------------
+
+  // The hardest recurring shape: "fee paid by merchant M over period P".
+  // Filter on merchant + transaction_date, read total_fee.
+  view: fee_totals is {
+    group_by: merchant
+    aggregate: total_fee, matched_rule_count, transaction_count
+    order_by: merchant
+  }
+
+  view: fee_by_merchant_year is {
+    group_by: merchant, `year` is year(transaction_date)
+    aggregate: total_fee, matched_rule_count, transaction_count
+    order_by: merchant, `year`
+  }
+
+  view: fee_by_merchant_month is {
+    group_by: merchant, transaction_month
+    aggregate: total_fee, matched_rule_count, transaction_count
+    order_by: merchant, transaction_month
+  }
+
+  view: fee_by_merchant_day is {
+    group_by: merchant, transaction_date
+    aggregate: total_fee, matched_rule_count, transaction_count
+    order_by: merchant, transaction_date
+  }
+
+  // "Which fee IDs apply?" — distinct list, possibly under filters.
+  view: applicable_rule_ids is {
+    group_by: rule_id is fees.ID
+    aggregate: match_count is fees.count()
+    order_by: rule_id
+  }
+
+  view: applicable_rule_ids_by_merchant is {
+    group_by: merchant, rule_id is fees.ID
+    aggregate: match_count is fees.count()
+    order_by: merchant, rule_id
+  }
+
+  view: applicable_rule_ids_by_merchant_month is {
+    group_by: merchant, transaction_month, rule_id is fees.ID
+    aggregate: match_count is fees.count()
+    order_by: merchant, transaction_month, rule_id
+  }
+
+  // Per-rule contribution — fee + match count of each rule under current filters.
+  // Useful for "delta if rate of rule X changed" and rule-impact questions.
+  view: rule_breakdown is {
+    group_by:
+      rule_id is fees.ID,
+      rule_card_scheme is fees.card_scheme,
+      rule_fixed_amount is fees.fixed_amount,
+      rule_rate is fees.rate
+    aggregate:
+      match_count is fees.count(),
+      rule_fee is fees.sum(fees.fixed_amount + fees.rate * eur_amount / 10000),
+      rule_volume_eur is fees.sum(eur_amount)
+    order_by: rule_id
+  }
+
+  // Scheme counter-factual: per candidate card_scheme, total fee if all
+  // currently-filtered traffic were routed via that scheme.
+  view: scheme_scenarios is {
+    group_by: candidate_scheme is fees_any_scheme.card_scheme
+    aggregate:
+      scheme_scenario_fee
+      scheme_scenario_match_count
+    order_by: scheme_scenario_fee
+  }
+
+  view: scheme_scenarios_by_merchant is {
+    group_by: merchant, candidate_scheme is fees_any_scheme.card_scheme
+    aggregate:
+      scheme_scenario_fee
+      scheme_scenario_match_count
+    order_by: merchant, scheme_scenario_fee
+  }
+}

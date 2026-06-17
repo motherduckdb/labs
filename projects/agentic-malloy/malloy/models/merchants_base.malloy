@@ -1,19 +1,16 @@
 // merchants_base.malloy
-// Base source for the `merchants` directory table.
-// One row per merchant with its processing configuration:
-//   - merchant name
-//   - capture_delay (auth → settlement timing bucket)
-//   - acquirer list (acquiring banks the merchant routes through)
-//   - merchant_category_code (MCC, see manual §3)
-//   - account_type (single-letter code, see manual §2)
+// Base source for the `merchants` reference table. One row per merchant.
+// NO joins here — see merchants.malloy (if present) for join-aware logic.
 
 source: merchants_base is duckdb.table('merchants') extend {
 
-  //-------------------------------------------------------------------
-  // Derived dimensions
-  //-------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Derived dimensions (NEW names only — never redefine raw columns)
+  // ---------------------------------------------------------------------------
 
-  // Human-readable account type per the Merchant Manual §2.
+  // Human-readable label for account_type per the Merchant Manual §2.
+  // Domain observed in data: {D, F, H, R, S}. 'O' (Other) is documented but
+  // does not appear — kept in the pick for completeness.
   dimension: account_type_label is
     pick 'Enterprise - Retail'      when account_type = 'R'
     pick 'Enterprise - Digital'     when account_type = 'D'
@@ -21,56 +18,59 @@ source: merchants_base is duckdb.table('merchants') extend {
     pick 'Platform - Franchise'     when account_type = 'F'
     pick 'Platform - SaaS'          when account_type = 'S'
     pick 'Other'                    when account_type = 'O'
-    else 'Unknown'
+    else concat('Unknown (', account_type, ')')
 
-  // Broad channel grouping derived from account_type.
+  // High-level grouping: Enterprise vs Platform (vs Other).
   dimension: account_segment is
-    pick 'Enterprise' when account_type = 'R' | 'D' | 'H'
-    pick 'Platform'   when account_type = 'F' | 'S'
+    pick 'Enterprise' when account_type ? 'R' | 'D' | 'H'
+    pick 'Platform'   when account_type ? 'F' | 'S'
     else 'Other'
 
-  // capture_delay as an ordered bucket (faster = more expensive per manual §5).
-  dimension: capture_delay_bucket is
+  // capture_delay raw domain is {'1','2','7','immediate','manual'}.
+  // Bucket into a coarser, ordered band useful for fee-rule comparisons.
+  // (Fee rules use bands like '<3', '3-5', '>5', 'immediate', 'manual'.)
+  dimension: capture_delay_band is
     pick 'immediate' when capture_delay = 'immediate'
-    pick '<3 days'   when capture_delay = '<3'
-    pick '3-5 days'  when capture_delay = '3-5'
-    pick '>5 days'   when capture_delay = '>5'
     pick 'manual'    when capture_delay = 'manual'
-    else 'unknown'
+    pick '<3'        when capture_delay ? '1' | '2'
+    pick '3-5'       when capture_delay = '3' or capture_delay = '4' or capture_delay = '5'
+    pick '>5'        when capture_delay = '7' or capture_delay = '6'
+    else capture_delay
 
-  // True when the merchant settles quickly (more expensive bucket).
-  dimension: is_fast_capture is
-    capture_delay = 'immediate' or capture_delay = '<3'
+  // Numeric form of the delay in days (NULL for non-numeric 'immediate'/'manual').
+  dimension: capture_delay_days is capture_delay:::number
 
-  // Number of acquirers the merchant routes through.
+  // MCC as string (handy for joining/grouping against the MCC reference table,
+  // which often stores codes as strings).
+  dimension: mcc_code is merchant_category_code::string
+
+  // List-column helpers. Per the profile, the empty list encodes
+  // "applies to all acquirers". In this snapshot empty[]=0, so this branch
+  // is defensive but kept consistent with fee-rule semantics.
   dimension: acquirer_count is len!number(acquirer)
+  dimension: applies_to_all_acquirers is len!number(acquirer) = 0
+  dimension: has_multiple_acquirers is len!number(acquirer) > 1
 
-  dimension: is_multi_acquirer is len!number(acquirer) > 1
-
-  // MCC as string (handy for joins/labels, two-digit category prefix, etc.)
-  dimension: mcc_string is merchant_category_code::string
-
-  // First two digits of the MCC = high-level category (manual §3).
-  dimension: mcc_category_prefix is
-    substr!string(lpad!string(merchant_category_code::string, 4, '0'), 1, 2)
-
-  //-------------------------------------------------------------------
-  // Measures
-  //-------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Measures (all symmetric — safe at any grain)
+  // ---------------------------------------------------------------------------
 
   measure: merchant_count is count()
   measure: distinct_merchants is count(merchant)
   measure: distinct_mccs is count(merchant_category_code)
   measure: distinct_account_types is count(account_type)
+  measure: distinct_capture_delays is count(capture_delay)
+
   measure: avg_acquirers_per_merchant is avg(len!number(acquirer))
   measure: max_acquirers_per_merchant is max(len!number(acquirer))
-  measure: multi_acquirer_merchants is count() { where: len!number(acquirer) > 1 }
-  measure: fast_capture_merchants is
-    count() { where: capture_delay = 'immediate' or capture_delay = '<3' }
+  measure: merchants_with_multi_acquirer is
+    count() { where: len!number(acquirer) > 1 }
+  measure: merchants_applies_to_all_acquirers is
+    count() { where: len!number(acquirer) = 0 }
 
-  //-------------------------------------------------------------------
-  // Handy views
-  //-------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Reusable views
+  // ---------------------------------------------------------------------------
 
   view: by_account_type is {
     group_by: account_type, account_type_label
@@ -79,7 +79,7 @@ source: merchants_base is duckdb.table('merchants') extend {
   }
 
   view: by_capture_delay is {
-    group_by: capture_delay_bucket
+    group_by: capture_delay, capture_delay_band
     aggregate: merchant_count
     order_by: merchant_count desc
   }
@@ -90,13 +90,9 @@ source: merchants_base is duckdb.table('merchants') extend {
     order_by: merchant_count desc
   }
 
-  view: overview is {
-    aggregate:
-      merchant_count
-      distinct_mccs
-      distinct_account_types
-      avg_acquirers_per_merchant
-      multi_acquirer_merchants
-      fast_capture_merchants
+  view: by_segment is {
+    group_by: account_segment
+    aggregate: merchant_count
+    order_by: merchant_count desc
   }
 }

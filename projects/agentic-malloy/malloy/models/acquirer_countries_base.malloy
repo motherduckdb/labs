@@ -1,21 +1,40 @@
 source: acquirer_countries_base is duckdb.table('acquirer_countries') extend {
 
-  // --- Dimensions ---
+  // --- Dimensions (derived; do not redefine existing columns) ---
 
-  // Uppercased acquirer name (useful for case-insensitive matching/joins
-  // against acquirer fields in other tables).
-  dimension: acquirer_name is upper(acquirer)
+  dimension: is_european is country_code ? 'FR' | 'GB' | 'IT' | 'NL'
+  dimension: is_us is country_code = 'US'
 
-  // Uppercased ISO country code for the acquirer.
-  dimension: acquirer_country is upper(country_code)
+  dimension: country_name is
+    pick 'France'         when country_code = 'FR'
+    pick 'United Kingdom' when country_code = 'GB'
+    pick 'Italy'          when country_code = 'IT'
+    pick 'Netherlands'    when country_code = 'NL'
+    pick 'United States'  when country_code = 'US'
+    else country_code
 
   // --- Measures ---
 
   measure: row_count is count()
-
-  // Distinct acquirers represented in this lookup.
   measure: acquirer_count is count(acquirer)
-
-  // Distinct acquirer countries represented.
   measure: country_count is count(country_code)
+
+  // --- Reusable views ---
+
+  view: by_country is {
+    group_by: country_code, country_name
+    aggregate: acquirer_count
+    order_by: acquirer_count desc
+  }
+
+  view: by_acquirer is {
+    group_by: acquirer
+    aggregate: country_count
+    order_by: country_count desc
+  }
+
+  view: acquirer_country_list is {
+    group_by: acquirer, country_code
+    order_by: acquirer, country_code
+  }
 }

@@ -1,0 +1,66 @@
+// c2_payments.malloy
+// Canonical fact source: one row per payment attempt, enriched with merchant
+// attributes (account_type, capture_delay_band, MCC + description) through
+// c1_merchants. All merchant attributes are N:1 with respect to payments, so
+// every aggregate defined on payments_base remains symmetric / safe.
+
+source: c2_payments is payments_base extend {
+
+  // payments.merchant -> merchants.merchant (PK). Many payments to one merchant.
+  join_one: m is c1_merchants with merchant
+
+  // -----------------------------------------------------------------
+  // Pass-through merchant attributes (named so downstream code never
+  // has to remember the `m.` prefix).
+  // -----------------------------------------------------------------
+
+  dimension: merchant_account_type        is m.account_type
+  dimension: merchant_account_type_label  is m.account_type_label
+  dimension: merchant_account_segment     is m.account_segment
+
+  dimension: merchant_capture_delay       is m.capture_delay
+  dimension: merchant_capture_delay_band  is m.capture_delay_band
+  dimension: merchant_capture_delay_days  is m.capture_delay_days
+
+  dimension: merchant_mcc                 is m.merchant_category_code  // BIGINT
+  dimension: merchant_mcc_code            is m.mcc_code                // string form
+  dimension: merchant_mcc_description     is m.mcc_description
+  dimension: merchant_mcc_description_lc  is m.mcc_description_lower
+  dimension: merchant_mcc_category_prefix is m.mcc_category_prefix
+
+  dimension: merchant_acquirers           is m.acquirer                // list
+
+  // Domestic vs international flag as a 0/1 DOUBLE — matches fees.intracountry
+  // encoding exactly so rule matching can compare equality.
+  dimension: intracountry_flag is
+    pick 1.0 when issuing_country = acquirer_country
+    else 0.0
+
+  // -----------------------------------------------------------------
+  // Convenience views at the enriched grain
+  // -----------------------------------------------------------------
+
+  view: by_merchant_segment is {
+    group_by: merchant_account_segment, merchant_account_type_label
+    aggregate: transaction_count, total_eur, fraud_rate
+    order_by: transaction_count desc
+  }
+
+  view: by_merchant_mcc is {
+    group_by: merchant, merchant_mcc, merchant_mcc_description
+    aggregate: transaction_count, total_eur, fraud_rate
+    order_by: transaction_count desc
+  }
+
+  view: by_merchant_and_scheme is {
+    group_by: merchant, card_scheme
+    aggregate: transaction_count, total_eur, fraud_rate, refusal_rate
+    order_by: merchant, card_scheme
+  }
+
+  view: by_merchant_and_aci is {
+    group_by: merchant, aci, aci_label
+    aggregate: transaction_count, total_eur, fraud_count, fraud_rate
+    order_by: merchant, aci
+  }
+}

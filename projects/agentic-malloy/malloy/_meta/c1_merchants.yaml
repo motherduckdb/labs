@@ -1,0 +1,29 @@
+file: c1_merchants.malloy
+domain: merchants
+summary: |
+  Merchant dimension enriched with MCC description via a join_one to the
+  merchant_category_codes lookup. Exposes the merchant-level dimensions
+  (account_type_label, account_segment, capture_delay_band, mcc_code,
+  mcc_description) that downstream fact×rule matching needs in order to
+  evaluate fee-rule predicates against a merchant.
+  Acquirer is a LIST column on merchants — acquirer→country resolution is
+  intentionally NOT joined here (would require an unnest); use
+  acquirer_countries_base directly when an acquirer-country dimension is needed.
+summary_short: Merchants + MCC description (and account/capture/MCC dims for rule matching).
+exports:
+  - name: c1_merchants
+    kind: source
+    summary: Merchants enriched with MCC description and merchant-level rule-matching dimensions.
+  - name: c1_merchants.merchant_directory
+    kind: view
+    summary: One row per merchant with all rule-relevant attributes.
+  - name: c1_merchants.by_mcc_description
+    kind: view
+    summary: Merchant counts per MCC code + description.
+  - name: c1_merchants.by_account_type_and_capture
+    kind: view
+    summary: Merchant counts split by account-type label and capture-delay band.
+provides_for:
+  - "Resolving a merchant's account_type / capture_delay band / MCC for fee-rule matching"
+  - "Human-readable MCC descriptions on merchants"
+  - "Merchant directory listing"

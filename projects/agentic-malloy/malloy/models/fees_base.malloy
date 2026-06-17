@@ -1,129 +1,118 @@
-// Fee rules table: each row is ONE pricing rule that may match a transaction
-// based on card_scheme, account_type, capture_delay, fraud level, monthly
-// volume, MCC, credit flag, ACI, and intracountry flag. The effective fee is
-// `fixed_amount + rate * transaction_value / 10000`. NULL on a rule field
-// means the rule applies to all values of that field (wildcard).
+// fees_base.malloy
+// Base semantic model for the `fees` table (fee rules dataset).
+// One row = one fee rule. NO joins here.
+//
+// Wildcard encoding (verified against the column profile):
+//   - List columns (account_type, merchant_category_code, aci):
+//       empty list  = "applies to all"   (NEVER null in this data)
+//   - Scalar columns (capture_delay, monthly_fraud_level, monthly_volume, is_credit, intracountry):
+//       NULL        = "applies to all"
+//
+// Fee formula (per the Merchant Manual):
+//   fee = fixed_amount + rate * transaction_value / 10000
+
 source: fees_base is duckdb.table('fees') extend {
 
-  // ---------- Dimensions ----------
+  primary_key: ID
 
-  // Stable, human-readable label for the account category list. Useful for
-  // grouping when the raw list column is awkward to display.
-  dimension: account_type_label is array_to_string!string(account_type, ',')
+  //── Wildcard flags (list columns: empty list means "applies to all") ──
+  dimension: applies_to_all_account_types is len!number(account_type) = 0
+  dimension: applies_to_all_mccs          is len!number(merchant_category_code) = 0
+  dimension: applies_to_all_acis          is len!number(aci) = 0
 
-  // Same idea for ACI list and MCC list — flattened to string for grouping.
-  dimension: aci_label is array_to_string!string(aci, ',')
-  dimension: mcc_label is array_to_string!string(merchant_category_code, ',')
+  //── Wildcard flags (scalars: NULL means "applies to all") ──
+  dimension: applies_to_all_capture_delays      is capture_delay is null
+  dimension: applies_to_all_fraud_levels        is monthly_fraud_level is null
+  dimension: applies_to_all_monthly_volumes     is monthly_volume is null
+  dimension: applies_to_all_credit_flags        is is_credit is null
+  dimension: applies_to_all_intracountry_flags  is intracountry is null
 
-  // Wildcard indicators (NULL in the rule = "applies to all values"). These
-  // are handy for understanding rule specificity.
-  dimension: is_wildcard_account_type   is account_type is null
-  dimension: is_wildcard_capture_delay  is capture_delay is null
-  dimension: is_wildcard_fraud_level    is monthly_fraud_level is null
-  dimension: is_wildcard_volume         is monthly_volume is null
-  dimension: is_wildcard_mcc            is merchant_category_code is null
-  dimension: is_wildcard_credit         is is_credit is null
-  dimension: is_wildcard_aci            is aci is null
-  dimension: is_wildcard_intracountry   is intracountry is null
-
-  // Number of non-wildcard fields — a rough proxy for "how specific" the rule
-  // is (higher = matches fewer transactions but with more precise pricing).
-  dimension: rule_specificity is
-      (pick 0 when account_type is null else 1)
-    + (pick 0 when capture_delay is null else 1)
-    + (pick 0 when monthly_fraud_level is null else 1)
-    + (pick 0 when monthly_volume is null else 1)
-    + (pick 0 when merchant_category_code is null else 1)
-    + (pick 0 when is_credit is null else 1)
-    + (pick 0 when aci is null else 1)
-    + (pick 0 when intracountry is null else 1)
-
-  // Intracountry flag as a readable label.
-  dimension: scope is
+  //── Convenience scalar dimensions ──
+  // intracountry is stored as 0.0 / 1.0 (DOUBLE) — surface a readable label.
+  dimension: intracountry_label is
     pick 'domestic'      when intracountry = 1
     pick 'international' when intracountry = 0
     else 'any'
 
-  // Rate expressed as a percentage of the transaction value (rate is in
-  // basis-points-of-10000, i.e. rate/10000 = fraction, *100 = percent).
-  dimension: rate_pct is rate / 100.0
+  dimension: credit_label is
+    pick 'credit' when is_credit = true
+    pick 'debit'  when is_credit = false
+    else 'any'
 
-  // Fee on a hypothetical EUR 100 transaction — a quick comparability metric.
-  dimension: fee_on_100eur is fixed_amount + rate * 100.0 / 10000.0
+  // Sizes of the list "applies-to" sets (0 = wildcard).
+  dimension: account_type_count is len!number(account_type)
+  dimension: mcc_count          is len!number(merchant_category_code)
+  dimension: aci_count          is len!number(aci)
 
-  // ---------- Measures ----------
+  // Worked example: the per-transaction fee charged by this rule on a
+  // €100 transaction. Useful for ranking rules by economic impact.
+  dimension: fee_on_100_eur is fixed_amount + rate * 100 / 10000
+  dimension: fee_on_10_eur  is fixed_amount + rate * 10  / 10000
 
+  //── Measures (all base-grain — one row per rule, no joins here) ──
   measure: rule_count is count()
 
-  measure: scheme_count       is count(card_scheme)
-  measure: capture_delay_count is count(capture_delay)
-  measure: fraud_level_count   is count(monthly_fraud_level)
-  measure: volume_tier_count   is count(monthly_volume)
-
-  // Fixed-amount stats (EUR per transaction).
+  // Fixed component (€ per txn)
   measure: avg_fixed_amount is fixed_amount.avg()
   measure: min_fixed_amount is fixed_amount.min()
   measure: max_fixed_amount is fixed_amount.max()
   measure: sum_fixed_amount is fixed_amount.sum()
 
-  // Rate stats (raw rate units, divide by 10000 for the multiplier).
+  // Variable component (basis points / 10000)
   measure: avg_rate is rate.avg()
   measure: min_rate is rate.min()
   measure: max_rate is rate.max()
 
-  // Same in percent for readability.
-  measure: avg_rate_pct is rate_pct.avg()
-  measure: max_rate_pct is rate_pct.max()
+  // Effective fee on a €100 txn, averaged across matching rules
+  measure: avg_fee_on_100_eur is avg(fee_on_100_eur)
+  measure: max_fee_on_100_eur is max(fee_on_100_eur)
+  measure: min_fee_on_100_eur is min(fee_on_100_eur)
 
-  // Effective fee on a EUR 100 transaction.
-  measure: avg_fee_on_100eur is fee_on_100eur.avg()
-  measure: max_fee_on_100eur is fee_on_100eur.max()
+  // Population splits — handy filtered counts
+  measure: credit_rule_count        is count() { where: is_credit = true }
+  measure: debit_rule_count         is count() { where: is_credit = false }
+  measure: credit_agnostic_rule_count is count() { where: is_credit is null }
 
-  // Counts by transaction type — useful for sanity checks and segmentation.
-  measure: credit_rule_count is count() { where: is_credit = true }
-  measure: debit_rule_count  is count() { where: is_credit = false }
-  measure: domestic_rule_count      is count() { where: intracountry = 1 }
-  measure: international_rule_count is count() { where: intracountry = 0 }
+  measure: intracountry_rule_count   is count() { where: intracountry = 1 }
+  measure: international_rule_count  is count() { where: intracountry = 0 }
+  measure: geography_agnostic_rule_count is count() { where: intracountry is null }
 
-  // ---------- Views ----------
+  measure: wildcard_account_type_rule_count is count() { where: len!number(account_type) = 0 }
+  measure: wildcard_mcc_rule_count          is count() { where: len!number(merchant_category_code) = 0 }
+  measure: wildcard_aci_rule_count          is count() { where: len!number(aci) = 0 }
 
-  view: by_scheme is {
-    group_by: card_scheme
-    aggregate: rule_count, avg_fixed_amount, avg_rate_pct, avg_fee_on_100eur
-    order_by: rule_count desc
+  //── Reusable views ──
+  view: by_card_scheme is {
+    group_by:  card_scheme
+    aggregate: rule_count, avg_fixed_amount, avg_rate, avg_fee_on_100_eur
+    order_by:  rule_count desc
   }
 
   view: by_capture_delay is {
-    group_by: capture_delay
-    aggregate: rule_count, avg_fixed_amount, avg_rate_pct, avg_fee_on_100eur
-    order_by: avg_fee_on_100eur desc
+    group_by:  capture_delay
+    aggregate: rule_count, avg_fixed_amount, avg_rate, avg_fee_on_100_eur
+    order_by:  avg_fee_on_100_eur desc
   }
 
-  view: by_fraud_level is {
-    group_by: monthly_fraud_level
-    aggregate: rule_count, avg_fee_on_100eur
-    order_by: avg_fee_on_100eur desc
+  view: by_monthly_volume is {
+    group_by:  monthly_volume
+    aggregate: rule_count, avg_fee_on_100_eur, avg_rate
   }
 
-  view: by_volume_tier is {
-    group_by: monthly_volume
-    aggregate: rule_count, avg_fee_on_100eur
-    order_by: avg_fee_on_100eur desc
+  view: by_monthly_fraud_level is {
+    group_by:  monthly_fraud_level
+    aggregate: rule_count, avg_fee_on_100_eur, avg_rate
   }
 
-  view: by_scope is {
-    group_by: scope
-    aggregate: rule_count, avg_fixed_amount, avg_rate_pct, avg_fee_on_100eur
+  view: by_credit_and_intracountry is {
+    group_by:  credit_label, intracountry_label
+    aggregate: rule_count, avg_fee_on_100_eur, avg_rate, avg_fixed_amount
   }
 
-  view: by_credit is {
-    group_by: is_credit
-    aggregate: rule_count, avg_fee_on_100eur
-  }
-
-  view: by_aci is {
-    group_by: aci_label
-    aggregate: rule_count, avg_fee_on_100eur
-    order_by: avg_fee_on_100eur desc
+  view: most_expensive_rules is {
+    select: ID, card_scheme, capture_delay, monthly_fraud_level, monthly_volume,
+            is_credit, intracountry, fixed_amount, rate, fee_on_100_eur
+    order_by: fee_on_100_eur desc
+    limit: 25
   }
 }
