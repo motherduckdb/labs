@@ -12,6 +12,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { MODELS_DIR, sourceNamesIn, DATA_DIR } from './layer-build.js';
+import { viewQualitySmells, type Smell } from './view-quality.js';
 
 // ---------------------------------------------------------------------------
 // Miss rows (the --from JSONL shape) — see cli.ts runEvalTask's `row`.
@@ -190,6 +191,9 @@ export interface ViewProbe {
   ok: boolean;
   rowCount: number;
   error?: string;
+  /** degeneracy smells from the view's OWN output (it runs but is meaningless —
+   *  e.g. a "ranking" where most rows tie at the max). Closed-book; see I1. */
+  smells?: Smell[];
 }
 
 export interface MissAnalysis {
@@ -216,6 +220,7 @@ export type MissCategory =
   | 'query_compile_error'
   | 'layer_view_error'
   | 'layer_view_empty'
+  | 'layer_view_degenerate'
   | 'unknown';
 
 export type MissOwner = 'answering' | 'skill' | 'layer' | 'model';
@@ -258,6 +263,7 @@ export function classifyMiss(a: MissAnalysis): MissClassification {
   }
 
   const brokenView = a.viewProbes.find((p) => !p.ok);
+  const degenerateView = a.viewProbes.find((p) => p.ok && (p.smells?.length ?? 0) > 0);
   const emptyView = a.viewProbes.find((p) => p.ok && p.rowCount === 0);
   const reExec = a.reExec;
 
@@ -270,6 +276,21 @@ export function classifyMiss(a: MissAnalysis): MissClassification {
       suggestedOwner: 'layer',
       implicatedFiles: brokenView.file ? [brokenView.file, ...files.filter((f) => f !== brokenView.file)] : files,
       note: `named layer view \`${brokenView.source} -> ${brokenView.view}\` fails to execute on its own: ${brokenView.error?.slice(0, 200)}`,
+    };
+  }
+
+  if (degenerateView) {
+    // A named layer view RUNS but is DEGENERATE on its own (e.g. a "ranking" where
+    // most groups tie at the max because the grain folds in wildcard rows — the
+    // 1442 case). It executes, so the binary error/empty probes miss it; the
+    // smells catch it. This is a wrong-GRAIN layer defect, not the agent's inline
+    // logic — exactly the class that was previously misfiled as "skill".
+    return {
+      category: 'layer_view_degenerate',
+      layerSuspected: true,
+      suggestedOwner: 'layer',
+      implicatedFiles: degenerateView.file ? [degenerateView.file, ...files.filter((f) => f !== degenerateView.file)] : files,
+      note: `named layer view \`${degenerateView.source} -> ${degenerateView.view}\` runs but is DEGENERATE — ${degenerateView.smells?.[0]?.message ?? 'no discriminating output'}. Likely a wrong-grain layer defect, not the agent's query.`,
     };
   }
 
@@ -340,9 +361,12 @@ export async function analyzeMiss(row: MissRow, rt: MalloyRuntime, index: LayerI
       : { ok: false, rowCount: 0, error: (r.diagnostics ?? []).map((d) => d.message).join('\n') };
 
     // Smoke each referenced named view on its own (the structural-defect probe),
-    // source-scoped so a shared view name hits the source actually queried.
+    // source-scoped so a shared view name hits the source actually queried. Pull
+    // enough rows (not just 1) so the degeneracy detector can judge the view's
+    // output distribution — a view that runs but doesn't discriminate is a
+    // wrong-grain LAYER defect the error/empty probes can't see (I1).
     for (const { source, view } of referencedViews(malloySource, index)) {
-      const pr = await rt.run(`run: ${source} -> ${view}`, 1);
+      const pr = await rt.run(`run: ${source} -> ${view}`, 500);
       viewProbes.push({
         source,
         view,
@@ -350,6 +374,7 @@ export async function analyzeMiss(row: MissRow, rt: MalloyRuntime, index: LayerI
         ok: pr.ok,
         rowCount: pr.rows?.length ?? 0,
         error: pr.ok ? undefined : (pr.diagnostics ?? []).map((d) => d.message).join('\n'),
+        smells: pr.ok ? viewQualitySmells(pr.rows ?? []) : undefined,
       });
     }
   }
@@ -409,6 +434,7 @@ export function evidenceBlock(a: MissAnalysis, cls: MissClassification): string 
           ? `  - ${p.source} -> ${p.view}  [${p.file ?? '?'}]: OK, ${p.rowCount} row(s)${p.rowCount === 0 ? ' (EMPTY)' : ''}`
           : `  - ${p.source} -> ${p.view}  [${p.file ?? '?'}]: ERROR: ${p.error?.slice(0, 300)}`,
       );
+      for (const s of p.smells ?? []) lines.push(`      ⚠ DEGENERATE: ${s.message}`);
     }
   }
   lines.push(`\nDeterministic triage: ${cls.category} — ${cls.note}`);

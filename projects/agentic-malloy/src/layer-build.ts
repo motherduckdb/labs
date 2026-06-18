@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
+import { viewQualitySmells, smellSummary } from './view-quality.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -288,10 +289,14 @@ export function sourceNamesIn(src: string): string[] {
  */
 export async function validateModel(
   modelFile?: string,
-  opts: { modelsDir?: string; dbPath?: string } = {},
-): Promise<{ ok: boolean; diag: string }> {
+  opts: { modelsDir?: string; dbPath?: string; checkQuality?: boolean } = {},
+): Promise<{ ok: boolean; diag: string; smellDiag?: string }> {
   const modelsDir = opts.modelsDir ?? MODELS_DIR;
   const rt = new MalloyRuntime({ ...(opts.dbPath ? { databasePath: opts.dbPath } : {}), modelsDir });
+  // With checkQuality, pull enough rows to judge a view's output distribution (the
+  // degeneracy detector); otherwise 1 row is enough to prove it executes.
+  const cap = opts.checkQuality ? 500 : 1;
+  const smellLines: string[] = [];
   try {
     const inv = await rt.describe(); // compile check (throws on compile error)
     if (modelFile && existsSync(path.join(modelsDir, modelFile))) {
@@ -299,7 +304,7 @@ export async function validateModel(
       for (const s of inv.sources) {
         if (!mine.has(s)) continue;
         for (const view of inv.viewsBySource[s] ?? []) {
-          const r = await rt.run(`run: ${s} -> ${view}`, 1);
+          const r = await rt.run(`run: ${s} -> ${view}`, cap);
           if (!r.ok) {
             const errText = (r.diagnostics ?? []).map((d) => d.message).join('\n');
             // Only the binder/scope class points to the join_many materialization
@@ -315,10 +320,18 @@ export async function validateModel(
               diag: `The view \`${s} -> ${view}\` COMPILES but FAILS TO EXECUTE — a view that cannot run is unusable. Fix the source so this query runs.${hint}\nExecution error:\n${errText}`,
             };
           }
+          // Executed OK. With checkQuality, also flag DEGENERATE output (B2): a
+          // view that runs but doesn't compute what its name implies (e.g. a
+          // ranking where most rows tie at the max because the grain folds in
+          // wildcard rows). Advisory — never fails execution; returned separately.
+          if (opts.checkQuality) {
+            const smells = viewQualitySmells(r.rows ?? []);
+            if (smells.length) smellLines.push(smellSummary(`${s} -> ${view}`, smells));
+          }
         }
       }
     }
-    return { ok: true, diag: '' };
+    return { ok: true, diag: '', ...(smellLines.length ? { smellDiag: smellLines.join('\n\n') } : {}) };
   } catch (e) {
     const problems = (e as { problems?: Array<{ message: string }> })?.problems;
     return { ok: false, diag: problems ? problems.map((p) => p.message).join('\n') : e instanceof Error ? e.message : String(e) };
@@ -386,6 +399,7 @@ async function authorStage(opts: {
   let current: string | null = null; // last-written malloy (for edit rounds)
   let metaWritten = false;
   let forceFull = false; // set when an edit round produced no applicable edits
+  let smellNudged = false; // B2: a degeneracy nudge is given at most once, then accepted
 
   for (let round = 1; round <= opts.maxRounds; round++) {
     const editMode = round > 1 && current !== null && !forceFull;
@@ -474,14 +488,24 @@ async function authorStage(opts: {
     }
 
     const cv0 = Date.now();
-    const v = await validateModel(opts.modelFile, { modelsDir: opts.modelsDir, dbPath: opts.dbPath }); // compile + execute the file's views
+    const v = await validateModel(opts.modelFile, { modelsDir: opts.modelsDir, dbPath: opts.dbPath, checkQuality: true }); // compile + execute + degeneracy check
     if (opts.runId) {
       const callId = cl.newId();
       cl.toolCall({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, arguments: { round, mode }, model: opts.model });
-      cl.toolResult({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, ok: v.ok, durationMs: Date.now() - cv0, model: opts.model, output: v.ok ? 'ok' : v.diag.slice(0, 1500) });
+      cl.toolResult({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, ok: v.ok, durationMs: Date.now() - cv0, model: opts.model, output: v.ok ? (v.smellDiag ? `ok (degenerate: ${v.smellDiag.slice(0, 400)})` : 'ok') : v.diag.slice(0, 1500) });
     }
     if (v.ok) {
-      console.log(`  ✓ ${opts.label} (round ${round}, ${mode}, $${agg.cost.toFixed(4)})`);
+      // B2: the file executes. If a view is DEGENERATE (runs but doesn't compute
+      // what its name implies), nudge the author ONCE with the smell + the
+      // wildcard/grain fix — then accept (some skews are legitimate; never deadlock).
+      if (v.smellDiag && !smellNudged) {
+        smellNudged = true;
+        forceFull = true;
+        diag = `${v.smellDiag}\n\nThis is usually a WRONG-GRAIN bug: an aggregate that folds in "applies-to-all"/wildcard rows (which are common to every group and don't discriminate) collapses the ranking. FIX generically: rank/compare by the ENTITY-SPECIFIC rows, or expose BOTH a specific-only and an effective (incl. wildcard) measure so the answer can pick. Re-author this file to fix the degenerate view(s).`;
+        console.log(`  ⚠ ${opts.label} round ${round}: degenerate view — nudging once:\n${v.smellDiag.split('\n').slice(0, 4).map((l) => '      ' + l).join('\n')}`);
+        continue;
+      }
+      console.log(`  ✓ ${opts.label} (round ${round}, ${mode}, $${agg.cost.toFixed(4)})${v.smellDiag ? ' [accepted with degeneracy smell]' : ''}`);
       return { ok: true, ...agg };
     }
     console.log(`  ✗ ${opts.label} round ${round} (${mode}) error:\n${v.diag.split('\n').slice(0, 6).map((l) => '      ' + l).join('\n')}`);

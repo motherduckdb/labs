@@ -150,6 +150,25 @@ describe('layer-vs-skill triage (classifyMiss)', () => {
     expect(c.implicatedFiles[0]).toBe('c3_fee_assignment.malloy');
   });
 
+  it('1442 case: query runs + returns rows but a referenced view is DEGENERATE → LAYER (wrong grain), not skill', () => {
+    // Previously this was query_wrong_answer/skill (reExec ok, rows > 0). The
+    // degeneracy smell promotes it to a wrong-grain LAYER defect (I1).
+    const c = classifyMiss(
+      baseAnalysis({
+        reExec: { ok: true, rowCount: 727 },
+        viewProbes: [{
+          source: 'c4_mcc_avg_fee', view: 'by_mcc_at_50000', file: 'c4_fee_scenarios.malloy',
+          ok: true, rowCount: 769,
+          smells: [{ code: 'extreme_tie', column: 'avg_fee_at_50000', message: '727/769 rows tie at the MAX of "avg_fee_at_50000" (284.99) — a ranking that does not rank' }],
+        }],
+      }),
+    );
+    expect(c.category).toBe('layer_view_degenerate');
+    expect(c.suggestedOwner).toBe('layer');
+    expect(c.layerSuspected).toBe(true);
+    expect(c.implicatedFiles[0]).toBe('c4_fee_scenarios.malloy');
+  });
+
   it('submitted query errors but every referenced view runs clean → SKILL (inline query bug)', () => {
     const c = classifyMiss(
       baseAnalysis({

@@ -99,6 +99,7 @@ function deterministicManner(cls: MissClassification): FailureManner {
       return 'gave_up';
     case 'layer_view_error':
     case 'layer_view_empty':
+    case 'layer_view_degenerate':
     case 'query_compile_error':
     case 'query_wrong_answer':
       return 'wrong_logic';
