@@ -627,8 +627,16 @@ async function cmdLayerImprove(flags: Record<string, string | boolean>) {
       return;
     }
     const ids = (await readFile(fromPath, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => String((JSON.parse(l) as { task_id: unknown }).task_id));
-    console.log(`\n▶ re-evaluating ${ids.length} task-id(s) from ${path.basename(fromPath)} to measure the improvement …`);
-    await cmdEvaluate({ ...flags, 'task-id': ids.join(','), from: undefined as unknown as string });
+    // A successful repair leaves the edited layer/skill UNCOMMITTED, and an
+    // official run refuses a dirty tree. So an in-process official re-eval is
+    // self-contradictory — measure now as SMOKE, and point the user at the
+    // commit-then-official flow for a recordable number.
+    const reEvalRunClass = (flags['run-class'] === 'official') ? 'smoke' : ((flags['run-class'] as string) || 'smoke');
+    if (flags['run-class'] === 'official') {
+      console.log(`\nℹ️  re-eval runs as SMOKE: the just-edited layer/provenance${res.skillFixesApplied.length ? '/skill' : ''} is uncommitted, and an official run requires a clean tree. To record an official number: commit the edits, then run \`asm-malloy evaluate --split ${(flags.split as string) || 'templates'} --run-class official\`.`);
+    }
+    console.log(`\n▶ re-evaluating ${ids.length} task-id(s) from ${path.basename(fromPath)} to measure the improvement (run_class=${reEvalRunClass}) …`);
+    await cmdEvaluate({ ...flags, 'run-class': reEvalRunClass, 'task-id': ids.join(','), from: undefined as unknown as string });
   }
 }
 
@@ -684,10 +692,11 @@ async function main() {
       console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3] [--provider anthropic]');
       console.log('  layer-improve --from results/RUN.jsonl [--model opus --reasoning medium --max-rounds 4] \\');
       console.log('           [--provider anthropic] [--md [--database agentic_malloy]] [--no-manner] [--apply-skill-fixes] \\');
-      console.log('           [--tool-error-threshold 0.15] [--re-eval --author sonnet --fixer opus --run-class official]');
+      console.log('           [--tool-error-threshold 0.15] [--re-eval --author sonnet --fixer opus]');
       console.log('           (triages a run\'s misses by MANNER of failure + runs a tool-error meta-analysis;');
       console.log('            edits the layer ONLY for structural defects from TRAIN-only runs, never tunes to a gold answer;');
-      console.log('            tool-error rules are recommend-only unless --apply-skill-fixes; an official re-eval refuses a dirty tree)');
+      console.log('            tool-error rules are recommend-only unless --apply-skill-fixes;');
+      console.log('            --re-eval measures edits as SMOKE — commit, then `evaluate --run-class official` to record a number)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
       console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');

@@ -134,7 +134,10 @@ human) complement to the rule above: it triages a run's misses and edits the lay
   untouched, and reports where each fix belongs (skill / prompt / model-capability).
   On a successful edit it re-hashes, re-stamps `model_authored` with an
   `improve_lineage` (from/to hash, round, edited files, source run), and emits a
-  controllog build run. `--re-eval` then re-runs the same task-ids to measure.
+  controllog build run. `--re-eval` then re-runs the same task-ids to measure —
+  always as a **smoke** run (the just-edited layer/skill is uncommitted, and an
+  official run requires a clean tree), so commit the edits and run
+  `evaluate --run-class official` separately to record an official number.
 
 ## Harness status
 
