@@ -169,6 +169,24 @@ describe('layer-vs-skill triage (classifyMiss)', () => {
     expect(c.implicatedFiles[0]).toBe('c4_fee_scenarios.malloy');
   });
 
+  it('P1b: query ERRORS while a referenced view is degenerate → SKILL (query error wins, not layer)', () => {
+    // A degenerate referenced view must NOT steal the blame for the agent's own
+    // broken query — the query-error branch runs before the degeneracy branch.
+    const c = classifyMiss(
+      baseAnalysis({
+        reExec: { ok: false, rowCount: 0, error: "Unknown function 'lpad'" },
+        viewProbes: [{
+          source: 'c4_mcc_avg_fee', view: 'by_mcc_at_50000', file: 'c4_fee_scenarios.malloy',
+          ok: true, rowCount: 769,
+          smells: [{ code: 'extreme_tie', column: 'avg_fee_at_50000', message: '727/769 rows tie at the MAX' }],
+        }],
+      }),
+    );
+    expect(c.category).toBe('query_compile_error');
+    expect(c.suggestedOwner).toBe('skill');
+    expect(c.layerSuspected).toBe(false);
+  });
+
   it('submitted query errors but every referenced view runs clean → SKILL (inline query bug)', () => {
     const c = classifyMiss(
       baseAnalysis({

@@ -64,6 +64,14 @@ export function viewQualitySmells(
       smells.push({ code: 'all_zero', column: c, message: `measure "${c}" is 0 for every row — it never fires (suspect a broken match/filter)` });
       continue;
     }
+    // The variance/tie smells target MEASURES (a ranking that doesn't rank). A
+    // group-by KEY / numeric DIMENSION (mcc code, year, month, an id) is integer
+    // and legitimately repeats or is constant — judging it over-triggers. Without
+    // field-kind metadata, use a robust proxy: only continuous (non-integer)
+    // columns get these checks. Aggregates that matter here (avg/sum/rate/fee) are
+    // floats; all-zero (a never-firing integer count) is still caught above.
+    const isContinuous = ns.some((n) => !Number.isInteger(n));
+    if (!isContinuous) continue;
     const distinct = new Set(ns);
     if (distinct.size === 1) {
       smells.push({ code: 'zero_variance', column: c, message: `"${c}" is identical (${ns[0]}) across all ${ns.length} rows — it does not discriminate between groups (suspect wrong grain)` });

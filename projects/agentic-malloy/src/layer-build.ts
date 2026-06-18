@@ -444,8 +444,10 @@ async function authorStage(opts: {
     if (v.ok) {
       // B2: the file executes. If a view is DEGENERATE (runs but doesn't compute
       // what its name implies), nudge the author ONCE with the smell + the
-      // wildcard/grain fix — then accept (some skews are legitimate; never deadlock).
-      if (v.smellDiag && !smellNudged) {
+      // wildcard/grain fix — but ONLY when a re-author round remains. Smells are
+      // ADVISORY: they must NEVER turn a passing build into a failure, so a smell
+      // that first appears on the final allowed round is accepted, not nudged.
+      if (v.smellDiag && !smellNudged && round < opts.maxRounds) {
         smellNudged = true;
         forceFull = true;
         diag = `${v.smellDiag}\n\nThis is usually a WRONG-GRAIN bug: an aggregate that folds in "applies-to-all"/wildcard rows (which are common to every group and don't discriminate) collapses the ranking. FIX generically: rank/compare by the ENTITY-SPECIFIC rows, or expose BOTH a specific-only and an effective (incl. wildcard) measure so the answer can pick. Re-author this file to fix the degenerate view(s).`;

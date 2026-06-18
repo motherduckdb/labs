@@ -279,24 +279,11 @@ export function classifyMiss(a: MissAnalysis): MissClassification {
     };
   }
 
-  if (degenerateView) {
-    // A named layer view RUNS but is DEGENERATE on its own (e.g. a "ranking" where
-    // most groups tie at the max because the grain folds in wildcard rows — the
-    // 1442 case). It executes, so the binary error/empty probes miss it; the
-    // smells catch it. This is a wrong-GRAIN layer defect, not the agent's inline
-    // logic — exactly the class that was previously misfiled as "skill".
-    return {
-      category: 'layer_view_degenerate',
-      layerSuspected: true,
-      suggestedOwner: 'layer',
-      implicatedFiles: degenerateView.file ? [degenerateView.file, ...files.filter((f) => f !== degenerateView.file)] : files,
-      note: `named layer view \`${degenerateView.source} -> ${degenerateView.view}\` runs but is DEGENERATE — ${degenerateView.smells?.[0]?.message ?? 'no discriminating output'}. Likely a wrong-grain layer defect, not the agent's query.`,
-    };
-  }
-
   if (reExec && !reExec.ok) {
-    // Submitted Malloy errors, but every referenced named view runs clean → the
-    // fault is in the agent's INLINE composition, not the layer.
+    // Submitted Malloy ERRORS. The agent's own inline query is broken — that's a
+    // skill/answering issue regardless of any referenced view's quality, so this
+    // is checked BEFORE the degeneracy branch (a degenerate view must not steal
+    // the blame for the agent's broken query and misroute it to layer repair).
     return {
       category: 'query_compile_error',
       layerSuspected: false,
@@ -306,7 +293,22 @@ export function classifyMiss(a: MissAnalysis): MissClassification {
     };
   }
 
-  // From here the submitted Malloy re-ran successfully.
+  // From here the submitted Malloy re-ran successfully (so any defect is in the
+  // LAYER it built on, not the agent's query).
+  if (degenerateView) {
+    // A named layer view RUNS but is DEGENERATE on its own (e.g. a "ranking" where
+    // most groups tie at the max because the grain folds in wildcard rows — the
+    // 1442 case). It executes, so the binary error/empty probes miss it; the
+    // smells catch it. This is a wrong-GRAIN layer defect, not the agent's logic.
+    return {
+      category: 'layer_view_degenerate',
+      layerSuspected: true,
+      suggestedOwner: 'layer',
+      implicatedFiles: degenerateView.file ? [degenerateView.file, ...files.filter((f) => f !== degenerateView.file)] : files,
+      note: `named layer view \`${degenerateView.source} -> ${degenerateView.view}\` runs but is DEGENERATE — ${degenerateView.smells?.[0]?.message ?? 'no discriminating output'}. Likely a wrong-grain layer defect, not the agent's query.`,
+    };
+  }
+
   if (reExec && reExec.rowCount === 0 && emptyView) {
     // The query returned nothing AND a named layer view is itself empty → suspect
     // the layer view (a matching/aggregating view that returns nothing over rows

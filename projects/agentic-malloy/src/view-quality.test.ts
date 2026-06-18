@@ -49,6 +49,20 @@ describe('viewQualitySmells', () => {
     expect(viewQualitySmells(data)).toEqual([]);
   });
 
+  it('P2: does NOT flag a numeric integer DIMENSION (constant/low-spread) — only float measures', () => {
+    // year (int dimension) is constant, month (int dimension) is heavily tied — both
+    // are normal for a grouping key and must NOT trigger; the float measure is judged.
+    const data = [
+      ...Array.from({ length: 11 }, () => ({ year: 2023, month: 1, fee: 5.5 })),
+      { year: 2023, month: 2, fee: 99.9 },
+    ];
+    const s = viewQualitySmells(data);
+    expect(s.some((x) => x.column === 'year')).toBe(false); // integer dimension, not judged
+    expect(s.some((x) => x.column === 'month')).toBe(false); // integer dimension, not judged
+    // a genuinely degenerate FLOAT measure is still caught:
+    expect(viewQualitySmells(Array.from({ length: 12 }, () => ({ year: 2023, fee: 5.5 }))).some((x) => x.code === 'zero_variance' && x.column === 'fee')).toBe(true);
+  });
+
   it('handles bigint counts (MotherDuck) without misjudging', () => {
     const data = Array.from({ length: 10 }, (_, i) => ({ g: i, n: BigInt(i + 1) }));
     expect(viewQualitySmells(data)).toEqual([]); // 1..10 distinct → no smell
