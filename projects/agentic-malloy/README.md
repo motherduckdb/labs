@@ -110,19 +110,22 @@ human) complement to the rule above: it triages a run's misses and edits the lay
   tool over **15%** (`--tool-error-threshold`) gets a model diagnosis of the
   *systemic* cause + where the durable fix belongs. A layer-cause routes into the
   repair path (only if a view is actually broken); skill/linter causes become
-  precise recommendations. A diagnosed `skill` rule is appended to a marked section
-  of `src/skill.md` **by default** (it only ever fires for a tool over the >15%
-  threshold, so it stays sparing) — `--no-apply-skill-fixes` to only recommend. The
-  skill is a tunable prompt, not the layer, so this never touches `malloy_provenance`.
+  precise recommendations. A diagnosed `skill` rule is **recommend-only by default**;
+  `--apply-skill-fixes` (opt-in) appends it to a marked section of `src/skill.md` so a
+  default run never mutates a tracked file. The skill is a tunable prompt, not the
+  layer, so this never touches `malloy_provenance` — but because it's still an
+  uncommitted prompt change, an `evaluate --run-class official` **refuses to run on a
+  dirty tracked tree** (commit first), so an official number can't be scored on it.
 - **No leakage.** A repair prompt sees only the failing Malloy, exec diagnostics,
   "this view returns 0/errors", the column profile, and the manual — **never the
   gold answer**, and it must not tune to a train value. Fixes are general
   (join scope, wildcard/domain handling, grain), exactly like `layer-build`.
 - **Train-only edits.** A layer edit (and a skill-fix application) is **refused**
-  when the `--from` run includes any held-out/test task — checked against
-  `data/split.json`, not the row's recorded split. This stops held-out traces from
-  tuning the layer while still passing the official gate; such runs are
-  triaged/reported only.
+  when ANY task in the `--from` run (passers included, not just the misses) is
+  outside the train split — checked against `data/split.json`, not the row's
+  recorded split. The full-run check matters because the tool-error meta-analysis
+  spans every row, so a held-out passer's trace must not influence a write. Such
+  runs are triaged/reported only.
 - **Don't regress.** Edits are minimal atomic `{old,new}` patches, re-validated by
   the same P0 gate (compile + execute every view). If the post-edit all-views gate
   fails, **every edit is rolled back** and provenance is left untouched.

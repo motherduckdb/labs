@@ -400,6 +400,13 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     if (prov.manual_included !== true) reasons.push(`layer built without the manual (manual_included=${prov.manual_included})`);
     if (author !== resolveModel('sonnet')) reasons.push(`author must be sonnet (got ${author})`);
     if (fixer !== resolveModel('opus')) reasons.push(`fixer must be opus (got ${fixer})`);
+    // An official number must be REPRODUCIBLE from the recorded commit_sha. A dirty
+    // tracked tree (e.g. layer-improve having modified src/skill.md, or any layer
+    // edit) means the scored prompt/layer state isn't committed — refuse, don't
+    // just warn. This closes "--re-eval --run-class official scores on a dirty
+    // prompt state". (Smoke runs still only warn — see below.)
+    const dirty = gitDirtyTrackedFiles();
+    if (dirty.length) reasons.push(`uncommitted tracked changes (${dirty.length}) — an official run must be reproducible; commit first (layer-improve may have edited src/skill.md):\n      ${dirty.slice(0, 8).join('\n      ')}${dirty.length > 8 ? `\n      … and ${dirty.length - 8} more` : ''}`);
     if (reasons.length) {
       throw new Error(`Refusing an OFFICIAL run:\n  - ${reasons.join('\n  - ')}\nUse --run-class smoke for experiments.`);
     }
@@ -454,15 +461,14 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const scorer = new ScoreClient();
 
   // Reproducibility: the recorded commit_sha only describes this run if the
-  // tracked code is committed. Warn loudly on uncommitted tracked changes (an
-  // official run that backs the claim should be clean).
+  // tracked code is committed. Official runs REFUSE a dirty tree (above); smoke
+  // runs warn loudly but proceed.
   const commitSha = gitOutput('rev-parse HEAD');
   const dirtyFiles = gitDirtyTrackedFiles();
   if (dirtyFiles.length) {
     console.warn(`\n⚠️  ${dirtyFiles.length} uncommitted tracked change(s) — this run is NOT reproducible from commit ${commitSha?.slice(0, 8) ?? '(unknown)'}:`);
     for (const f of dirtyFiles.slice(0, 20)) console.warn(`     ${f}`);
     if (dirtyFiles.length > 20) console.warn(`     … and ${dirtyFiles.length - 20} more`);
-    if (runClass === 'official') console.warn(`   ▶ OFFICIAL run with a dirty tree — commit your changes for a reproducible result.`);
     console.warn('');
   }
 
@@ -587,11 +593,12 @@ async function cmdLayerImprove(flags: Record<string, string | boolean>) {
   // same data, matches the build gate). --md re-executes against MotherDuck.
   const motherduckDb = flags.md ? ((flags.database as string) || process.env.MD_DATABASE || 'agentic_malloy') : undefined;
   // --no-manner skips the per-miss failure-MANNER model call (cheaper; model
-  // call then fires only for layer-suspected misses). Tool-error robustness rules
-  // are appended to src/skill.md BY DEFAULT (only ever triggered by a tool over
-  // the >15% error threshold, so it stays sparing); --no-apply-skill-fixes opts out.
+  // call then fires only for layer-suspected misses). --apply-skill-fixes is
+  // OPT-IN: by default a diagnosed tool-error rule is only RECOMMENDED, not
+  // written to src/skill.md — a default run never mutates a tracked file, and an
+  // official re-eval can't silently score on an uncommitted prompt change.
   const manner = !flags['no-manner'];
-  const applySkillFixes = !flags['no-apply-skill-fixes'];
+  const applySkillFixes = !!flags['apply-skill-fixes'];
   const toolErrorThreshold = flags['tool-error-threshold'] ? Number(flags['tool-error-threshold']) : undefined;
 
   // Wrap in a controllog session so the improve pass shows in the dive's Build tab.
@@ -676,11 +683,11 @@ async function main() {
       console.log('  load [--motherduck --database agentic_malloy]');
       console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3] [--provider anthropic]');
       console.log('  layer-improve --from results/RUN.jsonl [--model opus --reasoning medium --max-rounds 4] \\');
-      console.log('           [--provider anthropic] [--md [--database agentic_malloy]] [--no-manner] [--no-apply-skill-fixes] \\');
+      console.log('           [--provider anthropic] [--md [--database agentic_malloy]] [--no-manner] [--apply-skill-fixes] \\');
       console.log('           [--tool-error-threshold 0.15] [--re-eval --author sonnet --fixer opus --run-class official]');
       console.log('           (triages a run\'s misses by MANNER of failure + runs a tool-error meta-analysis;');
-      console.log('            edits the layer ONLY for structural defects, never tunes to a gold answer;');
-      console.log('            tool-error robustness rules are appended to src/skill.md by default → --no-apply-skill-fixes to only recommend)');
+      console.log('            edits the layer ONLY for structural defects from TRAIN-only runs, never tunes to a gold answer;');
+      console.log('            tool-error rules are recommend-only unless --apply-skill-fixes; an official re-eval refuses a dirty tree)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
       console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
