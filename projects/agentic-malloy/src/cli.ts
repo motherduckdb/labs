@@ -18,7 +18,8 @@ import { createMCPClient, getExplorationTools, mcpRetryCount } from './mcp-clien
 import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
 import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
-import { hashLayerOnDisk, PROVENANCE_PATH } from './layer-build.js';
+import { hashLayerOnDisk, PROVENANCE_PATH, META_DIR } from './layer-build.js';
+import { loadGlossaryArtifact, renderGlossaryForAnswering } from './glossary.js';
 import { buildDabstepLayer } from './dabstep-build.js';
 import { improveLayer } from './layer-improve.js';
 import { uploadControllog } from './upload.js';
@@ -440,7 +441,10 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
 
   const skill = await readFile(SKILL_PATH, 'utf8');
   const primer = await readFile(path.join(REPO_ROOT, 'docs', 'malloy', 'malloy-primer.md'), 'utf8');
-  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}\n===============================`;
+  // The ubiquitous-language glossary (if the layer shipped one) maps the question's
+  // vocabulary to layer concepts/surfaces — the question→layer bridge at answer time.
+  const glossaryBlock = renderGlossaryForAnswering(await loadGlossaryArtifact(META_DIR));
+  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}${glossaryBlock ? `\n\n============ DOMAIN GLOSSARY (question terms → layer concepts) ============\n${glossaryBlock}` : ''}\n===============================`;
 
   await mkdir(RESULTS_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T', 'T').slice(0, 15) + 'Z';

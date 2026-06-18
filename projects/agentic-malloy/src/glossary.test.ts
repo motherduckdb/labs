@@ -6,11 +6,11 @@
  * fixture-DB test of groundGlossary end-to-end.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { parseGlossary, groundingResolves, renderGlossary, groundGlossary, type GlossaryEntry, type KnownSchema } from './glossary.js';
+import { parseGlossary, groundingResolves, renderGlossary, groundGlossary, loadGlossaryArtifact, renderGlossaryForAnswering, GLOSSARY_FILE, type GlossaryEntry, type KnownSchema } from './glossary.js';
 
 const known: KnownSchema = {
   columns: new Set(['fees.aci', 'aci', 'fees.merchant_category_code', 'merchant_category_code', 'payments.amount', 'amount']),
@@ -64,6 +64,37 @@ describe('renderGlossary', () => {
   });
   it('handles an empty glossary', () => {
     expect(renderGlossary([])).toBe('(no glossary)');
+  });
+});
+
+describe('artifact round-trip + answering surface', () => {
+  it('loadGlossaryArtifact reads what buildLayer writes (JSON-in-.yaml under glossary:)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'asm-gart-'));
+    try {
+      const entries = [entry({ term: 'steer to X', aliases: ['route to'], kind: 'scenario', modeling_pattern: 'counterfactual override' })];
+      writeFileSync(path.join(dir, GLOSSARY_FILE), JSON.stringify({ glossary: entries }, null, 2));
+      // loadGlossaryArtifact is async — assert via the returned promise below.
+      return loadGlossaryArtifact(dir).then((loaded) => {
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0]).toMatchObject({ term: 'steer to X', kind: 'scenario' });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('loadGlossaryArtifact returns [] when no artifact exists', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'asm-gart2-'));
+    try {
+      expect(await loadGlossaryArtifact(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it('renderGlossaryForAnswering maps terms to concepts + patterns (empty when no glossary)', () => {
+    expect(renderGlossaryForAnswering([])).toBe('');
+    const txt = renderGlossaryForAnswering([entry({ term: 'steer to X', kind: 'scenario', definition: 'counterfactual', modeling_pattern: 'override join' })]);
+    expect(txt).toContain('"steer to X"');
+    expect(txt).toContain('override join');
   });
 });
 

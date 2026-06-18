@@ -17,10 +17,16 @@
  * Enforced by: concept-level prompt, the grounding gate, and "parameterize don't
  * specialize" (a "fee at €50k" concept becomes fee_at_notional(amount)).
  */
+import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { complete } from './llm-client.js';
 import { normalizeTables, type TableInput } from './table-spec.js';
 import * as cl from './controllog.js';
+
+/** The on-disk glossary artifact filename (under the layer's _meta dir). */
+export const GLOSSARY_FILE = '_glossary.yaml';
 
 export type ConceptKind = 'entity' | 'measure' | 'dimension' | 'filter' | 'scenario' | 'operation';
 
@@ -198,4 +204,34 @@ export function renderGlossary(entries: GlossaryEntry[]): string {
       return `- "${e.term}"${aliases} [${e.kind}] — ${e.definition}${cols}${der}${pat}${gran}`;
     })
     .join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// LOAD / SURFACE — the artifact the answering agent reads to map a question's
+// vocabulary to the right layer concept + modeling pattern.
+// ---------------------------------------------------------------------------
+
+/** Read the persisted glossary artifact (written by buildLayer). Tolerant: the
+ *  file is JSON-in-`.yaml` under a `glossary:` key; returns [] if absent/unreadable. */
+export async function loadGlossaryArtifact(metaDir: string): Promise<GlossaryEntry[]> {
+  const p = path.join(metaDir, GLOSSARY_FILE);
+  if (!existsSync(p)) return [];
+  try {
+    const obj = JSON.parse(await readFile(p, 'utf8')) as { glossary?: unknown };
+    return Array.isArray(obj.glossary) ? parseGlossary(JSON.stringify(obj.glossary)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** A concise answering-side block: question terms → concept + the surface-finding
+ *  hint, so the agent maps a question to the right view via shared vocabulary. */
+export function renderGlossaryForAnswering(entries: GlossaryEntry[]): string {
+  if (!entries.length) return '';
+  const lines = entries.map((e) => {
+    const aliases = e.aliases?.length ? ` / ${e.aliases.join(' / ')}` : '';
+    const pat = e.modeling_pattern ? ` — ${e.modeling_pattern}` : '';
+    return `- "${e.term}"${aliases} [${e.kind}]: ${e.definition}${pat}`;
+  });
+  return `When a question uses one of these terms, it refers to the matching CONCEPT — find the layer source/view/measure that models it (its _meta describes it in these words) and reuse it; don't re-derive. For a 'scenario' concept, follow its modeling pattern.\n${lines.join('\n')}`;
 }
