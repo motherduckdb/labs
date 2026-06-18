@@ -23,10 +23,10 @@ import { LOCAL_DB_PATH, buildLocalDuckDB } from './load.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DATA_DIR = path.join(REPO_ROOT, 'data');
+export const DATA_DIR = path.join(REPO_ROOT, 'data');
 const MALLOY_DIR = path.join(REPO_ROOT, 'malloy');
-const MODELS_DIR = path.join(MALLOY_DIR, 'models');
-const META_DIR = path.join(MALLOY_DIR, '_meta');
+export const MODELS_DIR = path.join(MALLOY_DIR, 'models');
+export const META_DIR = path.join(MALLOY_DIR, '_meta');
 export const PROVENANCE_PATH = path.join(MALLOY_DIR, '.provenance.json');
 const TABLES = ['payments', 'fees', 'merchants', 'acquirer_countries', 'merchant_category_codes'];
 
@@ -132,12 +132,12 @@ async function trainQA(includeAnswers: boolean): Promise<string> {
 }
 
 const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'malloy');
-async function readDoc(name: string): Promise<string> {
+export async function readDoc(name: string): Promise<string> {
   return readFile(path.join(DOCS_DIR, name), 'utf8');
 }
 
 // DuckDB-specifics the primer doesn't cover + the Malloy-first rule + output format.
-const DUCKDB_NOTES = `Malloy-on-DuckDB specifics (in addition to the primer above):
+export const DUCKDB_NOTES = `Malloy-on-DuckDB specifics (in addition to the primer above):
 - Reference a table by NAME: \`duckdb.table('payments')\` — never a file path. The model files compile as ONE unit (concatenated), so do NOT use \`import\`; every source sees every other.
 - Do NOT redefine an existing table column as a dimension/measure (e.g. \`dimension: merchant is ...\` when a \`merchant\` column exists → "Cannot redefine"). Only ADD derived fields with NEW names.
 - ANY DuckDB SQL function the primer doesn't list needs the TYPED raw escape \`fn!returntype(args)\` — e.g. \`list_contains!boolean(fees.aci, aci)\`, \`len!number(fees.aci)\`, \`lpad!string(x, 3, '0')\`, \`strftime!string(d, '%Y')\`, \`make_date!date(y, m, d)\`. Plain \`lpad(...)\`/\`strftime(...)\` fail with "Unknown function". There is no native list-membership operator — use \`list_contains!boolean\` for list columns. Prefer Malloy-native date ops (\`@2023\`, \`.month\`, \`::date\`) over SQL date formatting where possible.
@@ -161,7 +161,7 @@ Output EXACTLY two fenced blocks and nothing else:
 // ---------------------------------------------------------------------------
 
 /** Parse a JSON array of {old,new} search/replace edits from a repair response. */
-function parseEdits(text: string): Array<{ old: string; new: string }> {
+export function parseEdits(text: string): Array<{ old: string; new: string }> {
   const m = text.match(/\[[\s\S]*\]/);
   try {
     const arr = JSON.parse(m ? m[0] : text) as Array<{ old?: unknown; new?: unknown }>;
@@ -200,7 +200,7 @@ async function clearLayer(): Promise<void> {
 
 /** Source names declared in a model file — targets the execution smoke test at
  *  the sources this file actually introduces (not inherited ones). */
-function sourceNamesIn(src: string): string[] {
+export function sourceNamesIn(src: string): string[] {
   return [...src.matchAll(/^[ \t]*source:[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]+is\b/gm)].map((m) => m[1]);
 }
 
@@ -213,7 +213,7 @@ function sourceNamesIn(src: string): string[] {
  * that class of bug, leaving every fee view unusable at answer time. The first
  * execution failure is returned as a diagnostic so the repair loop fixes it.
  */
-async function validateModel(modelFile?: string): Promise<{ ok: boolean; diag: string }> {
+export async function validateModel(modelFile?: string): Promise<{ ok: boolean; diag: string }> {
   const rt = new MalloyRuntime();
   try {
     const inv = await rt.describe(); // compile check (throws on compile error)

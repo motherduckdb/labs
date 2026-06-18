@@ -7,6 +7,13 @@
  * STRUCTs (the dive does `payload_json.field` struct access — a plain JSON column
  * would break it). controllog appends every run to one events.jsonl, so a full
  * rebuild each upload is idempotent and keeps all runs for cross-run comparison.
+ *
+ * `map_inference_threshold=-1` is REQUIRED: payload_json holds many distinct keys
+ * across event kinds (model/tool/eval/run_metadata/improvement_recommendation/…),
+ * and past DuckDB's default MAP-inference threshold read_json_auto flips the column
+ * STRUCT→MAP(VARCHAR, JSON). Under a MAP every value is JSON, so the dive's numeric
+ * aggregations (`avg(payload_json.duration_ms)`, cost_usd, tokens, …) fail with
+ * "avg(JSON)". Disabling MAP inference keeps it a STRUCT with typed fields.
  */
 import { DuckDBInstance } from '@duckdb/node-api';
 import { existsSync } from 'node:fs';
@@ -36,13 +43,13 @@ export async function uploadControllog(opts: {
     await conn.run("ATTACH 'md:'");
     await conn.run(`CREATE DATABASE IF NOT EXISTS ${db}`);
     await conn.run(
-      `CREATE OR REPLACE TABLE ${db}.main.events AS SELECT * FROM read_json_auto('${eventsPath}', format='newline_delimited')`,
+      `CREATE OR REPLACE TABLE ${db}.main.events AS SELECT * FROM read_json_auto('${eventsPath}', format='newline_delimited', map_inference_threshold=-1)`,
     );
     const events = Number((await conn.runAndReadAll(`SELECT count(*) AS n FROM ${db}.main.events`)).getRowObjects()[0].n);
     let postings = 0;
     if (existsSync(postingsPath)) {
       await conn.run(
-        `CREATE OR REPLACE TABLE ${db}.main.postings AS SELECT * FROM read_json_auto('${postingsPath}', format='newline_delimited')`,
+        `CREATE OR REPLACE TABLE ${db}.main.postings AS SELECT * FROM read_json_auto('${postingsPath}', format='newline_delimited', map_inference_threshold=-1)`,
       );
       postings = Number((await conn.runAndReadAll(`SELECT count(*) AS n FROM ${db}.main.postings`)).getRowObjects()[0].n);
     }

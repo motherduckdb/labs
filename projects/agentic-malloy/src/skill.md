@@ -111,3 +111,7 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 - A concept the data/manual does not define → `Not Applicable`. An empty result
   set for a real metric → the empty string, not `Not Applicable` (and a NULL inside a
   list is a bug to filter out, not a value to emit).
+
+## Auto-added robustness rules (layer-improve)
+- Teach Malloy operator rules: use `group_by`+`aggregate` (not `select`) in grouping queries; use `aggregate:` (not `calculate:`) for sums/avgs/counts — `calculate:` is only for window ops over already-grouped rows; to pick the max-of-aggregate row, compute the aggregate in an inner query then filter/top in an outer stage rather than using HAVING with a window; cast with `field::type` using the bare type keyword (string/number/date), not function-call syntax like `string_type(...)`.  _(why: submit_answer errored 42% of the time: Agent repeatedly misuses Malloy query operators (select in grouping, calculate with aggregates, HAVING with window funcs, bad cast syntax))_
+- Teach Malloy query shape: use 'select:' only for projection of scalar/dimension fields (no aggregates, no group_by in the same view); use 'group_by:' + 'aggregate:' together for grouped queries; aggregates must be defined via 'aggregate:' (not 'select:'); only reference aliases defined in the current query scope; ensure function arg types match (e.g. round(number, number) takes scalars, not a source).  _(why: run_malloy errored 22% of the time: Agent confuses Malloy's select vs group_by/aggregate semantics and references undefined aliases)_
