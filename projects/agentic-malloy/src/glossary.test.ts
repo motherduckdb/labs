@@ -45,9 +45,13 @@ describe('groundingResolves (honesty gate)', () => {
     expect(groundingResolves(entry({ grounding: { columns: ['amount'] } }), known)).toBe(true);
     expect(groundingResolves(entry({ grounding: { tables: ['payments'] } }), known)).toBe(true);
   });
-  it('is case-insensitive and resolves a qualified ref by its bare column', () => {
+  it('is case-insensitive on a real qualified ref', () => {
     expect(groundingResolves(entry({ grounding: { columns: ['Fees.ACI'] } }), known)).toBe(true);
-    expect(groundingResolves(entry({ grounding: { columns: ['orders.amount'] } }), known)).toBe(true); // unknown table, real bare col
+  });
+  it('REJECTS a qualified ref with a WRONG/unknown table even if the bare column exists elsewhere', () => {
+    // orders.amount: `amount` exists (on payments) but `orders` is not a real table
+    // → must NOT resolve (no bare-column fallback for a qualified ref).
+    expect(groundingResolves(entry({ grounding: { columns: ['orders.amount'] } }), known)).toBe(false);
   });
   it('REJECTS a hallucinated concept that binds to nothing real', () => {
     expect(groundingResolves(entry({ grounding: { columns: ['fees.loyalty_tier'], tables: ['rewards'] } }), known)).toBe(false);

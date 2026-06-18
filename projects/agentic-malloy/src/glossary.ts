@@ -138,11 +138,14 @@ export interface KnownSchema {
  *  Pure + case-insensitive. */
 export function groundingResolves(entry: GlossaryEntry, known: KnownSchema): boolean {
   const norm = (s: string) => s.trim().toLowerCase();
+  // known.columns holds BOTH qualified "table.col" AND bare "col" forms. So a
+  // QUALIFIED ref must match the exact "table.col" (the table must be real and own
+  // the column) — we do NOT fall back to the bare column, or a wrong/hallucinated
+  // table qualifier (orders.amount) would pass just because some table has amount.
+  // An UNQUALIFIED ref matches the bare form. A single membership check on the
+  // normalized ref does both correctly.
   for (const c of entry.grounding.columns ?? []) {
-    const k = norm(c);
-    if (known.columns.has(k)) return true;
-    const bare = k.includes('.') ? k.slice(k.lastIndexOf('.') + 1) : k;
-    if (known.columns.has(bare)) return true;
+    if (known.columns.has(norm(c))) return true;
   }
   for (const t of entry.grounding.tables ?? []) {
     if (known.tables.has(norm(t))) return true;
