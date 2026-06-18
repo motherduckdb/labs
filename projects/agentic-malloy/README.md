@@ -118,6 +118,11 @@ human) complement to the rule above: it triages a run's misses and edits the lay
   "this view returns 0/errors", the column profile, and the manual — **never the
   gold answer**, and it must not tune to a train value. Fixes are general
   (join scope, wildcard/domain handling, grain), exactly like `layer-build`.
+- **Train-only edits.** A layer edit (and a skill-fix application) is **refused**
+  when the `--from` run includes any held-out/test task — checked against
+  `data/split.json`, not the row's recorded split. This stops held-out traces from
+  tuning the layer while still passing the official gate; such runs are
+  triaged/reported only.
 - **Don't regress.** Edits are minimal atomic `{old,new}` patches, re-validated by
   the same P0 gate (compile + execute every view). If the post-edit all-views gate
   fails, **every edit is rolled back** and provenance is left untouched.
