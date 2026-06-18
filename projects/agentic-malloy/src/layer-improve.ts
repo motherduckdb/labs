@@ -24,7 +24,8 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { columnProfiles, hashLayerOnDisk, readDoc, validateModel, MODELS_DIR, DATA_DIR } from './layer-build.js';
+import { columnProfiles, hashLayerOnDisk, readDoc, validateModel, MODELS_DIR, META_DIR, DATA_DIR } from './layer-build.js';
+import { loadGlossaryArtifact, buildLayerVocabulary, questionVocabularyGap } from './glossary.js';
 import { LOCAL_DB_PATH } from './load.js';
 import * as cl from './controllog.js';
 import { MalloyRuntime } from './malloy-runtime.js';
@@ -61,6 +62,9 @@ export interface MissReport {
   fix?: { kind: 'skill' | 'linter' | 'layer' | 'model'; detail: string };
   /** trace-derived signals (when a controllog trace was correlated). */
   trace?: { exploredLayer: boolean; usedNamedView: boolean; runMalloyErrors: number; toolCalls: number };
+  /** question content-words absent from the layer's vocabulary — a coverage gap
+   *  (the layer doesn't model these concepts in the user's words). Closed-book. */
+  vocabGap?: string[];
 }
 
 export interface ToolHealthFinding extends ToolErrorStat {
@@ -171,6 +175,11 @@ export async function improveLayer(opts: {
   console.log(`  trace: ${runId ? `run ${runId.slice(0, 13)} (${corr.matched}/${corr.total} rows matched)` : 'no matching controllog run — JSONL-only evidence'}`);
 
   const index = await loadLayerIndex();
+  // Closed-book vocabulary check: the layer's known words (glossary + surface
+  // names) vs the question's words. A question term in neither is a coverage gap.
+  const glossaryEntries = await loadGlossaryArtifact(META_DIR);
+  const surfaceNames = [...index.sources, ...[...index.viewsBySource.values()].flatMap((s) => [...s])];
+  const layerVocab = buildLayerVocabulary(glossaryEntries, surfaceNames);
   const rt = new MalloyRuntime(databasePath ? { databasePath } : {});
   let totalCost = 0;
   const reports: MissReport[] = [];
@@ -198,7 +207,12 @@ export async function improveLayer(opts: {
       const cls = classifyMiss(a);
       const trace = runId ? taskTrace(events, runId, a.taskId) : null;
       const usedNamedView = a.malloySource ? referencedViews(a.malloySource, index).length > 0 : false;
-      console.log(`  miss ${a.taskId}: ${cls.category} → ${cls.suggestedOwner}${cls.layerSuspected ? ' (layer-suspected)' : ''}`);
+      // Closed-book vocabulary gap: question words the layer doesn't speak.
+      const vocab = questionVocabularyGap(a.question ?? '', layerVocab);
+      const evidence = evidenceBlock(a, cls) + (vocab.uncovered.length
+        ? `\n\nVOCABULARY GAP — question terms absent from the layer's glossary/surface names: ${vocab.uncovered.join(', ')}. The layer may not model these concepts in the user's words (a coverage/naming gap, not necessarily a query bug).`
+        : '');
+      console.log(`  miss ${a.taskId}: ${cls.category} → ${cls.suggestedOwner}${cls.layerSuspected ? ' (layer-suspected)' : ''}${vocab.uncovered.length ? ` [vocab-gap: ${vocab.uncovered.slice(0, 4).join(', ')}]` : ''}`);
 
       let owner: MissOwner = cls.suggestedOwner;
       let manner: FailureManner = deterministicManner(cls);
@@ -208,7 +222,7 @@ export async function improveLayer(opts: {
 
       if (mannerEnabled || cls.layerSuspected) {
         const v = await missVerdict({
-          evidence: evidenceBlock(a, cls),
+          evidence,
           trace: traceBlock(trace, a.predictedAnswer, usedNamedView),
           implicatedFile: file,
           implicatedFileSrc: file && existsSync(path.join(MODELS_DIR, file)) ? await readFile(path.join(MODELS_DIR, file), 'utf8') : null,
@@ -229,17 +243,18 @@ export async function improveLayer(opts: {
         // Layer edit only when train-only AND the deterministic probe AND the model agree.
         if (trainOnly && cls.layerSuspected && v.owner === 'layer' && file) {
           const list = defectsByFile.get(file) ?? [];
-          list.push(`### Miss ${a.taskId}\n${evidenceBlock(a, cls)}\nModel-confirmed defect: ${v.defect}`);
+          list.push(`### Miss ${a.taskId}\n${evidence}\nModel-confirmed defect: ${v.defect}`);
           defectsByFile.set(file, list);
         }
         if (opts.runId && fix && fix.kind !== 'layer') {
-          cl.event({ kind: 'improvement_recommendation', taskId: a.taskId, agentId: 'agent:asm-malloy-builder', runId: opts.runId, payload: { source: 'miss', manner, owner, fix_kind: fix.kind, detail: fix.detail, rationale } });
+          cl.event({ kind: 'improvement_recommendation', taskId: a.taskId, agentId: 'agent:asm-malloy-builder', runId: opts.runId, payload: { source: 'miss', manner, owner, fix_kind: fix.kind, detail: fix.detail, rationale, vocab_gap: vocab.uncovered } });
         }
       }
 
       reports.push({
         taskId: a.taskId, category: cls.category, owner, manner, implicatedFiles: cls.implicatedFiles, note: cls.note, rationale, fix,
         trace: trace ? { exploredLayer: trace.exploredLayer, usedNamedView, runMalloyErrors: trace.runMalloyErrors, toolCalls: trace.toolCalls } : undefined,
+        vocabGap: vocab.uncovered.length ? vocab.uncovered : undefined,
       });
     }
 
@@ -412,7 +427,8 @@ function renderSummary(o: {
     for (const r of rs) {
       const where = r.implicatedFiles.length ? ` [${r.implicatedFiles.join(', ')}]` : '';
       const fix = r.fix && r.fix.kind !== 'layer' && r.fix.detail ? `  → ${r.fix.kind}: ${r.fix.detail}` : '';
-      lines.push(`    - ${r.taskId} · ${MANNER_LABEL[r.manner]} (${r.category})${where}: ${r.rationale}${fix}`);
+      const gap = r.vocabGap?.length ? `  ⟨vocab-gap: ${r.vocabGap.join(', ')}⟩` : '';
+      lines.push(`    - ${r.taskId} · ${MANNER_LABEL[r.manner]} (${r.category})${where}: ${r.rationale}${fix}${gap}`);
     }
   }
 

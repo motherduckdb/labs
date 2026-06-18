@@ -224,6 +224,57 @@ export async function loadGlossaryArtifact(metaDir: string): Promise<GlossaryEnt
   }
 }
 
+// ---------------------------------------------------------------------------
+// VOCABULARY GAP — closed-book: does the layer SPEAK a question's language? A
+// question content-word that appears in neither the glossary nor any surface name
+// is a coverage gap (the layer doesn't model that concept in the user's words).
+// Used by layer-improve to distinguish "agent fumbled" from "layer can't be found
+// in these words." Uses question text + the layer's OWN vocabulary, never gold.
+// ---------------------------------------------------------------------------
+
+// Generic English + question/aggregation function words — NOT domain nouns (those
+// are concepts: present in the glossary → covered, absent → a real gap).
+const VOCAB_STOPWORDS = new Set([
+  'what', 'whats', 'which', 'how', 'many', 'much', 'list', 'show', 'give', 'find', 'tell', 'name', 'names',
+  'the', 'and', 'are', 'for', 'with', 'from', 'that', 'this', 'these', 'those', 'was', 'were', 'has', 'have', 'had', 'does', 'did',
+  'average', 'avg', 'total', 'sum', 'count', 'number', 'value', 'values', 'amount', 'most', 'least', 'highest', 'lowest',
+  'top', 'bottom', 'maximum', 'minimum', 'more', 'less', 'than', 'over', 'under', 'between', 'each', 'per', 'all', 'any',
+  'only', 'same', 'different', 'across', 'during', 'within', 'about', 'into', 'would', 'should', 'could', 'will', 'their', 'there',
+]);
+
+/** Significant content tokens of a string (lowercased, length ≥ 3, non-stopword,
+ *  deduped) — keeps short domain codes like "aci"/"mcc". Pure. */
+export function contentTokens(s: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of s.toLowerCase().matchAll(/[a-z0-9]+/g)) {
+    const t = m[0];
+    if (t.length < 3 || VOCAB_STOPWORDS.has(t) || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
+}
+
+/** The layer's known vocabulary: tokens from glossary terms/aliases + surface
+ *  (source/view/measure) names. Pure. */
+export function buildLayerVocabulary(entries: GlossaryEntry[], surfaceNames: string[] = []): Set<string> {
+  const vocab = new Set<string>();
+  const add = (s: string) => { for (const t of contentTokens(s)) vocab.add(t); };
+  for (const e of entries) { add(e.term); (e.aliases ?? []).forEach(add); }
+  for (const n of surfaceNames) add(n);
+  return vocab;
+}
+
+/** Question content-words absent from the layer's vocabulary (a coverage gap),
+ *  plus the coverage fraction. Pure. */
+export function questionVocabularyGap(question: string, vocab: Set<string>): { uncovered: string[]; coverage: number } {
+  const toks = contentTokens(question);
+  if (!toks.length) return { uncovered: [], coverage: 1 };
+  const uncovered = toks.filter((t) => !vocab.has(t));
+  return { uncovered, coverage: (toks.length - uncovered.length) / toks.length };
+}
+
 /** A concise answering-side block: question terms → concept + the surface-finding
  *  hint, so the agent maps a question to the right view via shared vocabulary. */
 export function renderGlossaryForAnswering(entries: GlossaryEntry[]): string {

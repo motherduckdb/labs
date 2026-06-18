@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { parseGlossary, groundingResolves, renderGlossary, groundGlossary, loadGlossaryArtifact, renderGlossaryForAnswering, GLOSSARY_FILE, type GlossaryEntry, type KnownSchema } from './glossary.js';
+import { parseGlossary, groundingResolves, renderGlossary, groundGlossary, loadGlossaryArtifact, renderGlossaryForAnswering, GLOSSARY_FILE, contentTokens, buildLayerVocabulary, questionVocabularyGap, type GlossaryEntry, type KnownSchema } from './glossary.js';
 
 const known: KnownSchema = {
   columns: new Set(['fees.aci', 'aci', 'fees.merchant_category_code', 'merchant_category_code', 'payments.amount', 'amount']),
@@ -68,16 +68,14 @@ describe('renderGlossary', () => {
 });
 
 describe('artifact round-trip + answering surface', () => {
-  it('loadGlossaryArtifact reads what buildLayer writes (JSON-in-.yaml under glossary:)', () => {
+  it('loadGlossaryArtifact reads what buildLayer writes (JSON-in-.yaml under glossary:)', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'asm-gart-'));
     try {
       const entries = [entry({ term: 'steer to X', aliases: ['route to'], kind: 'scenario', modeling_pattern: 'counterfactual override' })];
       writeFileSync(path.join(dir, GLOSSARY_FILE), JSON.stringify({ glossary: entries }, null, 2));
-      // loadGlossaryArtifact is async — assert via the returned promise below.
-      return loadGlossaryArtifact(dir).then((loaded) => {
-        expect(loaded).toHaveLength(1);
-        expect(loaded[0]).toMatchObject({ term: 'steer to X', kind: 'scenario' });
-      });
+      const loaded = await loadGlossaryArtifact(dir); // await BEFORE the finally cleans up
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0]).toMatchObject({ term: 'steer to X', kind: 'scenario' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -95,6 +93,45 @@ describe('artifact round-trip + answering surface', () => {
     const txt = renderGlossaryForAnswering([entry({ term: 'steer to X', kind: 'scenario', definition: 'counterfactual', modeling_pattern: 'override join' })]);
     expect(txt).toContain('"steer to X"');
     expect(txt).toContain('override join');
+  });
+});
+
+describe('vocabulary gap (closed-book)', () => {
+  it('contentTokens keeps domain words/codes, drops stopwords and short tokens', () => {
+    const t = contentTokens('What is the most expensive ACI to steer fraudulent traffic to?');
+    expect(t).toContain('aci');
+    expect(t).toContain('steer');
+    expect(t).toContain('fraudulent');
+    expect(t).not.toContain('the');
+    expect(t).not.toContain('most'); // aggregation stopword
+    expect(t).not.toContain('is');
+  });
+
+  it('buildLayerVocabulary unions glossary terms/aliases + surface names', () => {
+    const v = buildLayerVocabulary(
+      [entry({ term: 'steer to X', aliases: ['route to'] })],
+      ['fee_match', 'by_aci_avg_fee'],
+    );
+    expect(v.has('steer')).toBe(true);
+    expect(v.has('route')).toBe(true);
+    expect(v.has('aci')).toBe(true); // from by_aci_avg_fee
+    expect(v.has('match')).toBe(true); // from fee_match
+  });
+
+  it('questionVocabularyGap flags words the layer does not speak', () => {
+    const vocab = buildLayerVocabulary([entry({ term: 'fee' })], ['fee_match', 'by_card_scheme']);
+    const g = questionVocabularyGap('What is the total fee if a merchant steers traffic to NexPay?', vocab);
+    expect(g.uncovered).toContain('steers'); // not in vocab → gap
+    expect(g.uncovered).toContain('merchant');
+    expect(g.uncovered).not.toContain('fee'); // covered
+    expect(g.coverage).toBeLessThan(1);
+  });
+
+  it('full coverage when every content word is known', () => {
+    const vocab = buildLayerVocabulary([entry({ term: 'fee' }), entry({ term: 'scheme' })], []);
+    const g = questionVocabularyGap('average fee by scheme', vocab); // average/by are stopwords
+    expect(g.uncovered).toEqual([]);
+    expect(g.coverage).toBe(1);
   });
 });
 
