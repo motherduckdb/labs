@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { columnProfiles, renderQA, SEMANTIC_LAYER_POLICY, DUCKDB_NOTES } from './layer-build.js';
+import { columnProfiles, renderQA, SEMANTIC_LAYER_POLICY, DUCKDB_NOTES, quoteDuckRef, safeTableName, normalizeTables } from './layer-build.js';
 
 let dir: string;
 let dbPath: string;
@@ -34,6 +34,10 @@ beforeAll(async () => {
     (2, 'A', 'high', ['x']),
     (3, 'B', NULL,   ['x','y']),
     (4, 'B', 'low',  [])`);
+  // A table whose name is NOT a safe identifier (hyphen) — exercises ref-quoting
+  // in introspection and the ref-vs-name split.
+  await conn.run(`CREATE TABLE "order-items" (id BIGINT, qty INTEGER)`);
+  await conn.run(`INSERT INTO "order-items" VALUES (1, 5), (2, 9)`);
   conn.closeSync();
 });
 
@@ -100,5 +104,41 @@ describe('generic builder: anti-benchmark rendering', () => {
     // DUCKDB_NOTES is generic discipline — it must not bake in DABstep entities.
     expect(DUCKDB_NOTES).not.toMatch(/\bfee\b|\bmerchant\b|payments|acquirer/i);
     expect(DUCKDB_NOTES).toContain("duckdb.table('<table>')"); // placeholder, not a real table
+  });
+});
+
+// --- table specs: name plays 3 roles (DuckDB ref / Malloy id / file stem) ----
+
+describe('table specs (generic table names)', () => {
+  it('quoteDuckRef quotes bare, hyphenated, and schema-qualified refs', () => {
+    expect(quoteDuckRef('payments')).toBe('"payments"');
+    expect(quoteDuckRef('order-items')).toBe('"order-items"');
+    expect(quoteDuckRef('main.sales_orders')).toBe('"main"."sales_orders"');
+    expect(quoteDuckRef('"Already"."Quoted"')).toBe('"Already"."Quoted"'); // verbatim
+  });
+
+  it('safeTableName derives a valid identifier from messy refs', () => {
+    expect(safeTableName('order-items')).toBe('order_items');
+    expect(safeTableName('user events')).toBe('user_events');
+    expect(safeTableName('main.sales_orders')).toBe('sales_orders'); // last segment
+    expect(safeTableName('123tbl')).toBe('_123tbl'); // digit-leading
+  });
+
+  it('normalizeTables splits ref vs name, validates, and rejects collisions', () => {
+    expect(normalizeTables(['payments'])).toEqual([{ ref: 'payments', name: 'payments', quoted: '"payments"' }]);
+    expect(normalizeTables([{ ref: 'main.sales_orders', name: 'orders' }])[0]).toMatchObject({ ref: 'main.sales_orders', name: 'orders', quoted: '"main"."sales_orders"' });
+    // hyphenated ref → sanitized name, ref kept for SQL/duckdb.table
+    expect(normalizeTables(['order-items'])[0]).toMatchObject({ ref: 'order-items', name: 'order_items' });
+    // two refs collapsing to the same identifier must throw, not clobber a file
+    expect(() => normalizeTables(['order-items', 'order items'])).toThrow(/map to the Malloy identifier/i);
+  });
+
+  it('columnProfiles introspects a non-identifier table name (keyed by safe name)', async () => {
+    const p = await columnProfiles([{ ref: 'order-items' }], dbPath);
+    // keyed by the SAFE name, not the raw ref
+    expect(p.order_items).toBeDefined();
+    expect(p['order-items']).toBeUndefined();
+    expect(p.order_items).toContain('(2 rows)');
+    expect(p.order_items).toContain('qty');
   });
 });

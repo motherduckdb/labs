@@ -45,6 +45,66 @@ export async function readDoc(name: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Table specs — a table name plays THREE distinct roles: a physical DuckDB
+// reference (DESCRIBE/FROM/duckdb.table), a Malloy source identifier
+// (`<name>_base`), and a filesystem stem (`<name>_base.malloy`). Conflating them
+// breaks generic callers (hyphens `order-items`, spaces `user events`,
+// schema-qualified `main.sales_orders`, reserved words, case-sensitive/quoted
+// names). A TableSpec separates the physical `ref` (auto-quoted for SQL, used
+// verbatim inside `duckdb.table('<ref>')`) from a safe `name` (the Malloy /
+// _meta / file identifier).
+// ---------------------------------------------------------------------------
+
+export interface TableSpec {
+  /** physical DuckDB reference, optionally schema-qualified, any characters —
+   *  used in DESCRIBE/FROM (auto-quoted) and inside duckdb.table('<ref>'). */
+  ref: string;
+  /** safe identifier for the `<name>_base` source, file stem, and _meta. Must
+   *  match /^[A-Za-z_]\w*$/. Defaults to a sanitized form of ref's last segment. */
+  name?: string;
+}
+export type TableInput = string | TableSpec;
+export interface NormTable { ref: string; name: string; quoted: string }
+
+/** Quote a (possibly schema-qualified) DuckDB reference for safe SQL use:
+ *  `main.sales_orders` → `"main"."sales_orders"`, `order-items` → `"order-items"`.
+ *  A ref the caller already quoted (contains a ") is used verbatim. */
+export function quoteDuckRef(ref: string): string {
+  if (ref.includes('"')) return ref;
+  return ref.split('.').map((p) => `"${p.replace(/"/g, '""')}"`).join('.');
+}
+
+/** Derive a safe Malloy/file identifier from a table ref: its last dotted
+ *  segment, non-identifier chars → '_', a leading digit '_'-prefixed. */
+export function safeTableName(ref: string): string {
+  const seg = ref.split('.').pop() ?? ref;
+  let n = seg.replace(/"/g, '').replace(/[^A-Za-z0-9_]/g, '_');
+  if (/^[0-9]/.test(n)) n = `_${n}`;
+  return n;
+}
+
+/** Normalize TableInput[] to {ref, name, quoted}, validating each `name` is a
+ *  legal Malloy identifier and that names don't collide (which would clobber a
+ *  `<name>_base` file). Throws a clear, actionable error otherwise. */
+export function normalizeTables(tables: TableInput[]): NormTable[] {
+  const out: NormTable[] = [];
+  const seen = new Map<string, string>(); // name -> ref
+  for (const t of tables) {
+    const ref = typeof t === 'string' ? t : t.ref;
+    const name = (typeof t === 'string' ? undefined : t.name) ?? safeTableName(ref);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`Table "${ref}" → invalid Malloy identifier "${name}". Pass an explicit { ref, name } whose name matches /^[A-Za-z_]\\w*$/.`);
+    }
+    if (seen.has(name)) {
+      throw new Error(`Tables "${seen.get(name)}" and "${ref}" both map to the Malloy identifier "${name}". Disambiguate with an explicit { ref, name }.`);
+    }
+    seen.set(name, ref);
+    out.push({ ref, name, quoted: quoteDuckRef(ref) });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Generic data dictionary (columnProfiles) + schema introspection.
 // ---------------------------------------------------------------------------
 
@@ -67,13 +127,14 @@ function fmtVal(v: unknown): string {
   if (typeof v === 'string') return `'${v}'`;
   return String(v);
 }
-export async function columnProfiles(tables: string[], dbPath: string): Promise<Record<string, string>> {
+export async function columnProfiles(tables: TableInput[], dbPath: string): Promise<Record<string, string>> {
+  const specs = normalizeTables(tables);
   const instance = await DuckDBInstance.create(dbPath);
   const conn = await instance.connect();
   const num = (v: unknown) => Number(v as number | bigint);
   const out: Record<string, string> = {};
   try {
-    for (const t of tables) {
+    for (const { name: tableName, quoted: t } of specs) {
       const total = num((await conn.runAndReadAll(`SELECT count(*) c FROM ${t}`)).getRowObjects()[0].c);
       const cols = (await conn.runAndReadAll(`DESCRIBE ${t}`)).getRowObjects();
       const lines: string[] = [];
@@ -111,7 +172,7 @@ export async function columnProfiles(tables: string[], dbPath: string): Promise<
           lines.push(`  ${name} ${type} — (profile unavailable)`);
         }
       }
-      out[t] = `(${total.toLocaleString()} rows)\n${lines.join('\n')}`;
+      out[tableName] = `(${total.toLocaleString()} rows)\n${lines.join('\n')}`;
     }
   } finally {
     conn.closeSync();
@@ -119,14 +180,14 @@ export async function columnProfiles(tables: string[], dbPath: string): Promise<
   return out;
 }
 
-async function schemaByTable(tables: string[], dbPath: string): Promise<Record<string, string>> {
+async function schemaByTable(specs: NormTable[], dbPath: string): Promise<Record<string, string>> {
   const instance = await DuckDBInstance.create(dbPath);
   const conn = await instance.connect();
   const out: Record<string, string> = {};
   try {
-    for (const t of tables) {
-      const r = await conn.runAndReadAll(`DESCRIBE ${t}`);
-      out[t] = r.getRowObjects().map((row) => `  ${row.column_name} ${row.column_type}`).join('\n');
+    for (const { name, quoted } of specs) {
+      const r = await conn.runAndReadAll(`DESCRIBE ${quoted}`);
+      out[name] = r.getRowObjects().map((row) => `  ${row.column_name} ${row.column_type}`).join('\n');
     }
   } finally {
     conn.closeSync();
@@ -483,7 +544,10 @@ export interface GenerationPolicy {
 }
 
 export interface LayerBuildConfig {
-  tables: string[];
+  /** tables to model. A plain string is treated as both the DuckDB ref and the
+   *  identifier; use { ref, name } when the physical name isn't a safe Malloy
+   *  identifier (hyphens, spaces, schema-qualified, reserved words, case). */
+  tables: TableInput[];
   /** local DuckDB to introspect + compile/execute-validate against. Must exist. */
   dbPath: string;
   /** domain documentation the model reads for terminology/semantics (may be ''). */
@@ -533,7 +597,11 @@ export async function buildLayer(config: LayerBuildConfig): Promise<LayerBuildRe
   const policy = config.generationPolicy ?? {};
   const maxRounds = config.maxRounds ?? 3;
   const maxCentralFiles = policy.maxCentralFiles ?? 6;
-  const { tables, dbPath, outputName, domainName, model } = config;
+  const { dbPath, outputName, domainName, model } = config;
+  // Normalize the table inputs ONCE: each table's physical DuckDB `ref` (auto-
+  // quoted for SQL, used verbatim in duckdb.table) is kept distinct from its safe
+  // `name` (the Malloy `<name>_base` source, the file stem, and the _meta domain).
+  const specs = normalizeTables(config.tables);
 
   if (!existsSync(dbPath)) {
     throw new Error(`buildLayer: local compile DB not found at ${dbPath} — the caller must create it first.`);
@@ -546,42 +614,43 @@ export async function buildLayer(config: LayerBuildConfig): Promise<LayerBuildRe
     });
   }
 
-  const schema = await schemaByTable(tables, dbPath);
-  const profile = await columnProfiles(tables, dbPath);
-  const allProfiles = tables.map((t) => `### ${t}\n${profile[t]}`).join('\n\n');
+  const schema = await schemaByTable(specs, dbPath);
+  const profile = await columnProfiles(config.tables, dbPath);
+  const allProfiles = specs.map((s) => `### ${s.name}\n${profile[s.name]}`).join('\n\n');
   const context = config.contextMarkdown || '(no domain context supplied)';
   const qa = renderQA(config.qaPairs, policy.includeAnswers ?? false);
   const extra = policy.extraGuidance?.trim() || undefined;
   let totalCost = 0;
 
   if (config.centralOnly) {
-    const missing = tables.filter((t) => !existsSync(path.join(modelsDir, `${t}_base.malloy`)));
-    if (missing.length) throw new Error(`--central-only needs existing bases; missing: ${missing.join(', ')}. Run a full layer-build first.`);
-    console.log(`layer-build --central-only (model=${model}) — reusing ${tables.length} existing bases\n`);
+    const missing = specs.filter((s) => !existsSync(path.join(modelsDir, `${s.name}_base.malloy`)));
+    if (missing.length) throw new Error(`--central-only needs existing bases; missing: ${missing.map((s) => `${s.name}_base.malloy`).join(', ')}. Run a full layer-build first.`);
+    console.log(`layer-build --central-only (model=${model}) — reusing ${specs.length} existing bases\n`);
   } else {
     await clearLayer(modelsDir, metaDir);
-    console.log(`layer-build (model=${model}) — incremental, ${tables.length} bases + central\n`);
+    console.log(`layer-build (model=${model}) — incremental, ${specs.length} bases + central\n`);
   }
 
   const primer = config.docs.primer;
   const discovery = config.docs.relationshipDiscovery;
   const stageDefaults = { modelsDir, metaDir, dbPath, model, reasoningEffort: config.reasoningEffort, provider: config.provider, maxRounds, runId: config.runId };
 
-  // 1. Entity bases (independent: measures + dimensions, NO joins).
-  for (const t of config.centralOnly ? [] : tables) {
-    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table "${t}": a source named ${t}_base over duckdb.table('${t}') with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}\n\n${SEMANTIC_LAYER_POLICY}`;
-    const user = `## Table "${t}" schema (DuckDB)\n${schema[t]}\n\n## Column profile for "${t}" (ACTUAL values in the data — ground truth)\n${profile[t]}\n\n## Domain context (terminology + which measures matter)\n${context}\n\nWrite ${t}_base.malloy now (source named ${t}_base, measures + dimensions, no joins).`;
+  // 1. Entity bases (independent: measures + dimensions, NO joins). The Malloy
+  //    identifier/file uses the safe `name`; duckdb.table uses the physical `ref`.
+  for (const { name, ref } of config.centralOnly ? [] : specs) {
+    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table referenced as \`duckdb.table('${ref}')\`: a source named ${name}_base with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}\n\n${SEMANTIC_LAYER_POLICY}`;
+    const user = `## Table schema (DuckDB) for duckdb.table('${ref}')\n${schema[name]}\n\n## Column profile (ACTUAL values in the data — ground truth)\n${profile[name]}\n\n## Domain context (terminology + which measures matter)\n${context}\n\nWrite ${name}_base.malloy now (source named ${name}_base over duckdb.table('${ref}'), measures + dimensions, no joins).`;
     const r = await authorStage({
-      ...stageDefaults, label: `${t}_base.malloy`, modelFile: `${t}_base.malloy`, metaFile: `${t}_base.yaml`,
-      defaultExport: { name: `${t}_base`, kind: 'source' }, defaultDomain: t, system, user,
+      ...stageDefaults, label: `${name}_base.malloy`, modelFile: `${name}_base.malloy`, metaFile: `${name}_base.yaml`,
+      defaultExport: { name: `${name}_base`, kind: 'source' }, defaultDomain: name, system, user,
     });
     totalCost += r.cost;
-    if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(modelsDir, metaDir), files: [], diagnostics: `${t}_base: ${r.diag}`, cost: totalCost };
+    if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(modelsDir, metaDir), files: [], diagnostics: `${name}_base: ${r.diag}`, cost: totalCost };
   }
 
   // 2. Plan the central decomposition (model-derived) — a SMALL set of focused
   //    intermediate source files. Then author each one-at-a-time, then a thin top-level.
-  const baseContents = (await Promise.all(tables.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(modelsDir, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
+  const baseContents = (await Promise.all(specs.map(async (s) => `### ${s.name}_base.malloy\n${await readFile(path.join(modelsDir, `${s.name}_base.malloy`), 'utf8')}`))).join('\n\n');
   const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nInfer the REUSABLE semantic concepts (entities, relationships, measures, dimensions, and the analytical surfaces the examples imply) from the domain context, the SCHEMA, and the COLUMN PROFILE below. Derive join cardinality, matching predicates, and any bucketing from the ACTUAL encodings (lists vs scalars, the real categorical domains), not prose alone. Express joins and bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\nDESIGN FOR THIN ANSWERS: expose results as NAMED, reusable views/measures on the central source so a question is answered by a thin filter+select on top — the answering agent should never need to restate a join or a matching predicate. Identify the hardest recurring question shape and guarantee one named, end-to-end measure/view for it. A matching/aggregating measure that returns 0 or empty over rows you know exist is a BUG (usually a wildcard-encoding or domain mismatch — recheck the profile), not an answer.\n\n=== MALLOY PRIMER ===\n${primer}${discovery ? `\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}` : ''}\n\n${DUCKDB_NOTES}${extra ? `\n\n=== DOMAIN-SPECIFIC GUIDANCE (supplied context) ===\n${extra}` : ''}\n\n${SEMANTIC_LAYER_POLICY}`;
 
   const plan = await planCentral({ model, reasoningEffort: config.reasoningEffort, provider: config.provider, baseContents, context, qa, profiles: allProfiles, outputName, maxFiles: maxCentralFiles, extraGuidance: extra, runId: config.runId });
