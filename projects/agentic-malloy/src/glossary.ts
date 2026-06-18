@@ -19,7 +19,7 @@
  */
 import { DuckDBInstance } from '@duckdb/node-api';
 import { complete } from './llm-client.js';
-import { normalizeTables, type TableInput } from './layer-build.js';
+import { normalizeTables, type TableInput } from './table-spec.js';
 import * as cl from './controllog.js';
 
 export type ConceptKind = 'entity' | 'measure' | 'dimension' | 'filter' | 'scenario' | 'operation';
