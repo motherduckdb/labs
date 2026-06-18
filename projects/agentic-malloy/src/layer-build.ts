@@ -27,6 +27,7 @@ import { DuckDBInstance } from '@duckdb/node-api';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { viewQualitySmells, smellSummary } from './view-quality.js';
+import { extractGlossary, groundGlossary, renderGlossary, type GlossaryEntry } from './glossary.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -471,10 +472,10 @@ async function authorStage(opts: {
  *  (caller then authors a single top-level file). */
 async function planCentral(opts: {
   model: string; reasoningEffort?: string; provider?: string; baseContents: string; context: string; qa: string;
-  profiles: string; outputName: string; maxFiles: number; extraGuidance?: string; runId?: string;
+  profiles: string; outputName: string; maxFiles: number; extraGuidance?: string; glossary?: string; runId?: string;
 }): Promise<{ files: { file: string; purpose: string }[]; cost: number }> {
-  const system = `You are planning the CENTRAL files of a Malloy semantic layer (the base sources, one per table, already exist). Decompose the joins and the analytical needs into a SMALL set (1–${opts.maxFiles}) of FOCUSED intermediate source files — each a \`<name>.malloy\` — so NO single file is huge (each must comfortably fit in one model response) and lineage is clean. Order them DEPENDENCY-FIRST (a later file may reference earlier ones + the bases). Do NOT include the base files. Do NOT include the top-level ${opts.outputName}.malloy (it is added automatically last). Return ONLY a JSON array: [{"file":"<name>.malloy","purpose":"<one line>"}, ...].\n\n${SEMANTIC_LAYER_POLICY}`;
-  const user = `## Base sources\n${opts.baseContents}\n\n## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## Domain context\n${opts.context}\n\n## Example questions to COVER (generalize into reusable concepts — do NOT name files after them)\n${opts.qa}${opts.extraGuidance ? `\n\n## Domain-specific guidance (supplied context)\n${opts.extraGuidance}` : ''}\n\nPlan the intermediate source files now (JSON array only).`;
+  const system = `You are planning the CENTRAL files of a Malloy semantic layer (the base sources, one per table, already exist). Decompose the joins and the analytical needs into a SMALL set (1–${opts.maxFiles}) of FOCUSED intermediate source files — each a \`<name>.malloy\` — so NO single file is huge (each must comfortably fit in one model response) and lineage is clean. Order them DEPENDENCY-FIRST (a later file may reference earlier ones + the bases). Do NOT include the base files. Do NOT include the top-level ${opts.outputName}.malloy (it is added automatically last). Return ONLY a JSON array: [{"file":"<name>.malloy","purpose":"<one line>"}, ...].\n\n${SEMANTIC_LAYER_POLICY}${opts.glossary ?? ''}`;
+  const user = `## Base sources\n${opts.baseContents}\n\n## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## Domain context\n${opts.context}\n\n## Example questions to COVER (generalize into reusable concepts — do NOT name files after them)\n${opts.qa}${opts.extraGuidance ? `\n\n## Domain-specific guidance (supplied context)\n${opts.extraGuidance}` : ''}\n\nPlan the intermediate source files now — make sure the decomposition COVERS every glossary concept (a source/view for each).\nJSON array only.`;
   const t0 = Date.now();
   const resp = await complete({ model: opts.model, systemPrompt: system, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 4000 });
   if (opts.runId) {
@@ -514,6 +515,10 @@ export interface GenerationPolicy {
   extraGuidance?: string;
   /** max model-planned intermediate source files. Default 6. */
   maxCentralFiles?: number;
+  /** run the ubiquitous-language glossary pass (extract user vocabulary from the
+   *  questions, ground it, thread it into authoring so surfaces are named/described
+   *  in the user's words). Default true; set false for cheap/smoke builds. */
+  glossary?: boolean;
 }
 
 export interface LayerBuildConfig {
@@ -595,6 +600,25 @@ export async function buildLayer(config: LayerBuildConfig): Promise<LayerBuildRe
   const extra = policy.extraGuidance?.trim() || undefined;
   let totalCost = 0;
 
+  // Ubiquitous-language glossary (closed-book on answers): mine the question
+  // VOCABULARY → ground it against the real schema → thread it into authoring so
+  // surfaces are NAMED/described in the user's words (the question→layer bridge).
+  let glossaryBlock = '';
+  let glossaryEntries: GlossaryEntry[] = [];
+  if (policy.glossary !== false && config.qaPairs.length) {
+    const gx = await extractGlossary({
+      model, contextMarkdown: config.contextMarkdown, schema: allProfiles.length ? specs.map((s) => `### ${s.name}\n${schema[s.name]}`).join('\n\n') : '',
+      profiles: allProfiles, questions: config.qaPairs.map((q) => q.question),
+      reasoningEffort: config.reasoningEffort, provider: config.provider, runId: config.runId,
+    });
+    totalCost += gx.cost;
+    const { grounded, dropped } = await groundGlossary(gx.entries, config.tables, dbPath);
+    glossaryEntries = grounded;
+    if (dropped.length) console.log(`  glossary: ${grounded.length} concepts (dropped ${dropped.length} ungrounded: ${dropped.map((d) => `"${d.term}"`).slice(0, 5).join(', ')})`);
+    else console.log(`  glossary: ${grounded.length} concepts`);
+    glossaryBlock = grounded.length ? `\n\n=== UBIQUITOUS-LANGUAGE GLOSSARY (name/describe surfaces in these USER terms; bind concept → grounding → pattern) ===\n${renderGlossary(grounded)}` : '';
+  }
+
   if (config.centralOnly) {
     const missing = specs.filter((s) => !existsSync(path.join(modelsDir, `${s.name}_base.malloy`)));
     if (missing.length) throw new Error(`--central-only needs existing bases; missing: ${missing.map((s) => `${s.name}_base.malloy`).join(', ')}. Run a full layer-build first.`);
@@ -611,7 +635,7 @@ export async function buildLayer(config: LayerBuildConfig): Promise<LayerBuildRe
   // 1. Entity bases (independent: measures + dimensions, NO joins). The Malloy
   //    identifier/file uses the safe `name`; duckdb.table uses the physical `ref`.
   for (const { name, ref } of config.centralOnly ? [] : specs) {
-    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table referenced as \`duckdb.table('${ref}')\`: a source named ${name}_base with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}\n\n${SEMANTIC_LAYER_POLICY}`;
+    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table referenced as \`duckdb.table('${ref}')\`: a source named ${name}_base with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}\n\n${SEMANTIC_LAYER_POLICY}${glossaryBlock}`;
     const user = `## Table schema (DuckDB) for duckdb.table('${ref}')\n${schema[name]}\n\n## Column profile (ACTUAL values in the data — ground truth)\n${profile[name]}\n\n## Domain context (terminology + which measures matter)\n${context}\n\nWrite ${name}_base.malloy now (source named ${name}_base over duckdb.table('${ref}'), measures + dimensions, no joins).`;
     const r = await authorStage({
       ...stageDefaults, label: `${name}_base.malloy`, modelFile: `${name}_base.malloy`, metaFile: `${name}_base.yaml`,
@@ -624,9 +648,9 @@ export async function buildLayer(config: LayerBuildConfig): Promise<LayerBuildRe
   // 2. Plan the central decomposition (model-derived) — a SMALL set of focused
   //    intermediate source files. Then author each one-at-a-time, then a thin top-level.
   const baseContents = (await Promise.all(specs.map(async (s) => `### ${s.name}_base.malloy\n${await readFile(path.join(modelsDir, `${s.name}_base.malloy`), 'utf8')}`))).join('\n\n');
-  const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nInfer the REUSABLE semantic concepts (entities, relationships, measures, dimensions, and the analytical surfaces the examples imply) from the domain context, the SCHEMA, and the COLUMN PROFILE below. Derive join cardinality, matching predicates, and any bucketing from the ACTUAL encodings (lists vs scalars, the real categorical domains), not prose alone. Express joins and bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\nDESIGN FOR THIN ANSWERS: expose results as NAMED, reusable views/measures on the central source so a question is answered by a thin filter+select on top — the answering agent should never need to restate a join or a matching predicate. Identify the hardest recurring question shape and guarantee one named, end-to-end measure/view for it. A matching/aggregating measure that returns 0 or empty over rows you know exist is a BUG (usually a wildcard-encoding or domain mismatch — recheck the profile), not an answer.\n\n=== MALLOY PRIMER ===\n${primer}${discovery ? `\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}` : ''}\n\n${DUCKDB_NOTES}${extra ? `\n\n=== DOMAIN-SPECIFIC GUIDANCE (supplied context) ===\n${extra}` : ''}\n\n${SEMANTIC_LAYER_POLICY}`;
+  const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nInfer the REUSABLE semantic concepts (entities, relationships, measures, dimensions, and the analytical surfaces the examples imply) from the domain context, the SCHEMA, and the COLUMN PROFILE below. Derive join cardinality, matching predicates, and any bucketing from the ACTUAL encodings (lists vs scalars, the real categorical domains), not prose alone. Express joins and bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\nDESIGN FOR THIN ANSWERS: expose results as NAMED, reusable views/measures on the central source so a question is answered by a thin filter+select on top — the answering agent should never need to restate a join or a matching predicate. Identify the hardest recurring question shape and guarantee one named, end-to-end measure/view for it. A matching/aggregating measure that returns 0 or empty over rows you know exist is a BUG (usually a wildcard-encoding or domain mismatch — recheck the profile), not an answer.\n\n=== MALLOY PRIMER ===\n${primer}${discovery ? `\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}` : ''}\n\n${DUCKDB_NOTES}${extra ? `\n\n=== DOMAIN-SPECIFIC GUIDANCE (supplied context) ===\n${extra}` : ''}\n\n${SEMANTIC_LAYER_POLICY}${glossaryBlock}`;
 
-  const plan = await planCentral({ model, reasoningEffort: config.reasoningEffort, provider: config.provider, baseContents, context, qa, profiles: allProfiles, outputName, maxFiles: maxCentralFiles, extraGuidance: extra, runId: config.runId });
+  const plan = await planCentral({ model, reasoningEffort: config.reasoningEffort, provider: config.provider, baseContents, context, qa, profiles: allProfiles, outputName, maxFiles: maxCentralFiles, extraGuidance: extra, glossary: glossaryBlock, runId: config.runId });
   totalCost += plan.cost;
   console.log(`  central plan: ${plan.files.length} file(s) — ${plan.files.map((f) => f.file).join(', ') || `(none → single ${outputName}.malloy)`}`);
 
@@ -653,6 +677,21 @@ export async function buildLayer(config: LayerBuildConfig): Promise<LayerBuildRe
   });
   totalCost += central.cost;
   if (!central.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(modelsDir, metaDir), files: [], diagnostics: `${outputName}: ${central.diag}`, cost: totalCost };
+
+  // 4b. Persist the glossary artifact (hashed into provenance + available to the
+  //     answering agent for question→surface mapping), then a SOFT coverage check:
+  //     every concept should be addressable by a surface name or _meta text.
+  if (glossaryEntries.length) {
+    await writeFile(path.join(metaDir, '_glossary.yaml'), JSON.stringify({ glossary: glossaryEntries }, null, 2) + '\n');
+    const malloyText = (await Promise.all((await readdir(modelsDir)).filter((f) => f.endsWith('.malloy')).map((f) => readFile(path.join(modelsDir, f), 'utf8')))).join('\n');
+    const metaText = (await Promise.all((await readdir(metaDir)).filter((f) => f.endsWith('.yaml') && f !== '_glossary.yaml').map((f) => readFile(path.join(metaDir, f), 'utf8')))).join('\n');
+    const corpus = `${malloyText}\n${metaText}`.toLowerCase();
+    const tokens = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 3);
+    const uncovered = glossaryEntries.filter((e) => ![e.term, ...(e.aliases ?? [])].some((t) => tokens(t).some((tok) => corpus.includes(tok))));
+    console.log(uncovered.length
+      ? `  glossary coverage: ${glossaryEntries.length - uncovered.length}/${glossaryEntries.length} concepts addressable (gaps: ${uncovered.map((u) => `"${u.term}"`).slice(0, 6).join(', ')})`
+      : `  glossary coverage: all ${glossaryEntries.length} concepts addressable`);
+  }
 
   // 5. Provenance marker (so only a model-authored layer can back an official run).
   // --central-only REUSES existing base files (which may have been hand-edited), so it
