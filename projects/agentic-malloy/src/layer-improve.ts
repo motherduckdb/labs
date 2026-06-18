@@ -28,7 +28,6 @@ import { columnProfiles, hashLayerOnDisk, readDoc, validateModel, MODELS_DIR, DA
 import * as cl from './controllog.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import {
-  readMisses,
   loadLayerIndex,
   analyzeMiss,
   classifyMiss,
@@ -131,14 +130,19 @@ export async function improveLayer(opts: {
   const fromHash = await hashLayerOnDisk();
   const databasePath = opts.motherduckDb ? `md:${opts.motherduckDb}` : undefined;
 
-  const misses = await readMisses(opts.fromPath);
+  // Read the FULL run (passers + misses). The train-only guard MUST consider
+  // every task_id, not just the misses: the tool-error meta-analysis spans the
+  // whole run, so a held-out PASSER's trace could otherwise influence a
+  // skill/layer write even when all the misses happen to be train.
+  const allRows = (await readFile(opts.fromPath, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as MissRow);
+  const misses = allRows.filter((r) => r.is_correct === false);
 
   // P1 guard: a layer edit (or skill-fix application) must NEVER be driven by a
-  // run that includes held-out/test tasks — that would tune the layer on the
-  // generalization set while still passing the official gate. Check the actual
-  // task_ids against the train split.
+  // run that includes held-out/test tasks — that would tune the layer/skill on
+  // the generalization set while still passing the official gate. Checked over
+  // the WHOLE run against the train split.
   const trainIds = await loadTrainIds();
-  const nonTrain = nonTrainTaskIds(misses.map((m) => m.task_id), trainIds);
+  const nonTrain = nonTrainTaskIds(allRows.map((r) => r.task_id), trainIds);
   const trainOnly = nonTrain.length === 0;
 
   if (opts.runId) {
@@ -159,7 +163,6 @@ export async function improveLayer(opts: {
   // Correlate the run to its controllog so we can read the per-task tool TRACE
   // (the manner-of-failure evidence) + the run-level tool-error rates. Best
   // effort: a low match → trace is omitted and we judge from the JSONL alone.
-  const allRows = (await readFile(opts.fromPath, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as MissRow);
   const events = await loadControllog(opts.controllogDir ?? DEFAULT_CONTROLLOG_DIR);
   const corr = correlateRun(events, allRows);
   const runId = corr.runId;
