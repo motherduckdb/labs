@@ -18,7 +18,8 @@ import { createMCPClient, getExplorationTools, mcpRetryCount } from './mcp-clien
 import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
 import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
-import { buildLayer, hashLayerOnDisk, PROVENANCE_PATH } from './layer-build.js';
+import { hashLayerOnDisk, PROVENANCE_PATH } from './layer-build.js';
+import { buildDabstepLayer } from './dabstep-build.js';
 import { improveLayer } from './layer-improve.js';
 import { uploadControllog } from './upload.js';
 import { runPool, makeSerializedWriter } from './pool.js';
@@ -565,9 +566,9 @@ async function cmdLayerBuild(flags: Record<string, string | boolean>) {
   cl.init({ project: PROJECT_ID, logDir: RESULTS_DIR, agentId: 'agent:asm-malloy-builder' });
   const session = cl.createSession();
   const runId = cl.newId();
-  let res!: Awaited<ReturnType<typeof buildLayer>>;
+  let res!: Awaited<ReturnType<typeof buildDabstepLayer>>;
   await cl.runInSession(session, async () => {
-    res = await buildLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 5), centralOnly: !!flags['central-only'], provider, runId });
+    res = await buildDabstepLayer({ model, includeManual, reasoningEffort: reasoning, maxRounds: Number(flags['max-rounds'] ?? 5), centralOnly: !!flags['central-only'], provider, runId });
   });
   await cl.flushSession(session);
   console.log(`  build run_id ${runId} logged to results/controllog (upload to view in the dive's Build tab)`);

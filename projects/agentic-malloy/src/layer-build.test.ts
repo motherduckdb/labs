@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { columnProfiles } from './layer-build.js';
+import { columnProfiles, renderQA, SEMANTIC_LAYER_POLICY, DUCKDB_NOTES } from './layer-build.js';
 
 let dir: string;
 let dbPath: string;
@@ -64,5 +64,41 @@ describe('columnProfiles', () => {
     const scheme = p.rules.split('\n').find((l) => l.includes('scheme'))!;
     expect(scheme).toContain("'A'");
     expect(scheme).toContain("'B'");
+  });
+});
+
+// --- generic builder boundary (no DABstep / no benchmark shapes) -------------
+
+describe('generic builder: anti-benchmark rendering', () => {
+  it('renders Q/A as ID-free numbered examples (no task ids to copy into the layer)', () => {
+    const out = renderQA(
+      [
+        { question: 'avg fee for NexPay credit?', guidelines: 'round to 6', answer: '5.71' },
+        { question: 'top 5 merchants by volume', answer: '[a,b,c]' },
+      ],
+      false, // includeAnswers=false → answers omitted entirely
+    );
+    expect(out).toContain('Example 1:');
+    expect(out).toContain('Example 2:');
+    expect(out).toContain('avg fee for NexPay'); // the question text is allowed
+    expect(out).not.toMatch(/task_id|\[\d+\]/); // no task identifiers
+    expect(out).not.toContain('5.71'); // includeAnswers=false → no expected values
+  });
+
+  it('includes expected values ONLY when includeAnswers is set (still labeled, never an id)', () => {
+    const out = renderQA([{ question: 'q', answer: '42' }], true);
+    expect(out).toContain('expected: 42');
+    expect(out).toContain('Example 1:');
+  });
+
+  it('the semantic-layer policy forbids citing task ids / gold answers in output', () => {
+    expect(SEMANTIC_LAYER_POLICY).toMatch(/NEVER cite an example\/task identifier/i);
+    expect(SEMANTIC_LAYER_POLICY).toMatch(/reusable/i);
+  });
+
+  it('the generic Malloy guidance names no dataset entities (uses placeholders)', () => {
+    // DUCKDB_NOTES is generic discipline — it must not bake in DABstep entities.
+    expect(DUCKDB_NOTES).not.toMatch(/\bfee\b|\bmerchant\b|payments|acquirer/i);
+    expect(DUCKDB_NOTES).toContain("duckdb.table('<table>')"); // placeholder, not a real table
   });
 });

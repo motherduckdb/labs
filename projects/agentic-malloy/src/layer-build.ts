@@ -1,15 +1,22 @@
 /**
- * layer-build — the MODEL-AUTHORED Malloy layer pass. An expensive-tier model
- * reads the DABstep manual + the 26 train Q/A + table schema and WRITES the
- * semantic layer (malloy/models/*.malloy + malloy/_meta/*.yaml) from scratch.
- * Humans only edit this prompt / skill / code, never the emitted layer — that's
- * what makes the official 26/26 `malloy_provenance: model_authored`.
+ * layer-build — a GENERIC, model-authored Malloy layer builder. Given a dataset
+ * (tables + a local DuckDB to introspect/validate against), domain context
+ * markdown, a set of example Q/A pairs for coverage, and Malloy docs, an
+ * expensive-tier model WRITES a reusable semantic layer (<modelsDir>/*.malloy +
+ * <metaDir>/*.yaml) from scratch, each file compile+execute validated as it's
+ * written with a localized repair loop.
  *
- * INCREMENTAL: one file per LLM call (per Lloyd's source-per-entity convention),
- * each compiled+validated as it's written, with a localized repair loop. The
- * five `<table>_base.malloy` sources are authored first (independent, no joins),
- * then the central `dabstep.malloy` (joins + views). Each call returns two small
- * fenced blocks (```malloy + ```yaml) — far more robust than one giant JSON.
+ * NOTHING here is dataset-specific: table names, the context source, the example
+ * source, output naming, and any domain-specific guidance all arrive via
+ * `LayerBuildConfig`. The DABstep experiment supplies those through a thin
+ * wrapper (see dabstep-build.ts) — this module never reads DABstep files, names
+ * "fee"/"merchant", or cites task IDs.
+ *
+ * INCREMENTAL: one file per LLM call (source-per-entity convention). The
+ * `<table>_base.malloy` sources are authored first (independent, no joins), then
+ * a small model-planned set of intermediate sources, then a thin top-level
+ * `<outputName>.malloy`. Each call returns two fenced blocks (```malloy +
+ * ```yaml) — far more robust than one giant JSON.
  */
 import { readFile, readdir, writeFile, rm, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -19,35 +26,27 @@ import { fileURLToPath } from 'node:url';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
-import { LOCAL_DB_PATH, buildLocalDuckDB } from './load.js';
 import * as cl from './controllog.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Repo-relative locations. The layer + its docs live here by default; a generic
+// caller may override modelsDir/metaDir/provenancePath via the config. DATA_DIR
+// is exported for repo consumers (it is NOT used by the generic builder itself).
 export const DATA_DIR = path.join(REPO_ROOT, 'data');
 const MALLOY_DIR = path.join(REPO_ROOT, 'malloy');
 export const MODELS_DIR = path.join(MALLOY_DIR, 'models');
 export const META_DIR = path.join(MALLOY_DIR, '_meta');
 export const PROVENANCE_PATH = path.join(MALLOY_DIR, '.provenance.json');
-const TABLES = ['payments', 'fees', 'merchants', 'acquirer_countries', 'merchant_category_codes'];
+const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'malloy');
 
-// ---------------------------------------------------------------------------
-// Context gathering
-// ---------------------------------------------------------------------------
-
-async function schemaByTable(): Promise<Record<string, string>> {
-  const instance = await DuckDBInstance.create(LOCAL_DB_PATH);
-  const conn = await instance.connect();
-  const out: Record<string, string> = {};
-  try {
-    for (const t of TABLES) {
-      const r = await conn.runAndReadAll(`DESCRIBE ${t}`);
-      out[t] = r.getRowObjects().map((row) => `  ${row.column_name} ${row.column_type}`).join('\n');
-    }
-  } finally {
-    conn.closeSync();
-  }
-  return out;
+/** Read a doc from docs/malloy (the Malloy primer, relationship-discovery, …). */
+export async function readDoc(name: string): Promise<string> {
+  return readFile(path.join(DOCS_DIR, name), 'utf8');
 }
+
+// ---------------------------------------------------------------------------
+// Generic data dictionary (columnProfiles) + schema introspection.
+// ---------------------------------------------------------------------------
 
 /**
  * Dataset-agnostic COLUMN PROFILE: for every column of every table, report the
@@ -57,8 +56,8 @@ async function schemaByTable(): Promise<Record<string, string>> {
  * low-cardinality — the values a categorical match must reproduce exactly), or
  * a numeric range, or a few samples. For LIST/ARRAY columns, the NULL-vs-empty
  * split — because "applies to all" is usually the empty list, not NULL, and that
- * distinction silently breaks wildcard predicates. Nothing here is task- or
- * DABstep-specific; it's a generic data dictionary computed from the data.
+ * distinction silently breaks wildcard predicates. Generic: a data dictionary
+ * computed from the data, nothing task-specific.
  */
 const LOWCARD_MAX = 40; // ≤ this many distinct → enumerate the full domain
 const NUMERIC_TYPES = /^(BIGINT|HUGEINT|INTEGER|SMALLINT|TINYINT|UBIGINT|UINTEGER|USMALLINT|UTINYINT|DOUBLE|FLOAT|REAL|DECIMAL|NUMERIC)/i;
@@ -68,7 +67,7 @@ function fmtVal(v: unknown): string {
   if (typeof v === 'string') return `'${v}'`;
   return String(v);
 }
-export async function columnProfiles(tables: string[] = TABLES, dbPath: string = LOCAL_DB_PATH): Promise<Record<string, string>> {
+export async function columnProfiles(tables: string[], dbPath: string): Promise<Record<string, string>> {
   const instance = await DuckDBInstance.create(dbPath);
   const conn = await instance.connect();
   const num = (v: unknown) => Number(v as number | bigint);
@@ -120,41 +119,53 @@ export async function columnProfiles(tables: string[] = TABLES, dbPath: string =
   return out;
 }
 
-async function trainQA(includeAnswers: boolean): Promise<string> {
-  const trainIds: string[] = JSON.parse(await readFile(path.join(DATA_DIR, 'split.json'), 'utf8')).train_ids;
-  const ids = new Set(trainIds.map(String));
-  const all = (await readFile(path.join(DATA_DIR, 'dabstep', 'tasks', 'all.jsonl'), 'utf8'))
-    .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
-  return all
-    .filter((q) => ids.has(String(q.task_id)))
-    .map((q) => `- [${q.task_id}] ${q.question}${q.guidelines ? `\n  guidelines: ${q.guidelines}` : ''}${includeAnswers ? `\n  answer: ${q.answer}` : ''}`)
-    .join('\n');
+async function schemaByTable(tables: string[], dbPath: string): Promise<Record<string, string>> {
+  const instance = await DuckDBInstance.create(dbPath);
+  const conn = await instance.connect();
+  const out: Record<string, string> = {};
+  try {
+    for (const t of tables) {
+      const r = await conn.runAndReadAll(`DESCRIBE ${t}`);
+      out[t] = r.getRowObjects().map((row) => `  ${row.column_name} ${row.column_type}`).join('\n');
+    }
+  } finally {
+    conn.closeSync();
+  }
+  return out;
 }
 
-const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'malloy');
-export async function readDoc(name: string): Promise<string> {
-  return readFile(path.join(DOCS_DIR, name), 'utf8');
-}
+// ---------------------------------------------------------------------------
+// Generic Malloy/DuckDB authoring guidance (dataset-agnostic).
+// ---------------------------------------------------------------------------
 
-// DuckDB-specifics the primer doesn't cover + the Malloy-first rule + output format.
+// DuckDB-specifics the primer doesn't cover + the Malloy-first rule + general
+// modeling discipline. All GENERIC — no dataset's entities or facts appear here.
 export const DUCKDB_NOTES = `Malloy-on-DuckDB specifics (in addition to the primer above):
-- Reference a table by NAME: \`duckdb.table('payments')\` — never a file path. The model files compile as ONE unit (concatenated), so do NOT use \`import\`; every source sees every other.
-- Do NOT redefine an existing table column as a dimension/measure (e.g. \`dimension: merchant is ...\` when a \`merchant\` column exists → "Cannot redefine"). Only ADD derived fields with NEW names.
-- ANY DuckDB SQL function the primer doesn't list needs the TYPED raw escape \`fn!returntype(args)\` — e.g. \`list_contains!boolean(fees.aci, aci)\`, \`len!number(fees.aci)\`, \`lpad!string(x, 3, '0')\`, \`strftime!string(d, '%Y')\`, \`make_date!date(y, m, d)\`. Plain \`lpad(...)\`/\`strftime(...)\` fail with "Unknown function". There is no native list-membership operator — use \`list_contains!boolean\` for list columns. Prefer Malloy-native date ops (\`@2023\`, \`.month\`, \`::date\`) over SQL date formatting where possible.
+- Reference a table by NAME: \`duckdb.table('<table>')\` — never a file path. The model files compile as ONE unit (concatenated), so do NOT use \`import\`; every source sees every other.
+- Do NOT redefine an existing table column as a dimension/measure (e.g. \`dimension: x is ...\` when an \`x\` column exists → "Cannot redefine"). Only ADD derived fields with NEW names.
+- ANY DuckDB SQL function the primer doesn't list needs the TYPED raw escape \`fn!returntype(args)\` — e.g. \`list_contains!boolean(col, x)\`, \`len!number(col)\`, \`lpad!string(x, 3, '0')\`, \`strftime!string(d, '%Y')\`, \`make_date!date(y, m, d)\`. Plain \`lpad(...)\`/\`strftime(...)\` fail with "Unknown function". There is no native list-membership operator — use \`list_contains!boolean\` for list columns. Prefer Malloy-native date ops (\`@2023\`, \`.month\`, \`::date\`) over SQL date formatting where possible.
 - MALLOY-FIRST (important): express joins, group-bys, filters, and aggregates in MALLOY — \`join_one\`/\`join_many\`, \`view:\`, \`nest:\`, filtered aggregates. Do NOT write joins or group-bys inside \`duckdb.sql(...)\`. Use a \`duckdb.sql("...")\` source ONLY for logic Malloy genuinely cannot express, and keep it minimal.
 
-MODELING DISCIPLINE — verify against the data, never trust prose alone (these are general principles; apply them to ANY dataset):
+MODELING DISCIPLINE — verify against the data, never trust prose alone (general principles; apply them to ANY dataset):
 - A COLUMN PROFILE (per-column type, NULL count, and either the full DISTINCT domain, a numeric range, or samples; for list columns the NULL-vs-empty split) is given for every table below. It is GROUND TRUTH — when the prose docs and the profile disagree about encoding or domain, the profile wins.
 - WILDCARD / "applies to all" is a PHYSICAL-ENCODING question, not a prose one. Check the profile: a list/array column almost always encodes "all" as the EMPTY list (\`len!number(col)=0\`), NOT null; a scalar uses NULL. Write the wildcard branch to match what the data actually stores — \`len!number(col)=0 or list_contains!boolean(col, x)\` for a list field, \`col is null or col = x\` for a scalar — and put a wildcard branch on EVERY match field (one unguarded equality silently drops all wildcard rows for that field).
 - CATEGORICAL MATCH BY EQUALITY: when you derive/bucket a value to compare (string-equality) against a categorical column, your output labels MUST be EXACTLY that column's distinct values from the profile. NEVER infer the set of buckets from a single documented example — reproduce the full observed domain. If a fact column's raw domain differs from the rule column's domain (the profile shows two different sets), you must transform/bucket the fact value to the rule's exact strings before matching.
 - QUALIFY JOIN KEYS: if more than one joined table exposes the same column name, reference it qualified (\`some_source.col\`, not bare \`col\`) or you get a binder/scope error that only surfaces at EXECUTION, not at compile. After authoring a source with joins, mentally run a query THROUGH the join, not just a compile check.
 - JOIN_MANY DOUBLE-COUNTS: a \`join_many\` multiplies each base row by the number of matched rows on the other side. Define the per-match measure at the joined grain — \`joined.sum(<expr combining joined columns and base columns>)\` — and NEVER re-aggregate a base-grain column (a volume, a count, an amount) after a join_many, or it is multiplied by the match count. State in the source's _meta which measures are base-grain vs match-grain.
-- JOIN_MANY ON-CLAUSE SCOPE (critical, causes execution-only failures): a \`join_many ... on\` predicate must reference ONLY columns physically present on the two sources being joined. Do NOT reference a column reached through ANOTHER join — including a pass-through \`dimension: x is other_join.col\`. A pass-through dimension is just an ALIAS for the joined column, NOT a real column; it often COMPILES but the generated SQL references an out-of-scope alias and FAILS AT EXECUTION ("Referenced table … not found"). FIX (use this exact shape for fact×rule matching): (1) build an enriched fact source with a PROJECTION that turns the needed joined attributes into REAL local columns — \`source: enriched is fact_base extend { join_one: m is dim ... } -> { select: *, acct_type is m.account_type, mcc is m.merchant_category_code, ... }\`; (2) then \`source: matched is enriched extend { join_many: rules on (len!number(rules.x)=0 or list_contains!boolean(rules.x, acct_type)) and ... }\` referencing ONLY \`enriched\`'s local columns. Keep the fan-out exactly ONE join level deep.
+- JOIN_MANY ON-CLAUSE SCOPE (critical, causes execution-only failures): a \`join_many ... on\` predicate must reference ONLY columns physically present on the two sources being joined. Do NOT reference a column reached through ANOTHER join — including a pass-through \`dimension: x is other_join.col\`. A pass-through dimension is just an ALIAS for the joined column, NOT a real column; it often COMPILES but the generated SQL references an out-of-scope alias and FAILS AT EXECUTION ("Referenced table … not found"). FIX (use this exact shape for fact×rule matching): (1) build an enriched fact source with a PROJECTION that turns the needed joined attributes into REAL local columns — \`source: enriched is fact_base extend { join_one: m is dim ... } -> { select: *, attr_a is m.col_a, attr_b is m.col_b, ... }\`; (2) then \`source: matched is enriched extend { join_many: rules on (len!number(rules.x)=0 or list_contains!boolean(rules.x, attr_a)) and ... }\` referencing ONLY \`enriched\`'s local columns. Keep the fan-out exactly ONE join level deep.
 - A VIEW THAT COMPILES IS NOT DONE — IT MUST EXECUTE. Every view/measure you author will be run end-to-end at build time; one that compiles but errors at execution (binder/scope) is a FAILED build and will be sent back to you to fix. Author each source so a query through its joins actually returns rows.
 
 Output EXACTLY two fenced blocks and nothing else:
 1. A \`\`\`malloy block: the file contents.
 2. A \`\`\`yaml block: the _meta sidecar with TOP-LEVEL keys (do NOT nest under a \`_meta:\` key): file, domain, summary, exports (list of {name, kind, summary}), provides_for (list of strings).`;
+
+// The anti-benchmark / reusable-concepts policy — applied to ALL output so the
+// generated layer is a semantic model, not an answer key tailored to examples.
+export const SEMANTIC_LAYER_POLICY = `SEMANTIC-LAYER POLICY (applies to ALL generated Malloy AND _meta):
+- Produce a REUSABLE semantic layer describing the domain's entities, relationships, measures, and dimensions — NOT an answer key. Infer the reusable concepts from the domain context, the schema, the column profile, and the example questions.
+- The example questions indicate the analytical surface area to COVER. GENERALIZE them into reusable views/measures; they are examples, not labels to copy.
+- NEVER cite an example/task identifier (e.g. "Q123", "1711"), embed a gold/expected answer value, or create a one-off view named after or tailored to a single example. Name each view/measure for the CONCEPT it computes, never for a question.
+- A reader of the layer or its _meta should not be able to tell which specific example questions existed.`;
 
 // ---------------------------------------------------------------------------
 // Parsing + filesystem
@@ -190,10 +201,10 @@ function extractBlocks(text: string): { malloy?: string; meta?: string } {
   return { malloy: malloy?.trim(), meta: meta?.trim() };
 }
 
-async function clearLayer(): Promise<void> {
-  await mkdir(MODELS_DIR, { recursive: true });
-  await mkdir(META_DIR, { recursive: true });
-  for (const dir of [MODELS_DIR, META_DIR]) {
+async function clearLayer(modelsDir: string, metaDir: string): Promise<void> {
+  await mkdir(modelsDir, { recursive: true });
+  await mkdir(metaDir, { recursive: true });
+  for (const dir of [modelsDir, metaDir]) {
     for (const f of await readdir(dir)) await rm(path.join(dir, f));
   }
 }
@@ -209,16 +220,21 @@ export function sourceNamesIn(src: string): string[] {
  * given — EXECUTE every view of the source(s) that file introduces. A view can
  * COMPILE but fail at execution (e.g. a `join_many ... on` predicate that
  * references another join's alias compiles to SQL with an out-of-scope table →
- * DuckDB "Referenced table not found"). Compile-only validation shipped exactly
- * that class of bug, leaving every fee view unusable at answer time. The first
- * execution failure is returned as a diagnostic so the repair loop fixes it.
+ * DuckDB "Referenced table not found"). The first execution failure is returned
+ * as a diagnostic so the repair loop fixes it. `modelsDir`/`dbPath` default to
+ * this repo's layer + the MalloyRuntime default DB (back-compat for callers that
+ * pass only a file name).
  */
-export async function validateModel(modelFile?: string): Promise<{ ok: boolean; diag: string }> {
-  const rt = new MalloyRuntime();
+export async function validateModel(
+  modelFile?: string,
+  opts: { modelsDir?: string; dbPath?: string } = {},
+): Promise<{ ok: boolean; diag: string }> {
+  const modelsDir = opts.modelsDir ?? MODELS_DIR;
+  const rt = new MalloyRuntime({ ...(opts.dbPath ? { databasePath: opts.dbPath } : {}), modelsDir });
   try {
     const inv = await rt.describe(); // compile check (throws on compile error)
-    if (modelFile && existsSync(path.join(MODELS_DIR, modelFile))) {
-      const mine = new Set(sourceNamesIn(await readFile(path.join(MODELS_DIR, modelFile), 'utf8')));
+    if (modelFile && existsSync(path.join(modelsDir, modelFile))) {
+      const mine = new Set(sourceNamesIn(await readFile(path.join(modelsDir, modelFile), 'utf8')));
       for (const s of inv.sources) {
         if (!mine.has(s)) continue;
         for (const view of inv.viewsBySource[s] ?? []) {
@@ -231,7 +247,7 @@ export async function validateModel(modelFile?: string): Promise<{ ok: boolean; 
             // join-scoping hint when the error actually looks like that class.
             const isScopeBug = /referenced table .* not found|not in scope|undefined value|candidate tables/i.test(errText);
             const hint = isScopeBug
-              ? ` This is a join-scope bug: a \`join_many ... on\` predicate references attributes reached through ANOTHER join (a pass-through \`dimension: x is m.col\` is just an alias and drops out of SQL scope). FIX: MATERIALIZE those attributes as REAL columns first via a projection — \`source: enriched is base extend { join_one: m is ... } -> { select: *, acct is m.account_type, ... }\` — then \`join_many\` on \`enriched\`'s local columns, one level deep.`
+              ? ` This is a join-scope bug: a \`join_many ... on\` predicate references attributes reached through ANOTHER join (a pass-through \`dimension: x is m.col\` is just an alias and drops out of SQL scope). FIX: MATERIALIZE those attributes as REAL columns first via a projection — \`source: enriched is base extend { join_one: m is ... } -> { select: *, attr is m.col, ... }\` — then \`join_many\` on \`enriched\`'s local columns, one level deep.`
               : '';
             return {
               ok: false,
@@ -250,24 +266,24 @@ export async function validateModel(modelFile?: string): Promise<{ ok: boolean; 
   }
 }
 
-export async function hashLayerOnDisk(): Promise<string> {
+export async function hashLayerOnDisk(modelsDir: string = MODELS_DIR, metaDir: string = META_DIR): Promise<string> {
   const h = createHash('sha256');
   // Hash BOTH the .malloy models AND their _meta/*.yaml sidecars — the sidecars
   // carry routing/provenance metadata, so a hand-edit there must change the hash too.
-  const models = (await readdir(MODELS_DIR)).filter((f) => f.endsWith('.malloy')).sort();
+  const models = (await readdir(modelsDir)).filter((f) => f.endsWith('.malloy')).sort();
   for (const f of models) {
     h.update(`models/${f}`);
-    h.update(await readFile(path.join(MODELS_DIR, f), 'utf8'));
+    h.update(await readFile(path.join(modelsDir, f), 'utf8'));
   }
   let metaFiles: string[] = [];
   try {
-    metaFiles = (await readdir(META_DIR)).filter((f) => f.endsWith('.yaml')).sort();
+    metaFiles = (await readdir(metaDir)).filter((f) => f.endsWith('.yaml')).sort();
   } catch {
     /* no _meta dir */
   }
   for (const f of metaFiles) {
     h.update(`_meta/${f}`);
-    h.update(await readFile(path.join(META_DIR, f), 'utf8'));
+    h.update(await readFile(path.join(metaDir, f), 'utf8'));
   }
   return h.digest('hex').slice(0, 16);
 }
@@ -291,6 +307,10 @@ async function authorStage(opts: {
   modelFile: string; // e.g. payments_base.malloy
   metaFile: string; // e.g. payments_base.yaml
   defaultExport: { name: string; kind: string };
+  defaultDomain: string;
+  modelsDir: string;
+  metaDir: string;
+  dbPath: string;
   model: string;
   reasoningEffort?: string;
   provider?: string;
@@ -380,20 +400,20 @@ async function authorStage(opts: {
       diag = 'You did not return a ```malloy fenced block. Return exactly one ```malloy block and one ```yaml block.';
       continue;
     }
-    await writeFile(path.join(MODELS_DIR, opts.modelFile), malloy + '\n');
+    await writeFile(path.join(opts.modelsDir, opts.modelFile), malloy + '\n');
     current = malloy;
     if (!metaWritten) {
       const metaYaml =
         meta ??
-        `file: ${opts.modelFile}\ndomain: ${opts.modelFile.replace(/_base\.malloy$|\.malloy$/, '')}\nsummary: (auto)\nexports:\n  - name: ${opts.defaultExport.name}\n    kind: ${opts.defaultExport.kind}\n    summary: (auto)\n`;
-      await writeFile(path.join(META_DIR, opts.metaFile), metaYaml + (metaYaml.endsWith('\n') ? '' : '\n'));
+        `file: ${opts.modelFile}\ndomain: ${opts.defaultDomain}\nsummary: (auto)\nexports:\n  - name: ${opts.defaultExport.name}\n    kind: ${opts.defaultExport.kind}\n    summary: (auto)\n`;
+      await writeFile(path.join(opts.metaDir, opts.metaFile), metaYaml + (metaYaml.endsWith('\n') ? '' : '\n'));
       metaWritten = true;
     } else if (meta) {
-      await writeFile(path.join(META_DIR, opts.metaFile), meta + (meta.endsWith('\n') ? '' : '\n'));
+      await writeFile(path.join(opts.metaDir, opts.metaFile), meta + (meta.endsWith('\n') ? '' : '\n'));
     }
 
     const cv0 = Date.now();
-    const v = await validateModel(opts.modelFile); // compile + execute the file's views
+    const v = await validateModel(opts.modelFile, { modelsDir: opts.modelsDir, dbPath: opts.dbPath }); // compile + execute the file's views
     if (opts.runId) {
       const callId = cl.newId();
       cl.toolCall({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, arguments: { round, mode }, model: opts.model });
@@ -414,12 +434,13 @@ async function authorStage(opts: {
 
 /** Ask the model to decompose the central layer into a small set of focused
  *  source files (model-derived, dependency-first). Returns [] on parse failure
- *  (caller then authors a single dabstep.malloy). */
+ *  (caller then authors a single top-level file). */
 async function planCentral(opts: {
-  model: string; reasoningEffort?: string; provider?: string; baseContents: string; manual: string; qa: string; profiles: string; runId?: string;
+  model: string; reasoningEffort?: string; provider?: string; baseContents: string; context: string; qa: string;
+  profiles: string; outputName: string; maxFiles: number; extraGuidance?: string; runId?: string;
 }): Promise<{ files: { file: string; purpose: string }[]; cost: number }> {
-  const system = `You are planning the CENTRAL files of a Malloy semantic layer (the base sources, one per table, already exist). Decompose the joins, the fee model, and the analytical needs into a SMALL set (1–5) of FOCUSED intermediate source files — each a \`<name>.malloy\` — so NO single file is huge (each must comfortably fit in one model response) and lineage is clean. Order them DEPENDENCY-FIRST (a later file may reference earlier ones + the bases). Do NOT include the base files. Do NOT include the top-level dabstep.malloy (it is added automatically last). Return ONLY a JSON array: [{"file":"<name>.malloy","purpose":"<one line>"}, ...].`;
-  const user = `## Base sources\n${opts.baseContents}\n\n## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## The Merchant Manual\n${opts.manual}\n\n## Train questions the layer must support\n${opts.qa}\n\nPlan the intermediate source files now (JSON array only).`;
+  const system = `You are planning the CENTRAL files of a Malloy semantic layer (the base sources, one per table, already exist). Decompose the joins and the analytical needs into a SMALL set (1–${opts.maxFiles}) of FOCUSED intermediate source files — each a \`<name>.malloy\` — so NO single file is huge (each must comfortably fit in one model response) and lineage is clean. Order them DEPENDENCY-FIRST (a later file may reference earlier ones + the bases). Do NOT include the base files. Do NOT include the top-level ${opts.outputName}.malloy (it is added automatically last). Return ONLY a JSON array: [{"file":"<name>.malloy","purpose":"<one line>"}, ...].\n\n${SEMANTIC_LAYER_POLICY}`;
+  const user = `## Base sources\n${opts.baseContents}\n\n## Column profiles (actual encodings + domains — ground truth)\n${opts.profiles}\n\n## Domain context\n${opts.context}\n\n## Example questions to COVER (generalize into reusable concepts — do NOT name files after them)\n${opts.qa}${opts.extraGuidance ? `\n\n## Domain-specific guidance (supplied context)\n${opts.extraGuidance}` : ''}\n\nPlan the intermediate source files now (JSON array only).`;
   const t0 = Date.now();
   const resp = await complete({ model: opts.model, systemPrompt: system, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 4000 });
   if (opts.runId) {
@@ -432,7 +453,7 @@ async function planCentral(opts: {
     const arr = JSON.parse(m ? m[0] : resp.text) as Array<{ file?: string; purpose?: string }>;
     const files = arr
       .filter((x) => x && typeof x.file === 'string')
-      .slice(0, 6)
+      .slice(0, opts.maxFiles)
       .map((x) => ({ file: String(x.file), purpose: String(x.purpose ?? '') }));
     return { files, cost: resp.cost ?? 0 };
   } catch {
@@ -441,8 +462,53 @@ async function planCentral(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Orchestration
+// Orchestration — the GENERIC builder
 // ---------------------------------------------------------------------------
+
+export interface QAPair {
+  question: string;
+  guidelines?: string;
+  answer?: string;
+}
+
+export interface GenerationPolicy {
+  /** include the example answers in the prompt (coverage understanding). The
+   *  SEMANTIC_LAYER_POLICY still forbids copying them into the output. Default false. */
+  includeAnswers?: boolean;
+  /** caller-supplied, dataset-specific modeling hints. NOT baked into the generic
+   *  builder — appended verbatim as "supplied context" when present. */
+  extraGuidance?: string;
+  /** max model-planned intermediate source files. Default 6. */
+  maxCentralFiles?: number;
+}
+
+export interface LayerBuildConfig {
+  tables: string[];
+  /** local DuckDB to introspect + compile/execute-validate against. Must exist. */
+  dbPath: string;
+  /** domain documentation the model reads for terminology/semantics (may be ''). */
+  contextMarkdown: string;
+  /** example questions for coverage (examples, NOT labels — see policy). */
+  qaPairs: QAPair[];
+  /** stem of the thin top-level model file (e.g. 'sales' → sales.malloy). */
+  outputName: string;
+  /** default _meta domain for authored files. */
+  domainName: string;
+  docs: { primer: string; relationshipDiscovery?: string };
+  generationPolicy?: GenerationPolicy;
+  model: string;
+  reasoningEffort?: string;
+  provider?: string;
+  maxRounds?: number;
+  /** reuse existing *_base.malloy, only (re)author the central files. */
+  centralOnly?: boolean;
+  modelsDir?: string; // default MODELS_DIR
+  metaDir?: string; // default META_DIR
+  provenancePath?: string; // default PROVENANCE_PATH
+  /** extra fields merged into the written provenance (e.g. {manual_included}). */
+  provenanceFields?: Record<string, unknown>;
+  runId?: string; // controllog build-run id (emits build events when set)
+}
 
 export interface LayerBuildResult {
   ok: boolean;
@@ -452,114 +518,119 @@ export interface LayerBuildResult {
   cost: number;
 }
 
-export async function buildLayer(opts: {
-  model: string;
-  includeManual?: boolean;
-  includeAnswers?: boolean;
-  maxRounds?: number;
-  reasoningEffort?: string;
-  centralOnly?: boolean; // reuse existing *_base.malloy, only (re)author dabstep.malloy
-  provider?: string; // pin OpenRouter to a single upstream provider
-  runId?: string; // controllog build-run id (emits build events when set)
-}): Promise<LayerBuildResult> {
-  if (!existsSync(LOCAL_DB_PATH)) {
-    console.log('local compile DB missing — building data/dabstep.duckdb …');
-    await buildLocalDuckDB();
+/** Render example Q/A pairs as numbered, ID-FREE examples (so the model has no
+ *  task identifier to copy into the layer — enforces the anti-benchmark policy). */
+export function renderQA(pairs: QAPair[], includeAnswers: boolean): string {
+  return pairs
+    .map((q, i) => `- Example ${i + 1}: ${q.question}${q.guidelines ? `\n  guidelines: ${q.guidelines}` : ''}${includeAnswers && q.answer !== undefined ? `\n  expected: ${q.answer}` : ''}`)
+    .join('\n');
+}
+
+export async function buildLayer(config: LayerBuildConfig): Promise<LayerBuildResult> {
+  const modelsDir = config.modelsDir ?? MODELS_DIR;
+  const metaDir = config.metaDir ?? META_DIR;
+  const provenancePath = config.provenancePath ?? PROVENANCE_PATH;
+  const policy = config.generationPolicy ?? {};
+  const maxRounds = config.maxRounds ?? 3;
+  const maxCentralFiles = policy.maxCentralFiles ?? 6;
+  const { tables, dbPath, outputName, domainName, model } = config;
+
+  if (!existsSync(dbPath)) {
+    throw new Error(`buildLayer: local compile DB not found at ${dbPath} — the caller must create it first.`);
   }
-  if (opts.runId) {
+  if (config.runId) {
     cl.runMetadata({
-      runId: opts.runId,
-      resolvedConfig: { phase: 'build', model: opts.model, include_manual: opts.includeManual !== false, central_only: !!opts.centralOnly, reasoning: opts.reasoningEffort ?? null, provider: opts.provider ?? null },
-      agentName: 'agent:asm-malloy-builder', datasetName: 'agentic_malloy', datasetVersion: 'layer-build',
+      runId: config.runId,
+      resolvedConfig: { phase: 'build', model, output_name: outputName, context_included: config.contextMarkdown.length > 0, central_only: !!config.centralOnly, reasoning: config.reasoningEffort ?? null, provider: config.provider ?? null },
+      agentName: 'agent:asm-malloy-builder', datasetName: outputName, datasetVersion: 'layer-build',
     });
   }
-  const schema = await schemaByTable();
-  const profile = await columnProfiles();
-  const allProfiles = TABLES.map((t) => `### ${t}\n${profile[t]}`).join('\n\n');
-  const manual = opts.includeManual === false ? '(omitted — manual-ablation run)' : await readFile(path.join(DATA_DIR, 'dabstep', 'context', 'manual.md'), 'utf8');
-  const qa = await trainQA(opts.includeAnswers ?? true);
-  const maxRounds = opts.maxRounds ?? 3;
+
+  const schema = await schemaByTable(tables, dbPath);
+  const profile = await columnProfiles(tables, dbPath);
+  const allProfiles = tables.map((t) => `### ${t}\n${profile[t]}`).join('\n\n');
+  const context = config.contextMarkdown || '(no domain context supplied)';
+  const qa = renderQA(config.qaPairs, policy.includeAnswers ?? false);
+  const extra = policy.extraGuidance?.trim() || undefined;
   let totalCost = 0;
 
-  if (opts.centralOnly) {
-    const missing = TABLES.filter((t) => !existsSync(path.join(MODELS_DIR, `${t}_base.malloy`)));
+  if (config.centralOnly) {
+    const missing = tables.filter((t) => !existsSync(path.join(modelsDir, `${t}_base.malloy`)));
     if (missing.length) throw new Error(`--central-only needs existing bases; missing: ${missing.join(', ')}. Run a full layer-build first.`);
-    console.log(`layer-build --central-only (model=${opts.model}) — reusing ${TABLES.length} existing bases\n`);
+    console.log(`layer-build --central-only (model=${model}) — reusing ${tables.length} existing bases\n`);
   } else {
-    await clearLayer();
-    console.log(`layer-build (model=${opts.model}) — incremental, ${TABLES.length} bases + central\n`);
+    await clearLayer(modelsDir, metaDir);
+    console.log(`layer-build (model=${model}) — incremental, ${tables.length} bases + central\n`);
   }
 
-  const primer = await readDoc('malloy-primer.md');
-  const discovery = await readDoc('relationship-discovery.md');
+  const primer = config.docs.primer;
+  const discovery = config.docs.relationshipDiscovery;
+  const stageDefaults = { modelsDir, metaDir, dbPath, model, reasoningEffort: config.reasoningEffort, provider: config.provider, maxRounds, runId: config.runId };
 
   // 1. Entity bases (independent: measures + dimensions, NO joins).
-  for (const t of opts.centralOnly ? [] : TABLES) {
-    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table "${t}": a source named ${t}_base over duckdb.table('${t}') with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}`;
-    const user = `## Table "${t}" schema (DuckDB)\n${schema[t]}\n\n## Column profile for "${t}" (ACTUAL values in the data — ground truth)\n${profile[t]}\n\n## The Merchant Manual (for terminology + which measures matter)\n${manual}\n\nWrite ${t}_base.malloy now (source named ${t}_base, measures + dimensions, no joins).`;
+  for (const t of config.centralOnly ? [] : tables) {
+    const system = `You are a Malloy expert writing ONE base source file for the DuckDB table "${t}": a source named ${t}_base over duckdb.table('${t}') with useful measures + dimensions and NO join logic.\n\n=== MALLOY PRIMER ===\n${primer}\n\n${DUCKDB_NOTES}\n\n${SEMANTIC_LAYER_POLICY}`;
+    const user = `## Table "${t}" schema (DuckDB)\n${schema[t]}\n\n## Column profile for "${t}" (ACTUAL values in the data — ground truth)\n${profile[t]}\n\n## Domain context (terminology + which measures matter)\n${context}\n\nWrite ${t}_base.malloy now (source named ${t}_base, measures + dimensions, no joins).`;
     const r = await authorStage({
-      label: `${t}_base.malloy`, modelFile: `${t}_base.malloy`, metaFile: `${t}_base.yaml`,
-      defaultExport: { name: `${t}_base`, kind: 'source' },
-      model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, system, user, maxRounds, runId: opts.runId,
+      ...stageDefaults, label: `${t}_base.malloy`, modelFile: `${t}_base.malloy`, metaFile: `${t}_base.yaml`,
+      defaultExport: { name: `${t}_base`, kind: 'source' }, defaultDomain: t, system, user,
     });
     totalCost += r.cost;
-    if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `${t}_base: ${r.diag}`, cost: totalCost };
+    if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(modelsDir, metaDir), files: [], diagnostics: `${t}_base: ${r.diag}`, cost: totalCost };
   }
 
   // 2. Plan the central decomposition (model-derived) — a SMALL set of focused
-  //    intermediate source files so no single file blows past the output-token cap
-  //    (and lineage stays clean). Then author each one-at-a-time, then a thin top-level.
-  const baseContents = (await Promise.all(TABLES.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(MODELS_DIR, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
-  const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nThe hardest questions need a fact-row × rule-row match with multi-rule fan-out. DERIVE that model yourself from the manual + the SCHEMA + the COLUMN PROFILE below — matching predicates, formula, and any dynamic bucketing follow from the actual encodings (lists vs scalars, the real categorical domains), not the prose alone. Express joins and bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\nDESIGN FOR THIN ANSWERS: expose the analytical results as NAMED views/measures on the central source so each question is answered by a thin filter+select on top — the answering agent should never need to restate a join or a matching predicate. Identify the hardest recurring question shape and guarantee one named, end-to-end measure/view that answers it directly. A matching/aggregating measure that returns 0 or empty over rows you know exist is a BUG (usually a wildcard-encoding or domain mismatch — recheck against the profile), not an answer.\n\n=== MALLOY PRIMER ===\n${primer}\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}\n\n${DUCKDB_NOTES}`;
+  //    intermediate source files. Then author each one-at-a-time, then a thin top-level.
+  const baseContents = (await Promise.all(tables.map(async (t) => `### ${t}_base.malloy\n${await readFile(path.join(modelsDir, `${t}_base.malloy`), 'utf8')}`))).join('\n\n');
+  const sharedSystem = `You are a Malloy expert building a multi-file semantic layer over the base sources.\n\nInfer the REUSABLE semantic concepts (entities, relationships, measures, dimensions, and the analytical surfaces the examples imply) from the domain context, the SCHEMA, and the COLUMN PROFILE below. Derive join cardinality, matching predicates, and any bucketing from the ACTUAL encodings (lists vs scalars, the real categorical domains), not prose alone. Express joins and bucketing in Malloy (join_*, view:, nest:), not in SQL.\n\nDESIGN FOR THIN ANSWERS: expose results as NAMED, reusable views/measures on the central source so a question is answered by a thin filter+select on top — the answering agent should never need to restate a join or a matching predicate. Identify the hardest recurring question shape and guarantee one named, end-to-end measure/view for it. A matching/aggregating measure that returns 0 or empty over rows you know exist is a BUG (usually a wildcard-encoding or domain mismatch — recheck the profile), not an answer.\n\n=== MALLOY PRIMER ===\n${primer}${discovery ? `\n\n=== RELATIONSHIP / JOIN-CARDINALITY DISCOVERY ===\n${discovery}` : ''}\n\n${DUCKDB_NOTES}${extra ? `\n\n=== DOMAIN-SPECIFIC GUIDANCE (supplied context) ===\n${extra}` : ''}\n\n${SEMANTIC_LAYER_POLICY}`;
 
-  const plan = await planCentral({ model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, baseContents, manual, qa, profiles: allProfiles, runId: opts.runId });
+  const plan = await planCentral({ model, reasoningEffort: config.reasoningEffort, provider: config.provider, baseContents, context, qa, profiles: allProfiles, outputName, maxFiles: maxCentralFiles, extraGuidance: extra, runId: config.runId });
   totalCost += plan.cost;
-  console.log(`  central plan: ${plan.files.length} file(s) — ${plan.files.map((f) => f.file).join(', ') || '(none → single dabstep.malloy)'}`);
+  console.log(`  central plan: ${plan.files.length} file(s) — ${plan.files.map((f) => f.file).join(', ') || `(none → single ${outputName}.malloy)`}`);
 
-  // 3. Author each planned intermediate source in order (numeric prefix → the runtime
-  //    concatenates them after the bases in dependency order).
+  // 3. Author each planned intermediate source in order.
   let authored = '';
   for (let i = 0; i < plan.files.length; i++) {
     const stem = `c${i + 1}_${plan.files[i].file.replace(/\.malloy$/, '').replace(/[^a-z0-9_]/gi, '_')}`;
     const modelFile = `${stem}.malloy`;
-    const user = `## Base sources\n${baseContents}\n\n## Column profiles (actual encodings + domains — ground truth; prefer over prose)\n${allProfiles}\n\n## Intermediate sources already authored (you may reference these by name)\n${authored || '(none yet)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite ${modelFile} now — ONE focused source. Purpose: ${plan.files[i].purpose}\nIt may reference the bases and the already-authored sources by name. Keep it to this one concern.`;
+    const user = `## Base sources\n${baseContents}\n\n## Column profiles (actual encodings + domains — ground truth; prefer over prose)\n${allProfiles}\n\n## Intermediate sources already authored (you may reference these by name)\n${authored || '(none yet)'}\n\n## Domain context\n${context}\n\n## Example questions to COVER (generalize — do NOT cite or name after them)\n${qa}\n\nWrite ${modelFile} now — ONE focused source. Purpose: ${plan.files[i].purpose}\nIt may reference the bases and the already-authored sources by name. Keep it to this one concern.`;
     const r = await authorStage({
-      label: modelFile, modelFile, metaFile: `${stem}.yaml`, defaultExport: { name: stem, kind: 'source' },
-      model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, system: sharedSystem, user, maxRounds, maxTokens: 36000, runId: opts.runId,
+      ...stageDefaults, label: modelFile, modelFile, metaFile: `${stem}.yaml`,
+      defaultExport: { name: stem, kind: 'source' }, defaultDomain: domainName, system: sharedSystem, user, maxTokens: 36000,
     });
     totalCost += r.cost;
-    if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `${modelFile}: ${r.diag}`, cost: totalCost };
-    authored += `### ${modelFile}\n${await readFile(path.join(MODELS_DIR, modelFile), 'utf8')}\n\n`;
+    if (!r.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(modelsDir, metaDir), files: [], diagnostics: `${modelFile}: ${r.diag}`, cost: totalCost };
+    authored += `### ${modelFile}\n${await readFile(path.join(modelsDir, modelFile), 'utf8')}\n\n`;
   }
 
-  // 4. Thin top-level dabstep.malloy: cross-cutting views/measures over the sources above.
-  const centralUser = `## Base sources\n${baseContents}\n\n## Column profiles (actual encodings + domains — ground truth; prefer over prose)\n${allProfiles}\n\n## Intermediate sources (reference these by name)\n${authored || '(none)'}\n\n## The Merchant Manual\n${manual}\n\n## Train questions the layer must support\n${qa}\n\nWrite a THIN top-level dabstep.malloy: named views/measures so the questions are answerable by thin per-query Malloy on top of the sources above. Reuse the intermediate sources; do NOT restate their logic. Keep it small.`;
+  // 4. Thin top-level <outputName>.malloy: cross-cutting views/measures.
+  const centralUser = `## Base sources\n${baseContents}\n\n## Column profiles (actual encodings + domains — ground truth; prefer over prose)\n${allProfiles}\n\n## Intermediate sources (reference these by name)\n${authored || '(none)'}\n\n## Domain context\n${context}\n\n## Example questions to COVER (generalize — do NOT cite or name after them)\n${qa}\n\nWrite a THIN top-level ${outputName}.malloy: named, REUSABLE views/measures so the questions are answerable by thin per-query Malloy on top of the sources above. Reuse the intermediate sources; do NOT restate their logic. Keep it small.`;
   const central = await authorStage({
-    label: 'dabstep.malloy', modelFile: 'dabstep.malloy', metaFile: 'dabstep.yaml',
-    defaultExport: { name: 'dabstep', kind: 'model' },
-    model: opts.model, reasoningEffort: opts.reasoningEffort, provider: opts.provider, system: sharedSystem, user: centralUser, maxRounds,
-    maxTokens: 36000, runId: opts.runId,
+    ...stageDefaults, label: `${outputName}.malloy`, modelFile: `${outputName}.malloy`, metaFile: `${outputName}.yaml`,
+    defaultExport: { name: outputName, kind: 'model' }, defaultDomain: domainName, system: sharedSystem, user: centralUser, maxTokens: 36000,
   });
   totalCost += central.cost;
-  if (!central.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(), files: [], diagnostics: `dabstep: ${central.diag}`, cost: totalCost };
+  if (!central.ok) return { ok: false, malloyModelHash: await hashLayerOnDisk(modelsDir, metaDir), files: [], diagnostics: `${outputName}: ${central.diag}`, cost: totalCost };
 
-  // 3. Provenance marker (so only a model-authored layer can back an official run).
+  // 5. Provenance marker (so only a model-authored layer can back an official run).
   // --central-only REUSES existing base files (which may have been hand-edited), so it
   // cannot honestly claim the whole layer is freshly model-authored — mark it
   // `central_only` so the official gate refuses it. Only a full build stamps model_authored.
-  const hash = await hashLayerOnDisk();
-  const files = (await readdir(MODELS_DIR)).filter((f) => f.endsWith('.malloy')).sort();
+  const hash = await hashLayerOnDisk(modelsDir, metaDir);
+  const files = (await readdir(modelsDir)).filter((f) => f.endsWith('.malloy')).sort();
   await writeFile(
-    PROVENANCE_PATH,
+    provenancePath,
     JSON.stringify(
       {
-        malloy_provenance: opts.centralOnly ? 'central_only' : 'model_authored',
+        malloy_provenance: config.centralOnly ? 'central_only' : 'model_authored',
         malloy_model_hash: hash,
-        manual_included: opts.includeManual !== false,
-        authoring_model: opts.model,
-        central_only: !!opts.centralOnly,
+        context_included: config.contextMarkdown.length > 0,
+        authoring_model: model,
+        central_only: !!config.centralOnly,
+        output_name: outputName,
         built_at: new Date().toISOString(),
         files,
+        ...(config.provenanceFields ?? {}),
       },
       null,
       2,

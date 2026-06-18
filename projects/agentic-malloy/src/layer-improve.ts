@@ -25,6 +25,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { columnProfiles, hashLayerOnDisk, readDoc, validateModel, MODELS_DIR, DATA_DIR } from './layer-build.js';
+import { LOCAL_DB_PATH } from './load.js';
 import * as cl from './controllog.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import {
@@ -178,7 +179,7 @@ export async function improveLayer(opts: {
   let diagnostics: string | undefined;
 
   try {
-    const profile = await columnProfiles();
+    const profile = await columnProfiles(TABLES, LOCAL_DB_PATH);
     const profiles = TABLES.map((t) => `### ${t}\n${profile[t]}`).join('\n\n');
     const manual = existsSync(path.join(DATA_DIR, 'dabstep', 'context', 'manual.md'))
       ? await readFile(path.join(DATA_DIR, 'dabstep', 'context', 'manual.md'), 'utf8')
