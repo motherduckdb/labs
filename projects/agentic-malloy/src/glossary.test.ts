@@ -30,12 +30,22 @@ describe('parseGlossary', () => {
     expect(g[0]).toMatchObject({ term: 'ACI', kind: 'dimension', modeling_pattern: 'wildcard strata' });
     expect(g[0].grounding.columns).toEqual(['fees.aci']);
   });
-  it('returns [] on non-JSON / non-array', () => {
+  it('returns [] on truly non-JSON', () => {
     expect(parseGlossary('no json here')).toEqual([]);
-    expect(parseGlossary('{"term":"x"}')).toEqual([]); // object, not array
+    expect(parseGlossary('')).toEqual([]);
   });
   it('coerces an unknown kind to a safe default', () => {
     expect(parseGlossary('[{"term":"x","kind":"frobnicate","grounding":{}}]')[0].kind).toBe('entity');
+  });
+  it('strips a ```json fence', () => {
+    expect(parseGlossary('```json\n[{"term":"fee","kind":"measure","grounding":{}}]\n```')).toHaveLength(1);
+  });
+  it('SALVAGES a TRUNCATED array (token cap hit mid-array, no closing ]) — keeps complete entries', () => {
+    // two complete objects, then a third cut off — the regex-only parse would have
+    // returned []. Salvage recovers the two complete ones.
+    const truncated = '```json\n[\n{"term":"card scheme","kind":"dimension","grounding":{"columns":["fees.card_scheme"]}},\n{"term":"fee","kind":"measure","grounding":{"columns":["fees.rate"]}},\n{"term":"merchant","kind":"entity","grounding":{"columns":["merchants';
+    const g = parseGlossary(truncated);
+    expect(g.map((e) => e.term)).toEqual(['card scheme', 'fee']); // the truncated 3rd is dropped
   });
 });
 

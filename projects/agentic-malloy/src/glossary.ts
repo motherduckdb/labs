@@ -83,7 +83,7 @@ export async function extractGlossary(opts: {
   const qBlock = opts.questions.map((q, i) => `- Example ${i + 1}: ${q}`).join('\n');
   const user = `## Domain context (manual)\n${opts.contextMarkdown || '(none)'}\n\n## Table schemas\n${opts.schema}\n\n## Column profiles (actual encodings/domains — ground truth)\n${opts.profiles}\n\n## Example questions (USER LANGUAGE — mine the vocabulary; do NOT cite or specialize to any one)\n${qBlock}\n\nReturn the glossary JSON array now.`;
   const t0 = Date.now();
-  const resp = await complete({ model: opts.model, systemPrompt: GLOSSARY_SYSTEM, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 8000 });
+  const resp = await complete({ model: opts.model, systemPrompt: GLOSSARY_SYSTEM, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 20000 });
   if (opts.runId) {
     const ex = cl.newId();
     cl.modelPrompt({ taskId: '__glossary__', runId: opts.runId, provider: 'openrouter', model: opts.model, promptTokens: resp.promptTokens, exchangeId: ex, role: 'builder', payload: { phase: 'build', stage: '__glossary__', round: 1 } });
@@ -92,16 +92,38 @@ export async function extractGlossary(opts: {
   return { entries: parseGlossary(resp.text), cost: resp.cost ?? 0, raw: resp.text };
 }
 
-/** Parse + sanitize the model's JSON glossary. Drops malformed entries. Pure. */
+/** Salvage complete top-level `{...}` objects from an array body — brace-matched
+ *  and string-aware, so a TRUNCATED response (hit the token cap mid-array, no
+ *  closing `]`) still yields every complete entry, dropping only the partial tail. */
+function salvageObjects(s: string): unknown[] {
+  const out: unknown[] = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') { if (depth === 0) start = i; depth++; }
+    else if (ch === '}') { depth--; if (depth === 0 && start >= 0) { try { out.push(JSON.parse(s.slice(start, i + 1))); } catch { /* skip */ } start = -1; } }
+  }
+  return out;
+}
+
+/** Parse + sanitize the model's JSON glossary. Tolerant of a leading ```json
+ *  fence and of TRUNCATION (a verbose glossary that overflows the token cap) —
+ *  falls back to salvaging the complete objects. Drops malformed entries. Pure. */
 export function parseGlossary(text: string): GlossaryEntry[] {
-  const m = text.match(/\[[\s\S]*\]/);
+  // Strip a leading code fence so the array index is found cleanly.
+  const fenced = text.match(/```[a-zA-Z]*\r?\n([\s\S]*?)```/);
+  const body = fenced ? fenced[1] : text;
+  const start = body.indexOf('[');
+  const arrText = start >= 0 ? body.slice(start) : body;
   let arr: unknown;
   try {
-    arr = JSON.parse(m ? m[0] : text);
+    arr = JSON.parse(arrText);
   } catch {
-    return [];
+    arr = null; // likely truncated (no closing ]) — salvage below
   }
-  if (!Array.isArray(arr)) return [];
+  if (!Array.isArray(arr)) arr = salvageObjects(arrText);
   const kinds: ConceptKind[] = ['entity', 'measure', 'dimension', 'filter', 'scenario', 'operation'];
   const out: GlossaryEntry[] = [];
   for (const e of arr as Array<Record<string, unknown>>) {
