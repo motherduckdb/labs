@@ -189,6 +189,7 @@ export async function complete(params: {
   maxTokens?: number;
   reasoningEffort?: string;
   provider?: string; // pin OpenRouter to a single upstream provider
+  onRetry?: (m: string) => void; // visibility hook for retries (defaults to a console.warn)
 }): Promise<{ text: string; promptTokens: number; completionTokens: number; cost?: number } & CacheTokens> {
   let messages: Array<Record<string, unknown>> = [
     { role: 'system', content: params.systemPrompt },
@@ -206,11 +207,20 @@ export async function complete(params: {
   if (params.reasoningEffort && params.reasoningEffort !== 'off') body.reasoning = { effort: params.reasoningEffort };
   if (params.provider) body.provider = pinnedProvider(params.provider);
 
-  const res = await fetchWithRetry(OPENROUTER_URL, {
-    method: 'POST',
-    headers: OPENROUTER_HEADERS(),
-    body: JSON.stringify(body),
-  });
+  // A big non-streamed generation (e.g. a 36k-token layer file) can legitimately
+  // run past the default 120s — too-short a timeout ABORTS it mid-generation and
+  // retries forever. Scale the per-attempt timeout with max_tokens (≈8ms/token,
+  // floor 120s, cap 360s). onRetry surfaces any retry so a stall is VISIBLE.
+  const timeoutMs = Math.min(360_000, Math.max(120_000, (params.maxTokens ?? 36000) * 8));
+  const res = await fetchWithRetry(
+    OPENROUTER_URL,
+    { method: 'POST', headers: OPENROUTER_HEADERS(), body: JSON.stringify(body) },
+    {
+      timeoutMs,
+      maxAttempts: 4,
+      onRetry: params.onRetry ?? ((m) => console.warn(`  ⟳ openrouter retry (${params.model}): ${m}`)),
+    },
+  );
   if (!res.ok) throw new Error(`OpenRouter error ${res.status}: ${await res.text()}`);
   const json = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
