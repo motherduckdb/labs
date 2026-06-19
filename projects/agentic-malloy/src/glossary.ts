@@ -160,19 +160,19 @@ export interface KnownSchema {
  *  Pure + case-insensitive. */
 export function groundingResolves(entry: GlossaryEntry, known: KnownSchema): boolean {
   const norm = (s: string) => s.trim().toLowerCase();
-  // known.columns holds BOTH qualified "table.col" AND bare "col" forms. So a
-  // QUALIFIED ref must match the exact "table.col" (the table must be real and own
-  // the column) — we do NOT fall back to the bare column, or a wrong/hallucinated
-  // table qualifier (orders.amount) would pass just because some table has amount.
-  // An UNQUALIFIED ref matches the bare form. A single membership check on the
-  // normalized ref does both correctly.
-  for (const c of entry.grounding.columns ?? []) {
-    if (known.columns.has(norm(c))) return true;
+  const cols = entry.grounding.columns ?? [];
+  // known.columns holds BOTH qualified "table.col" AND bare "col" forms. A
+  // QUALIFIED ref must match the exact "table.col" (so a wrong qualifier like
+  // orders.amount can't pass off a bare amount elsewhere); an UNQUALIFIED ref
+  // matches the bare form. A single membership check does both.
+  if (cols.length) {
+    // Columns WERE supplied → at least one must be real. A real TABLE name does
+    // NOT rescue fake columns (a concept claiming fees.loyalty_tier is
+    // hallucinated even though `fees` exists).
+    return cols.some((c) => known.columns.has(norm(c)));
   }
-  for (const t of entry.grounding.tables ?? []) {
-    if (known.tables.has(norm(t))) return true;
-  }
-  return false;
+  // No columns supplied → an entity-level concept grounded by a real table is OK.
+  return (entry.grounding.tables ?? []).some((t) => known.tables.has(norm(t)));
 }
 
 /** Introspect the DB to build the KnownSchema (table + column names). */

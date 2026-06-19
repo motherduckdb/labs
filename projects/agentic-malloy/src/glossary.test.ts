@@ -67,6 +67,13 @@ describe('groundingResolves (honesty gate)', () => {
     expect(groundingResolves(entry({ grounding: { columns: ['fees.loyalty_tier'], tables: ['rewards'] } }), known)).toBe(false);
     expect(groundingResolves(entry({ grounding: {} }), known)).toBe(false);
   });
+  it('REJECTS fake columns even when a REAL table is named (a table must not rescue fake columns)', () => {
+    // columns ARE supplied but none resolve; `fees` is real but cannot vouch for fees.loyalty_tier.
+    expect(groundingResolves(entry({ grounding: { columns: ['fees.loyalty_tier'], tables: ['fees'] } }), known)).toBe(false);
+  });
+  it('grounds an entity-level concept by a real table ONLY when no columns are supplied', () => {
+    expect(groundingResolves(entry({ grounding: { tables: ['fees'] } }), known)).toBe(true);
+  });
 });
 
 describe('renderGlossary', () => {
