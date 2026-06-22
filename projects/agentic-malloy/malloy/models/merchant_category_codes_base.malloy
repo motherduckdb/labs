@@ -1,64 +1,38 @@
-// Base source for the MCC reference table.
-// One row per Merchant Category Code (MCC): a 4-digit code assigned by card
-// schemes to classify merchant business type. Used by fee rules
-// (fees.merchant_category_code is a list of MCC ints) and as an
-// enrichment lookup from transactions/merchants.
+// merchant_category_codes_base.malloy
+// Lookup dimension: four-digit Merchant Category Code (MCC) → industry description.
+// Joined to merchants/fees on MCC to resolve human-readable category descriptions
+// and to support description ↔ code lookups.
+
 source: merchant_category_codes_base is duckdb.table('merchant_category_codes') extend {
 
-  // ---- Dimensions (derived; do NOT redefine existing columns) ----
+  // ---------- Dimensions ----------
 
-  // MCC as an integer — handy for joining against fee rules where
-  // merchant_category_code is stored as a list of integers.
-  dimension: mcc_int is mcc::number
+  // MCC as a numeric value, useful for matching against integer MCC lists in fees
+  // (fees.merchant_category_code is a list of integers).
+  dimension: mcc_code is mcc::number
+
+  // Uppercased description for case-insensitive matching against user-supplied text.
+  dimension: description_upper is upper(description)
 
   // First two digits of the MCC indicate the broad category per the manual.
-  dimension: mcc_category_prefix is substr!string(mcc, 1, 2)
+  dimension: mcc_category_prefix is substr(mcc, 1, 2)
 
-  // Last two digits of the MCC indicate the subcategory.
-  dimension: mcc_subcategory_suffix is substr!string(mcc, 3, 2)
-
-  // Coarse industry bucket derived from the MCC numeric range (ISO 18245
-  // ranges). Useful for high-level grouping in reports.
-  dimension: mcc_industry_group is
-      pick 'Agricultural Services'        when mcc_int >= 1 and mcc_int <= 1499
-      pick 'Contracted Services'          when mcc_int >= 1500 and mcc_int <= 2999
-      pick 'Airlines'                     when mcc_int >= 3000 and mcc_int <= 3299
-      pick 'Car Rental'                   when mcc_int >= 3300 and mcc_int <= 3499
-      pick 'Lodging'                      when mcc_int >= 3500 and mcc_int <= 3999
-      pick 'Transportation Services'      when mcc_int >= 4000 and mcc_int <= 4799
-      pick 'Utility Services'             when mcc_int >= 4800 and mcc_int <= 4999
-      pick 'Retail Outlet Services'       when mcc_int >= 5000 and mcc_int <= 5599
-      pick 'Clothing Stores'              when mcc_int >= 5600 and mcc_int <= 5699
-      pick 'Miscellaneous Stores'         when mcc_int >= 5700 and mcc_int <= 7299
-      pick 'Business Services'            when mcc_int >= 7300 and mcc_int <= 7999
-      pick 'Professional Services'        when mcc_int >= 8000 and mcc_int <= 8999
-      pick 'Government Services'          when mcc_int >= 9000 and mcc_int <= 9999
-      else 'Other'
-
-  // ---- Measures ----
+  // ---------- Measures ----------
 
   measure: mcc_count is count()
   measure: distinct_mcc_count is count(mcc)
   measure: distinct_description_count is count(description)
-  measure: min_mcc is mcc_int.min()
-  measure: max_mcc is mcc_int.max()
 
-  // ---- Reusable views ----
-
-  view: by_industry_group is {
-    group_by: mcc_industry_group
-    aggregate: mcc_count
-    order_by: mcc_count desc
-  }
+  // ---------- Views ----------
 
   view: by_category_prefix is {
     group_by: mcc_category_prefix
     aggregate: mcc_count
-    order_by: mcc_category_prefix
+    order_by: mcc_count desc
   }
 
-  view: listing is {
-    select: mcc, description, mcc_industry_group
+  view: catalog is {
+    select: mcc, mcc_code, description
     order_by: mcc
   }
 }

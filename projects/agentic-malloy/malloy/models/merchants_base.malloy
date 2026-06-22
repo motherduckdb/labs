@@ -1,14 +1,17 @@
 // merchants_base.malloy
-// Base source for the `merchants` reference table (30 rows, one per merchant).
-// Pure dimensions + measures — NO joins. Join logic lives in downstream sources.
+// Authoritative merchant dimension: one row per merchant partner.
+// Provides merchant attributes (account type, MCC, capture delay, acquirers)
+// plus derived buckets used when matching merchants against fee rules.
 
 source: merchants_base is duckdb.table('merchants') extend {
+  primary_key: merchant
 
-  // ---------- Descriptive dimensions ----------
+  //
+  // ── Derived dimensions ───────────────────────────────────────────────
+  //
 
-  // Human-readable label for account_type (per Merchant Manual §2).
-  // Domain observed in data: D, F, H, R, S (manual also documents 'O' = Other).
-  dimension: account_type_label is
+  // Human-readable label for the account_type code (per the Merchant Guide).
+  dimension: account_type_description is
     pick 'Enterprise - Retail'      when account_type = 'R'
     pick 'Enterprise - Digital'     when account_type = 'D'
     pick 'Enterprise - Hospitality' when account_type = 'H'
@@ -17,68 +20,49 @@ source: merchants_base is duckdb.table('merchants') extend {
     pick 'Other'                    when account_type = 'O'
     else 'Unknown'
 
-  // Coarse channel grouping from account_type.
-  dimension: business_channel is
-    pick 'Enterprise' when account_type = 'R' | 'D' | 'H'
-    pick 'Platform'   when account_type = 'F' | 'S'
-    else 'Other'
-
-  // MCC stays a code; provide a string form for joins/labels.
-  dimension: mcc_str is merchant_category_code::string
-
-  // Capture-delay buckets (manual §5 talks about speed of capture→settlement).
-  // Raw values in data: '1','2','7','immediate','manual'.
+  // Bucket the merchant's capture_delay string into the vocabulary used by
+  // fees.capture_delay rules: 'immediate', '<3', '3-5', '>5', 'manual'.
+  // The merchants table stores numeric-day strings ('1','2','7') plus the
+  // literal labels 'immediate' and 'manual'.
   dimension: capture_delay_bucket is
     pick 'immediate' when capture_delay = 'immediate'
     pick 'manual'    when capture_delay = 'manual'
     pick '<3'        when capture_delay = '1' or capture_delay = '2'
-    pick '3-5'       when capture_delay = '7'   // 7 day delay → ">5" — corrected below
+    pick '3-5'       when capture_delay = '3' or capture_delay = '4' or capture_delay = '5'
+    pick '>5'        when capture_delay = '6' or capture_delay = '7'
+                       or capture_delay = '8' or capture_delay = '9'
     else capture_delay
 
-  // Numeric form of capture delay (NULL for 'immediate'/'manual').
+  // Numeric form of capture_delay where meaningful (NULL for 'immediate'/'manual').
   dimension: capture_delay_days is
-    pick null when capture_delay = 'immediate' or capture_delay = 'manual'
+    pick null when capture_delay = 'immediate'
+    pick null when capture_delay = 'manual'
     else capture_delay::number
 
-  // Map raw capture_delay onto the fee-rule capture_delay vocabulary
-  // ('<3', '3-5', '>5', 'immediate', 'manual') from the Merchant Manual §5.
-  dimension: capture_delay_rule is
-    pick 'immediate' when capture_delay = 'immediate'
-    pick 'manual'    when capture_delay = 'manual'
-    pick '<3'        when capture_delay = '1' or capture_delay = '2'
-    pick '>5'        when capture_delay = '7'
-    else capture_delay
+  // Number of acquirers this merchant uses.
+  dimension: acquirer_count is len!number(acquirer)
 
-  // Capture speed flags
-  dimension: is_immediate_capture is capture_delay = 'immediate'
-  dimension: is_manual_capture    is capture_delay = 'manual'
-
-  // ---------- Acquirer (list column) ----------
-  // Per profile: NULL=0, empty[]=0. Empty list semantics ("applies to all")
-  // do not actually occur for merchants, but we expose helpers anyway.
-  dimension: acquirer_count   is len!number(acquirer)
-  dimension: has_any_acquirer is len!number(acquirer) > 0
+  // Whether this merchant uses multiple acquirers.
   dimension: is_multi_acquirer is len!number(acquirer) > 1
 
-  // ---------- Measures ----------
+  //
+  // ── Measures (merchant-grain) ───────────────────────────────────────
+  //
+
   measure: merchant_count is count()
-  measure: mcc_count      is count(merchant_category_code)
-  measure: account_type_count is count(account_type)
 
-  // Counts per business channel (filtered aggregates)
-  measure: enterprise_merchants is count() { where: business_channel = 'Enterprise' }
-  measure: platform_merchants   is count() { where: business_channel = 'Platform' }
+  measure: distinct_mcc_count is count(merchant_category_code)
 
-  // Capture profile counts
-  measure: immediate_capture_merchants is count() { where: is_immediate_capture }
-  measure: manual_capture_merchants    is count() { where: is_manual_capture }
+  measure: distinct_account_type_count is count(account_type)
 
-  // Avg acquirers per merchant
-  measure: avg_acquirers_per_merchant is avg(acquirer_count)
+  measure: avg_acquirer_count is avg(acquirer_count)
 
-  // ---------- Handy views ----------
+  //
+  // ── Reusable views ──────────────────────────────────────────────────
+  //
+
   view: by_account_type is {
-    group_by: account_type, account_type_label
+    group_by: account_type, account_type_description
     aggregate: merchant_count
     order_by: merchant_count desc
   }
@@ -89,15 +73,22 @@ source: merchants_base is duckdb.table('merchants') extend {
     order_by: merchant_count desc
   }
 
-  view: by_capture_delay is {
-    group_by: capture_delay, capture_delay_rule
+  view: by_capture_delay_bucket is {
+    group_by: capture_delay_bucket
     aggregate: merchant_count
     order_by: merchant_count desc
   }
 
-  view: by_channel is {
-    group_by: business_channel
-    aggregate: merchant_count
-    order_by: merchant_count desc
+  view: merchant_directory is {
+    select:
+      merchant,
+      account_type,
+      account_type_description,
+      merchant_category_code,
+      capture_delay,
+      capture_delay_bucket,
+      acquirer,
+      acquirer_count
+    order_by: merchant asc
   }
 }

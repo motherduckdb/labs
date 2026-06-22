@@ -1,104 +1,222 @@
 // payments_base.malloy
-// Base source over the raw payments table. NO joins here — only
-// dimensions and measures derived from columns in this table.
-// Domain notes (from column profile + Merchant Manual):
-//   - year is always 2023; day_of_year ∈ [1..365] → derive a real date.
-//   - aci ∈ {A..G} per the ACI section of the manual.
-//   - shopper_interaction ∈ {Ecommerce, POS}.
-//   - "intracountry" (per fee rules) ≡ issuing_country = acquirer_country.
+// Base semantic source over the payments fact table.
+// Grain: one row per payment (psp_reference). No joins here.
 
 source: payments_base is duckdb.table('payments') extend {
-  primary_key: psp_reference
 
-  //
-  // ── Derived time dimensions ─────────────────────────────────────────
-  //
-  // day_of_year + year → real DATE; 2023-01-01 + (day_of_year - 1) days.
-  dimension: transaction_date is
-    date_add!date(make_date!date(`year`, 1, 1), day_of_year - 1, 'day')
+  //------------------------------------------------------------------
+  // Derived dimensions
+  //------------------------------------------------------------------
 
+  // Calendar — payments only carry year + day_of_year (+ hour/minute).
+  // Build a real DATE so users can filter with @2023-02 / .month etc.
+  dimension: transaction_date is make_date!date(`year`, 1, 1) + (day_of_year - 1) day
   dimension: transaction_month is transaction_date.month
   dimension: transaction_quarter is transaction_date.quarter
-  dimension: transaction_week is transaction_date.week
-  dimension: day_of_week is dayofweek!number(transaction_date)
 
-  dimension: time_of_day_bucket is
-    pick 'night'   when hour_of_day < 6
-    pick 'morning' when hour_of_day < 12
-    pick 'afternoon' when hour_of_day < 18
-    else 'evening'
-
-  //
-  // ── Derived business dimensions ─────────────────────────────────────
-  //
-  // Local acquiring per manual §5.1.1: issuer country = acquirer country.
+  // Local acquiring flag: issuer country == acquirer country.
+  // Matches fees.intracountry semantics (1.0 = domestic, 0.0 = cross-border).
   dimension: is_intracountry is issuing_country = acquirer_country
-  dimension: is_crossborder is issuing_country != acquirer_country
 
-  // IP vs issuing country mismatch — a fraud signal.
-  dimension: ip_issuer_mismatch is
-    ip_country is not null and ip_country != issuing_country
+  // Cross-border indicator (complement, for convenience)
+  dimension: is_cross_border is issuing_country != acquirer_country
 
-  // ACI human label per manual §4.
-  dimension: aci_label is
-    pick 'Card present - Non-authenticated'        when aci = 'A'
-    pick 'Card Present - Authenticated'            when aci = 'B'
-    pick 'Tokenized card with mobile device'       when aci = 'C'
-    pick 'Card Not Present - Card On File'         when aci = 'D'
-    pick 'Card Not Present - Recurring Bill Pmt'   when aci = 'E'
-    pick 'Card Not Present - 3-D Secure'           when aci = 'F'
-    pick 'Card Not Present - Non-3-D Secure'       when aci = 'G'
-    else 'Unknown'
+  // Approval flag — Adyen acceptance is the inverse of is_refused_by_adyen
+  dimension: is_approved is not is_refused_by_adyen
 
-  // Card-present vs card-not-present grouping by ACI.
-  dimension: is_card_present is aci = 'A' or aci = 'B'
-  dimension: is_card_not_present is aci = 'D' or aci = 'E' or aci = 'F' or aci = 'G'
-  dimension: is_3d_secure is aci = 'F'
+  // ACI groupings (card-present vs card-not-present, per the manual)
+  dimension: aci_group is
+    pick 'CardPresent'    when aci = 'A' or aci = 'B'
+    pick 'Tokenized'      when aci = 'C'
+    pick 'CardNotPresent' when aci = 'D' or aci = 'E' or aci = 'F' or aci = 'G'
+    else 'Other'
 
-  // Outcome flags
-  dimension: is_successful is not is_refused_by_adyen
-  dimension: credit_or_debit is pick 'credit' when is_credit else 'debit'
+  // Channel — Ecommerce vs POS already in shopper_interaction, expose as channel
+  dimension: channel is shopper_interaction
 
-  //
-  // ── Volume / count measures ─────────────────────────────────────────
-  //
+  //------------------------------------------------------------------
+  // Symmetric measures (safe across joins)
+  //------------------------------------------------------------------
+
   measure: transaction_count is count()
-  measure: unique_shoppers is count(email_address)
-  measure: unique_cards is count(card_number)
-  measure: unique_ips is count(ip_address)
+  measure: distinct_merchants is count(merchant)
+  measure: distinct_card_schemes is count(card_scheme)
+  measure: distinct_issuing_countries is count(issuing_country)
+  measure: distinct_acquirer_countries is count(acquirer_country)
+  measure: distinct_card_numbers is count(card_number)
 
-  measure: total_eur is eur_amount.sum()
-  measure: avg_eur is eur_amount.avg()
-  measure: median_eur is eur_amount.avg()
-  measure: max_eur is eur_amount.max()
-  measure: min_eur is eur_amount.min()
+  measure: fraudulent_transaction_count is count() { where: has_fraudulent_dispute }
+  measure: refused_transaction_count    is count() { where: is_refused_by_adyen }
+  measure: approved_transaction_count   is count() { where: not is_refused_by_adyen }
+  measure: credit_transaction_count     is count() { where: is_credit }
+  measure: debit_transaction_count      is count() { where: not is_credit }
+  measure: intracountry_count           is count() { where: issuing_country = acquirer_country }
+  measure: cross_border_count           is count() { where: issuing_country != acquirer_country }
+  measure: ecommerce_count              is count() { where: shopper_interaction = 'Ecommerce' }
+  measure: pos_count                    is count() { where: shopper_interaction = 'POS' }
 
-  //
-  // ── Outcome-segmented counts/volumes (filtered aggregates) ─────────
-  //
-  measure: refused_count is count() { where: is_refused_by_adyen }
-  measure: approved_count is count() { where: not is_refused_by_adyen }
-  measure: fraud_count   is count() { where: has_fraudulent_dispute }
+  //------------------------------------------------------------------
+  // Asymmetric measures — use payments_base.<x>.sum/avg form
+  //------------------------------------------------------------------
 
-  measure: refused_eur  is eur_amount.sum() { where: is_refused_by_adyen }
-  measure: approved_eur is eur_amount.sum() { where: not is_refused_by_adyen }
-  measure: fraud_eur    is eur_amount.sum() { where: has_fraudulent_dispute }
+  measure: total_eur_volume is eur_amount.sum()
+  measure: avg_transaction_value is eur_amount.avg()
+  measure: min_transaction_value is eur_amount.min()
+  measure: max_transaction_value is eur_amount.max()
 
-  //
-  // ── Rates (KPIs from manual §8.2) ──────────────────────────────────
-  //
-  measure: authorization_rate is approved_count / count()      // higher is better
-  measure: refusal_rate       is refused_count  / count()
-  measure: fraud_rate         is fraud_count    / count()      // by count
-  measure: fraud_volume_rate  is fraud_eur / nullif!number(total_eur, 0)  // by € (manual §7)
+  measure: fraudulent_eur_volume is eur_amount.sum() { where: has_fraudulent_dispute }
+  measure: refused_eur_volume    is eur_amount.sum() { where: is_refused_by_adyen }
+  measure: approved_eur_volume   is eur_amount.sum() { where: not is_refused_by_adyen }
+  measure: credit_eur_volume     is eur_amount.sum() { where: is_credit }
+  measure: debit_eur_volume      is eur_amount.sum() { where: not is_credit }
+  measure: intracountry_eur_volume is eur_amount.sum() { where: issuing_country = acquirer_country }
+  measure: cross_border_eur_volume is eur_amount.sum() { where: issuing_country != acquirer_country }
 
-  //
-  // ── Mix measures ───────────────────────────────────────────────────
-  //
-  measure: credit_count       is count() { where: is_credit }
-  measure: credit_share       is credit_count / count()
-  measure: intracountry_count is count() { where: is_intracountry }
-  measure: intracountry_share is intracountry_count / count()
-  measure: ecommerce_count    is count() { where: shopper_interaction = 'Ecommerce' }
-  measure: ecommerce_share    is ecommerce_count / count()
+  //------------------------------------------------------------------
+  // Rate / share measures (use all() for percent-of-group)
+  //------------------------------------------------------------------
+
+  // Monthly fraud level = fraudulent volume / total volume (as the manual defines it).
+  // Group by merchant + transaction_month upstream to get the per-month value.
+  measure: fraud_rate_by_volume is
+    eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
+
+  measure: fraud_rate_by_count is
+    fraudulent_transaction_count / transaction_count
+
+  measure: refusal_rate is
+    refused_transaction_count / transaction_count
+
+  measure: approval_rate is
+    approved_transaction_count / transaction_count
+
+  measure: credit_share_by_volume is
+    credit_eur_volume / total_eur_volume
+
+  measure: intracountry_share_by_volume is
+    intracountry_eur_volume / total_eur_volume
+
+  measure: cross_border_share_by_volume is
+    cross_border_eur_volume / total_eur_volume
+
+  //------------------------------------------------------------------
+  // Reusable views — generic slices of the payments fact.
+  // (No fee logic here — that lives in higher-level sources that
+  // join the fees rule table onto payments_base.)
+  //------------------------------------------------------------------
+
+  view: by_merchant is {
+    group_by: merchant
+    aggregate:
+      transaction_count
+      total_eur_volume
+      avg_transaction_value
+      fraud_rate_by_volume
+  }
+
+  view: by_card_scheme is {
+    group_by: card_scheme
+    aggregate:
+      transaction_count
+      total_eur_volume
+      avg_transaction_value
+  }
+
+  view: by_aci is {
+    group_by: aci
+    aggregate:
+      transaction_count
+      total_eur_volume
+      avg_transaction_value
+      fraud_rate_by_volume
+  }
+
+  view: by_month is {
+    group_by: transaction_month
+    aggregate:
+      transaction_count
+      total_eur_volume
+      fraudulent_eur_volume
+      fraud_rate_by_volume
+    order_by: transaction_month
+  }
+
+  // Cross-border profile by issuing country — exposes BOTH the
+  // domestic and cross-border legs (and their share) so the ranking
+  // isn't collapsed when a country has no same-country acquirer.
+  // (e.g. BE/ES/GR/LU/SE have 0 intracountry share because their
+  // acquirers aren't in their country; this view shows that fact
+  // explicitly rather than tying everyone at 0 on a single metric.)
+  view: by_issuing_country is {
+    group_by: issuing_country
+    aggregate:
+      transaction_count
+      total_eur_volume
+      intracountry_count
+      cross_border_count
+      intracountry_eur_volume
+      cross_border_eur_volume
+      intracountry_share_by_volume
+    order_by: total_eur_volume desc
+  }
+
+  view: by_acquirer_country is {
+    group_by: acquirer_country
+    aggregate:
+      transaction_count
+      total_eur_volume
+      intracountry_count
+      cross_border_count
+  }
+
+  view: by_country_pair is {
+    group_by:
+      issuing_country
+      acquirer_country
+    aggregate:
+      transaction_count
+      total_eur_volume
+      fraud_rate_by_volume
+    order_by: total_eur_volume desc
+  }
+
+  // Per-merchant per-month aggregate — the natural grain at which
+  // monthly_volume and monthly_fraud_level buckets are computed.
+  view: monthly_merchant_profile is {
+    group_by:
+      merchant
+      transaction_month
+    aggregate:
+      total_eur_volume
+      fraudulent_eur_volume
+      fraud_rate_by_volume
+      transaction_count
+    order_by: merchant, transaction_month
+  }
+
+  view: by_credit_flag is {
+    group_by: is_credit
+    aggregate:
+      transaction_count
+      total_eur_volume
+      avg_transaction_value
+  }
+
+  view: by_channel is {
+    group_by: shopper_interaction
+    aggregate:
+      transaction_count
+      total_eur_volume
+      fraud_rate_by_volume
+  }
+
+  view: fraud_overview is {
+    aggregate:
+      transaction_count
+      fraudulent_transaction_count
+      total_eur_volume
+      fraudulent_eur_volume
+      fraud_rate_by_volume
+      fraud_rate_by_count
+  }
 }

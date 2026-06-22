@@ -1,58 +1,26 @@
 file: dabstep.malloy
-domain: payments / fees — thin top-level
+domain: payments-fee-optimization
 summary: |
-  Thin layer above c3_fee_assignment & friends. Adds three rule-only "average
-  scenario" cost lenses (by card_scheme, by MCC, by ACI) for hypothetical
-  transactions, and a steer-fraud-to-different-ACI what-if that fans out each
-  fraudulent transaction across the 7 candidate ACI values and re-matches the
-  rule set. All other question shapes (applicable rule IDs, total fees by
-  merchant/year/month/day/scheme/aci, matched volume per rule for rate-change
-  deltas, steer-to-different-card-scheme) are already covered by named views on
-  the intermediate sources and are intentionally not restated here.
+  Thin top-level index over the c1–c5 intermediate semantic sources.
+  Provides a single fees-only rule-lookup wrapper (fee_rule_lookup) for
+  ad-hoc "which fee IDs match this (account_type, aci, ...) tuple?"
+  questions, and documents — in comments — which intermediate view
+  answers each recurring question shape (applicable fees, total fees,
+  cheapest/most expensive card_scheme/ACI/MCC at a notional, rate /
+  fixed_amount / MCC / ACI counterfactuals, rule-scope tightening).
+  All other answers are a thin `+ { where: ... }` on the existing
+  intermediate views; no logic is restated here.
 exports:
-  - name: rules_lens
+  - name: fee_rule_lookup
     kind: source
     summary: |
-      fees_base + avg-fee measures at canonical hypothetical tx values
-      (50, 100, 1000, 4321, 50 000 EUR). View `by_card_scheme_avg_fee`
-      answers "which card scheme is cheapest/most expensive at X EUR" by
-      filtering and reading the appropriate column.
-  - name: rules_per_mcc
-    kind: source
-    summary: |
-      Rules unnested by merchant_category_code (wildcard rules excluded so
-      MCC is a real scalar). View `by_mcc_avg_fee` answers "most expensive
-      MCC at X EUR" — group_by mcc, order by avg_fee desc.
-  - name: rules_per_aci
-    kind: source
-    summary: |
-      Rules unnested by aci. View `by_aci_avg_fee` answers "most expensive
-      ACI" type questions; caller refines with `+ { where: card_scheme=...,
-      is_credit=true }`.
-  - name: aci_options
-    kind: source
-    summary: 7-row constant table {A..G} used as a steering target list.
-  - name: fee_match_steer_aci
-    kind: source
-    summary: |
-      Same fact×rule fan-out as fee_match, but ACI is taken from a cross-
-      joined `aci_pick.target_aci` instead of the transaction. Views
-      `fraud_steered_to_aci_by_merchant_year` and `…_by_merchant_month`
-      return one row per (merchant[, month], target_aci) — pick the row
-      with min total_fee_eur to answer "which ACI should they steer to".
+      Wildcard-aware fees_base wrapper. View matching_fee_ids returns
+      the set of fee IDs whose conditions are compatible with the
+      filters supplied via `+ { where: ... }`; matching_fee_detail
+      returns the same with full rule attributes. Use wildcard-aware
+      predicates: (len!number(col)=0 or list_contains!boolean(col, v))
+      for list columns; (col is null or col = v) for scalar columns.
 provides_for:
-  - "Q1290 — avg fee NexPay credit 1000 EUR: rules_lens + where card_scheme='NexPay' and (is_credit is null or is_credit=true)"
-  - "Q1417 — avg fee GlobalCard account_type H, MCC 4121, 1000 EUR: rules_lens with matching where on account_type/MCC list wildcards"
-  - "Q1442 — most expensive MCC at 50 000 EUR: rules_per_mcc.by_mcc_avg_fee"
-  - "Q1451 — most expensive ACI for credit GlobalCard at 100 EUR: rules_per_aci.by_aci_avg_fee + where card_scheme='GlobalCard' and is_credit=true"
-  - "Q1475 — fee IDs for account_type=D and aci=F: fees_base + where wildcards-or-contains on both"
-  - "Q1507, Q1520 — cheapest/most expensive scheme at 50/4321 EUR: rules_lens.by_card_scheme_avg_fee"
-  - "Q1593 — avg fee account_type H, GlobalCard, 100 EUR: rules_lens + where"
-  - "Q1685, Q1744, Q1808 — applicable fee IDs by merchant×year/month/day: fee_match.applicable_rules_by_merchant_{year,month,day}"
-  - "Q1711, Q1746, Q1834 — total fees paid by merchant year/month/day: fee_match.total_fees_by_merchant_{year,month,day}"
-  - "Q2463, Q2490 — rate-change delta: fee_match.matched_volume_by_merchant_{year,month}_rule  → delta = (new_rate - rule_rate) * matched_volume / 10000"
-  - "Q2524 — merchants affected by fee ID 17: fee_match.merchants_affected_by_rule + where rule_id=17"
-  - "Q2557 — what-if rule restricted to account_type=S: fee_match.merchants_affected_by_rule + agent intersects with merchants of acct_type=S"
-  - "Q2587, Q2634, Q2762, Q2765 — steer card scheme: fee_match_any_scheme.total_fees_by_merchant_{year,month}_steered_scheme"
-  - "Q2703, Q2767 — steer fraud to different ACI: fee_match_steer_aci.fraud_steered_to_aci_by_merchant_{year,month} (excluding the original ACI in agent post-filter)"
-  - "Q347 — avg tx value by issuing_country: payments_enriched grouped by issuing_country with where merchant=..., card_scheme=..., month range"
+  - fee IDs applicable to a given (account_type, aci, card_scheme, mcc, ...) tuple
+  - directory comment block routing every recurring question shape to its intermediate view
+  - rule-grain ad-hoc filtering without restating wildcard match logic

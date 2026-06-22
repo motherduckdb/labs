@@ -1,26 +1,27 @@
 file: payments_base.malloy
 domain: payments
 summary: |
-  Base source over the raw `payments` DuckDB table. Adds derived time
-  dimensions (a real transaction_date built from year + day_of_year, plus
-  month/quarter/week and a time-of-day bucket), business dimensions
-  aligned to the Merchant Manual (intracountry vs crossborder per
-  §5.1.1, ACI human labels and card-present / CNP / 3-D Secure flags per
-  §4, IP-vs-issuer mismatch, success flag, credit/debit), and a full
-  measure set: volume counts, € totals/avg/median, outcome-segmented
-  filtered aggregates, and the KPI rates from §8.2 (authorization rate,
-  refusal rate, fraud rate by count, fraud volume rate by €). No joins.
+  Base semantic source over the payments fact table (one row per payment).
+  Exposes derived calendar fields (transaction_date / month / quarter from
+  year + day_of_year), an intracountry / cross-border flag (issuer == acquirer
+  country), approval and ACI groupings, and a comprehensive set of symmetric
+  and source-local asymmetric measures: transaction counts and EUR volumes,
+  segmented by fraud, refusal, credit, intracountry, and channel; plus rate
+  measures (fraud_rate_by_volume, refusal_rate, approval_rate, credit_share,
+  intracountry_share, cross_border_share). Reusable views slice payments by
+  merchant, card scheme, ACI, month, issuing/acquirer country, country pair,
+  credit flag, channel, and at the per-merchant-per-month grain used for
+  monthly_volume / monthly_fraud_level bucketing. No joins.
 exports:
   - name: payments_base
     kind: source
-    summary: |
-      Per-transaction grain (primary_key psp_reference). All measures are
-      base-grain; safe to aggregate directly. Use this as the root for
-      any payments-fee or fraud analysis source that joins fee rules or
-      merchant attributes.
+    summary: Payment-grain fact source with calendar, geography, fraud, ACI and channel measures/dimensions.
 provides_for:
-  - "payments KPIs: authorization rate, refusal rate, fraud rate (by count and by €)"
-  - "Volume & mix analyses by merchant, card_scheme, aci, device_type, shopper_interaction, country"
-  - "Time-series over transaction_date / month / quarter / hour_of_day"
-  - "Local vs cross-border acquiring analysis (is_intracountry)"
-  - "Foundation for fee-rule joins (downstream sources)"
+  - "Transaction counts and EUR volumes per merchant, card scheme, ACI, country, month"
+  - "Fraud ratio per merchant per natural month (input to monthly_fraud_level bucketing)"
+  - "Monthly EUR volume per merchant (input to monthly_volume bucketing)"
+  - "Intracountry vs cross-border segmentation of volume and counts"
+  - "Credit vs debit segmentation"
+  - "Channel (Ecommerce vs POS) and ACI-group segmentation"
+  - "Average / min / max transaction value for any slice"
+  - "Calendar filtering by month / quarter / arbitrary date range"

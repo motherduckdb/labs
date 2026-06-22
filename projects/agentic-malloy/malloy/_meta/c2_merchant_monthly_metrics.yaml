@@ -1,0 +1,40 @@
+file: c2_merchant_monthly_metrics.malloy
+domain: payments / fee-rule matching
+summary: |
+  Per-merchant × natural-calendar-month aggregation of the payments fact.
+  Computes total euro volume, fraudulent euro volume, monthly fraud ratio,
+  and — critically — the bucketed `monthly_volume_bucket` and
+  `monthly_fraud_level_bucket` string dimensions whose values are drawn
+  from the EXACT string domains used by the fees rule table
+  (`<100k | 100k-1m | 1m-5m | >5m` and `<7.2% | 7.2%-7.7% | 7.7%-8.3% | >8.3%`).
+  This is the merchant-grain context downstream fee-matching sources join
+  to find which fee rules apply to a merchant in a given month.
+exports:
+  - name: c2_merchant_monthly_metrics
+    kind: source
+    summary: |
+      One row per (merchant, natural-month). Carries total_eur_volume,
+      fraudulent_eur_volume, fraud_rate, and the two bucket strings used
+      as fee-rule match keys. Composite identity (merchant, month_start) —
+      downstream joins use explicit `on` predicates, not `with`.
+  - name: profile
+    kind: view
+    summary: Canonical per-merchant-month profile row including both bucket strings.
+  - name: by_monthly_volume_bucket
+    kind: view
+    summary: How merchant-months distribute across fees.monthly_volume buckets.
+  - name: by_monthly_fraud_level_bucket
+    kind: view
+    summary: How merchant-months distribute across fees.monthly_fraud_level buckets.
+  - name: merchant_bucket_calendar
+    kind: view
+    summary: Per-merchant calendar of (volume bucket, fraud-level bucket) assignments by month.
+  - name: by_merchant_year
+    kind: view
+    summary: Annual roll-up per merchant of volume, fraud volume, and bucket statistics.
+provides_for:
+  - merchant × month volume bucket lookup for fee-rule matching
+  - merchant × month fraud-level bucket lookup for fee-rule matching
+  - monthly fraud ratio reporting per merchant
+  - natural-month aggregation of payments at merchant grain
+  - bucket-string vocabulary aligned to fees.monthly_volume and fees.monthly_fraud_level

@@ -1,54 +1,22 @@
 file: merchant_category_codes_base.malloy
-domain: Reference / lookup table — Merchant Category Codes (MCC) per ISO 18245, used to classify merchants by business type.
+domain: Payments / merchant taxonomy
 summary: |
-  Base source over the merchant_category_codes table (769 rows, one per 4-digit
-  MCC). Exposes the raw mcc/description columns plus derived dimensions:
-  mcc_int (numeric form for joining against fee-rule MCC lists),
-  mcc_category_prefix / mcc_subcategory_suffix (first two / last two digits),
-  and mcc_industry_group (coarse ISO 18245 industry bucket). Measures are
-  simple counts. No joins — this file is the leaf reference source; richer
-  models can join_one onto it via mcc or mcc_int.
+  Base semantic source over the merchant_category_codes lookup table. Provides
+  the canonical mapping between four-digit MCC strings and their industry
+  descriptions, plus a numeric form of the MCC for matching against the
+  integer MCC lists carried by fee rules, and an uppercase description form
+  for case-insensitive lookup by name.
 exports:
   - name: merchant_category_codes_base
     kind: source
-    summary: Base source for the MCC reference table with derived dimensions and counts.
-  - name: mcc_int
-    kind: dimension
-    summary: MCC cast to a number — use when joining against fee rules whose merchant_category_code lists are integer-typed.
-  - name: mcc_category_prefix
-    kind: dimension
-    summary: First two digits of the MCC (broad category per the manual).
-  - name: mcc_subcategory_suffix
-    kind: dimension
-    summary: Last two digits of the MCC (subcategory within the broad category).
-  - name: mcc_industry_group
-    kind: dimension
-    summary: Coarse ISO 18245 industry bucket derived from the numeric MCC range (Airlines, Lodging, Retail, etc.).
-  - name: mcc_count
-    kind: measure
-    summary: Row count — number of MCCs in scope.
-  - name: distinct_mcc_count
-    kind: measure
-    summary: Distinct count of mcc values.
-  - name: distinct_description_count
-    kind: measure
-    summary: Distinct count of description values.
-  - name: min_mcc
-    kind: measure
-    summary: Minimum numeric MCC in scope.
-  - name: max_mcc
-    kind: measure
-    summary: Maximum numeric MCC in scope.
-  - name: by_industry_group
-    kind: view
-    summary: MCC counts grouped by derived industry group.
-  - name: by_category_prefix
-    kind: view
-    summary: MCC counts grouped by the two-digit category prefix.
-  - name: listing
-    kind: view
-    summary: Plain listing of mcc, description, and industry group ordered by MCC.
+    summary: |
+      One row per MCC. Dimensions: mcc (string), mcc_code (numeric form for
+      list-membership matching against fees.merchant_category_code),
+      description, description_upper (case-insensitive match key),
+      mcc_category_prefix (first two digits = broad category). Measures:
+      mcc_count, distinct_mcc_count, distinct_description_count. Views:
+      catalog (full listing), by_category_prefix (rows per two-digit group).
 provides_for:
-  - merchant_category_codes
-  - mcc lookup / enrichment
-  - fee rule MCC matching (via mcc_int against fees.merchant_category_code list)
+  - "Merchant Category Code (MCC): resolve code ↔ description and expose a numeric mcc_code for joining/list-membership against fee rules"
+  - "Wildcard rule semantics: numeric mcc_code is the value tested with list_contains against fees.merchant_category_code (empty list = any)"
+  - "Catalog browsing and grouping of MCCs by two-digit category prefix"

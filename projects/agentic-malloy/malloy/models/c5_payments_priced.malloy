@@ -1,0 +1,519 @@
+// c5_payments_priced.malloy
+//
+// Transaction-grain pricing surface. One row per (payment × matched fee rule).
+// fee_eur per match = fixed_amount + rate * eur_amount / 10000.
+//
+// Concerns covered here (everything is a thin filter+select on top of these):
+//   • Total fees paid per merchant by year / month / day / card_scheme
+//   • Cheapest / most expensive card_scheme to steer a merchant's traffic to
+//   • Counterfactual rate / fixed_amount override on a target Fee ID — exposed
+//     as the SINGLE row of context (current rate, current fixed, eur volume,
+//     match count) the caller needs to compute the delta in one multiply.
+//   • Counterfactual ACI steering of fraudulent transactions: a sibling source
+//     re-prices fraud-only payments under each candidate ACI; argmin via
+//     order_by + limit 1.
+//   • Counterfactual MCC reassignment: a sibling source re-prices every
+//     payment under each candidate MCC; delta = total(new) − total(current).
+//
+// The matching predicates are exactly the wildcard-aware conjunction from
+// c4 (NULL scalar / empty list = "applies to all"); intracountry is derived
+// per payment from issuing_country = acquirer_country (the acquirer's
+// country is already on the payments row, so no acquirer_countries lookup
+// is required here).
+
+// ─────────────────────────────────────────────────────────────────────
+// 1. Main pricing surface — (payment × matched fee rule)
+// ─────────────────────────────────────────────────────────────────────
+
+source: c5_payments_priced is duckdb.sql("""
+  WITH monthly AS (
+    SELECT
+      merchant, year,
+      date_trunc('month', make_date(year, 1, 1) + (day_of_year - 1)::INTEGER)::DATE AS month_start,
+      SUM(eur_amount)                                                       AS total_eur,
+      SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END)      AS fraud_eur
+    FROM payments
+    GROUP BY 1, 2, 3
+  ),
+  bk AS (
+    SELECT merchant, year, month_start,
+      CASE
+        WHEN total_eur <  100000 THEN '<100k'
+        WHEN total_eur < 1000000 THEN '100k-1m'
+        WHEN total_eur < 5000000 THEN '1m-5m'
+        ELSE                          '>5m'
+      END AS monthly_volume_bucket,
+      CASE
+        WHEN total_eur = 0                       THEN '<7.2%'
+        WHEN fraud_eur / total_eur < 0.072       THEN '<7.2%'
+        WHEN fraud_eur / total_eur < 0.077       THEN '7.2%-7.7%'
+        WHEN fraud_eur / total_eur < 0.083       THEN '7.7%-8.3%'
+        ELSE                                          '>8.3%'
+      END AS monthly_fraud_level_bucket
+    FROM monthly
+  ),
+  enriched AS (
+    SELECT
+      p.psp_reference, p.merchant, p.year, p.day_of_year,
+      date_trunc('month', make_date(p.year, 1, 1) + (p.day_of_year - 1)::INTEGER)::DATE AS transaction_month,
+      p.eur_amount, p.has_fraudulent_dispute, p.card_scheme, p.aci, p.is_credit,
+      p.issuing_country, p.acquirer_country,
+      CASE WHEN p.issuing_country = p.acquirer_country THEN 1.0 ELSE 0.0 END AS is_intracountry,
+      m.account_type, m.merchant_category_code AS mcc_code,
+      CASE
+        WHEN m.capture_delay = 'immediate'        THEN 'immediate'
+        WHEN m.capture_delay = 'manual'           THEN 'manual'
+        WHEN m.capture_delay IN ('1','2')         THEN '<3'
+        WHEN m.capture_delay IN ('3','4','5')     THEN '3-5'
+        WHEN m.capture_delay IN ('6','7','8','9') THEN '>5'
+        ELSE m.capture_delay
+      END AS capture_delay_bucket,
+      bk.monthly_volume_bucket, bk.monthly_fraud_level_bucket
+    FROM payments p
+    JOIN merchants m USING (merchant)
+    LEFT JOIN bk
+      ON bk.merchant    = p.merchant
+     AND bk.year        = p.year
+     AND bk.month_start = date_trunc('month', make_date(p.year, 1, 1) + (p.day_of_year - 1)::INTEGER)::DATE
+  )
+  SELECT
+    e.psp_reference, e.merchant, e.year, e.day_of_year, e.transaction_month,
+    e.eur_amount, e.has_fraudulent_dispute,
+    e.card_scheme, e.aci, e.is_credit,
+    e.issuing_country, e.acquirer_country, e.is_intracountry,
+    e.account_type, e.mcc_code, e.capture_delay_bucket,
+    e.monthly_volume_bucket, e.monthly_fraud_level_bucket,
+    f.ID                                                        AS fee_id,
+    f.fixed_amount                                              AS fee_fixed_amount,
+    f.rate                                                      AS fee_rate,
+    f.fixed_amount + f.rate * e.eur_amount / 10000.0            AS fee_eur
+  FROM enriched e
+  JOIN fees f
+    ON  f.card_scheme = e.card_scheme
+   AND (len(f.account_type) = 0
+        OR list_contains(f.account_type, e.account_type))
+   AND (len(f.merchant_category_code) = 0
+        OR list_contains(f.merchant_category_code, e.mcc_code))
+   AND (len(f.aci) = 0
+        OR list_contains(f.aci, e.aci))
+   AND (f.capture_delay IS NULL
+        OR f.capture_delay = e.capture_delay_bucket)
+   AND (f.is_credit IS NULL
+        OR f.is_credit = e.is_credit)
+   AND (f.intracountry IS NULL
+        OR f.intracountry = e.is_intracountry)
+   AND (f.monthly_volume IS NULL
+        OR f.monthly_volume = e.monthly_volume_bucket)
+   AND (f.monthly_fraud_level IS NULL
+        OR f.monthly_fraud_level = e.monthly_fraud_level_bucket)
+""") extend {
+
+  // ── Calendar conveniences ───────────────────────────────────────────
+  dimension: transaction_quarter is transaction_month.quarter
+
+  // ── Measures ────────────────────────────────────────────────────────
+  // NB: this source is at (payment × fee_id) grain. Use distinct_payments
+  // for a payment count; eur_amount-based measures are summed once per
+  // (payment, fee_id) match — see `matched_eur_volume` below.
+  measure: match_count        is count()
+  measure: distinct_payments  is count(psp_reference)
+  measure: distinct_fee_ids   is count(fee_id)
+  measure: distinct_merchants is count(merchant)
+
+  // Fee outcomes
+  measure: total_fee_eur is fee_eur.sum()
+  measure: avg_fee_eur   is fee_eur.avg()
+  measure: min_fee_eur   is fee_eur.min()
+  measure: max_fee_eur   is fee_eur.max()
+
+  // Counterfactual-override helpers. When the caller filters to a single
+  // fee_id (+ merchant + window), every match row has the same fee_rate
+  // and fee_fixed_amount, so .max() returns the scalar value.
+  measure: matched_eur_volume     is eur_amount.sum()
+  measure: matched_rate           is fee_rate.max()
+  measure: matched_fixed_amount   is fee_fixed_amount.max()
+
+  // ── Total-fees views (thin filter+select on top to scope) ──────────
+  view: total_fees_by_merchant_year is {
+    group_by:  merchant, `year`
+    aggregate: total_fee_eur, distinct_payments, match_count
+    order_by:  merchant, `year`
+  }
+
+  view: total_fees_by_merchant_month is {
+    group_by:  merchant, transaction_month
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  merchant, transaction_month
+  }
+
+  view: total_fees_by_merchant_day is {
+    group_by:  merchant, `year`, day_of_year
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  merchant, `year`, day_of_year
+  }
+
+  // ── Card-scheme steering ranking (cheapest / most expensive) ───────
+  // Caller filters to one merchant + window, then `limit: 1` (or reads
+  // the ordered list).
+  view: card_scheme_ranking_by_merchant_year is {
+    group_by:  merchant, `year`, card_scheme
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  total_fee_eur asc, card_scheme asc
+  }
+
+  view: card_scheme_ranking_by_merchant_month is {
+    group_by:  merchant, transaction_month, card_scheme
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  total_fee_eur asc, card_scheme asc
+  }
+
+  // ── Per-fee × merchant × window slice ──────────────────────────────
+  // The atomic surface for both "which fees affected M?" and the rate /
+  // fixed-amount override deltas.
+  //
+  //   delta_rate(new_rate)   = (new_rate - matched_rate)
+  //                          * matched_eur_volume / 10000
+  //   delta_fixed(new_fixed) = (new_fixed - matched_fixed_amount)
+  //                          * match_count
+  //
+  // Usage:
+  //   run: c5_payments_priced -> fee_override_context_by_year + {
+  //     where: merchant = 'Rafa_AI' and `year` = 2023 and fee_id = 141
+  //   }
+  view: fee_override_context_by_year is {
+    group_by:  merchant, `year`, fee_id
+    aggregate:
+      match_count,
+      matched_eur_volume,
+      matched_rate,
+      matched_fixed_amount,
+      total_fee_eur
+    order_by:  merchant, `year`, fee_id
+  }
+
+  view: fee_override_context_by_month is {
+    group_by:  merchant, transaction_month, fee_id
+    aggregate:
+      match_count,
+      matched_eur_volume,
+      matched_rate,
+      matched_fixed_amount,
+      total_fee_eur
+    order_by:  merchant, transaction_month, fee_id
+  }
+
+  view: fee_override_context_by_day is {
+    group_by:  merchant, `year`, day_of_year, fee_id
+    aggregate:
+      match_count,
+      matched_eur_volume,
+      matched_rate,
+      matched_fixed_amount,
+      total_fee_eur
+    order_by:  merchant, `year`, day_of_year, fee_id
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// 2. Counterfactual ACI steering of fraudulent transactions
+//
+// Restrict to fraudulent payments, cross-join with the 7 ACI candidates,
+// then re-match fees with the payment's aci replaced by the candidate.
+// Sum fee_eur per candidate; argmin = the ACI to steer fraud toward.
+// ─────────────────────────────────────────────────────────────────────
+
+source: c5_payments_priced_aci_steering is duckdb.sql("""
+  WITH monthly AS (
+    SELECT merchant, year,
+      date_trunc('month', make_date(year,1,1) + (day_of_year-1)::INTEGER)::DATE AS month_start,
+      SUM(eur_amount) AS total_eur,
+      SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) AS fraud_eur
+    FROM payments GROUP BY 1,2,3
+  ),
+  bk AS (
+    SELECT merchant, year, month_start,
+      CASE WHEN total_eur < 100000 THEN '<100k'
+           WHEN total_eur < 1000000 THEN '100k-1m'
+           WHEN total_eur < 5000000 THEN '1m-5m'
+           ELSE '>5m' END AS monthly_volume_bucket,
+      CASE WHEN total_eur = 0 OR fraud_eur/total_eur < 0.072 THEN '<7.2%'
+           WHEN fraud_eur/total_eur < 0.077 THEN '7.2%-7.7%'
+           WHEN fraud_eur/total_eur < 0.083 THEN '7.7%-8.3%'
+           ELSE '>8.3%' END AS monthly_fraud_level_bucket
+    FROM monthly
+  ),
+  fraud AS (
+    SELECT
+      p.psp_reference, p.merchant, p.year, p.day_of_year,
+      date_trunc('month', make_date(p.year,1,1) + (p.day_of_year-1)::INTEGER)::DATE AS transaction_month,
+      p.eur_amount, p.card_scheme, p.is_credit,
+      CASE WHEN p.issuing_country = p.acquirer_country THEN 1.0 ELSE 0.0 END AS is_intracountry,
+      m.account_type, m.merchant_category_code AS mcc_code,
+      CASE
+        WHEN m.capture_delay = 'immediate'        THEN 'immediate'
+        WHEN m.capture_delay = 'manual'           THEN 'manual'
+        WHEN m.capture_delay IN ('1','2')         THEN '<3'
+        WHEN m.capture_delay IN ('3','4','5')     THEN '3-5'
+        WHEN m.capture_delay IN ('6','7','8','9') THEN '>5'
+        ELSE m.capture_delay
+      END AS capture_delay_bucket,
+      bk.monthly_volume_bucket, bk.monthly_fraud_level_bucket
+    FROM payments p
+    JOIN merchants m USING (merchant)
+    LEFT JOIN bk
+      ON bk.merchant=p.merchant AND bk.year=p.year
+     AND bk.month_start = date_trunc('month', make_date(p.year,1,1) + (p.day_of_year-1)::INTEGER)::DATE
+    WHERE p.has_fraudulent_dispute = TRUE
+  ),
+  candidates AS (
+    SELECT UNNEST(['A','B','C','D','E','F','G']) AS candidate_aci
+  ),
+  steered AS (
+    SELECT fr.*, c.candidate_aci FROM fraud fr CROSS JOIN candidates c
+  )
+  SELECT
+    s.psp_reference, s.merchant, s.year, s.day_of_year, s.transaction_month,
+    s.eur_amount, s.card_scheme, s.candidate_aci AS aci, s.is_credit,
+    s.is_intracountry, s.account_type, s.mcc_code, s.capture_delay_bucket,
+    s.monthly_volume_bucket, s.monthly_fraud_level_bucket,
+    f.ID                                              AS fee_id,
+    f.fixed_amount + f.rate * s.eur_amount / 10000.0  AS fee_eur
+  FROM steered s
+  JOIN fees f
+    ON  f.card_scheme = s.card_scheme
+   AND (len(f.account_type)=0           OR list_contains(f.account_type, s.account_type))
+   AND (len(f.merchant_category_code)=0 OR list_contains(f.merchant_category_code, s.mcc_code))
+   AND (len(f.aci)=0                    OR list_contains(f.aci, s.candidate_aci))
+   AND (f.capture_delay IS NULL         OR f.capture_delay = s.capture_delay_bucket)
+   AND (f.is_credit IS NULL             OR f.is_credit = s.is_credit)
+   AND (f.intracountry IS NULL          OR f.intracountry = s.is_intracountry)
+   AND (f.monthly_volume IS NULL        OR f.monthly_volume = s.monthly_volume_bucket)
+   AND (f.monthly_fraud_level IS NULL   OR f.monthly_fraud_level = s.monthly_fraud_level_bucket)
+""") extend {
+
+  measure: match_count       is count()
+  measure: distinct_payments is count(psp_reference)
+  measure: total_fee_eur     is fee_eur.sum()
+
+  // Ranking views — caller scopes via where: (merchant + window), then
+  // reads the cheapest row (limit 1) or the full ordered ranking.
+  view: fraud_fee_ranking_by_aci_year is {
+    group_by:  merchant, `year`, aci
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  total_fee_eur asc, aci asc
+  }
+
+  view: fraud_fee_ranking_by_aci_month is {
+    group_by:  merchant, transaction_month, aci
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  total_fee_eur asc, aci asc
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// 3. Counterfactual MCC reassignment
+//
+// Cross-join every payment with the universe of candidate MCCs (the set
+// that appears in any fee rule's MCC list, plus every MCC actually used
+// by a merchant), then re-match fees with mcc_code replaced by the
+// candidate. The merchant's actual monthly_volume / monthly_fraud_level
+// buckets are preserved (MCC change does not alter monthly aggregates).
+//
+//   delta(M, new_mcc, window) = total_fee_eur(merchant=M, mcc_code=new_mcc, window)
+//                             − total_fee_eur(merchant=M, mcc_code=<merchant's current MCC>, window)
+// ─────────────────────────────────────────────────────────────────────
+
+source: c5_payments_priced_mcc_counterfactual is duckdb.sql("""
+  WITH monthly AS (
+    SELECT merchant, year,
+      date_trunc('month', make_date(year,1,1) + (day_of_year-1)::INTEGER)::DATE AS month_start,
+      SUM(eur_amount) AS total_eur,
+      SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) AS fraud_eur
+    FROM payments GROUP BY 1,2,3
+  ),
+  bk AS (
+    SELECT merchant, year, month_start,
+      CASE WHEN total_eur < 100000 THEN '<100k'
+           WHEN total_eur < 1000000 THEN '100k-1m'
+           WHEN total_eur < 5000000 THEN '1m-5m'
+           ELSE '>5m' END AS monthly_volume_bucket,
+      CASE WHEN total_eur = 0 OR fraud_eur/total_eur < 0.072 THEN '<7.2%'
+           WHEN fraud_eur/total_eur < 0.077 THEN '7.2%-7.7%'
+           WHEN fraud_eur/total_eur < 0.083 THEN '7.7%-8.3%'
+           ELSE '>8.3%' END AS monthly_fraud_level_bucket
+    FROM monthly
+  ),
+  enriched AS (
+    SELECT
+      p.psp_reference, p.merchant, p.year, p.day_of_year,
+      date_trunc('month', make_date(p.year,1,1) + (p.day_of_year-1)::INTEGER)::DATE AS transaction_month,
+      p.eur_amount, p.card_scheme, p.aci, p.is_credit,
+      CASE WHEN p.issuing_country = p.acquirer_country THEN 1.0 ELSE 0.0 END AS is_intracountry,
+      m.account_type,
+      CASE
+        WHEN m.capture_delay = 'immediate'        THEN 'immediate'
+        WHEN m.capture_delay = 'manual'           THEN 'manual'
+        WHEN m.capture_delay IN ('1','2')         THEN '<3'
+        WHEN m.capture_delay IN ('3','4','5')     THEN '3-5'
+        WHEN m.capture_delay IN ('6','7','8','9') THEN '>5'
+        ELSE m.capture_delay
+      END AS capture_delay_bucket,
+      bk.monthly_volume_bucket, bk.monthly_fraud_level_bucket
+    FROM payments p
+    JOIN merchants m USING (merchant)
+    LEFT JOIN bk
+      ON bk.merchant=p.merchant AND bk.year=p.year
+     AND bk.month_start = date_trunc('month', make_date(p.year,1,1) + (p.day_of_year-1)::INTEGER)::DATE
+  ),
+  mcc_universe AS (
+    SELECT DISTINCT UNNEST(merchant_category_code) AS candidate_mcc
+    FROM fees WHERE len(merchant_category_code) > 0
+    UNION
+    SELECT DISTINCT merchant_category_code AS candidate_mcc FROM merchants
+  ),
+  pairs AS (
+    SELECT e.*, u.candidate_mcc FROM enriched e CROSS JOIN mcc_universe u
+  )
+  SELECT
+    pp.psp_reference, pp.merchant, pp.year, pp.day_of_year, pp.transaction_month,
+    pp.eur_amount, pp.card_scheme, pp.aci, pp.is_credit, pp.is_intracountry,
+    pp.account_type, pp.candidate_mcc AS mcc_code, pp.capture_delay_bucket,
+    pp.monthly_volume_bucket, pp.monthly_fraud_level_bucket,
+    f.ID                                              AS fee_id,
+    f.fixed_amount + f.rate * pp.eur_amount / 10000.0 AS fee_eur
+  FROM pairs pp
+  JOIN fees f
+    ON  f.card_scheme = pp.card_scheme
+   AND (len(f.account_type)=0           OR list_contains(f.account_type, pp.account_type))
+   AND (len(f.merchant_category_code)=0 OR list_contains(f.merchant_category_code, pp.candidate_mcc))
+   AND (len(f.aci)=0                    OR list_contains(f.aci, pp.aci))
+   AND (f.capture_delay IS NULL         OR f.capture_delay = pp.capture_delay_bucket)
+   AND (f.is_credit IS NULL             OR f.is_credit = pp.is_credit)
+   AND (f.intracountry IS NULL          OR f.intracountry = pp.is_intracountry)
+   AND (f.monthly_volume IS NULL        OR f.monthly_volume = pp.monthly_volume_bucket)
+   AND (f.monthly_fraud_level IS NULL   OR f.monthly_fraud_level = pp.monthly_fraud_level_bucket)
+""") extend {
+
+  measure: match_count       is count()
+  measure: distinct_payments is count(psp_reference)
+  measure: total_fee_eur     is fee_eur.sum()
+
+  // Per-merchant per-candidate-MCC totals. Subtract the row at the
+  // merchant's actual MCC to get the counterfactual delta.
+  //
+  //   run: c5_payments_priced_mcc_counterfactual
+  //          -> total_fees_by_merchant_candidate_mcc_year + {
+  //        where: merchant = 'Crossfit_Hanna' and `year` = 2023
+  //               and mcc_code ? 7523 | 7997
+  //      }
+  view: total_fees_by_merchant_candidate_mcc_year is {
+    group_by:  merchant, `year`, candidate_mcc is mcc_code
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  merchant, `year`, candidate_mcc
+  }
+
+  view: total_fees_by_merchant_candidate_mcc_month is {
+    group_by:  merchant, transaction_month, candidate_mcc is mcc_code
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  merchant, transaction_month, candidate_mcc
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// 4. Counterfactual card_scheme steering
+//
+// Cross-join every payment with the 4 candidate card schemes, then
+// re-match fees with the payment's card_scheme replaced by the candidate.
+// Sum fee_eur per candidate; argmin = cheapest scheme to steer to,
+// argmax = most expensive.
+// ─────────────────────────────────────────────────────────────────────
+
+source: c5_payments_priced_card_scheme_counterfactual is duckdb.sql("""
+  WITH monthly AS (
+    SELECT merchant, year,
+      date_trunc('month', make_date(year,1,1) + (day_of_year-1)::INTEGER)::DATE AS month_start,
+      SUM(eur_amount) AS total_eur,
+      SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) AS fraud_eur
+    FROM payments GROUP BY 1,2,3
+  ),
+  bk AS (
+    SELECT merchant, year, month_start,
+      CASE WHEN total_eur < 100000 THEN '<100k'
+           WHEN total_eur < 1000000 THEN '100k-1m'
+           WHEN total_eur < 5000000 THEN '1m-5m'
+           ELSE '>5m' END AS monthly_volume_bucket,
+      CASE WHEN total_eur = 0 OR fraud_eur/total_eur < 0.072 THEN '<7.2%'
+           WHEN fraud_eur/total_eur < 0.077 THEN '7.2%-7.7%'
+           WHEN fraud_eur/total_eur < 0.083 THEN '7.7%-8.3%'
+           ELSE '>8.3%' END AS monthly_fraud_level_bucket
+    FROM monthly
+  ),
+  enriched AS (
+    SELECT
+      p.psp_reference, p.merchant, p.year, p.day_of_year,
+      date_trunc('month', make_date(p.year,1,1) + (p.day_of_year-1)::INTEGER)::DATE AS transaction_month,
+      p.eur_amount, p.aci, p.is_credit,
+      CASE WHEN p.issuing_country = p.acquirer_country THEN 1.0 ELSE 0.0 END AS is_intracountry,
+      m.account_type, m.merchant_category_code AS mcc_code,
+      CASE
+        WHEN m.capture_delay = 'immediate'        THEN 'immediate'
+        WHEN m.capture_delay = 'manual'           THEN 'manual'
+        WHEN m.capture_delay IN ('1','2')         THEN '<3'
+        WHEN m.capture_delay IN ('3','4','5')     THEN '3-5'
+        WHEN m.capture_delay IN ('6','7','8','9') THEN '>5'
+        ELSE m.capture_delay
+      END AS capture_delay_bucket,
+      bk.monthly_volume_bucket, bk.monthly_fraud_level_bucket
+    FROM payments p
+    JOIN merchants m USING (merchant)
+    LEFT JOIN bk
+      ON bk.merchant=p.merchant AND bk.year=p.year
+     AND bk.month_start = date_trunc('month', make_date(p.year,1,1) + (p.day_of_year-1)::INTEGER)::DATE
+  ),
+  candidates AS (
+    SELECT UNNEST(['GlobalCard','NexPay','SwiftCharge','TransactPlus']) AS candidate_card_scheme
+  ),
+  steered AS (
+    SELECT e.*, c.candidate_card_scheme FROM enriched e CROSS JOIN candidates c
+  )
+  SELECT
+    s.psp_reference, s.merchant, s.year, s.day_of_year, s.transaction_month,
+    s.eur_amount, s.candidate_card_scheme AS card_scheme, s.aci, s.is_credit,
+    s.is_intracountry, s.account_type, s.mcc_code, s.capture_delay_bucket,
+    s.monthly_volume_bucket, s.monthly_fraud_level_bucket,
+    f.ID                                              AS fee_id,
+    f.fixed_amount + f.rate * s.eur_amount / 10000.0  AS fee_eur
+  FROM steered s
+  JOIN fees f
+    ON  f.card_scheme = s.candidate_card_scheme
+   AND (len(f.account_type)=0           OR list_contains(f.account_type, s.account_type))
+   AND (len(f.merchant_category_code)=0 OR list_contains(f.merchant_category_code, s.mcc_code))
+   AND (len(f.aci)=0                    OR list_contains(f.aci, s.aci))
+   AND (f.capture_delay IS NULL         OR f.capture_delay = s.capture_delay_bucket)
+   AND (f.is_credit IS NULL             OR f.is_credit = s.is_credit)
+   AND (f.intracountry IS NULL          OR f.intracountry = s.is_intracountry)
+   AND (f.monthly_volume IS NULL        OR f.monthly_volume = s.monthly_volume_bucket)
+   AND (f.monthly_fraud_level IS NULL   OR f.monthly_fraud_level = s.monthly_fraud_level_bucket)
+""") extend {
+
+  measure: match_count       is count()
+  measure: distinct_payments is count(psp_reference)
+  measure: total_fee_eur     is fee_eur.sum()
+
+  // Ranking views — caller scopes via where: (merchant + window), then
+  // reads the cheapest row (limit 1, asc) or most expensive (desc).
+  view: fee_ranking_by_card_scheme_year is {
+    group_by:  merchant, `year`, card_scheme
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  total_fee_eur asc, card_scheme asc
+  }
+
+  view: fee_ranking_by_card_scheme_month is {
+    group_by:  merchant, transaction_month, card_scheme
+    aggregate: total_fee_eur, distinct_payments
+    order_by:  total_fee_eur asc, card_scheme asc
+  }
+}
