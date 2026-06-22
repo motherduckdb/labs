@@ -242,6 +242,10 @@ export interface MissAnalysis {
   malloySource: string | null;
   /** re-running the submitted Malloy now (null when nothing was submitted). */
   reExec: { ok: boolean; rowCount: number; error?: string } | null;
+  /** degeneracy smells from the SUBMITTED query's OWN output (e.g. a listing that
+   *  includes a phantom NULL key) — catches defects when the agent queried inline
+   *  rather than via a named view. Closed-book. */
+  reExecSmells?: Smell[];
   /** each named layer view the submission referenced, smoke-run on its own. */
   viewProbes: ViewProbe[];
   implicatedFiles: string[];
@@ -255,6 +259,7 @@ export type MissCategory =
   | 'layer_view_empty'
   | 'layer_view_degenerate'
   | 'layer_pattern_gap'
+  | 'layer_listing_null'
   | 'unknown';
 
 export type MissOwner = 'answering' | 'skill' | 'layer' | 'model';
@@ -284,6 +289,17 @@ export interface MissClassification {
  *   - submitted FAILS to re-run, referenced views clean .. skill (agent's inline Malloy)
  *   - submitted FAILS, no views referenced ............... skill (agent's inline Malloy)
  */
+// An ENUMERATION/listing question — its answer is a set of values (a comma list),
+// so a phantom NULL key in the result is a stray member, not noise to ignore.
+const LIST_GUIDE_RE = /comma[- ]separated|list of values|\bempty (list|string)\b|\beg:\s*[A-Za-z0-9]+\s*,/i;
+const LIST_Q_RE = /\b(list|enumerate)\b|\bwhat are the\b|\bwhich\b[\s\S]{0,80}?\b(apply|applicable|are)\b/i;
+
+/** Is the answer a LIST/enumeration (so a NULL element is a defect, not a category)?
+ *  Keys off the answer guideline ("comma separated list") first, then the question. */
+export function isListingQuestion(question = '', guidelines = ''): boolean {
+  return LIST_GUIDE_RE.test(guidelines) || LIST_Q_RE.test(question);
+}
+
 export function classifyMiss(a: MissAnalysis): MissClassification {
   const files = a.implicatedFiles;
   if (!a.submitted || a.hitLimit || !a.malloySource) {
@@ -340,6 +356,24 @@ export function classifyMiss(a: MissAnalysis): MissClassification {
       suggestedOwner: 'layer',
       implicatedFiles: degenerateView.file ? [degenerateView.file, ...files.filter((f) => f !== degenerateView.file)] : files,
       note: `named layer view \`${degenerateView.source} -> ${degenerateView.view}\` runs but is DEGENERATE — ${degenerateView.smells?.[0]?.message ?? 'no discriminating output'}. Likely a wrong-grain layer defect, not the agent's query.`,
+    };
+  }
+
+  // The submitted query RAN and returned rows, but on a LISTING question its own
+  // output enumerates a key that includes a phantom NULL (an unmatched outer-join
+  // row). That NULL leaks into the comma-list answer (often as "Not Applicable").
+  // The durable fix is in the LAYER: a listing/enumeration surface over an
+  // outer-joined source should exclude the unmatched (NULL-key) group — so any
+  // agent listing it gets clean values. (The query ran fine, so it's not the
+  // agent's inline logic that's broken; it's the surface it enumerated.)
+  const phantomKey = (a.reExecSmells ?? []).find((s) => s.code === 'phantom_key_null');
+  if (reExec && reExec.ok && reExec.rowCount > 0 && phantomKey && isListingQuestion(a.question, a.guidelines)) {
+    return {
+      category: 'layer_listing_null',
+      layerSuspected: true,
+      suggestedOwner: 'layer',
+      implicatedFiles: files,
+      note: `the answer ENUMERATES \`${phantomKey.column}\` but the result includes a phantom NULL (${phantomKey.message}) — an unmatched outer-join row that renders as a stray list value ("Not Applicable"). A layer enumeration surface over this source should EXCLUDE the unmatched/NULL-key group (e.g. \`where: ${phantomKey.column} is not null\` at the source/enrichment if it doesn't break transaction counts, else in each enumeration view) so listing the key never yields NULL.`,
     };
   }
 
@@ -477,13 +511,20 @@ export async function analyzeMiss(row: MissRow, rt: MalloyRuntime, index: LayerI
   const hitLimit = !!row.hit_limit;
 
   let reExec: MissAnalysis['reExec'] = null;
+  let reExecSmells: Smell[] | undefined;
   const viewProbes: ViewProbe[] = [];
 
   if (malloySource) {
-    const r = await rt.run(malloySource, 50);
-    reExec = r.ok
-      ? { ok: true, rowCount: r.rows?.length ?? 0 }
-      : { ok: false, rowCount: 0, error: (r.diagnostics ?? []).map((d) => d.message).join('\n') };
+    // Pull a generous row cap (not 50) so the submitted query's FULL output is
+    // judged — a phantom NULL key often sorts LAST (NULLS LAST), so a tight cap
+    // would miss it. The agent's own `limit` still bounds the real result.
+    const r = await rt.run(malloySource, 1000);
+    if (r.ok) {
+      reExec = { ok: true, rowCount: r.rows?.length ?? 0 };
+      reExecSmells = viewQualitySmells(r.rows ?? []);
+    } else {
+      reExec = { ok: false, rowCount: 0, error: (r.diagnostics ?? []).map((d) => d.message).join('\n') };
+    }
 
     // Smoke each referenced named view on its own (the structural-defect probe),
     // source-scoped so a shared view name hits the source actually queried. Pull
@@ -515,6 +556,7 @@ export async function analyzeMiss(row: MissRow, rt: MalloyRuntime, index: LayerI
     hitLimit,
     malloySource,
     reExec,
+    reExecSmells,
     viewProbes,
     implicatedFiles: malloySource ? mapMalloyToFiles(malloySource, index) : [],
   };
@@ -548,6 +590,7 @@ export function evidenceBlock(a: MissAnalysis, cls: MissClassification): string 
           : `Re-running it now: EXECUTION ERROR:\n${a.reExec.error}`,
       );
     }
+    for (const s of a.reExecSmells ?? []) lines.push(`  ⚠ the submitted query's OWN output: ${s.message}`);
   } else {
     lines.push(`\nThe answering agent did NOT submit a Malloy answer (hit the turn limit).`);
   }

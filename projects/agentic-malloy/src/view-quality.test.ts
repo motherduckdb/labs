@@ -63,6 +63,30 @@ describe('viewQualitySmells', () => {
     expect(viewQualitySmells(Array.from({ length: 12 }, () => ({ year: 2023, fee: 5.5 }))).some((x) => x.code === 'zero_variance' && x.column === 'fee')).toBe(true);
   });
 
+  it('flags phantom_key_null: a NULL in a (near-)unique enumeration key (the 1744 case)', () => {
+    // 86 unique fee IDs + one phantom NULL from an unmatched outer-join row.
+    const data = [
+      ...Array.from({ length: 86 }, (_, i) => ({ fee_id: i + 1 })),
+      { fee_id: null as number | null },
+    ];
+    const s = viewQualitySmells(data);
+    const ph = s.find((x) => x.code === 'phantom_key_null' && x.column === 'fee_id');
+    expect(ph).toBeTruthy();
+    expect(ph!.message).toMatch(/phantom unmatched-join row/);
+  });
+
+  it('does NOT flag a NULL in a LOW-cardinality categorical (NULL may be a real category)', () => {
+    // capture_delay over 20 rows with only 3 distinct values + a NULL → not a key,
+    // so the NULL is not treated as a phantom (avoids false positives).
+    const data = Array.from({ length: 20 }, (_, i) => ({ capture_delay: i % 4 === 0 ? null : ['immediate', 'manual', '<3'][i % 3] }));
+    expect(viewQualitySmells(data).some((x) => x.code === 'phantom_key_null')).toBe(false);
+  });
+
+  it('does NOT flag a clean unique key with NO nulls', () => {
+    const data = Array.from({ length: 30 }, (_, i) => ({ id: i + 1 }));
+    expect(viewQualitySmells(data).some((x) => x.code === 'phantom_key_null')).toBe(false);
+  });
+
   it('handles bigint counts (MotherDuck) without misjudging', () => {
     const data = Array.from({ length: 10 }, (_, i) => ({ g: i, n: BigInt(i + 1) }));
     expect(viewQualitySmells(data)).toEqual([]); // 1..10 distinct → no smell

@@ -104,6 +104,8 @@ function deterministicManner(cls: MissClassification): FailureManner {
   switch (cls.category) {
     case 'no_submission':
       return 'gave_up';
+    case 'layer_listing_null':
+      return 'overspecified'; // the answer carried an EXTRA phantom (NULL) list member
     case 'layer_view_error':
     case 'layer_view_empty':
     case 'layer_view_degenerate':

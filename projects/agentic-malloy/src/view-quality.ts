@@ -15,7 +15,7 @@
  * with other evidence rather than hard-failing on a single smell.
  */
 export interface Smell {
-  code: 'all_null' | 'all_zero' | 'zero_variance' | 'extreme_tie';
+  code: 'all_null' | 'all_zero' | 'zero_variance' | 'extreme_tie' | 'phantom_key_null';
   column: string;
   message: string;
 }
@@ -35,17 +35,23 @@ function toNum(v: unknown): number | null {
  *                    discriminate between groups — usually the wrong grain).
  *  - extreme_tie   : > `tieFraction` of rows share the MAX (or MIN) of a numeric
  *                    column — a "ranking that does not rank" (the wildcard-grain bug).
+ *  - phantom_key_null : a (near-)unique IDENTITY/KEY column (an enumeration of
+ *                    entities) contains a NULL — a phantom unmatched-outer-join row
+ *                    that leaks into a listing (e.g. "list applicable fee IDs"
+ *                    returns the IDs + a stray NULL that renders as "Not Applicable").
  *
  * `minRows` guards against judging tiny groupings (a 5-row scheme ranking is not
  * degenerate just because schemes are few). Only numeric columns are judged for
- * zero/variance/tie; any column is judged for all-null.
+ * zero/variance/tie; any column is judged for all-null; a near-unique column
+ * (cardinality ≥ `keyUniqueness` of its non-nulls) is judged for phantom_key_null.
  */
 export function viewQualitySmells(
   rows: Array<Record<string, unknown>>,
-  opts: { minRows?: number; tieFraction?: number } = {},
+  opts: { minRows?: number; tieFraction?: number; keyUniqueness?: number } = {},
 ): Smell[] {
   const minRows = opts.minRows ?? 8;
   const tieFraction = opts.tieFraction ?? 0.5;
+  const keyUniqueness = opts.keyUniqueness ?? 0.9;
   const smells: Smell[] = [];
   if (rows.length < minRows) return smells; // too few rows to judge meaningfully
   const cols = Object.keys(rows[0] ?? {});
@@ -55,6 +61,19 @@ export function viewQualitySmells(
     if (nonNull.length === 0) {
       smells.push({ code: 'all_null', column: c, message: `column "${c}" is NULL for all ${rows.length} rows — computes nothing` });
       continue;
+    }
+    // phantom_key_null: SOME rows are NULL while the non-null values are a
+    // (near-)unique key — i.e. this column ENUMERATES entities and a NULL slipped
+    // in. That NULL is a phantom unmatched-join row, not a real member; in a list
+    // answer it renders as a stray value ("Not Applicable"). A low-cardinality
+    // categorical with a NULL is NOT flagged (NULL may be a legitimate category).
+    const nullCount = raw.length - nonNull.length;
+    if (nullCount > 0 && nonNull.length >= minRows) {
+      const distinctNonNull = new Set(nonNull.map((v) => (typeof v === 'bigint' ? v.toString() : String(v)))).size;
+      if (distinctNonNull >= keyUniqueness * nonNull.length) {
+        smells.push({ code: 'phantom_key_null', column: c, message: `${nullCount} row(s) have a NULL "${c}" while the other ${nonNull.length} value(s) are (near-)unique — a phantom unmatched-join row in what should be a clean enumeration of "${c}"` });
+        continue; // a key column — don't also numeric-judge it
+      }
     }
     const nums = nonNull.map(toNum);
     const isNumeric = nums.every((n) => n !== null) && nums.length === nonNull.length;

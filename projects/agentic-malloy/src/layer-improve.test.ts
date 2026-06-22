@@ -19,6 +19,7 @@ import {
   detectPatternGap,
   isSteeringQuestion,
   steeringVocabulary,
+  isListingQuestion,
   evidenceBlock,
   analyzeMiss,
   nonTrainTaskIds,
@@ -344,6 +345,54 @@ describe('pattern-consistency gate (detectPatternGap)', () => {
         { isSteering: true },
       ),
     ).toBeNull();
+  });
+});
+
+// --- phantom-NULL-in-a-listing gate (the 1744 class) -------------------------
+
+describe('isListingQuestion', () => {
+  it('detects a comma-separated-list answer guideline', () => {
+    expect(isListingQuestion('What are the applicable fee IDs for X in 2023?', 'Answer must be a list of values in comma separated list, eg: A, B, C.')).toBe(true);
+  });
+  it('detects "list"/"what are the" question phrasings', () => {
+    expect(isListingQuestion('List the merchants that paid NexPay.')).toBe(true);
+    expect(isListingQuestion('What are the fee IDs that apply?')).toBe(true);
+  });
+  it('is false for a scalar question', () => {
+    expect(isListingQuestion('What is the total fee for NexPay in 2023?', 'Answer must be a number rounded to 2 decimals.')).toBe(false);
+  });
+});
+
+describe('layer_listing_null (phantom NULL key in an enumeration answer)', () => {
+  const listingMiss = (over: Partial<MissAnalysis> = {}): MissAnalysis => baseAnalysis({
+    question: 'What are the applicable fee IDs for Martinis_Fine_Steakhouse in 2023?',
+    guidelines: 'Answer must be a list of values in comma separated list, eg: A, B, C.',
+    malloySource: 'run: fee_match -> { group_by: fee_id is fees.ID; aggregate: total_fee_amount }',
+    implicatedFiles: ['c3_fee_assignment.malloy'],
+    reExec: { ok: true, rowCount: 87 },
+    reExecSmells: [{ code: 'phantom_key_null', column: 'fee_id', message: '1 row(s) have a NULL "fee_id" while the other 86 value(s) are (near-)unique — a phantom unmatched-join row in what should be a clean enumeration of "fee_id"' }],
+    viewProbes: [],
+    ...over,
+  });
+
+  it('a LISTING answer whose own output has a phantom NULL key → LAYER (enumeration surface defect)', () => {
+    const c = classifyMiss(listingMiss());
+    expect(c.category).toBe('layer_listing_null');
+    expect(c.layerSuspected).toBe(true);
+    expect(c.suggestedOwner).toBe('layer');
+    expect(c.note).toMatch(/phantom NULL|is not null/);
+  });
+
+  it('the SAME phantom on a NON-listing (scalar) question stays SKILL — no enumeration to clean', () => {
+    const c = classifyMiss(listingMiss({ question: 'What is the max fee?', guidelines: 'Answer must be a number.' }));
+    expect(c.category).toBe('query_wrong_answer');
+    expect(c.layerSuspected).toBe(false);
+  });
+
+  it('a listing answer with NO phantom smell is not a layer defect (clean enumeration)', () => {
+    const c = classifyMiss(listingMiss({ reExecSmells: [] }));
+    expect(c.category).toBe('query_wrong_answer');
+    expect(c.layerSuspected).toBe(false);
   });
 });
 
