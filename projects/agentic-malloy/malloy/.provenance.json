@@ -1,6 +1,6 @@
 {
   "malloy_provenance": "model_authored",
-  "malloy_model_hash": "572c98fa52eb2037",
+  "malloy_model_hash": "ef6674b2dce46bd2",
   "context_included": true,
   "authoring_model": "anthropic/claude-opus-4.7",
   "central_only": false,
@@ -20,7 +20,7 @@
     "payments_base.malloy"
   ],
   "manual_included": true,
-  "improve_round": 1,
+  "improve_round": 2,
   "improve_lineage": [
     {
       "from_hash": "8a4a6e3ff61598e7",
@@ -36,6 +36,21 @@
       ],
       "train_only": true,
       "at": "2026-06-22T17:38:06.830Z"
+    },
+    {
+      "from_hash": "572c98fa52eb2037",
+      "to_hash": "ef6674b2dce46bd2",
+      "round": 2,
+      "improve_model": "anthropic/claude-opus-4.7",
+      "edited_files": [
+        "c4_fee_applicability.malloy"
+      ],
+      "from_run": "templates_2026-06-22T1748Z.jsonl",
+      "from_splits": [
+        "train"
+      ],
+      "train_only": true,
+      "at": "2026-06-22T18:32:22.487Z"
     }
   ]
 }

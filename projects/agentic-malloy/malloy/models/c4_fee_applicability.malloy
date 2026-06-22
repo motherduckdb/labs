@@ -147,18 +147,21 @@ source: c4_fee_applicability is c4_payments_enriched extend {
   // ─────────────────────────────────────────────────────────────────────
 
   view: applicable_fees_by_merchant_year is {
+    where:     fees.ID is not null
     group_by:  merchant, `year`, fee_id is fees.ID
     aggregate: matched_transaction_count
     order_by:  merchant, `year`, fee_id
   }
 
   view: applicable_fees_by_merchant_month is {
+    where:     fees.ID is not null
     group_by:  merchant, transaction_month, fee_id is fees.ID
     aggregate: matched_transaction_count
     order_by:  merchant, transaction_month, fee_id
   }
 
   view: applicable_fees_by_merchant_day is {
+    where:     fees.ID is not null
     group_by:  merchant, `year`, day_of_year, fee_id is fees.ID
     aggregate: matched_transaction_count
     order_by:  merchant, `year`, day_of_year, fee_id
@@ -170,6 +173,7 @@ source: c4_fee_applicability is c4_payments_enriched extend {
   // ─────────────────────────────────────────────────────────────────────
 
   view: merchants_by_fee is {
+    where:     fees.ID is not null
     group_by:  fee_id is fees.ID, merchant
     aggregate: matched_transaction_count
     order_by:  fee_id, merchant
@@ -190,6 +194,7 @@ source: c4_fee_applicability is c4_payments_enriched extend {
   // Joined fee-rule attributes alongside each match — useful for spot-
   // checking why a rule applied (and at what pricing).
   view: matched_rule_detail is {
+    where: fees.ID is not null
     group_by:
       merchant,
       `year`,
