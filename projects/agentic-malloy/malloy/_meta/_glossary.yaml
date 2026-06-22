@@ -94,7 +94,6 @@
           "payments"
         ],
         "columns": [
-          "fees.*",
           "merchants.account_type",
           "merchants.merchant_category_code",
           "merchants.capture_delay",

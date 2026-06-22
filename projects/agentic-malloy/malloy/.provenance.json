@@ -1,6 +1,6 @@
 {
   "malloy_provenance": "model_authored",
-  "malloy_model_hash": "ef6674b2dce46bd2",
+  "malloy_model_hash": "d7a2545e3a8300b0",
   "context_included": true,
   "authoring_model": "anthropic/claude-opus-4.7",
   "central_only": false,
@@ -51,6 +51,18 @@
       ],
       "train_only": true,
       "at": "2026-06-22T18:32:22.487Z"
+    },
+    {
+      "kind": "deterministic_reground",
+      "reason": "codex PR67 P2 — applied the fixed grounding gate (pruneGrounding) to the committed _glossary.yaml; stripped hallucinated grounding refs the pre-fix .some() gate let through",
+      "from_hash": "ef6674b2dce46bd2",
+      "to_hash": "d7a2545e3a8300b0",
+      "edited_files": [
+        "_meta/_glossary.yaml"
+      ],
+      "concepts_before": 26,
+      "concepts_after": 26,
+      "at": "2026-06-22T21:17:10.221Z"
     }
   ]
 }
