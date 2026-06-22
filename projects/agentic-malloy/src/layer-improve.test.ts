@@ -276,14 +276,17 @@ describe('isSteeringQuestion', () => {
 });
 
 describe('steeringVocabulary (don\'t let a dimension noun masquerade as steering)', () => {
-  it('keeps only SCENARIO terms/aliases that name a steering ACTION', () => {
+  it('keeps SCENARIO + OPERATION terms/aliases that name a steering ACTION', () => {
     const v = steeringVocabulary([
       { kind: 'scenario', term: 'Counterfactual ACI steering', aliases: ['move fraudulent transactions to a different ACI', 'incentivize different interaction'] },
+      { kind: 'operation', term: 'Cheapest / most expensive option', aliases: ['steer traffic to', 'minimum fees'] }, // operation now included
       { kind: 'dimension', term: 'Authorization Characteristics Indicator (ACI)', aliases: ['authorization characteristic'] }, // must NOT be pulled in
       { kind: 'scenario', term: 'Average fee scenario', aliases: ['typical fee'] }, // scenario but no steering verb → dropped
     ]);
     expect(v).toContain('Counterfactual ACI steering');
     expect(v).toContain('move fraudulent transactions to a different ACI');
+    expect(v).toContain('steer traffic to'); // operation-kind alias with a steering verb
+    expect(v).not.toContain('minimum fees'); // operation alias but NO steering verb → dropped
     expect(v).not.toContain('authorization characteristic'); // dimension entry excluded
     expect(v).not.toContain('typical fee'); // no steering verb
     expect(v).not.toContain('incentivize different interaction'); // no steering verb

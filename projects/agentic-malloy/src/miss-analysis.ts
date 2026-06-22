@@ -289,13 +289,17 @@ export interface MissClassification {
  *   - submitted FAILS to re-run, referenced views clean .. skill (agent's inline Malloy)
  *   - submitted FAILS, no views referenced ............... skill (agent's inline Malloy)
  */
-// An ENUMERATION/listing question — its answer is a set of values (a comma list),
-// so a phantom NULL key in the result is a stray member, not noise to ignore.
-const LIST_GUIDE_RE = /comma[- ]separated|list of values|\bempty (list|string)\b|\beg:\s*[A-Za-z0-9]+\s*,/i;
+// An ENUMERATION/listing question — its answer is a set of values, so a phantom
+// NULL key in the result is a stray member, not noise to ignore.
+// PRIMARY signal: the dataset's OWN answer-format GUIDELINE says the answer is a
+// list/set (a dataset-provided spec, NOT hardcoded domain knowledge). FALLBACK:
+// generic enumeration phrasing in the question. As with steering, this is a recall
+// pre-filter — the phantom_key_null smell + the model verdict are the authority.
+const LIST_GUIDE_RE = /comma[- ]separated|separated by|list of (values|ids|items|[a-z]+)|\ba list\b|\bset of\b|\bempty (list|string)\b|\beg:\s*[A-Za-z0-9]+\s*,/i;
 const LIST_Q_RE = /\b(list|enumerate)\b|\bwhat are the\b|\bwhich\b[\s\S]{0,80}?\b(apply|applicable|are)\b/i;
 
 /** Is the answer a LIST/enumeration (so a NULL element is a defect, not a category)?
- *  Keys off the answer guideline ("comma separated list") first, then the question. */
+ *  Reads the dataset's answer-format guideline first, then the question phrasing. */
 export function isListingQuestion(question = '', guidelines = ''): boolean {
   return LIST_GUIDE_RE.test(guidelines) || LIST_Q_RE.test(question);
 }
@@ -434,13 +438,17 @@ const STEER_RE: RegExp[] = [
 const STEER_TERM_RE = /\bsteer|\bre-?price|\breassign|\bmove\b[\s\S]{0,30}?\bto\b|\bswitch\b[\s\S]{0,30}?\bto\b/i;
 
 /**
- * The steering/counterfactual PHRASES drawn from a glossary: only SCENARIO entries'
- * terms/aliases that themselves name a steering action. Augments the generic
- * STEER_RE lexicon for domain phrasings without admitting dimension nouns. Pure.
+ * The steering/counterfactual PHRASES the DATASET itself names — drawn from the
+ * glossary's SCENARIO and OPERATION concepts (the dataset's own taxonomy of
+ * "what-if you changed X" and argmin/argmax-over-a-dimension operations), keeping
+ * only terms/aliases that themselves name a steering ACTION (so a bare dimension
+ * noun like "ACI" can't seed it via a concept whose description merely mentions
+ * steering). This is the PRIMARY, dataset-derived signal for isSteeringQuestion;
+ * the generic STEER_RE lexicon is only a fallback. Pure.
  */
 export function steeringVocabulary(entries: Array<{ kind?: string; term?: string; aliases?: string[] }>): string[] {
   return entries
-    .filter((e) => e.kind === 'scenario')
+    .filter((e) => e.kind === 'scenario' || e.kind === 'operation')
     .flatMap((e) => [e.term ?? '', ...(e.aliases ?? [])])
     .filter((t) => !!t && STEER_TERM_RE.test(t));
 }
@@ -448,14 +456,21 @@ export function steeringVocabulary(entries: Array<{ kind?: string; term?: string
 /**
  * Is this a counterfactual STEERING question — one that asks what WOULD happen if
  * some dimension were changed ("steer/move … to a different X", "to which X
- * should …")? Generic lexicon (no dataset facts); `extraTerms` lets the caller add
- * the glossary's own scenario aliases (see steeringVocabulary). Pure.
+ * should …")? This is a cheap RECALL pre-filter, not the decider: a candidate is
+ * only acted on if the layer's structure corroborates it (detectPatternGap) and
+ * the model verdict agrees. PRIMARY signal = `glossaryTerms` (the dataset's own
+ * scenario/operation vocabulary, via steeringVocabulary); FALLBACK = a generic,
+ * domain-agnostic English lexicon (no dataset facts) for phrasings the glossary's
+ * concept aliases don't literally contain. Pure.
  */
-export function isSteeringQuestion(question: string, extraTerms: string[] = []): boolean {
+export function isSteeringQuestion(question: string, glossaryTerms: string[] = []): boolean {
   if (!question) return false;
-  if (STEER_RE.some((re) => re.test(question))) return true;
   const q = question.toLowerCase();
-  return extraTerms.some((t) => t && t.length >= 4 && q.includes(t.toLowerCase()));
+  // PRIMARY: the dataset names it (glossary scenario/operation vocabulary).
+  if (glossaryTerms.some((t) => t && t.length >= 4 && q.includes(t.toLowerCase()))) return true;
+  // FALLBACK: generic counterfactual phrasing the glossary alias may not literally
+  // contain (e.g. "steer traffic IN ORDER TO …" vs the alias "steer traffic to").
+  return STEER_RE.some((re) => re.test(question));
 }
 
 /**
