@@ -155,24 +155,40 @@ export interface KnownSchema {
   tables: Set<string>;
 }
 
-/** Does an entry's grounding resolve against the real schema? An entry must name
- *  at least one real column or table — otherwise it's a hallucinated concept.
- *  Pure + case-insensitive. */
-export function groundingResolves(entry: GlossaryEntry, known: KnownSchema): boolean {
+/**
+ * PRUNE an entry's grounding to ONLY the columns/tables that exist in the real
+ * schema, returning the cleaned entry — or null if nothing real remains (a
+ * hallucinated concept). This is the honesty gate: it must not merely pass/fail an
+ * entry, because a MIXED grounding (one real + one fake column, e.g.
+ * ["fees.rate", "fees.loyalty_tier"]) would otherwise be kept WITH the fake column
+ * still attached and leak it into _glossary.yaml + the prompts. Pruning strips the
+ * fake refs and keeps the real ones. Pure + case-insensitive.
+ *
+ * known.columns holds BOTH qualified "table.col" AND bare "col" forms, so a
+ * QUALIFIED ref must match the exact "table.col" (a wrong qualifier like
+ * orders.amount can't pass off a bare amount elsewhere) and an UNQUALIFIED ref
+ * matches the bare form. A real TABLE does NOT rescue fake columns.
+ */
+export function pruneGrounding(entry: GlossaryEntry, known: KnownSchema): GlossaryEntry | null {
   const norm = (s: string) => s.trim().toLowerCase();
-  const cols = entry.grounding.columns ?? [];
-  // known.columns holds BOTH qualified "table.col" AND bare "col" forms. A
-  // QUALIFIED ref must match the exact "table.col" (so a wrong qualifier like
-  // orders.amount can't pass off a bare amount elsewhere); an UNQUALIFIED ref
-  // matches the bare form. A single membership check does both.
-  if (cols.length) {
-    // Columns WERE supplied → at least one must be real. A real TABLE name does
-    // NOT rescue fake columns (a concept claiming fees.loyalty_tier is
-    // hallucinated even though `fees` exists).
-    return cols.some((c) => known.columns.has(norm(c)));
+  const suppliedCols = entry.grounding.columns ?? [];
+  const cols = suppliedCols.filter((c) => known.columns.has(norm(c)));
+  const tables = (entry.grounding.tables ?? []).filter((t) => known.tables.has(norm(t)));
+  if (suppliedCols.length) {
+    // Columns were supplied → at least one must be real (a real table can't rescue
+    // an all-fake column list).
+    if (cols.length === 0) return null;
+  } else if (tables.length === 0) {
+    // No columns → an entity-level concept needs at least one real table.
+    return null;
   }
-  // No columns supplied → an entity-level concept grounded by a real table is OK.
-  return (entry.grounding.tables ?? []).some((t) => known.tables.has(norm(t)));
+  return { ...entry, grounding: { ...entry.grounding, columns: cols, tables } };
+}
+
+/** Does an entry's grounding resolve against the real schema (after pruning fakes)?
+ *  Boolean view of pruneGrounding — kept for the predicate callers/tests. Pure. */
+export function groundingResolves(entry: GlossaryEntry, known: KnownSchema): boolean {
+  return pruneGrounding(entry, known) !== null;
 }
 
 /** Introspect the DB to build the KnownSchema (table + column names). */
@@ -207,7 +223,14 @@ export async function groundGlossary(
   const known = await knownSchemaOf(tables, dbPath);
   const grounded: GlossaryEntry[] = [];
   const dropped: GlossaryEntry[] = [];
-  for (const e of entries) (groundingResolves(e, known) ? grounded : dropped).push(e);
+  for (const e of entries) {
+    // Keep the PRUNED entry (fake columns/tables stripped) so a mixed grounding
+    // never carries a hallucinated ref into the artifact; drop entries with no
+    // real grounding at all.
+    const pruned = pruneGrounding(e, known);
+    if (pruned) grounded.push(pruned);
+    else dropped.push(e);
+  }
   return { grounded, dropped };
 }
 

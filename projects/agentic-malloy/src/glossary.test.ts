@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { parseGlossary, groundingResolves, renderGlossary, groundGlossary, loadGlossaryArtifact, renderGlossaryForAnswering, GLOSSARY_FILE, contentTokens, buildLayerVocabulary, questionVocabularyGap, type GlossaryEntry, type KnownSchema } from './glossary.js';
+import { parseGlossary, groundingResolves, pruneGrounding, renderGlossary, groundGlossary, loadGlossaryArtifact, renderGlossaryForAnswering, GLOSSARY_FILE, contentTokens, buildLayerVocabulary, questionVocabularyGap, type GlossaryEntry, type KnownSchema } from './glossary.js';
 
 const known: KnownSchema = {
   columns: new Set(['fees.aci', 'aci', 'fees.merchant_category_code', 'merchant_category_code', 'payments.amount', 'amount']),
@@ -73,6 +73,26 @@ describe('groundingResolves (honesty gate)', () => {
   });
   it('grounds an entity-level concept by a real table ONLY when no columns are supplied', () => {
     expect(groundingResolves(entry({ grounding: { tables: ['fees'] } }), known)).toBe(true);
+  });
+});
+
+describe('pruneGrounding (strip fakes, keep reals — no hallucinated leak; codex PR67 #r3455367807)', () => {
+  it('MIXED grounding: keeps the real column, STRIPS the fake one (the reported leak)', () => {
+    const p = pruneGrounding(entry({ grounding: { columns: ['fees.aci', 'fees.loyalty_tier'] } }), known);
+    expect(p).not.toBeNull();
+    expect(p!.grounding.columns).toEqual(['fees.aci']); // fees.loyalty_tier removed — cannot reach the artifact
+  });
+  it('strips a fake TABLE even when a real column is kept', () => {
+    const p = pruneGrounding(entry({ grounding: { columns: ['fees.aci'], tables: ['rewards'] } }), known);
+    expect(p!.grounding.columns).toEqual(['fees.aci']);
+    expect(p!.grounding.tables).toEqual([]); // fake `rewards` stripped
+  });
+  it('returns null when EVERY column is fake (a real table does not rescue)', () => {
+    expect(pruneGrounding(entry({ grounding: { columns: ['fees.loyalty_tier'], tables: ['fees'] } }), known)).toBeNull();
+  });
+  it('keeps a column-free entity concept by a real table, pruning fake tables', () => {
+    const p = pruneGrounding(entry({ grounding: { tables: ['fees', 'ghost'] } }), known);
+    expect(p!.grounding.tables).toEqual(['fees']);
   });
 });
 
@@ -179,5 +199,15 @@ describe('groundGlossary (fixture DB)', () => {
     );
     expect(grounded.map((e) => e.term)).toEqual(['fee rate']);
     expect(dropped.map((e) => e.term)).toEqual(['phantom']);
+  });
+
+  it('PRUNES a mixed grounding on a KEPT entry — the fake column never reaches the artifact', async () => {
+    const { grounded } = await groundGlossary(
+      [entry({ term: 'fee', grounding: { columns: ['fees.rate', 'fees.bogus_col'] } })],
+      ['fees'],
+      dbPath,
+    );
+    expect(grounded).toHaveLength(1);
+    expect(grounded[0].grounding.columns).toEqual(['fees.rate']); // fees.bogus_col stripped
   });
 });
