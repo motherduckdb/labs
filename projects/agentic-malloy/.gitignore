@@ -6,3 +6,5 @@ node_modules/
 results/*.jsonl
 results/controllog/
 .DS_Store
+# one-off trace-extraction scratch scripts
+_extract_*.mjs
