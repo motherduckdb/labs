@@ -1,0 +1,22 @@
+file: merchant_category_codes_base.malloy
+domain: Payments / merchant taxonomy
+summary: |
+  Base semantic source over the merchant_category_codes lookup table. Provides
+  the canonical mapping between four-digit MCC strings and their industry
+  descriptions, plus a numeric form of the MCC for matching against the
+  integer MCC lists carried by fee rules, and an uppercase description form
+  for case-insensitive lookup by name.
+exports:
+  - name: merchant_category_codes_base
+    kind: source
+    summary: |
+      One row per MCC. Dimensions: mcc (string), mcc_code (numeric form for
+      list-membership matching against fees.merchant_category_code),
+      description, description_upper (case-insensitive match key),
+      mcc_category_prefix (first two digits = broad category). Measures:
+      mcc_count, distinct_mcc_count, distinct_description_count. Views:
+      catalog (full listing), by_category_prefix (rows per two-digit group).
+provides_for:
+  - "Merchant Category Code (MCC): resolve code ↔ description and expose a numeric mcc_code for joining/list-membership against fee rules"
+  - "Wildcard rule semantics: numeric mcc_code is the value tested with list_contains against fees.merchant_category_code (empty list = any)"
+  - "Catalog browsing and grouping of MCCs by two-digit category prefix"

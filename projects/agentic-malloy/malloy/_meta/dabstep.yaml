@@ -1,0 +1,26 @@
+file: dabstep.malloy
+domain: payments-fee-optimization
+summary: |
+  Thin top-level index over the c1–c5 intermediate semantic sources.
+  Provides a single fees-only rule-lookup wrapper (fee_rule_lookup) for
+  ad-hoc "which fee IDs match this (account_type, aci, ...) tuple?"
+  questions, and documents — in comments — which intermediate view
+  answers each recurring question shape (applicable fees, total fees,
+  cheapest/most expensive card_scheme/ACI/MCC at a notional, rate /
+  fixed_amount / MCC / ACI counterfactuals, rule-scope tightening).
+  All other answers are a thin `+ { where: ... }` on the existing
+  intermediate views; no logic is restated here.
+exports:
+  - name: fee_rule_lookup
+    kind: source
+    summary: |
+      Wildcard-aware fees_base wrapper. View matching_fee_ids returns
+      the set of fee IDs whose conditions are compatible with the
+      filters supplied via `+ { where: ... }`; matching_fee_detail
+      returns the same with full rule attributes. Use wildcard-aware
+      predicates: (len!number(col)=0 or list_contains!boolean(col, v))
+      for list columns; (col is null or col = v) for scalar columns.
+provides_for:
+  - fee IDs applicable to a given (account_type, aci, card_scheme, mcc, ...) tuple
+  - directory comment block routing every recurring question shape to its intermediate view
+  - rule-grain ad-hoc filtering without restating wildcard match logic

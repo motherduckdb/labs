@@ -1,0 +1,298 @@
+// c4_fee_applicability.malloy
+//
+// Wildcard-aware conjunctive matching of fee rules against transactions
+// enriched with the merchant's dimensional attributes and that month's
+// monthly-volume / monthly-fraud-level buckets.
+//
+// Applicability semantics
+// -----------------------
+// A fee rule R "applies to" merchant M in window W iff there exists at least
+// one payment P of M in W where every condition column of R either is a
+// wildcard (NULL scalar / empty list) OR matches P's attribute. Conditions:
+//
+//   • card_scheme              : R.card_scheme = P.card_scheme          (scalar, never NULL in fees)
+//   • account_type   (list)    : empty | merchant.account_type in list
+//   • merchant_category_code   : empty | merchant.mcc in list           (list of BIGINT)
+//   • capture_delay  (scalar)  : NULL  | bucketed merchant.capture_delay equal
+//   • is_credit      (scalar)  : NULL  | equals P.is_credit
+//   • aci            (list)    : empty | P.aci in list
+//   • intracountry   (scalar)  : NULL  | equals (P.issuing_country = P.acquirer_country)
+//   • monthly_volume          : NULL  | equals merchant×month volume bucket
+//   • monthly_fraud_level     : NULL  | equals merchant×month fraud bucket
+//
+// All match values are produced as REAL local columns on c4_payments_enriched
+// (per the Malloy guidance: join_many on-clauses may only reference physical
+// columns of the two joined sources, never pass-through join aliases).
+//
+// Counterfactual rule-scope edits ("if fee 64 only applied to account_type S,
+// which merchants would have been affected?") are supported by sibling sources
+// that drop a single match predicate so callers can impose a hypothetical
+// scope via a plain `where:` filter on the enriched fact's attribute.
+
+// ─────────────────────────────────────────────────────────────────────
+// Enriched transaction fact — payment × merchant × (merchant,month) bucket
+// ─────────────────────────────────────────────────────────────────────
+
+source: c4_payments_enriched is duckdb.sql("""
+  WITH monthly AS (
+    SELECT
+      merchant,
+      year,
+      date_trunc('month', make_date(year, 1, 1) + (day_of_year - 1) * INTERVAL '1 day')::DATE AS month_start,
+      SUM(eur_amount) AS total_eur,
+      SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END) AS fraud_eur
+    FROM payments
+    GROUP BY 1, 2, 3
+  ),
+  bk AS (
+    SELECT
+      merchant, year, month_start,
+      CASE
+        WHEN total_eur <  100000 THEN '<100k'
+        WHEN total_eur < 1000000 THEN '100k-1m'
+        WHEN total_eur < 5000000 THEN '1m-5m'
+        ELSE                          '>5m'
+      END AS monthly_volume_bucket,
+      CASE
+        WHEN total_eur = 0                       THEN '<7.2%'
+        WHEN fraud_eur / total_eur < 0.072       THEN '<7.2%'
+        WHEN fraud_eur / total_eur < 0.077       THEN '7.2%-7.7%'
+        WHEN fraud_eur / total_eur < 0.083       THEN '7.7%-8.3%'
+        ELSE                                          '>8.3%'
+      END AS monthly_fraud_level_bucket
+    FROM monthly
+  )
+  SELECT
+    p.psp_reference,
+    p.merchant,
+    p.year,
+    p.day_of_year,
+    date_trunc('month', make_date(p.year, 1, 1) + (p.day_of_year - 1) * INTERVAL '1 day')::DATE AS transaction_month,
+    p.eur_amount,
+    p.has_fraudulent_dispute,
+    p.card_scheme,
+    p.aci,
+    p.is_credit,
+    p.issuing_country,
+    p.acquirer_country,
+    CASE WHEN p.issuing_country = p.acquirer_country THEN 1.0 ELSE 0.0 END AS is_intracountry,
+    m.account_type,
+    m.merchant_category_code AS mcc_code,
+    CASE
+      WHEN m.capture_delay = 'immediate'         THEN 'immediate'
+      WHEN m.capture_delay = 'manual'            THEN 'manual'
+      WHEN m.capture_delay IN ('1','2')          THEN '<3'
+      WHEN m.capture_delay IN ('3','4','5')      THEN '3-5'
+      WHEN m.capture_delay IN ('6','7','8','9')  THEN '>5'
+      ELSE m.capture_delay
+    END AS capture_delay_bucket,
+    bk.monthly_volume_bucket,
+    bk.monthly_fraud_level_bucket
+  FROM payments p
+  JOIN merchants m USING (merchant)
+  LEFT JOIN bk
+    ON bk.merchant    = p.merchant
+   AND bk.year        = p.year
+   AND bk.month_start = date_trunc('month', make_date(p.year, 1, 1) + (p.day_of_year - 1) * INTERVAL '1 day')::DATE
+""") extend {
+
+  primary_key: psp_reference
+
+  // Calendar conveniences
+  dimension: transaction_quarter is transaction_month.quarter
+  dimension: is_intracountry_flag is is_intracountry = 1.0
+
+  measure: transaction_count       is count()
+  measure: distinct_merchant_count is count(merchant)
+  measure: total_eur_volume        is eur_amount.sum()
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Main applicability source — every match predicate enforced
+// ─────────────────────────────────────────────────────────────────────
+
+source: c4_fee_applicability is c4_payments_enriched extend {
+
+  join_many: fees is fees_base on
+        fees.card_scheme = card_scheme
+    and (len!number(fees.account_type) = 0
+         or list_contains!boolean(fees.account_type, account_type))
+    and (len!number(fees.merchant_category_code) = 0
+         or list_contains!boolean(fees.merchant_category_code, mcc_code))
+    and (len!number(fees.aci) = 0
+         or list_contains!boolean(fees.aci, aci))
+    and (fees.capture_delay is null
+         or fees.capture_delay = capture_delay_bucket)
+    and (fees.is_credit is null
+         or fees.is_credit = is_credit)
+    and (fees.intracountry is null
+         or fees.intracountry = is_intracountry)
+    and (fees.monthly_volume is null
+         or fees.monthly_volume = monthly_volume_bucket)
+    and (fees.monthly_fraud_level is null
+         or fees.monthly_fraud_level = monthly_fraud_level_bucket)
+
+  // ── Symmetric measures (safe across the join_many) ───────────────────
+  measure: matched_transaction_count is count()
+  measure: distinct_fee_count        is count(fees.ID)
+  measure: distinct_merchant_match   is count(merchant)
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Applicable Fee IDs — at the three natural windows
+  //
+  //   Use a thin `+ { where: ... }` on top to scope:
+  //     run: c4_fee_applicability -> applicable_fees_by_merchant_year + {
+  //       where: merchant = 'Martinis_Fine_Steakhouse' and `year` = 2023
+  //     }
+  // ─────────────────────────────────────────────────────────────────────
+
+  view: applicable_fees_by_merchant_year is {
+    where:     fees.ID is not null
+    group_by:  merchant, `year`, fee_id is fees.ID
+    aggregate: matched_transaction_count
+    order_by:  merchant, `year`, fee_id
+  }
+
+  view: applicable_fees_by_merchant_month is {
+    where:     fees.ID is not null
+    group_by:  merchant, transaction_month, fee_id is fees.ID
+    aggregate: matched_transaction_count
+    order_by:  merchant, transaction_month, fee_id
+  }
+
+  view: applicable_fees_by_merchant_day is {
+    where:     fees.ID is not null
+    group_by:  merchant, `year`, day_of_year, fee_id is fees.ID
+    aggregate: matched_transaction_count
+    order_by:  merchant, `year`, day_of_year, fee_id
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Fee-centric pivots — "which merchants does fee X affect?"
+  //   run: c4_fee_applicability -> merchants_by_fee + { where: fees.ID = 17 }
+  // ─────────────────────────────────────────────────────────────────────
+
+  view: merchants_by_fee is {
+    where:     fees.ID is not null
+    group_by:  fee_id is fees.ID, merchant
+    aggregate: matched_transaction_count
+    order_by:  fee_id, merchant
+  }
+
+  view: fee_count_by_merchant_year is {
+    group_by:  merchant, `year`
+    aggregate: distinct_fee_count, matched_transaction_count
+    order_by:  merchant, `year`
+  }
+
+  view: fee_count_by_merchant_month is {
+    group_by:  merchant, transaction_month
+    aggregate: distinct_fee_count, matched_transaction_count
+    order_by:  merchant, transaction_month
+  }
+
+  // Joined fee-rule attributes alongside each match — useful for spot-
+  // checking why a rule applied (and at what pricing).
+  view: matched_rule_detail is {
+    where: fees.ID is not null
+    group_by:
+      merchant,
+      `year`,
+      fee_id is fees.ID,
+      fees.card_scheme,
+      fees.capture_delay,
+      fees.monthly_volume,
+      fees.monthly_fraud_level,
+      fees.is_credit,
+      fees.intracountry,
+      fees.fixed_amount,
+      fees.rate
+    aggregate: matched_transaction_count
+    order_by:  merchant, `year`, fee_id
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Counterfactual scope edit — account_type tightening
+//
+// Same join as c4_fee_applicability, MINUS the account_type predicate.
+// Caller imposes the hypothetical account-type scope by filtering on the
+// merchant's actual account_type column (a real local column on the
+// enriched fact). Pattern:
+//
+//   run: c4_fee_applicability_account_type_scope -> affected_merchants + {
+//     where: fees.ID = 64 and account_type = 'S' and `year` = 2023
+//   }
+// ─────────────────────────────────────────────────────────────────────
+
+source: c4_fee_applicability_account_type_scope is c4_payments_enriched extend {
+
+  join_many: fees is fees_base on
+        fees.card_scheme = card_scheme
+    and (len!number(fees.merchant_category_code) = 0
+         or list_contains!boolean(fees.merchant_category_code, mcc_code))
+    and (len!number(fees.aci) = 0
+         or list_contains!boolean(fees.aci, aci))
+    and (fees.capture_delay is null
+         or fees.capture_delay = capture_delay_bucket)
+    and (fees.is_credit is null
+         or fees.is_credit = is_credit)
+    and (fees.intracountry is null
+         or fees.intracountry = is_intracountry)
+    and (fees.monthly_volume is null
+         or fees.monthly_volume = monthly_volume_bucket)
+    and (fees.monthly_fraud_level is null
+         or fees.monthly_fraud_level = monthly_fraud_level_bucket)
+
+  measure: matched_transaction_count is count()
+  measure: distinct_fee_count        is count(fees.ID)
+
+  view: affected_merchants is {
+    group_by:  fee_id is fees.ID, merchant, account_type
+    aggregate: matched_transaction_count
+    order_by:  fee_id, merchant
+  }
+
+  view: affected_merchants_by_account_type is {
+    group_by:  fee_id is fees.ID, account_type, merchant
+    aggregate: matched_transaction_count
+    order_by:  fee_id, account_type, merchant
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Counterfactual scope edit — MCC tightening
+//
+// Same join, MINUS the merchant_category_code predicate. Caller imposes
+// the hypothetical MCC by filtering on the merchant's actual mcc_code
+// (e.g. "if fee 64 were only applied to MCC 7372, ...").
+// ─────────────────────────────────────────────────────────────────────
+
+source: c4_fee_applicability_mcc_scope is c4_payments_enriched extend {
+
+  join_many: fees is fees_base on
+        fees.card_scheme = card_scheme
+    and (len!number(fees.account_type) = 0
+         or list_contains!boolean(fees.account_type, account_type))
+    and (len!number(fees.aci) = 0
+         or list_contains!boolean(fees.aci, aci))
+    and (fees.capture_delay is null
+         or fees.capture_delay = capture_delay_bucket)
+    and (fees.is_credit is null
+         or fees.is_credit = is_credit)
+    and (fees.intracountry is null
+         or fees.intracountry = is_intracountry)
+    and (fees.monthly_volume is null
+         or fees.monthly_volume = monthly_volume_bucket)
+    and (fees.monthly_fraud_level is null
+         or fees.monthly_fraud_level = monthly_fraud_level_bucket)
+
+  measure: matched_transaction_count is count()
+  measure: distinct_fee_count        is count(fees.ID)
+
+  view: affected_merchants is {
+    group_by:  fee_id is fees.ID, merchant, mcc_code
+    aggregate: matched_transaction_count
+    order_by:  fee_id, merchant
+  }
+}

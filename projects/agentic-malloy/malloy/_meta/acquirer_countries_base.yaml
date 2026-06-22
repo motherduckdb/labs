@@ -1,0 +1,34 @@
+file: acquirer_countries_base.malloy
+domain: payments / fee modeling — acquirer reference data
+summary: |
+  Base semantic source over the `acquirer_countries` reference table, which
+  maps each acquirer (bank) to the country in which it acquires transactions.
+  This is the authoritative lookup used to resolve a payment's acquirer
+  country (and therefore the domestic vs. cross-border / intracountry flag)
+  from the `acquirer` attribute. Provides dimensions for acquirer, country
+  code, a derived region bucket, and a Eurozone flag, plus simple count
+  measures and small browsing views. Contains no joins.
+exports:
+  - name: acquirer_countries_base
+    kind: source
+    summary: |
+      One row per acquirer × acquiring-country mapping (8 acquirers across
+      5 countries: FR, GB, IT, NL, US). Exposes acquirer, country_code, a
+      friendly acquirer_label, a coarse acquirer_region (Europe / North
+      America / Other), and an is_eurozone_acquirer flag. Measures cover
+      row counts and distinct counts of acquirers and countries. Intended
+      to be joined from a payments source via payments.acquirer = acquirer.
+  - name: acquirer_directory
+    kind: view
+    summary: Alphabetical roster of acquirers with their country and region.
+  - name: acquirers_by_country
+    kind: view
+    summary: Count of acquirers operating in each country.
+  - name: acquirers_by_region
+    kind: view
+    summary: Count of acquirers operating in each derived region bucket.
+provides_for:
+  - Resolve acquirer_country for a payment by joining payments.acquirer to acquirer.
+  - Derive the intracountry flag (issuing_country = acquirer_country) needed for fee-rule matching.
+  - Slice payments / fees by acquirer country or region.
+  - Enumerate the set of acquirers and the countries they cover.

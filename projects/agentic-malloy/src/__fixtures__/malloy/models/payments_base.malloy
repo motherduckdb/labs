@@ -1,0 +1,6 @@
+// Stable test fixture — does NOT change when the live layer is rebuilt.
+source: payments_base is duckdb.table('payments') extend {
+  measure:
+    transaction_count is count()
+    total_eur is eur_amount.sum()
+}

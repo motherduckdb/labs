@@ -1,0 +1,31 @@
+{
+  "name": "agentic-malloy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "asm-malloy": "./bin/asm-malloy.ts"
+  },
+  "scripts": {
+    "asm-malloy": "tsx bin/asm-malloy.ts",
+    "spike": "tsx src/spike.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "1.5.3-r.3",
+    "@malloydata/db-duckdb": "^0.0.412",
+    "@malloydata/malloy": "^0.0.412",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.19.0",
+    "typescript": "^5",
+    "vitest": "^4.1.4"
+  }
+}

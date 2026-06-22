@@ -1,0 +1,48 @@
+file: c4_fee_applicability.malloy
+domain: payments-fees
+summary: |
+  Wildcard-aware conjunctive matching of fee rules against an enriched
+  transaction fact (payment × merchant dimension × merchant×month buckets),
+  exposing the set of applicable Fee IDs at three natural windows
+  (merchant-year, merchant-month, merchant-day) and the inverse "which
+  merchants does this fee affect?" pivot. Two sibling sources drop a single
+  match predicate (account_type or merchant_category_code) so callers can
+  impose counterfactual rule-scope edits by filtering on the merchant's
+  actual attribute.
+exports:
+  - name: c4_payments_enriched
+    kind: source
+    summary: |
+      One row per payment, enriched with merchant attributes (account_type,
+      MCC, capture_delay bucketed to the fees vocabulary) and the
+      merchant×month volume and fraud-level buckets — all materialized as
+      real local columns so they may be referenced by join_many predicates.
+  - name: c4_fee_applicability
+    kind: source
+    summary: |
+      Enriched payments joined many-to-many to fees_base via wildcard-aware
+      predicates over all nine condition columns. Provides applicable Fee
+      IDs per merchant, per merchant×month, per merchant×day; inverse
+      "merchants by fee" pivots; per-merchant fee counts; and a matched-rule
+      detail view exposing pricing of each matched rule.
+  - name: c4_fee_applicability_account_type_scope
+    kind: source
+    summary: |
+      Counterfactual variant that drops the account_type predicate. Callers
+      impose a hypothetical "fee X only applies to account_type Y" by
+      filtering on fees.ID and the enriched fact's account_type column.
+  - name: c4_fee_applicability_mcc_scope
+    kind: source
+    summary: |
+      Counterfactual variant that drops the merchant_category_code
+      predicate. Callers impose a hypothetical MCC scope by filtering on
+      fees.ID and the enriched fact's mcc_code column.
+provides_for:
+  - applicable Fee IDs for a merchant in a given year / month / day
+  - listing merchants affected by a specific fee rule
+  - per-merchant counts of applicable fee rules over a window
+  - inspecting matched fee rules' pricing attributes alongside the match
+  - counterfactual "if fee X were tightened to account_type Y" merchant lists
+  - counterfactual "if fee X were tightened to MCC Y" merchant lists
+  - enriched transaction fact (merchant attrs + monthly buckets) reusable
+    by downstream sources that need to price transactions per matched rule

@@ -1,0 +1,27 @@
+file: payments_base.malloy
+domain: payments
+summary: |
+  Base semantic source over the payments fact table (one row per payment).
+  Exposes derived calendar fields (transaction_date / month / quarter from
+  year + day_of_year), an intracountry / cross-border flag (issuer == acquirer
+  country), approval and ACI groupings, and a comprehensive set of symmetric
+  and source-local asymmetric measures: transaction counts and EUR volumes,
+  segmented by fraud, refusal, credit, intracountry, and channel; plus rate
+  measures (fraud_rate_by_volume, refusal_rate, approval_rate, credit_share,
+  intracountry_share, cross_border_share). Reusable views slice payments by
+  merchant, card scheme, ACI, month, issuing/acquirer country, country pair,
+  credit flag, channel, and at the per-merchant-per-month grain used for
+  monthly_volume / monthly_fraud_level bucketing. No joins.
+exports:
+  - name: payments_base
+    kind: source
+    summary: Payment-grain fact source with calendar, geography, fraud, ACI and channel measures/dimensions.
+provides_for:
+  - "Transaction counts and EUR volumes per merchant, card scheme, ACI, country, month"
+  - "Fraud ratio per merchant per natural month (input to monthly_fraud_level bucketing)"
+  - "Monthly EUR volume per merchant (input to monthly_volume bucketing)"
+  - "Intracountry vs cross-border segmentation of volume and counts"
+  - "Credit vs debit segmentation"
+  - "Channel (Ecommerce vs POS) and ACI-group segmentation"
+  - "Average / min / max transaction value for any slice"
+  - "Calendar filtering by month / quarter / arbitrary date range"

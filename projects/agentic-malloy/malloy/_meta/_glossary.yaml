@@ -1,0 +1,617 @@
+{
+  "glossary": [
+    {
+      "term": "Merchant",
+      "aliases": [
+        "merchant account",
+        "merchant partner"
+      ],
+      "kind": "entity",
+      "definition": "A business processing transactions through the platform, characterized by its account type, MCC, capture delay and acquirer(s).",
+      "grounding": {
+        "tables": [
+          "merchants",
+          "payments"
+        ],
+        "columns": [
+          "merchants.merchant",
+          "merchants.account_type",
+          "merchants.merchant_category_code",
+          "merchants.capture_delay",
+          "merchants.acquirer",
+          "payments.merchant"
+        ],
+        "derivation": "merchants table is the authoritative dimension; payments.merchant joins to merchants.merchant."
+      },
+      "modeling_pattern": "Single-row-per-merchant dimension joined to fact (payments) and to fee-rule matching context."
+    },
+    {
+      "term": "Card scheme",
+      "aliases": [
+        "scheme",
+        "card network"
+      ],
+      "kind": "dimension",
+      "definition": "The card network that processed the transaction (e.g. GlobalCard, NexPay, SwiftCharge, TransactPlus). Fee rules are partitioned by scheme.",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "payments.card_scheme",
+          "fees.card_scheme"
+        ],
+        "derivation": "Direct equality between payments.card_scheme and fees.card_scheme during fee matching."
+      },
+      "modeling_pattern": "Mandatory join key in fee matching; users compare schemes to find min/max fee."
+    },
+    {
+      "term": "Fee rule",
+      "aliases": [
+        "fee",
+        "Fee ID",
+        "fee with ID",
+        "rule"
+      ],
+      "kind": "entity",
+      "definition": "A row in the fees table specifying conditions (scheme, account_type, capture_delay, monthly_fraud_level, monthly_volume, MCC, is_credit, aci, intracountry) and the pricing (fixed_amount, rate) that applies when all conditions match.",
+      "grounding": {
+        "tables": [
+          "fees"
+        ],
+        "columns": [
+          "fees.ID",
+          "fees.card_scheme",
+          "fees.account_type",
+          "fees.capture_delay",
+          "fees.monthly_fraud_level",
+          "fees.monthly_volume",
+          "fees.merchant_category_code",
+          "fees.is_credit",
+          "fees.aci",
+          "fees.intracountry",
+          "fees.fixed_amount",
+          "fees.rate"
+        ],
+        "derivation": "Identified by fees.ID; selected via conjunctive match across condition columns."
+      },
+      "modeling_pattern": "Sparse rule table — NULL or empty-list condition column means 'matches any value of that attribute' (wildcard)."
+    },
+    {
+      "term": "Applicable fee rules",
+      "aliases": [
+        "applicable Fee IDs",
+        "fees that apply",
+        "fees affecting a merchant"
+      ],
+      "kind": "operation",
+      "definition": "The set of fee-rule IDs whose conditions are all satisfied by a given merchant (and optionally a given transaction or time window).",
+      "grounding": {
+        "tables": [
+          "fees",
+          "merchants",
+          "payments"
+        ],
+        "columns": [
+          "merchants.account_type",
+          "merchants.merchant_category_code",
+          "merchants.capture_delay",
+          "payments.card_scheme",
+          "payments.is_credit",
+          "payments.aci",
+          "payments.issuing_country",
+          "payments.acquirer_country"
+        ],
+        "derivation": "For each fee row, require (fees.card_scheme = ctx.card_scheme OR fees.card_scheme IS NULL) AND (fees.account_type @> [ctx.account_type] OR empty) AND (ctx.mcc = ANY(fees.merchant_category_code) OR empty) AND (fees.capture_delay matches OR NULL) AND (fees.is_credit = ctx.is_credit OR NULL) AND (ctx.aci = ANY(fees.aci) OR empty) AND (fees.intracountry matches (issuing_country = acquirer_country) OR NULL) AND (fees.monthly_volume / monthly_fraud_level bucket matches the merchant's measured value for the relevant month OR NULL)."
+      },
+      "modeling_pattern": "Wildcard-aware conjunctive matching: every condition column treats NULL / empty list as 'any'. Applicability can be evaluated at merchant grain (using only merchant attributes) or at transaction grain (adding scheme/aci/is_credit/intracountry)."
+    },
+    {
+      "term": "Fee amount",
+      "aliases": [
+        "fee in euros",
+        "cost of transaction",
+        "fee charged"
+      ],
+      "kind": "measure",
+      "definition": "The euro fee charged for a transaction under a given matching fee rule: fixed_amount plus a proportional component on notional.",
+      "grounding": {
+        "tables": [
+          "fees",
+          "payments"
+        ],
+        "columns": [
+          "fees.fixed_amount",
+          "fees.rate",
+          "payments.eur_amount"
+        ],
+        "derivation": "fee = fees.fixed_amount + fees.rate * transaction_value / 10000, where transaction_value is payments.eur_amount or a user-supplied notional."
+      },
+      "modeling_pattern": "Two-component pricing (fixed + ad-valorem). Parameterizable on a hypothetical transaction value when no actual transaction exists."
+    },
+    {
+      "term": "Hypothetical transaction value",
+      "aliases": [
+        "transaction value of X EUR",
+        "notional amount",
+        "for a transaction of N euros"
+      ],
+      "kind": "filter",
+      "definition": "A user-supplied transaction amount (parameter) plugged into the fee formula to compare fee outcomes without referencing real payments.",
+      "grounding": {
+        "tables": [
+          "fees"
+        ],
+        "columns": [
+          "fees.fixed_amount",
+          "fees.rate"
+        ],
+        "derivation": "fee(N) = fixed_amount + rate * N / 10000; N is a query parameter."
+      },
+      "modeling_pattern": "Parameterized pricing evaluation — compute fee at notional N for any matching rule(s)."
+    },
+    {
+      "term": "Average fee scenario",
+      "aliases": [
+        "in the average scenario",
+        "average fee",
+        "typical fee"
+      ],
+      "kind": "scenario",
+      "definition": "Evaluation of fee outcomes when transaction-level attributes are unspecified, by averaging the fee across all fee rules matching the partially specified context.",
+      "grounding": {
+        "tables": [
+          "fees"
+        ],
+        "columns": [
+          "fees.fixed_amount",
+          "fees.rate",
+          "fees.card_scheme",
+          "fees.account_type",
+          "fees.is_credit",
+          "fees.merchant_category_code",
+          "fees.aci"
+        ],
+        "derivation": "AVG(fixed_amount + rate * N / 10000) over all fee rows whose conditions are compatible with the supplied filters (e.g. card_scheme, account_type, MCC, is_credit)."
+      },
+      "modeling_pattern": "Marginalize over unspecified condition columns by averaging across all rules that survive wildcard-aware matching."
+    },
+    {
+      "term": "Cheapest / most expensive option",
+      "aliases": [
+        "minimum fees",
+        "maximum fees",
+        "cheapest fee",
+        "most expensive fee",
+        "steer traffic to"
+      ],
+      "kind": "operation",
+      "definition": "Ranking of an attribute (card scheme, ACI, MCC, ...) by fee amount to find the value that minimizes or maximizes cost.",
+      "grounding": {
+        "tables": [
+          "fees",
+          "payments"
+        ],
+        "columns": [
+          "fees.fixed_amount",
+          "fees.rate"
+        ],
+        "derivation": "argmin/argmax over the candidate attribute of the computed fee (per transaction, per notional, or aggregated total). Ties resolved per question (e.g. alphabetical)."
+      },
+      "modeling_pattern": "Argmin/argmax over a dimension after matching and fee computation; supports tie-breaking rules and list outputs."
+    },
+    {
+      "term": "Total fees paid",
+      "aliases": [
+        "total fees in euros",
+        "fees paid",
+        "amount paid in fees"
+      ],
+      "kind": "measure",
+      "definition": "Sum of fee amounts across all transactions of a merchant in a time window, where each transaction is priced by its matching fee rule(s).",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees",
+          "merchants"
+        ],
+        "columns": [
+          "payments.eur_amount",
+          "payments.merchant",
+          "payments.day_of_year",
+          "payments.year",
+          "fees.fixed_amount",
+          "fees.rate"
+        ],
+        "derivation": "SUM over payments (filtered by merchant and time) of (matched_rule.fixed_amount + matched_rule.rate * payments.eur_amount / 10000)."
+      },
+      "modeling_pattern": "Fact aggregation where each fact row is enriched with the applicable fee rule before summation."
+    },
+    {
+      "term": "Counterfactual fee-rule edit (delta)",
+      "aliases": [
+        "delta if rate changed",
+        "what delta would X pay",
+        "if the relative fee changed",
+        "if fixed_amount changed"
+      ],
+      "kind": "scenario",
+      "definition": "Hypothetical recomputation of total fees assuming a specific fee rule's rate or fixed_amount were changed to a new value, expressed as the difference vs. actual total.",
+      "grounding": {
+        "tables": [
+          "fees",
+          "payments"
+        ],
+        "columns": [
+          "fees.ID",
+          "fees.rate",
+          "fees.fixed_amount",
+          "payments.eur_amount"
+        ],
+        "derivation": "delta = SUM(fee_with_override) − SUM(fee_actual), where for the targeted fees.ID the rate (or fixed_amount) is replaced with the user-supplied value before recomputing fees on all matching transactions in the window."
+      },
+      "modeling_pattern": "Counterfactual override join: overlay a modified pricing parameter on the targeted rule, recompute, and difference against baseline."
+    },
+    {
+      "term": "Counterfactual ACI steering",
+      "aliases": [
+        "move fraudulent transactions to a different ACI",
+        "preferred ACI to steer to",
+        "incentivize different interaction"
+      ],
+      "kind": "scenario",
+      "definition": "Hypothetical reassignment of a subset of transactions (typically fraudulent) from their current ACI to an alternative ACI, choosing the ACI that minimizes the resulting fees.",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "payments.aci",
+          "payments.has_fraudulent_dispute",
+          "payments.merchant",
+          "fees.aci",
+          "fees.fixed_amount",
+          "fees.rate"
+        ],
+        "derivation": "For each candidate ACI value, recompute total fees over the targeted transaction subset by replacing payments.aci with that value and re-matching fee rules; pick argmin."
+      },
+      "modeling_pattern": "Counterfactual dimension swap on a filtered transaction subset, followed by re-pricing and argmin selection over a small enumerated domain."
+    },
+    {
+      "term": "Counterfactual MCC change",
+      "aliases": [
+        "if the merchant had changed MCC",
+        "imagine MCC was X"
+      ],
+      "kind": "scenario",
+      "definition": "Hypothetical change of a merchant's MCC for a time window, leading to different applicable fee rules and a delta in total fees.",
+      "grounding": {
+        "tables": [
+          "merchants",
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "merchants.merchant_category_code",
+          "fees.merchant_category_code",
+          "payments.eur_amount"
+        ],
+        "derivation": "delta = SUM(fee under MCC=new) − SUM(fee under MCC=current) across all transactions in window."
+      },
+      "modeling_pattern": "Counterfactual override on a merchant-dimension attribute, with fee re-matching."
+    },
+    {
+      "term": "Counterfactual rule-scope change",
+      "aliases": [
+        "if the fee was only applied to account type X",
+        "if rule applicability changed"
+      ],
+      "kind": "scenario",
+      "definition": "Hypothetical tightening or broadening of a fee rule's condition columns (e.g. account_type list) to identify which merchants would then be affected.",
+      "grounding": {
+        "tables": [
+          "fees",
+          "merchants"
+        ],
+        "columns": [
+          "fees.ID",
+          "fees.account_type",
+          "fees.merchant_category_code",
+          "merchants.account_type",
+          "merchants.merchant_category_code"
+        ],
+        "derivation": "Replace the targeted rule's condition column with the hypothetical value, re-run applicability over the merchants dimension, and return matching merchants."
+      },
+      "modeling_pattern": "Counterfactual override on a rule-condition column followed by re-matching."
+    },
+    {
+      "term": "Account type",
+      "aliases": [
+        "merchant account type"
+      ],
+      "kind": "dimension",
+      "definition": "Categorical classification of a merchant's business model (R, D, H, F, S, O) as defined in the manual.",
+      "grounding": {
+        "tables": [
+          "merchants",
+          "fees"
+        ],
+        "columns": [
+          "merchants.account_type",
+          "fees.account_type"
+        ],
+        "derivation": "fees.account_type is a list; rule matches when merchant's account_type is in the list or the list is empty."
+      },
+      "modeling_pattern": "List-typed condition column with empty-list wildcard."
+    },
+    {
+      "term": "Merchant Category Code (MCC)",
+      "aliases": [
+        "MCC",
+        "MCC code",
+        "MCC description"
+      ],
+      "kind": "dimension",
+      "definition": "Four-digit industry code assigned to a merchant; some questions reference it by code, others by textual description.",
+      "grounding": {
+        "tables": [
+          "merchants",
+          "fees",
+          "merchant_category_codes"
+        ],
+        "columns": [
+          "merchants.merchant_category_code",
+          "fees.merchant_category_code",
+          "merchant_category_codes.mcc",
+          "merchant_category_codes.description"
+        ],
+        "derivation": "Join merchants.merchant_category_code → merchant_category_codes.mcc to resolve description; check membership in fees.merchant_category_code list (empty = any)."
+      },
+      "modeling_pattern": "Lookup via description ↔ code; list-membership matching with wildcard."
+    },
+    {
+      "term": "Authorization Characteristics Indicator (ACI)",
+      "aliases": [
+        "ACI",
+        "payment interaction",
+        "authorization characteristic"
+      ],
+      "kind": "dimension",
+      "definition": "Single-letter code (A–G) describing how the transaction was submitted to the acquirer (card present/not present, authenticated, tokenized, recurring, 3-D Secure, etc.).",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "payments.aci",
+          "fees.aci"
+        ],
+        "derivation": "Rule matches when payments.aci is in fees.aci list or list is empty."
+      },
+      "modeling_pattern": "List-typed condition column with empty-list wildcard; enumerable target for counterfactual steering."
+    },
+    {
+      "term": "Credit transaction flag",
+      "aliases": [
+        "is_credit",
+        "credit transactions"
+      ],
+      "kind": "filter",
+      "definition": "Boolean indicating whether a transaction is credit (typically higher-fee) versus debit.",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "payments.is_credit",
+          "fees.is_credit"
+        ],
+        "derivation": "Match when fees.is_credit equals payments.is_credit or fees.is_credit IS NULL."
+      },
+      "modeling_pattern": "Nullable boolean condition with NULL = wildcard."
+    },
+    {
+      "term": "Intracountry / international flag",
+      "aliases": [
+        "intracountry",
+        "domestic transaction",
+        "cross-border",
+        "local acquiring"
+      ],
+      "kind": "filter",
+      "definition": "Indicates whether the issuing country equals the acquirer country (domestic) or differs (international).",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "payments.issuing_country",
+          "payments.acquirer_country",
+          "fees.intracountry"
+        ],
+        "derivation": "is_intracountry = (payments.issuing_country = payments.acquirer_country); match fees.intracountry to this boolean (0/1) unless NULL."
+      },
+      "modeling_pattern": "Derived boolean from two columns, matched against a nullable numeric flag in the rule table."
+    },
+    {
+      "term": "Capture delay",
+      "aliases": [
+        "capture-to-settlement delay"
+      ],
+      "kind": "dimension",
+      "definition": "Bucketed delay between authorization and capture/settlement; rule condition with buckets 'immediate', '<3', '3-5', '>5', 'manual'.",
+      "grounding": {
+        "tables": [
+          "merchants",
+          "fees"
+        ],
+        "columns": [
+          "merchants.capture_delay",
+          "fees.capture_delay"
+        ],
+        "derivation": "Map merchants.capture_delay (numeric days like '1','2','7' or 'immediate'/'manual') into the bucket scheme used by fees.capture_delay; NULL in fees = any."
+      },
+      "modeling_pattern": "Bucketed string-range matching with explicit bucket vocabulary; NULL = wildcard."
+    },
+    {
+      "term": "Monthly volume bucket",
+      "aliases": [
+        "merchant monthly volume",
+        "monthly volume tier"
+      ],
+      "kind": "dimension",
+      "definition": "Bucket describing a merchant's total euro volume in a natural month ('<100k','100k-1m','1m-5m','>5m'), used as a fee-rule condition.",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "payments.merchant",
+          "payments.eur_amount",
+          "payments.year",
+          "payments.day_of_year",
+          "fees.monthly_volume"
+        ],
+        "derivation": "For each (merchant, natural month): vol = SUM(eur_amount); map to bucket and compare to fees.monthly_volume (NULL = any)."
+      },
+      "modeling_pattern": "Aggregate-then-bucket condition computed per natural calendar month."
+    },
+    {
+      "term": "Monthly fraud level bucket",
+      "aliases": [
+        "fraud rate bucket",
+        "monthly fraud ratio"
+      ],
+      "kind": "dimension",
+      "definition": "Bucket describing the merchant's monthly fraud ratio (fraudulent volume / total volume): '<7.2%', '7.2%-7.7%', '7.7%-8.3%', '>8.3%'.",
+      "grounding": {
+        "tables": [
+          "payments",
+          "fees"
+        ],
+        "columns": [
+          "payments.has_fraudulent_dispute",
+          "payments.eur_amount",
+          "payments.merchant",
+          "fees.monthly_fraud_level"
+        ],
+        "derivation": "For each (merchant, natural month): fraud_ratio = SUM(eur_amount WHERE has_fraudulent_dispute) / SUM(eur_amount); map to bucket; NULL in fees = any."
+      },
+      "modeling_pattern": "Aggregate-then-bucket condition; ratio computed per natural calendar month."
+    },
+    {
+      "term": "Fraudulent transaction",
+      "aliases": [
+        "fraudulent transactions",
+        "fraud",
+        "fraudulent dispute"
+      ],
+      "kind": "filter",
+      "definition": "A transaction flagged as fraudulent via dispute outcome.",
+      "grounding": {
+        "tables": [
+          "payments"
+        ],
+        "columns": [
+          "payments.has_fraudulent_dispute"
+        ],
+        "derivation": "Filter payments WHERE has_fraudulent_dispute = TRUE."
+      },
+      "modeling_pattern": "Boolean filter; subset on which counterfactual steering scenarios operate."
+    },
+    {
+      "term": "Time window",
+      "aliases": [
+        "in 2023",
+        "in December 2023",
+        "in October 2023",
+        "in February",
+        "the Xth of the year",
+        "between May and June"
+      ],
+      "kind": "filter",
+      "definition": "Calendar restriction on payments using year, month-of-year, or day-of-year.",
+      "grounding": {
+        "tables": [
+          "payments"
+        ],
+        "columns": [
+          "payments.year",
+          "payments.day_of_year"
+        ],
+        "derivation": "Derive month from day_of_year (e.g. month boundaries in a non-leap year); filter year=Y AND day_of_year BETWEEN start AND end."
+      },
+      "modeling_pattern": "Natural-month boundaries required for monthly volume/fraud bucketing; day_of_year as ordinal day filter."
+    },
+    {
+      "term": "Issuing country",
+      "aliases": [
+        "issuer country"
+      ],
+      "kind": "dimension",
+      "definition": "Country code of the card issuer for a transaction; used to slice metrics and to derive intracountry flag.",
+      "grounding": {
+        "tables": [
+          "payments"
+        ],
+        "columns": [
+          "payments.issuing_country",
+          "payments.acquirer_country"
+        ],
+        "derivation": "Group by payments.issuing_country; compare against payments.acquirer_country for intracountry."
+      },
+      "modeling_pattern": "Geographical dimension; pair with acquirer_country for cross-border logic."
+    },
+    {
+      "term": "Average transaction value",
+      "aliases": [
+        "average eur amount",
+        "avg transaction value"
+      ],
+      "kind": "measure",
+      "definition": "Mean transaction notional in euros over a filtered set of transactions.",
+      "grounding": {
+        "tables": [
+          "payments"
+        ],
+        "columns": [
+          "payments.eur_amount"
+        ],
+        "derivation": "AVG(eur_amount) WHERE filters (merchant, scheme, time window, country, ...)."
+      },
+      "modeling_pattern": "Simple aggregate sliceable by any dimension."
+    },
+    {
+      "term": "Wildcard rule semantics",
+      "aliases": [
+        "null means any",
+        "empty list applies to all"
+      ],
+      "kind": "operation",
+      "definition": "Semantics whereby a NULL scalar or empty list in a fee-rule condition column means the rule applies to all values of that attribute.",
+      "grounding": {
+        "tables": [
+          "fees"
+        ],
+        "columns": [
+          "fees.account_type",
+          "fees.capture_delay",
+          "fees.monthly_fraud_level",
+          "fees.monthly_volume",
+          "fees.merchant_category_code",
+          "fees.is_credit",
+          "fees.aci",
+          "fees.intracountry"
+        ],
+        "derivation": "Match predicate: (condition IS NULL) OR (cardinality(condition)=0 for lists) OR (value satisfies condition)."
+      },
+      "modeling_pattern": "Wildcard-aware conjunctive matching: every condition column is OR'd with a wildcard branch."
+    }
+  ]
+}

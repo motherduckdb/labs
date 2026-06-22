@@ -1,0 +1,49 @@
+file: c5_payments_priced.malloy
+domain: payment fee pricing (transaction-grain, counterfactual-ready)
+summary: |
+  Transaction × matching-fee-rule pricing surface and its two counterfactual
+  siblings. fee_eur per match is fixed_amount + rate * eur_amount / 10000;
+  intracountry is derived from issuing_country = acquirer_country. The main
+  source exposes per-merchant total fees sliceable by year / month / day /
+  card_scheme, plus a per-(merchant, window, fee_id) override context (current
+  rate, current fixed_amount, matched eur volume, match count) that turns a
+  rate-override or fixed-amount-override delta into one multiplication on
+  top. Two sibling sources re-price subsets under a swapped attribute:
+  fraudulent transactions cross-joined with each candidate ACI (for ACI
+  steering argmin), and all transactions cross-joined with each candidate
+  MCC (for MCC reassignment deltas).
+exports:
+  - name: c5_payments_priced
+    kind: source
+    summary: |
+      One row per (payment × matched fee rule). Symmetric measures
+      (total_fee_eur, distinct_payments, match_count) and views for total
+      fees by merchant × time window, card_scheme steering rankings, and a
+      per-fee override context (matched_rate, matched_fixed_amount,
+      matched_eur_volume, match_count) that powers rate / fixed_amount
+      counterfactual deltas via one arithmetic step on the caller.
+  - name: c5_payments_priced_aci_steering
+    kind: source
+    summary: |
+      Fraudulent payments cross-joined with the 7 ACI candidates and
+      re-matched against fees with the payment's aci replaced by the
+      candidate. Ranking views by merchant × year / month × candidate aci;
+      caller scopes via where: and limit 1 for argmin.
+  - name: c5_payments_priced_mcc_counterfactual
+    kind: source
+    summary: |
+      All payments cross-joined with the universe of candidate MCCs (MCCs
+      that appear in any fee rule's MCC list, plus MCCs actually used by
+      merchants) and re-matched against fees with mcc_code replaced by the
+      candidate. View total_fees_by_merchant_candidate_mcc_year exposes
+      the per-candidate total; the counterfactual MCC delta is the
+      difference between the new-MCC row and the current-MCC row for the
+      same merchant + window.
+provides_for:
+  - Total fees paid by a merchant in a year / month / single day of year.
+  - Argmin / argmax card_scheme a merchant should steer traffic to for min / max fees in a year or month.
+  - Counterfactual delta when a target fee's rate is changed to a new value (one merchant + window + fee_id).
+  - Counterfactual delta when a target fee's fixed_amount is changed to a new value.
+  - Argmin candidate ACI to steer a merchant's fraudulent transactions to in a year or month.
+  - Counterfactual fee delta when a merchant's MCC is reassigned to a different value over a window.
+  - Per-(merchant, window, fee_id) match count and matched eur volume for any rule-level pricing what-if.

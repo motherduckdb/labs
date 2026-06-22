@@ -1,0 +1,138 @@
+{
+  "version": "v3",
+  "description": "26 template-representative questions (one per template T01-T26) from DABStep. Target: 100%.",
+  "train_ids": [
+    "2557",
+    "1451",
+    "1417",
+    "1593",
+    "1290",
+    "1685",
+    "1711",
+    "2703",
+    "2537",
+    "1507",
+    "1520",
+    "2490",
+    "2463",
+    "2524",
+    "2587",
+    "2634",
+    "2767",
+    "2765",
+    "2762",
+    "1744",
+    "1834",
+    "1746",
+    "347",
+    "1475",
+    "1442",
+    "1808"
+  ],
+  "templates": {
+    "T01": {
+      "pattern": "during {year}, imagine if the fee id {fee_id} was only applied to account_type {at}, which merchants would have been affected by this change?",
+      "rep_id": "2557"
+    },
+    "T02": {
+      "pattern": "for a credit transaction of {amount} eur on {card_scheme}, what would be the most expensive authorization characteristics indicator (aci)? in the case of a draw between multiple aci {aci}, return the aci with the lowest alphabetical order. provide the response in a list even if there is only one value.",
+      "rep_id": "1451"
+    },
+    "T03": {
+      "pattern": "for account_type {at} and the mcc description: {mcc_desc}, what would be the average fee that the card scheme {card_scheme} would charge for a transaction value of {amount} eur? provide the answer in eur and 6 decimals",
+      "rep_id": "1417"
+    },
+    "T04": {
+      "pattern": "for account_type {at}, what would be the average fee that the card scheme {card_scheme} would charge for a transaction value of {amount} eur? provide the answer in eur and 6 decimals.",
+      "rep_id": "1593"
+    },
+    "T05": {
+      "pattern": "for credit transactions, what would be the average fee that the card scheme {card_scheme} would charge for a transaction value of {amount} eur?",
+      "rep_id": "1290"
+    },
+    "T06": {
+      "pattern": "for the {day_of_year} of the year {year}, what are the fee ids applicable to {merchant}?",
+      "rep_id": "1685"
+    },
+    "T07": {
+      "pattern": "for the {day_of_year} of the year {year}, what is the total fees (in euros) that {merchant} should pay?",
+      "rep_id": "1711"
+    },
+    "T08": {
+      "pattern": "for {merchant} in {month}, if we were to move the fraudulent transactions towards a different authorization characteristics indicator (aci) by incentivizing users to use a different interaction, what would be the preferred choice considering the lowest possible fees?",
+      "rep_id": "2703"
+    },
+    "T09": {
+      "pattern": "imagine the merchant {merchant} had changed its mcc code {mcc} before {year} started, what amount delta will it have to pay in fees for the year {year}?",
+      "rep_id": "2537"
+    },
+    "T10": {
+      "pattern": "in the average scenario, which card scheme would provide the cheapest fee for a transaction value of {amount} eur?",
+      "rep_id": "1507"
+    },
+    "T11": {
+      "pattern": "in the average scenario, which card scheme would provide the most expensive fee for a transaction value of {amount} eur?",
+      "rep_id": "1520"
+    },
+    "T12": {
+      "pattern": "in the year {year} what delta would {merchant} pay if the relative fee of the fee id {fee_id} changed to {rate}?",
+      "rep_id": "2490"
+    },
+    "T13": {
+      "pattern": "in {month} {year} what delta would {merchant} pay if the relative fee of the fee id {fee_id} changed to {rate}?",
+      "rep_id": "2463"
+    },
+    "T14": {
+      "pattern": "in {year}, which merchants were affected by the fee id {fee_id}?",
+      "rep_id": "2524"
+    },
+    "T15": {
+      "pattern": "looking at the month of {month}, to which card scheme should the merchant {merchant} steer traffic in order to pay the maximum fees?",
+      "rep_id": "2587"
+    },
+    "T16": {
+      "pattern": "looking at the month of {month}, to which card scheme should the merchant {merchant} steer traffic in order to pay the minimum fees?",
+      "rep_id": "2634"
+    },
+    "T17": {
+      "pattern": "looking at the year {year} and at the merchant {merchant}, if we were to move the fraudulent transactions towards a different authorization characteristics indicator (aci) by incentivizing shoppers to use a different payment interactions, what would be the preferred choice considering the lowest possible fees?",
+      "rep_id": "2767"
+    },
+    "T18": {
+      "pattern": "looking at the year {year}, to which card scheme should the merchant {merchant} steer traffic to in order to pay the maximum fees?",
+      "rep_id": "2765"
+    },
+    "T19": {
+      "pattern": "looking at the year {year}, to which card scheme should the merchant {merchant} steer traffic to in order to pay the minimum fees?",
+      "rep_id": "2762"
+    },
+    "T20": {
+      "pattern": "what are the applicable fee ids for {merchant} in {year}?",
+      "rep_id": "1744"
+    },
+    "T21": {
+      "pattern": "what are the total fees (in euros) that {merchant} paid in {month} {year}?",
+      "rep_id": "1834"
+    },
+    "T22": {
+      "pattern": "what are the total fees (in euros) that {merchant} paid in {year}?",
+      "rep_id": "1746"
+    },
+    "T23": {
+      "pattern": "what is the average transaction value grouped by {group_col} for {merchant} {card_scheme} transactions between {month} and {month} {year}?",
+      "rep_id": "347"
+    },
+    "T24": {
+      "pattern": "what is the fee id or ids that apply to account_type {at} and aci {aci}?",
+      "rep_id": "1475"
+    },
+    "T25": {
+      "pattern": "what is the most expensive mcc for a transaction of {amount} eur, in general? if there are many mccs with the same value, list all of them. provide a list as an output even if it is one element.",
+      "rep_id": "1442"
+    },
+    "T26": {
+      "pattern": "what were the applicable fee ids for {merchant} in {month} {year}?",
+      "rep_id": "1808"
+    }
+  }
+}

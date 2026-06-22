@@ -1,0 +1,381 @@
+// c3_average_fee_scenarios.malloy
+//
+// "Average scenario" pricing surface — fees-only (no payments).
+//
+// The average-scenario fee for a notional N is:
+//     fee_eur(N) = fixed_amount + rate * N / 10000        (per rule)
+//     avg_fee(N) = AVG(fee_eur(N)) over all rules in scope
+//
+// "In scope" = the rules that survive a wildcard-aware filter on the
+// supplied attributes. Unspecified attributes are marginalized over
+// (i.e. averaged across rules that vary in that attribute, INCLUDING
+// wildcard rules whose condition column is NULL or an empty list).
+//
+// Wildcard-aware filter patterns (use these in `where:`):
+//   • scalar    : (col is null or col = <value>)
+//   • list      : (len!number(col) = 0 or list_contains!boolean(col, <value>))
+//
+// This file provides three sources:
+//   1. c3_average_fee_scenarios          — rule-grain (extends fees_base);
+//      group/argmin/argmax by card_scheme / capture_delay / is_credit /
+//      intracountry. Use this whenever the GROUPING key is a scalar column.
+//   2. c3_avg_fee_by_account_type        — (rule × account_type) unnest, so
+//      grouping/ranking by account_type does not undercount wildcard rules.
+//   3. c3_avg_fee_by_aci                 — (rule × aci) unnest.
+//   4. c3_avg_fee_by_mcc                 — (rule × mcc) unnest, over the
+//      universe of MCCs that appear in any rule's MCC list (a wildcard
+//      rule contributes to every such MCC).
+//
+// The unnested helpers exist because account_type / aci / merchant_category_code
+// are LIST columns: directly grouping by those would drop wildcard rules
+// (empty list = "any") and produce wrong averages.
+
+// ────────────────────────────────────────────────────────────────────────
+// 1. Rule-grain average-fee surface
+// ────────────────────────────────────────────────────────────────────────
+
+source: c3_average_fee_scenarios is fees_base extend {
+
+  // Per-rule notional fee at common transaction values (fee_eur_on_1/10/100/1k/10k
+  // are inherited from fees_base).
+  dimension: fee_eur_on_50    is fixed_amount + rate * 50    / 10000.0
+  dimension: fee_eur_on_500   is fixed_amount + rate * 500   / 10000.0
+  dimension: fee_eur_on_4321  is fixed_amount + rate * 4321  / 10000.0
+  dimension: fee_eur_on_50000 is fixed_amount + rate * 50000 / 10000.0
+
+  // ── Average-of-rule fee at common notionals ──────────────────────────
+  measure: avg_fee_on_1     is fee_eur_on_1.avg()
+  measure: avg_fee_on_10    is fee_eur_on_10.avg()
+  measure: avg_fee_on_50    is fee_eur_on_50.avg()
+  measure: avg_fee_on_100   is fee_eur_on_100.avg()
+  measure: avg_fee_on_500   is fee_eur_on_500.avg()
+  measure: avg_fee_on_1k    is fee_eur_on_1k.avg()
+  measure: avg_fee_on_4321  is fee_eur_on_4321.avg()
+  measure: avg_fee_on_10k   is fee_eur_on_10k.avg()
+  measure: avg_fee_on_50k   is fee_eur_on_50000.avg()
+
+  // ── Extrema at common notionals (min/max fee across rules in scope) ──
+  measure: min_fee_on_50    is fee_eur_on_50.min()
+  measure: max_fee_on_50    is fee_eur_on_50.max()
+  measure: min_fee_on_100   is fee_eur_on_100.min()
+  measure: max_fee_on_100   is fee_eur_on_100.max()
+  measure: min_fee_on_1k    is fee_eur_on_1k.min()
+  measure: max_fee_on_1k    is fee_eur_on_1k.max()
+  measure: min_fee_on_10k   is fee_eur_on_10k.min()
+  measure: max_fee_on_10k   is fee_eur_on_10k.max()
+  measure: min_fee_on_50k   is fee_eur_on_50000.min()
+  measure: max_fee_on_50k   is fee_eur_on_50000.max()
+
+  // ── Reusable views ───────────────────────────────────────────────────
+  //
+  // Each view marginalizes over all attributes NOT specified by the query.
+  // Add wildcard-aware filters via `+ { where: ... }`:
+  //
+  //   run: c3_average_fee_scenarios -> avg_by_card_scheme + {
+  //     where:
+  //       (len!number(account_type) = 0 or list_contains!boolean(account_type, 'H'))
+  //       and (is_credit is null or is_credit = true)
+  //   }
+
+  view: avg_by_card_scheme is {
+    group_by:  card_scheme
+    aggregate:
+      rule_count,
+      avg_fee_on_50,
+      avg_fee_on_100,
+      avg_fee_on_500,
+      avg_fee_on_1k,
+      avg_fee_on_4321,
+      avg_fee_on_10k,
+      avg_fee_on_50k
+    order_by: card_scheme
+  }
+
+  // Argmin / argmax over card_scheme at common notionals.
+  view: cheapest_card_scheme_on_50 is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_50, rule_count
+    order_by:  avg_fee_on_50 asc
+    limit:     1
+  }
+  view: most_expensive_card_scheme_on_50 is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_50, rule_count
+    order_by:  avg_fee_on_50 desc
+    limit:     1
+  }
+  view: cheapest_card_scheme_on_100 is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_100, rule_count
+    order_by:  avg_fee_on_100 asc
+    limit:     1
+  }
+  view: most_expensive_card_scheme_on_100 is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_100, rule_count
+    order_by:  avg_fee_on_100 desc
+    limit:     1
+  }
+  view: cheapest_card_scheme_on_1k is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_1k, rule_count
+    order_by:  avg_fee_on_1k asc
+    limit:     1
+  }
+  view: most_expensive_card_scheme_on_1k is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_1k, rule_count
+    order_by:  avg_fee_on_1k desc
+    limit:     1
+  }
+  view: cheapest_card_scheme_on_4321 is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_4321, rule_count
+    order_by:  avg_fee_on_4321 asc
+    limit:     1
+  }
+  view: most_expensive_card_scheme_on_4321 is {
+    group_by:  card_scheme
+    aggregate: avg_fee_on_4321, rule_count
+    order_by:  avg_fee_on_4321 desc
+    limit:     1
+  }
+
+  view: avg_by_is_credit is {
+    group_by:  is_credit_label
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k
+  }
+
+  view: avg_by_intracountry is {
+    group_by:  intracountry_flag
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k
+  }
+
+  view: avg_by_capture_delay is {
+    group_by:  capture_delay
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k
+    order_by:  capture_delay
+  }
+
+  // Scheme × is_credit slice — common combination ("avg fee that NexPay
+  // would charge on a credit transaction of 1000 EUR").
+  view: avg_by_scheme_and_is_credit is {
+    group_by:  card_scheme, is_credit_label
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k, avg_fee_on_10k
+    order_by:  card_scheme, is_credit_label
+  }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// 2. Per-(rule × account_type) — average fee grouped/ranked by account_type
+//    Wildcard account_type rules ([] = applies to all) are exploded onto
+//    every member of the account-type universe so averaging is correct.
+// ────────────────────────────────────────────────────────────────────────
+
+source: c3_avg_fee_by_account_type is duckdb.sql("""
+  WITH universe AS (
+    SELECT account_type
+    FROM (VALUES ('R'),('D'),('H'),('F'),('S'),('O')) AS t(account_type)
+  )
+  SELECT
+    f.ID,
+    f.card_scheme,
+    f.is_credit,
+    f.intracountry,
+    f.merchant_category_code,
+    f.aci,
+    f.capture_delay,
+    f.monthly_fraud_level,
+    f.monthly_volume,
+    f.fixed_amount,
+    f.rate,
+    u.account_type AS account_type
+  FROM fees f
+  CROSS JOIN universe u
+  WHERE len(f.account_type) = 0
+     OR list_contains(f.account_type, u.account_type)
+""") extend {
+
+  dimension: fee_eur_on_50    is fixed_amount + rate * 50    / 10000.0
+  dimension: fee_eur_on_100   is fixed_amount + rate * 100   / 10000.0
+  dimension: fee_eur_on_1k    is fixed_amount + rate * 1000  / 10000.0
+  dimension: fee_eur_on_10k   is fixed_amount + rate * 10000 / 10000.0
+  dimension: fee_eur_on_50000 is fixed_amount + rate * 50000 / 10000.0
+
+  dimension: is_credit_label is
+    pick 'credit' when is_credit = true
+    pick 'debit'  when is_credit = false
+    else 'any'
+
+  measure: rule_count     is count()
+  measure: avg_fee_on_50  is fee_eur_on_50.avg()
+  measure: avg_fee_on_100 is fee_eur_on_100.avg()
+  measure: avg_fee_on_1k  is fee_eur_on_1k.avg()
+  measure: avg_fee_on_10k is fee_eur_on_10k.avg()
+  measure: avg_fee_on_50k is fee_eur_on_50000.avg()
+  measure: min_fee_on_100 is fee_eur_on_100.min()
+  measure: max_fee_on_100 is fee_eur_on_100.max()
+
+  view: avg_by_account_type is {
+    group_by:  account_type
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k, avg_fee_on_10k
+    order_by:  account_type
+  }
+
+  view: avg_by_account_type_and_scheme is {
+    group_by:  account_type, card_scheme
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k, avg_fee_on_10k
+    order_by:  account_type, card_scheme
+  }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// 3. Per-(rule × aci) — argmin / argmax fee over ACI codes
+// ────────────────────────────────────────────────────────────────────────
+
+source: c3_avg_fee_by_aci is duckdb.sql("""
+  WITH universe AS (
+    SELECT aci FROM (VALUES ('A'),('B'),('C'),('D'),('E'),('F'),('G')) AS t(aci)
+  )
+  SELECT
+    f.ID,
+    f.card_scheme,
+    f.account_type,
+    f.is_credit,
+    f.intracountry,
+    f.merchant_category_code,
+    f.capture_delay,
+    f.monthly_fraud_level,
+    f.monthly_volume,
+    f.fixed_amount,
+    f.rate,
+    u.aci AS aci
+  FROM fees f
+  CROSS JOIN universe u
+  WHERE len(f.aci) = 0
+     OR list_contains(f.aci, u.aci)
+""") extend {
+
+  dimension: fee_eur_on_50    is fixed_amount + rate * 50    / 10000.0
+  dimension: fee_eur_on_100   is fixed_amount + rate * 100   / 10000.0
+  dimension: fee_eur_on_1k    is fixed_amount + rate * 1000  / 10000.0
+  dimension: fee_eur_on_10k   is fixed_amount + rate * 10000 / 10000.0
+
+  dimension: is_credit_label is
+    pick 'credit' when is_credit = true
+    pick 'debit'  when is_credit = false
+    else 'any'
+
+  measure: rule_count     is count()
+  measure: avg_fee_on_50  is fee_eur_on_50.avg()
+  measure: avg_fee_on_100 is fee_eur_on_100.avg()
+  measure: avg_fee_on_1k  is fee_eur_on_1k.avg()
+  measure: avg_fee_on_10k is fee_eur_on_10k.avg()
+  measure: min_fee_on_100 is fee_eur_on_100.min()
+  measure: max_fee_on_100 is fee_eur_on_100.max()
+
+  view: avg_by_aci is {
+    group_by:  aci
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k
+    order_by:  aci
+  }
+
+  // Ranking ACIs cheapest-first; argmin via `limit: 1`. Ties broken by
+  // alphabetical order on ACI (its natural sort).
+  view: cheapest_aci_on_100 is {
+    group_by:  aci
+    aggregate: avg_fee_on_100, rule_count
+    order_by:  avg_fee_on_100 asc, aci asc
+    limit:     1
+  }
+  view: most_expensive_aci_on_100 is {
+    group_by:  aci
+    aggregate: avg_fee_on_100, rule_count
+    order_by:  avg_fee_on_100 desc, aci asc
+    limit:     1
+  }
+
+  view: avg_by_aci_and_scheme is {
+    group_by:  aci, card_scheme
+    aggregate: rule_count, avg_fee_on_100, avg_fee_on_1k
+    order_by:  aci, card_scheme
+  }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// 4. Per-(rule × mcc) — average / extrema by MCC
+//
+// The MCC universe is the set of MCCs that appear in any rule's MCC list.
+// Wildcard rules (empty MCC list) contribute to EVERY MCC in that universe.
+// ────────────────────────────────────────────────────────────────────────
+
+source: c3_avg_fee_by_mcc is duckdb.sql("""
+  WITH universe AS (
+    SELECT DISTINCT UNNEST(merchant_category_code) AS mcc
+    FROM fees
+    WHERE len(merchant_category_code) > 0
+  )
+  SELECT
+    f.ID,
+    f.card_scheme,
+    f.account_type,
+    f.aci,
+    f.is_credit,
+    f.intracountry,
+    f.capture_delay,
+    f.monthly_fraud_level,
+    f.monthly_volume,
+    f.fixed_amount,
+    f.rate,
+    u.mcc AS mcc
+  FROM fees f
+  CROSS JOIN universe u
+  WHERE len(f.merchant_category_code) = 0
+     OR list_contains(f.merchant_category_code, u.mcc)
+""") extend {
+
+  dimension: fee_eur_on_100   is fixed_amount + rate * 100   / 10000.0
+  dimension: fee_eur_on_1k    is fixed_amount + rate * 1000  / 10000.0
+  dimension: fee_eur_on_10k   is fixed_amount + rate * 10000 / 10000.0
+  dimension: fee_eur_on_50000 is fixed_amount + rate * 50000 / 10000.0
+
+  dimension: is_credit_label is
+    pick 'credit' when is_credit = true
+    pick 'debit'  when is_credit = false
+    else 'any'
+
+  // MCC description, joined from the lookup dimension.
+  join_one: mcc_info is merchant_category_codes_base
+    on mcc = mcc_info.mcc_code
+
+  dimension: mcc_description is mcc_info.description
+
+  measure: rule_count     is count()
+  measure: avg_fee_on_100 is fee_eur_on_100.avg()
+  measure: avg_fee_on_1k  is fee_eur_on_1k.avg()
+  measure: avg_fee_on_10k is fee_eur_on_10k.avg()
+  measure: avg_fee_on_50k is fee_eur_on_50000.avg()
+
+  view: avg_by_mcc is {
+    group_by:  mcc, mcc_description
+    aggregate: rule_count, avg_fee_on_1k, avg_fee_on_10k, avg_fee_on_50k
+    order_by:  avg_fee_on_50k desc
+  }
+
+  view: cheapest_mcc_on_50k is {
+    group_by:  mcc, mcc_description
+    aggregate: avg_fee_on_50k, rule_count
+    order_by:  avg_fee_on_50k asc, mcc asc
+    limit:     10
+  }
+
+  view: most_expensive_mcc_on_50k is {
+    group_by:  mcc, mcc_description
+    aggregate: avg_fee_on_50k, rule_count
+    order_by:  avg_fee_on_50k desc, mcc asc
+    limit:     10
+  }
+}

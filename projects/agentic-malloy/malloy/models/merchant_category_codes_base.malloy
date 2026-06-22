@@ -1,0 +1,38 @@
+// merchant_category_codes_base.malloy
+// Lookup dimension: four-digit Merchant Category Code (MCC) → industry description.
+// Joined to merchants/fees on MCC to resolve human-readable category descriptions
+// and to support description ↔ code lookups.
+
+source: merchant_category_codes_base is duckdb.table('merchant_category_codes') extend {
+
+  // ---------- Dimensions ----------
+
+  // MCC as a numeric value, useful for matching against integer MCC lists in fees
+  // (fees.merchant_category_code is a list of integers).
+  dimension: mcc_code is mcc::number
+
+  // Uppercased description for case-insensitive matching against user-supplied text.
+  dimension: description_upper is upper(description)
+
+  // First two digits of the MCC indicate the broad category per the manual.
+  dimension: mcc_category_prefix is substr(mcc, 1, 2)
+
+  // ---------- Measures ----------
+
+  measure: mcc_count is count()
+  measure: distinct_mcc_count is count(mcc)
+  measure: distinct_description_count is count(description)
+
+  // ---------- Views ----------
+
+  view: by_category_prefix is {
+    group_by: mcc_category_prefix
+    aggregate: mcc_count
+    order_by: mcc_count desc
+  }
+
+  view: catalog is {
+    select: mcc, mcc_code, description
+    order_by: mcc
+  }
+}

@@ -1,0 +1,94 @@
+// merchants_base.malloy
+// Authoritative merchant dimension: one row per merchant partner.
+// Provides merchant attributes (account type, MCC, capture delay, acquirers)
+// plus derived buckets used when matching merchants against fee rules.
+
+source: merchants_base is duckdb.table('merchants') extend {
+  primary_key: merchant
+
+  //
+  // ── Derived dimensions ───────────────────────────────────────────────
+  //
+
+  // Human-readable label for the account_type code (per the Merchant Guide).
+  dimension: account_type_description is
+    pick 'Enterprise - Retail'      when account_type = 'R'
+    pick 'Enterprise - Digital'     when account_type = 'D'
+    pick 'Enterprise - Hospitality' when account_type = 'H'
+    pick 'Platform - Franchise'     when account_type = 'F'
+    pick 'Platform - SaaS'          when account_type = 'S'
+    pick 'Other'                    when account_type = 'O'
+    else 'Unknown'
+
+  // Bucket the merchant's capture_delay string into the vocabulary used by
+  // fees.capture_delay rules: 'immediate', '<3', '3-5', '>5', 'manual'.
+  // The merchants table stores numeric-day strings ('1','2','7') plus the
+  // literal labels 'immediate' and 'manual'.
+  dimension: capture_delay_bucket is
+    pick 'immediate' when capture_delay = 'immediate'
+    pick 'manual'    when capture_delay = 'manual'
+    pick '<3'        when capture_delay = '1' or capture_delay = '2'
+    pick '3-5'       when capture_delay = '3' or capture_delay = '4' or capture_delay = '5'
+    pick '>5'        when capture_delay = '6' or capture_delay = '7'
+                       or capture_delay = '8' or capture_delay = '9'
+    else capture_delay
+
+  // Numeric form of capture_delay where meaningful (NULL for 'immediate'/'manual').
+  dimension: capture_delay_days is
+    pick null when capture_delay = 'immediate'
+    pick null when capture_delay = 'manual'
+    else capture_delay::number
+
+  // Number of acquirers this merchant uses.
+  dimension: acquirer_count is len!number(acquirer)
+
+  // Whether this merchant uses multiple acquirers.
+  dimension: is_multi_acquirer is len!number(acquirer) > 1
+
+  //
+  // ── Measures (merchant-grain) ───────────────────────────────────────
+  //
+
+  measure: merchant_count is count()
+
+  measure: distinct_mcc_count is count(merchant_category_code)
+
+  measure: distinct_account_type_count is count(account_type)
+
+  measure: avg_acquirer_count is avg(acquirer_count)
+
+  //
+  // ── Reusable views ──────────────────────────────────────────────────
+  //
+
+  view: by_account_type is {
+    group_by: account_type, account_type_description
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+
+  view: by_mcc is {
+    group_by: merchant_category_code
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+
+  view: by_capture_delay_bucket is {
+    group_by: capture_delay_bucket
+    aggregate: merchant_count
+    order_by: merchant_count desc
+  }
+
+  view: merchant_directory is {
+    select:
+      merchant,
+      account_type,
+      account_type_description,
+      merchant_category_code,
+      capture_delay,
+      capture_delay_bucket,
+      acquirer,
+      acquirer_count
+    order_by: merchant asc
+  }
+}

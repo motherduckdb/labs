@@ -1,0 +1,103 @@
+// dabstep.malloy
+//
+// Thin top-level semantic layer. Everything here is a re-export or a
+// micro-wrapper over the intermediate sources (c1–c5). Each top-level
+// answer surface is a NAMED, reusable view/query — questions are answered
+// by a thin `+ { where: ... }` (and optional `limit:`) on top.
+//
+// Index of analytical surfaces → where to query:
+//
+//   AVERAGE-SCENARIO PRICING (no payments, just fee rules)
+//     • cheapest/most expensive card_scheme @ notional N
+//         c3_average_fee_scenarios -> avg_by_card_scheme
+//         (sort + limit 1 for argmin/argmax; or use the prebuilt
+//          cheapest_card_scheme_on_50 / _on_100 / _on_1k / _on_4321 etc.)
+//     • cheapest/most expensive ACI @ notional, with wildcard ACIs unnested
+//         c3_avg_fee_by_aci -> avg_by_aci / cheapest_aci_on_100 / most_expensive_aci_on_100
+//     • cheapest/most expensive MCC @ notional, with wildcard MCCs unnested
+//         c3_avg_fee_by_mcc -> avg_by_mcc / cheapest_mcc_on_50k / most_expensive_mcc_on_50k
+//     • avg fee by account_type (with wildcard rules exploded)
+//         c3_avg_fee_by_account_type -> avg_by_account_type
+//
+//   APPLICABLE FEE RULES (merchant × window)
+//     • year / month / day grain
+//         c4_fee_applicability -> applicable_fees_by_merchant_year
+//                              -> applicable_fees_by_merchant_month
+//                              -> applicable_fees_by_merchant_day
+//     • merchants affected by fee X
+//         c4_fee_applicability -> merchants_by_fee
+//
+//   FEE RULES MATCHING A (account_type, aci) PAIR (rule-grain, no merchant)
+//     • use fees_base with wildcard-aware filters (see view below)
+//
+//   TOTAL FEES PAID & CARD-SCHEME STEERING
+//     • c5_payments_priced -> total_fees_by_merchant_year
+//                          -> total_fees_by_merchant_month
+//                          -> total_fees_by_merchant_day
+//                          -> card_scheme_ranking_by_merchant_year
+//                          -> card_scheme_ranking_by_merchant_month
+//
+//   COUNTERFACTUALS
+//     • rate / fixed_amount override on a target fee_id:
+//         c5_payments_priced -> fee_override_context_by_year/_month/_day
+//         delta_rate(new)   = (new − matched_rate) * matched_eur_volume / 10000
+//         delta_fixed(new)  = (new − matched_fixed_amount) * match_count
+//     • ACI steering of fraudulent transactions (argmin over candidate ACIs):
+//         c5_payments_priced_aci_steering -> fraud_fee_ranking_by_aci_year/_month
+//     • MCC reassignment (delta vs current MCC):
+//         c5_payments_priced_mcc_counterfactual
+//           -> total_fees_by_merchant_candidate_mcc_year/_month
+//     • Rule-scope tightening (which merchants affected if fee X only
+//       applied to account_type=Y, MCC=Z, ...):
+//         c4_fee_applicability_account_type_scope -> affected_merchants
+//         c4_fee_applicability_mcc_scope          -> affected_merchants
+//
+//   PAYMENT SLICES (no fee logic)
+//     • payments_base -> by_merchant / by_card_scheme / by_aci /
+//                        by_issuing_country / by_country_pair / by_month / ...
+//
+
+// ─────────────────────────────────────────────────────────────────────
+// Fees-only rule lookup helper.
+//
+// Find fee IDs that apply to a (account_type?, aci?, card_scheme?,
+// is_credit?, mcc?, capture_delay?, monthly_volume?, monthly_fraud_level?,
+// intracountry?) tuple, respecting wildcard semantics on every condition.
+//
+// Use by filtering the dimensions you care about; the unspecified ones
+// are left to whatever the rule says (wildcards survive automatically).
+//
+// Example — "fee IDs that apply to account_type = D and aci = F":
+//
+//   run: fee_rule_lookup -> matching_fee_ids + {
+//     where:
+//       (len!number(account_type) = 0
+//        or list_contains!boolean(account_type, 'D'))
+//       and (len!number(aci) = 0
+//           or list_contains!boolean(aci, 'F'))
+//   }
+// ─────────────────────────────────────────────────────────────────────
+
+source: fee_rule_lookup is fees_base extend {
+  view: matching_fee_ids is {
+    group_by:  fee_id is ID
+    order_by:  fee_id
+  }
+
+  view: matching_fee_detail is {
+    select:
+      ID,
+      card_scheme,
+      account_type,
+      merchant_category_code,
+      aci,
+      is_credit,
+      intracountry,
+      capture_delay,
+      monthly_volume,
+      monthly_fraud_level,
+      fixed_amount,
+      rate
+    order_by: ID
+  }
+}

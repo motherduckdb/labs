@@ -1,0 +1,17 @@
+file: merchants_base.malloy
+domain: payments / merchant dimension
+summary: |
+  Base source over the merchants table — one authoritative row per merchant
+  partner. Exposes merchant attributes (account type, MCC, capture delay,
+  acquirers) and derives the capture-delay bucket vocabulary used when
+  matching merchants against fee-rule conditions. No joins; intended to be
+  joined into payments and fee-matching layers downstream.
+exports:
+  - name: merchants_base
+    kind: source
+    summary: Merchant dimension keyed by merchant name, with descriptive labels, capture-delay bucketing, acquirer-list helpers, and reusable breakdown views.
+provides_for:
+  - Resolving merchant attributes (account_type, MCC, capture_delay bucket, acquirers) used as the merchant side of fee-rule applicability matching.
+  - Merchant-grain counts and breakdowns by account type, MCC, and capture-delay bucket.
+  - Joining as a dimension into payments-level analyses (payments.merchant → merchants_base.merchant).
+  - Translating raw capture_delay values ('1','2','7','immediate','manual') into the fee-rule bucket vocabulary ('immediate','<3','3-5','>5','manual').
