@@ -80,7 +80,7 @@ const MISS_SYSTEM = `You are triaging a FAILED data question answered against a 
 - "other".
 
 (b) owner — where the fix belongs:
-- "layer": a STRUCTURAL defect in a layer source/view itself (errors at execution, or a matching/aggregating view is wrongly empty over rows that exist, or wrong grain). Justified ONLY when a NAMED layer view, run on its own, is itself broken — never because the agent's own inline query was wrong.
+- "layer": EITHER (i) a STRUCTURAL defect in a layer source/view itself (errors at execution, or a matching/aggregating view is wrongly empty over rows that exist, or wrong grain) — justified ONLY when a NAMED layer view, run on its own, is itself broken; OR (ii) a COVERAGE / PATTERN gap: the question needs a modeling pattern (e.g. COUNTERFACTUAL re-pricing — re-evaluate ALL traffic as if a dimension were changed, vs. ranking the ACTUAL observed values) that the layer ALREADY applies to SIBLING dimensions but is MISSING for this question's dimension, so the agent had to fall back to a non-counterfactual surface and cannot rebuild the wildcard-aware re-matching inline. Adding the missing sibling source IS a layer fix. Case (ii) is justified ONLY when the evidence EXPLICITLY states that sibling counterfactual source(s) exist and names them — otherwise default to "skill".
 - "skill": the layer is fine; fix the answering SKILL/prompt (the agent under-filtered, used the wrong field/grain, missed a wildcard, didn't reuse an existing view, or wrote bad inline Malloy).
 - "model": a model-capability/reasoning gap on a hard compositional question that no layer or skill edit cleanly fixes.
 

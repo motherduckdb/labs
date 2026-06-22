@@ -101,6 +101,13 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 - **Window functions need an explicit `order_by` in the SAME stage.** A `calculate:`
   `rank()`/`row_number()` with no `order_by` ranks in an undefined order — you'll pick
   an arbitrary row. Always `order_by` the ranked measure in that stage.
+- **A layer view's built-in `order_by` is NOT preserved when you refine it with
+  `+ { … limit }`.** Reusing a ranking view as `ranking_view + { where: …; limit: 1 }`
+  drops the view's own ordering, so `limit 1` returns an ARBITRARY row (often the
+  alphabetically-first group), not the cheapest/most-expensive. ALWAYS restate the
+  sort in your refinement: `ranking_view + { where: …; order_by: <measure> asc|desc;
+  limit: 1 }` (asc = cheapest/min, desc = most expensive/max). Same for any `limit`
+  you add on top of a named view.
 - **"Move/steer/switch to a DIFFERENT X" excludes the CURRENT value — and the current
   value usually looks CHEAPEST.** When a question asks to move something to a *different*
   X (a different ACI, scheme, …), the candidate set the layer gives you INCLUDES the

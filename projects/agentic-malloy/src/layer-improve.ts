@@ -33,6 +33,9 @@ import {
   loadLayerIndex,
   analyzeMiss,
   classifyMiss,
+  detectPatternGap,
+  isSteeringQuestion,
+  steeringVocabulary,
   evidenceBlock,
   referencedViews,
   loadTrainIds,
@@ -104,6 +107,7 @@ function deterministicManner(cls: MissClassification): FailureManner {
     case 'layer_view_error':
     case 'layer_view_empty':
     case 'layer_view_degenerate':
+    case 'layer_pattern_gap':
     case 'query_compile_error':
     case 'query_wrong_answer':
       return 'wrong_logic';
@@ -180,6 +184,10 @@ export async function improveLayer(opts: {
   const glossaryEntries = await loadGlossaryArtifact(META_DIR);
   const surfaceNames = [...index.sources, ...[...index.viewsBySource.values()].flatMap((s) => [...s])];
   const layerVocab = buildLayerVocabulary(glossaryEntries, surfaceNames);
+  // The glossary's own scenario/steering vocabulary augments the generic steering
+  // lexicon (so domain phrasings like "steer traffic to" are recognized) — only
+  // action phrases, never a dimension noun (see steeringVocabulary).
+  const steeringTerms = steeringVocabulary(glossaryEntries);
   const rt = new MalloyRuntime(databasePath ? { databasePath } : {});
   let totalCost = 0;
   const reports: MissReport[] = [];
@@ -202,9 +210,18 @@ export async function improveLayer(opts: {
     //    model owner==='layer' — the model cannot conjure a defect the data
     //    doesn't show, and held-out runs never edit.
     const defectsByFile = new Map<string, string[]>();
+    const additiveFiles = new Set<string>(); // files whose defect is a coverage gap (add by analogy)
     for (const row of misses) {
       const a = await analyzeMiss(row, rt, index);
-      const cls = classifyMiss(a);
+      let cls = classifyMiss(a);
+      // Pattern-consistency gate: a clean-running STEERING miss answered with a
+      // non-counterfactual surface, while the layer implements the counterfactual
+      // pattern for SIBLING dimensions, is a layer COVERAGE GAP — promote it from
+      // skill to a layer-suspected defect (add the missing sibling by analogy).
+      if (!cls.layerSuspected && cls.category === 'query_wrong_answer') {
+        const gap = detectPatternGap(a, index, { isSteering: isSteeringQuestion(a.question ?? '', steeringTerms) });
+        if (gap) cls = gap;
+      }
       const trace = runId ? taskTrace(events, runId, a.taskId) : null;
       const usedNamedView = a.malloySource ? referencedViews(a.malloySource, index).length > 0 : false;
       // Closed-book vocabulary gap: question words the layer doesn't speak.
@@ -245,6 +262,9 @@ export async function improveLayer(opts: {
           const list = defectsByFile.get(file) ?? [];
           list.push(`### Miss ${a.taskId}\n${evidence}\nModel-confirmed defect: ${v.defect}`);
           defectsByFile.set(file, list);
+          // A coverage gap is repaired ADDITIVELY (author the missing sibling),
+          // not by editing an existing broken view.
+          if (cls.category === 'layer_pattern_gap') additiveFiles.add(file);
         }
         if (opts.runId && fix && fix.kind !== 'layer') {
           cl.event({ kind: 'improvement_recommendation', taskId: a.taskId, agentId: 'agent:asm-malloy-builder', runId: opts.runId, payload: { source: 'miss', manner, owner, fix_kind: fix.kind, detail: fix.detail, rationale, vocab_gap: vocab.uncovered } });
@@ -315,6 +335,7 @@ export async function improveLayer(opts: {
           provider: opts.provider,
           maxRounds,
           runId: opts.runId,
+          allowAdditive: additiveFiles.has(file),
         });
         totalCost += r.cost;
         if (r.ok && r.applied > 0) editedFiles.push(file);

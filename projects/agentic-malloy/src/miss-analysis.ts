@@ -80,28 +80,61 @@ export interface LayerIndex {
   viewsBySource: Map<string, Set<string>>;
   /** every source name defined anywhere. */
   sources: Set<string>;
+  /** sources implementing a COUNTERFACTUAL / steering pattern — they enumerate a
+   *  candidate set and re-evaluate as if a dimension were changed (CROSS JOIN over
+   *  `candidate_<dim>`, or a `*_steering`/`*_counterfactual` source name) → the
+   *  dimension(s) they enumerate + the file. This is the structural signal that
+   *  the layer KNOWS HOW to express counterfactuals; the pattern-gap detector uses
+   *  it to spot a steering question answered with a non-counterfactual surface. */
+  counterfactualSources: Map<string, { file: string; dims: string[] }>;
 }
 
 const SOURCE_DEF_RE = /^[ \t]*source:[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]+is\b/gm;
 const VIEW_DEF_RE = /^[ \t]*view:[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]+is\b/gm;
+const CANDIDATE_RE = /\bcandidate_([A-Za-z][A-Za-z0-9_]*)/g;
+
+/**
+ * Does a source BODY (its definition span) implement a counterfactual/steering
+ * pattern? The robust structural tell is a CROSS JOIN against an enumerated set of
+ * `candidate_<dim>` values (the "re-price as if dim were each candidate" shape);
+ * a `*_steering`/`*_counterfactual` source name is a softer fallback. Returns the
+ * enumerated dimension token(s), or null when it's an ordinary source. Pure.
+ */
+export function detectCounterfactualSource(name: string, body: string): string[] | null {
+  const dims = new Set<string>();
+  for (const m of body.matchAll(CANDIDATE_RE)) dims.add(m[1].toLowerCase());
+  const hasCrossJoinCandidates = /\bcross\s+join\b/i.test(body) && dims.size > 0;
+  const byName = /(steering|counterfactual)/i.test(name);
+  if (hasCrossJoinCandidates || byName) return dims.size ? [...dims] : ['(unspecified)'];
+  return null;
+}
 
 /**
  * Build the source-scoped index from a map of file -> body. Views are attributed
  * to the source whose `extend { … }` block they fall in (by source-definition
  * order within the file), so duplicate view names across sources stay distinct.
+ * Each source's body SPAN (def → next def / EOF) is also scanned for the
+ * counterfactual/steering pattern.
  */
 export function buildLayerIndex(bodyOf: Record<string, string>): LayerIndex {
   const fileOfSource = new Map<string, string>();
   const viewsBySource = new Map<string, Set<string>>();
   const sources = new Set<string>();
+  const counterfactualSources = new Map<string, { file: string; dims: string[] }>();
   for (const [file, body] of Object.entries(bodyOf)) {
     // Find each source definition and where it starts, in order.
     const defs: Array<{ name: string; at: number }> = [];
     for (const m of body.matchAll(SOURCE_DEF_RE)) defs.push({ name: m[1], at: m.index ?? 0 });
-    for (const { name } of defs) {
+    for (let i = 0; i < defs.length; i++) {
+      const { name, at } = defs[i];
       sources.add(name);
       if (!fileOfSource.has(name)) fileOfSource.set(name, file);
       if (!viewsBySource.has(name)) viewsBySource.set(name, new Set());
+      // Scan only THIS source's span so `candidate_*` in a sibling source below it
+      // is not mis-attributed.
+      const end = i + 1 < defs.length ? defs[i + 1].at : body.length;
+      const cf = detectCounterfactualSource(name, body.slice(at, end));
+      if (cf && !counterfactualSources.has(name)) counterfactualSources.set(name, { file, dims: cf });
     }
     // Attribute each view to the nearest preceding source definition in the file.
     for (const vm of body.matchAll(VIEW_DEF_RE)) {
@@ -112,7 +145,7 @@ export function buildLayerIndex(bodyOf: Record<string, string>): LayerIndex {
       if (owner) viewsBySource.get(owner)!.add(vm[1]);
     }
   }
-  return { fileOfSource, viewsBySource, sources };
+  return { fileOfSource, viewsBySource, sources, counterfactualSources };
 }
 
 /** Read the on-disk layer and build its index. */
@@ -221,6 +254,7 @@ export type MissCategory =
   | 'layer_view_error'
   | 'layer_view_empty'
   | 'layer_view_degenerate'
+  | 'layer_pattern_gap'
   | 'unknown';
 
 export type MissOwner = 'answering' | 'skill' | 'layer' | 'model';
@@ -338,6 +372,95 @@ export function classifyMiss(a: MissAnalysis): MissClassification {
     suggestedOwner: 'skill',
     implicatedFiles: files,
     note: 'the submitted Malloy compiles, executes, and returns rows — the layer surfaces it used work; the wrong answer comes from the agent\'s inline logic (filter / field / grain / ranking), a skill/answering issue, not a layer defect.',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pattern-consistency gate (closed-book). A view can run clean and return
+// healthy, well-varied rows yet still be the WRONG MODEL for the question —
+// e.g. "to which scheme should the merchant steer traffic to pay min fees?"
+// answered by ranking the fees ACTUALLY paid per scheme (partition-by-actual)
+// instead of re-pricing ALL traffic onto each candidate scheme (counterfactual).
+// The binary error/empty/degeneracy probes can't see this; the structural tell
+// is an ASYMMETRY — the layer already implements the counterfactual pattern for
+// SIBLING dimensions but is MISSING it for this question's dimension.
+// ---------------------------------------------------------------------------
+
+const STEER_RE: RegExp[] = [
+  /\bsteer(s|ed|ing)?\b/i,
+  /\bmove[\s\S]{0,40}?\bto\b[\s\S]{0,25}?\bdifferent\b/i,
+  /\bswitch(es|ed|ing)?[\s\S]{0,40}?\bto\b[\s\S]{0,25}?\bdifferent\b/i,
+  /\breassign(s|ed|ing)?\b/i,
+  /\bto which\b[\s\S]{0,60}?\bshould\b/i,
+];
+
+// A glossary term/alias only counts as steering vocabulary if it itself names a
+// steering ACTION — so a bare dimension noun ("ACI") can't smuggle in via a
+// DIMENSION entry whose description happens to mention counterfactual steering.
+const STEER_TERM_RE = /\bsteer|\bre-?price|\breassign|\bmove\b[\s\S]{0,30}?\bto\b|\bswitch\b[\s\S]{0,30}?\bto\b/i;
+
+/**
+ * The steering/counterfactual PHRASES drawn from a glossary: only SCENARIO entries'
+ * terms/aliases that themselves name a steering action. Augments the generic
+ * STEER_RE lexicon for domain phrasings without admitting dimension nouns. Pure.
+ */
+export function steeringVocabulary(entries: Array<{ kind?: string; term?: string; aliases?: string[] }>): string[] {
+  return entries
+    .filter((e) => e.kind === 'scenario')
+    .flatMap((e) => [e.term ?? '', ...(e.aliases ?? [])])
+    .filter((t) => !!t && STEER_TERM_RE.test(t));
+}
+
+/**
+ * Is this a counterfactual STEERING question — one that asks what WOULD happen if
+ * some dimension were changed ("steer/move … to a different X", "to which X
+ * should …")? Generic lexicon (no dataset facts); `extraTerms` lets the caller add
+ * the glossary's own scenario aliases (see steeringVocabulary). Pure.
+ */
+export function isSteeringQuestion(question: string, extraTerms: string[] = []): boolean {
+  if (!question) return false;
+  if (STEER_RE.some((re) => re.test(question))) return true;
+  const q = question.toLowerCase();
+  return extraTerms.some((t) => t && t.length >= 4 && q.includes(t.toLowerCase()));
+}
+
+/**
+ * The pattern-consistency gate: when a CLEAN-running steering miss was answered
+ * with a NON-counterfactual surface while the layer DOES implement counterfactual
+ * re-pricing for sibling dimensions, that asymmetry is a layer COVERAGE GAP (a
+ * missing counterfactual sibling source) — repairable by analogy. Returns a
+ * layer-suspected classification, or null when it doesn't apply (caller keeps the
+ * original skill classification).
+ *
+ * NEVER speculative: requires (a) the query ran clean AND returned rows (no
+ * structural probe owns it), (b) every referenced view is itself healthy, AND
+ * (c) the layer ALREADY contains ≥1 counterfactual source (the capability + the
+ * template). If the agent's head source is itself counterfactual, there's no gap.
+ * Closed-book: keys off the question intent + the layer's OWN structure, never gold.
+ */
+export function detectPatternGap(a: MissAnalysis, index: LayerIndex, opts: { isSteering: boolean }): MissClassification | null {
+  if (!opts.isSteering || !a.malloySource) return null;
+  if (!a.reExec || !a.reExec.ok || a.reExec.rowCount === 0) return null; // only the wrong-but-HEALTHY case
+  if (a.viewProbes.some((p) => !p.ok || p.rowCount === 0 || (p.smells?.length ?? 0) > 0)) return null;
+  const cf = index.counterfactualSources;
+  if (cf.size === 0) return null; // no sibling template/capability → don't conjure one
+  const head = parseHeadSource(a.malloySource);
+  if (head && cf.has(head)) return null; // already answered with a counterfactual source
+  // Land the new sibling in the file that holds the existing counterfactual
+  // sources (prefer the head source's own file when it co-locates them).
+  const cfFiles = [...cf.values()].map((v) => v.file);
+  const headFile = head ? index.fileOfSource.get(head) : undefined;
+  const file = headFile && cfFiles.includes(headFile) ? headFile : cfFiles[0];
+  const siblings = [...cf.keys()];
+  return {
+    category: 'layer_pattern_gap',
+    layerSuspected: true,
+    suggestedOwner: 'layer',
+    implicatedFiles: [file, ...a.implicatedFiles.filter((f) => f !== file)],
+    note:
+      `this is a counterfactual/steering question, but it was answered with \`${head ?? '?'}\` — a NON-counterfactual surface that ranks ACTUAL (observed) values rather than re-pricing all traffic onto each candidate. ` +
+      `The layer DOES implement the counterfactual pattern for sibling dimensions (${siblings.join(', ')}), so a counterfactual source for THIS question's dimension appears to be MISSING. ` +
+      `Adding it by analogy to the sibling source(s) is a layer fix, not a skill fix (the agent cannot rebuild the wildcard-aware re-matching inline).`,
   };
 }
 

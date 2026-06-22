@@ -15,6 +15,10 @@ import {
   identifiersIn,
   parseHeadSource,
   classifyMiss,
+  detectCounterfactualSource,
+  detectPatternGap,
+  isSteeringQuestion,
+  steeringVocabulary,
   evidenceBlock,
   analyzeMiss,
   nonTrainTaskIds,
@@ -48,6 +52,22 @@ const BODIES: Record<string, string> = {
   measure: total_fee_amount is matched.sum(matched.fee)
   view: total_fees_by_merchant_year is { group_by: merchant, year; aggregate: total_fee_amount }
   view: total_fees_by_merchant_month is { group_by: merchant, month; aggregate: total_fee_amount }
+}`,
+  // A file with BOTH a partition-by-actual ranking source AND a counterfactual
+  // SIBLING (the aci-steering shape). The pattern-gap detector keys off exactly
+  // this asymmetry: a steering question answered by `priced` (ranks actuals)
+  // while `priced_aci_steering` proves the layer can express counterfactuals.
+  'c5_priced.malloy': `source: priced is duckdb.sql("""SELECT merchant, card_scheme, fee FROM payments JOIN fees USING (card_scheme)""") extend {
+  measure: total_fee is fee.sum()
+  view: scheme_ranking is { group_by: card_scheme; aggregate: total_fee }
+}
+
+source: priced_aci_steering is duckdb.sql("""
+  WITH cands AS (SELECT UNNEST(['A','B']) AS candidate_aci)
+  SELECT p.merchant, c.candidate_aci, f.fee FROM payments p CROSS JOIN cands c JOIN fees f ON list_contains(f.aci, c.candidate_aci)
+""") extend {
+  measure: total_fee is fee.sum()
+  view: by_aci is { group_by: candidate_aci; aggregate: total_fee }
 }`,
 };
 
@@ -221,6 +241,109 @@ describe('layer-vs-skill triage (classifyMiss)', () => {
     expect(c.category).toBe('query_wrong_answer');
     expect(c.suggestedOwner).toBe('skill');
     expect(c.layerSuspected).toBe(false);
+  });
+});
+
+// --- pattern-consistency gate (the counterfactual coverage gap) --------------
+
+describe('counterfactual-source detection (buildLayerIndex)', () => {
+  it('flags a CROSS JOIN-over-candidate_<dim> source as counterfactual, with its dim + file', () => {
+    expect(INDEX.counterfactualSources.has('priced_aci_steering')).toBe(true);
+    expect(INDEX.counterfactualSources.get('priced_aci_steering')!.dims).toEqual(['aci']);
+    expect(INDEX.counterfactualSources.get('priced_aci_steering')!.file).toBe('c5_priced.malloy');
+  });
+  it('does NOT flag an ordinary partition-by-actual source (no candidate cross-join)', () => {
+    expect(INDEX.counterfactualSources.has('priced')).toBe(false);
+    expect(INDEX.counterfactualSources.has('fee_match')).toBe(false);
+  });
+  it('detectCounterfactualSource: name fallback fires; a plain source is null', () => {
+    expect(detectCounterfactualSource('x_steering', 'SELECT 1')).toEqual(['(unspecified)']);
+    expect(detectCounterfactualSource('plain', 'SELECT a FROM t WHERE b = 1')).toBeNull();
+  });
+});
+
+describe('isSteeringQuestion', () => {
+  it('matches steer / move-to-different / to-which-X-should phrasings', () => {
+    expect(isSteeringQuestion('to which card scheme should the merchant steer traffic to pay the minimum fees?')).toBe(true);
+    expect(isSteeringQuestion('which ACI should we move fraud to a different value?')).toBe(true);
+    expect(isSteeringQuestion('what is the total fee for NexPay in 2023?')).toBe(false);
+  });
+  it('honors extra glossary scenario terms (and ignores too-short noise)', () => {
+    expect(isSteeringQuestion('reprice the cohort', ['reprice'])).toBe(true);
+    expect(isSteeringQuestion('reprice the cohort')).toBe(false);
+  });
+});
+
+describe('steeringVocabulary (don\'t let a dimension noun masquerade as steering)', () => {
+  it('keeps only SCENARIO terms/aliases that name a steering ACTION', () => {
+    const v = steeringVocabulary([
+      { kind: 'scenario', term: 'Counterfactual ACI steering', aliases: ['move fraudulent transactions to a different ACI', 'incentivize different interaction'] },
+      { kind: 'dimension', term: 'Authorization Characteristics Indicator (ACI)', aliases: ['authorization characteristic'] }, // must NOT be pulled in
+      { kind: 'scenario', term: 'Average fee scenario', aliases: ['typical fee'] }, // scenario but no steering verb → dropped
+    ]);
+    expect(v).toContain('Counterfactual ACI steering');
+    expect(v).toContain('move fraudulent transactions to a different ACI');
+    expect(v).not.toContain('authorization characteristic'); // dimension entry excluded
+    expect(v).not.toContain('typical fee'); // no steering verb
+    expect(v).not.toContain('incentivize different interaction'); // no steering verb
+  });
+
+  it('REGRESSION: a dimension alias can no longer make a hypothetical-pricing question look like steering (the 1451 false positive)', () => {
+    // The ACI DIMENSION entry's description mentions "counterfactual steering"; its
+    // alias "authorization characteristic" is a substring of Q1451 — but it must
+    // not seed the steering lexicon, so Q1451 is correctly NOT a steering question.
+    const terms = steeringVocabulary([{ kind: 'dimension', term: 'ACI', aliases: ['authorization characteristic'] }]);
+    expect(terms).toEqual([]);
+    expect(isSteeringQuestion('what would be the most expensive Authorization Characteristics Indicator (ACI)?', terms)).toBe(false);
+  });
+});
+
+describe('pattern-consistency gate (detectPatternGap)', () => {
+  const steeringMiss = (over: Partial<MissAnalysis> = {}): MissAnalysis => ({
+    taskId: '2762',
+    question: 'to which card scheme should the merchant steer traffic to pay the minimum fees?',
+    submitted: true,
+    hitLimit: false,
+    malloySource: 'run: priced -> scheme_ranking + { order_by: total_fee asc; limit: 1 }',
+    reExec: { ok: true, rowCount: 4 },
+    viewProbes: [{ source: 'priced', view: 'scheme_ranking', file: 'c5_priced.malloy', ok: true, rowCount: 4 }],
+    implicatedFiles: ['c5_priced.malloy'],
+    ...over,
+  });
+
+  it('clean STEERING miss answered with a non-counterfactual source + a CF sibling exists → LAYER coverage gap', () => {
+    const g = detectPatternGap(steeringMiss(), INDEX, { isSteering: true });
+    expect(g).not.toBeNull();
+    expect(g!.category).toBe('layer_pattern_gap');
+    expect(g!.layerSuspected).toBe(true);
+    expect(g!.suggestedOwner).toBe('layer');
+    expect(g!.implicatedFiles[0]).toBe('c5_priced.malloy');
+    expect(g!.note).toMatch(/priced_aci_steering/); // names the sibling — satisfies the verdict's guard
+  });
+
+  it('null when the question is NOT a steering question', () => {
+    expect(detectPatternGap(steeringMiss(), INDEX, { isSteering: false })).toBeNull();
+  });
+
+  it('null when the agent ALREADY used a counterfactual source (no gap)', () => {
+    expect(detectPatternGap(steeringMiss({ malloySource: 'run: priced_aci_steering -> by_aci', viewProbes: [] }), INDEX, { isSteering: true })).toBeNull();
+  });
+
+  it('null when the layer has NO counterfactual sibling (no template → never speculate)', () => {
+    const noCf = buildLayerIndex({ 'a.malloy': `source: priced is duckdb.sql("""SELECT 1""") extend {\n  view: r is { group_by: x }\n}` });
+    expect(detectPatternGap(steeringMiss(), noCf, { isSteering: true })).toBeNull();
+  });
+
+  it('null on the wrong-but-not-healthy cases (query errored / empty / degenerate view) — a structural probe owns those', () => {
+    expect(detectPatternGap(steeringMiss({ reExec: { ok: false, rowCount: 0, error: 'boom' } }), INDEX, { isSteering: true })).toBeNull();
+    expect(detectPatternGap(steeringMiss({ reExec: { ok: true, rowCount: 0 } }), INDEX, { isSteering: true })).toBeNull();
+    expect(
+      detectPatternGap(
+        steeringMiss({ viewProbes: [{ source: 'priced', view: 'scheme_ranking', file: 'c5_priced.malloy', ok: true, rowCount: 4, smells: [{ code: 'extreme_tie', column: 'total_fee', message: 'tie' }] }] }),
+        INDEX,
+        { isSteering: true },
+      ),
+    ).toBeNull();
   });
 });
 

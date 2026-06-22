@@ -20,6 +20,12 @@ const REPAIR_SYSTEM_HEADER = `You are a Malloy expert REPAIRING one file of an e
 
 ABSOLUTE RULE: do NOT tune anything to a specific answer value. You are given NO gold answers. A correct fix is one that makes the view structurally sound for ANY input (correct join scope, correct wildcard/domain handling, correct grain), not one that nudges a number. Make the MINIMAL edits that fix ONLY the described defect — do not rewrite, reorder, or restructure anything else, and do not change views that already work.`;
 
+// Appended when the defect is a COVERAGE GAP (a missing source/view this file
+// should provide by analogy to siblings already in it) rather than a broken view.
+const ADDITIVE_NOTE = `
+
+ADDITIVE REPAIR IS IN SCOPE HERE: the defect describes a source/view that is MISSING from this file — a coverage gap relative to SIBLING sources already present. You SHOULD ADD it, authored by CLOSE ANALOGY to the named sibling(s): copy their exact matching / wildcard / re-pricing structure verbatim and change ONLY the steered dimension (the column the candidate set enumerates and the equality it drives in the re-match). Expose the same shape of ranking view(s) the siblings expose. Express the addition as ONE atomic edit whose "old" is a UNIQUE snippet copied verbatim from the file (e.g. its final non-empty lines) and whose "new" is that exact snippet followed by the new source/view. Do NOT alter the sibling sources or any view that already works.`;
+
 export interface RepairResult {
   ok: boolean;
   file: string;
@@ -44,13 +50,16 @@ export async function repairFileStage(opts: {
   provider?: string;
   maxRounds: number;
   runId?: string;
+  /** the defect is a COVERAGE GAP (a missing source to add by analogy), not a
+   *  broken view — permit an additive edit + use the additive instructions. */
+  allowAdditive?: boolean;
 }): Promise<RepairResult> {
   const agg = { cost: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, cacheWriteTokens: 0 };
   const modelPath = path.join(MODELS_DIR, opts.file);
   let current = await readFile(modelPath, 'utf8');
   let diag = '';
   let totalApplied = 0;
-  const system = `${REPAIR_SYSTEM_HEADER}\n\n=== MALLOY PRIMER ===\n${opts.primer}\n\n${DUCKDB_NOTES}`;
+  const system = `${REPAIR_SYSTEM_HEADER}${opts.allowAdditive ? ADDITIVE_NOTE : ''}\n\n=== MALLOY PRIMER ===\n${opts.primer}\n\n${DUCKDB_NOTES}`;
 
   for (let round = 1; round <= opts.maxRounds; round++) {
     const t0 = Date.now();
@@ -64,7 +73,11 @@ export async function repairFileStage(opts: {
         `## The Merchant Manual\n${opts.manual}\n\n` +
         `=== current ${opts.file} ===\n${current}\n\n` +
         `Return ONLY a JSON array of minimal edits: [{"old":"<text copied VERBATIM from the file, unique>","new":"<replacement>"}]. ` +
-        `Each "old" must appear exactly once in the file. Fix ONLY the described structural defect (typed raw escapes fn!returntype, wildcard branch on every match field, materialize join attributes as real columns before a join_many, qualify join keys).${errSuffix}`,
+        `Each "old" must appear exactly once in the file. ` +
+        (opts.allowAdditive
+          ? `ADD the missing source/view by analogy to the named sibling(s) — emit ONE edit whose "old" is a unique verbatim snippet (e.g. the file's final lines) and whose "new" repeats it then appends the new source, reusing the siblings' exact wildcard-aware re-matching and changing only the steered dimension.`
+          : `Fix ONLY the described structural defect (typed raw escapes fn!returntype, wildcard branch on every match field, materialize join attributes as real columns before a join_many, qualify join keys).`) +
+        errSuffix,
       reasoningEffort: opts.reasoningEffort,
       provider: opts.provider,
       maxTokens: 12000,
