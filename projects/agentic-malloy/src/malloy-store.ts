@@ -24,6 +24,10 @@ export interface ExportMeta {
   name: string;
   kind: string;
   summary: string;
+  /** how to CALL this source/view (e.g. "scope via `where: merchant=… and year=…`,
+   *  then `limit 1` for the cheapest"). Lives in the yaml sidecar so the .malloy
+   *  stays lean — get_file surfaces it next to the (comment-light) source. */
+  usage?: string;
 }
 export interface FileMeta {
   file: string;
@@ -101,15 +105,29 @@ export class MalloyStore {
     return lines.join('\n') || '(no files)';
   }
 
-  /** Full source of the named files. */
+  /**
+   * The named files: the yaml METADATA (file summary + per-export summary/usage)
+   * followed by the .malloy source. The metadata is the durable description of the
+   * surface; the source stays comment-light. Serving both here means the agent gets
+   * the rationale + how-to-call without it being duplicated as .malloy prose.
+   */
   getFile(files: string[]): string {
     const chunks: string[] = [];
     const unknown: string[] = [];
     for (const f of files) {
       const key = f.trim();
       const fm = this.byFile.get(key) ?? this.byFile.get(`${key}.malloy`);
-      if (fm) chunks.push(`### ${fm.file}\n${fm.body}`);
-      else unknown.push(key);
+      if (fm) {
+        const head: string[] = [`### ${fm.file}  [${fm.domain}]`, fm.summary];
+        if (fm.exports.length) {
+          head.push('Exports:');
+          for (const e of fm.exports) {
+            head.push(`  - ${e.name} (${e.kind}) — ${e.summary}`);
+            if (e.usage) head.push(`      usage: ${e.usage}`);
+          }
+        }
+        chunks.push(`${head.join('\n')}\n\n\`\`\`malloy\n${fm.body}\n\`\`\``);
+      } else unknown.push(key);
     }
     if (unknown.length) {
       chunks.push(`[unknown files: ${unknown.join(', ')}. Valid: ${[...this.byFile.keys()].join(', ')}]`);

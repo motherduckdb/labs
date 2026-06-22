@@ -166,9 +166,14 @@ MODELING DISCIPLINE — verify against the data, never trust prose alone (genera
 - JOIN_MANY ON-CLAUSE SCOPE (critical, causes execution-only failures): a \`join_many ... on\` predicate must reference ONLY columns physically present on the two sources being joined. Do NOT reference a column reached through ANOTHER join — including a pass-through \`dimension: x is other_join.col\`. A pass-through dimension is just an ALIAS for the joined column, NOT a real column; it often COMPILES but the generated SQL references an out-of-scope alias and FAILS AT EXECUTION ("Referenced table … not found"). FIX (use this exact shape for fact×rule matching): (1) build an enriched fact source with a PROJECTION that turns the needed joined attributes into REAL local columns — \`source: enriched is fact_base extend { join_one: m is dim ... } -> { select: *, attr_a is m.col_a, attr_b is m.col_b, ... }\`; (2) then \`source: matched is enriched extend { join_many: rules on (len!number(rules.x)=0 or list_contains!boolean(rules.x, attr_a)) and ... }\` referencing ONLY \`enriched\`'s local columns. Keep the fan-out exactly ONE join level deep.
 - A VIEW THAT COMPILES IS NOT DONE — IT MUST EXECUTE. Every view/measure you author will be run end-to-end at build time; one that compiles but errors at execution (binder/scope) is a FAILED build and will be sent back to you to fix. Author each source so a query through its joins actually returns rows.
 
+COMMENT DISCIPLINE — the .malloy and the _meta sidecar have DIFFERENT jobs; do not duplicate prose across them:
+- The _meta yaml is the DESCRIPTION surface (it's what a reader/agent sees to navigate and call the layer): put ALL prose there — what each source/view means, the grain, and HOW TO CALL it (the \`usage\` per export).
+- The .malloy carries CODE ONLY, with comments limited to TERSE, code-local notes that explain a non-obvious Malloy/DuckDB idiom right where it's used (e.g. why a raw escape \`fn!returntype\` is needed, an empty-list-vs-NULL wildcard encoding, a base-grain-vs-match-grain caution, a join-scope reason). A few words each.
+- Do NOT write narration/header blocks in the .malloy that restate the _meta summary (domain overview, "this source exposes X by Y", usage walkthroughs). That prose belongs ONLY in the yaml. A lean model file + a rich sidecar, never the same words twice.
+
 Output EXACTLY two fenced blocks and nothing else:
-1. A \`\`\`malloy block: the file contents.
-2. A \`\`\`yaml block: the _meta sidecar with TOP-LEVEL keys (do NOT nest under a \`_meta:\` key): file, domain, summary, exports (list of {name, kind, summary}), provides_for (list of strings).`;
+1. A \`\`\`malloy block: the file contents (code + only terse code-local comments, per the discipline above).
+2. A \`\`\`yaml block: the _meta sidecar with TOP-LEVEL keys (do NOT nest under a \`_meta:\` key): file, domain, summary, exports (list of {name, kind, summary, usage}), provides_for (list of strings). \`usage\` is a one-line how-to-call for that export (the scoping \`where:\`, the final shape, e.g. "scope to one entity + time window then \`limit 1\` ordered asc for the cheapest").`;
 
 // The anti-benchmark / reusable-concepts policy — applied to ALL output so the
 // generated layer is a semantic model, not an answer key tailored to examples.

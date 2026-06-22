@@ -5,3 +5,4 @@ exports:
   - name: payments_base
     kind: source
     summary: payments with transaction_count + total_eur measures
+    usage: "scope with where: then aggregate transaction_count / total_eur"

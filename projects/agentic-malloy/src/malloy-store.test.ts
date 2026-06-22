@@ -37,6 +37,14 @@ describe('MalloyStore', () => {
     expect(store.getFile(['payments_base'])).toContain('source: payments_base');
   });
 
+  it('get_file surfaces the yaml metadata (summary + per-export usage) alongside the source', () => {
+    const out = store.getFile(['payments_base.malloy']);
+    expect(out).toContain('Fixture payments base for tests.'); // file summary from the sidecar
+    expect(out).toContain('Exports:');
+    expect(out).toContain('usage: scope with where:'); // per-export how-to-call, so .malloy can stay lean
+    expect(out).toContain('```malloy'); // the source is fenced after the metadata
+  });
+
   it('reports central layer size and export names', () => {
     expect(store.centralLayerChars()).toBeGreaterThan(0);
     expect(store.allExportNames()).toContain('payments_base');
