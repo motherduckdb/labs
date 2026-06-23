@@ -13,7 +13,7 @@ import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
-import { DUCKDB_NOTES, MODELS_DIR, META_DIR, parseEdits, validateModel, PROVENANCE_PATH } from './layer-build.js';
+import { DUCKDB_NOTES, MODELS_DIR, META_DIR, parseEdits, validateModel, PROVENANCE_PATH, VIEW_VALIDATION_TIMEOUT_MS } from './layer-build.js';
 import * as cl from './controllog.js';
 
 const REPAIR_SYSTEM_HEADER = `You are a Malloy expert REPAIRING one file of an existing semantic layer. A view/source in this file has a STRUCTURAL defect (it errors at execution, or returns 0/empty over rows that exist, or computes at the wrong grain). Fix the DEFECT generically — make the layer correct per the manual + the data's actual encodings (the column profile).
@@ -144,7 +144,7 @@ export async function executeAllViews(rt: MalloyRuntime): Promise<{ ok: boolean;
   const inv = await rt.describe(); // compile check (throws on compile error → caller catches)
   for (const s of inv.sources) {
     for (const view of inv.viewsBySource[s] ?? []) {
-      const r = await rt.run(`run: ${s} -> ${view}`, 1);
+      const r = await rt.run(`run: ${s} -> ${view}`, 1, VIEW_VALIDATION_TIMEOUT_MS);
       if (!r.ok) {
         return { ok: false, diag: `\`${s} -> ${view}\` fails to execute:\n${(r.diagnostics ?? []).map((d) => d.message).join('\n')}` };
       }

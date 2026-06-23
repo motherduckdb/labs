@@ -176,14 +176,26 @@ export class MalloyRuntime {
    *  `rowLimit` caps exploration output (default 50). The SCORED answer must pass
    *  a large explicit cap (see ANSWER_ROW_LIMIT) — Malloy's own default caps at 50,
    *  which silently truncates list answers (a 155-row answer was being cut to 50). */
-  async run(querySrc: string, rowLimit = 50): Promise<RunResult> {
+  async run(querySrc: string, rowLimit = 50, timeoutMs?: number): Promise<RunResult> {
     try {
-      const model = await this.loadModelText();
-      const runnable = this.runtime.loadModel(model).loadQuery(querySrc);
-      const sql = await runnable.getSQL();
-      const result = await runnable.run({ rowLimit });
-      const rows = result.data.toObject() as Row[];
-      return { ok: true, sql, rows };
+      const exec = (async () => {
+        const model = await this.loadModelText();
+        const runnable = this.runtime.loadModel(model).loadQuery(querySrc);
+        const sql = await runnable.getSQL();
+        const result = await runnable.run({ rowLimit });
+        return { ok: true as const, sql, rows: result.data.toObject() as Row[] };
+      })();
+      // Bound execution: an intractable view (e.g. a full cross-join over a large
+      // candidate set) must fail FAST so a build/repair loop can fix it, rather than
+      // wedging the caller. The underlying query may keep running, but the caller
+      // proceeds. Only applied when a timeout is requested (build validation).
+      if (timeoutMs && timeoutMs > 0) {
+        const timeout = new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error(`execution exceeded ${Math.round(timeoutMs / 1000)}s — likely an intractable grain (e.g. a full cross-join over a large candidate domain); reduce the materialized product or scope the candidate set`)), timeoutMs),
+        );
+        return await Promise.race([exec, timeout]);
+      }
+      return await exec;
     } catch (err) {
       return { ok: false, diagnostics: this.toDiagnostics(err) };
     }
