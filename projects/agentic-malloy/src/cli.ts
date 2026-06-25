@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { buildLocalDuckDB, buildMotherDuckDB, LOCAL_DB_PATH } from './load.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { MalloyStore } from './malloy-store.js';
-import { buildSymbolSet } from './linter.js';
+import { buildSymbolSet, buildKindMap, type FieldKind } from './linter.js';
 import { ScoreClient } from './score-client.js';
 import { createMCPClient, getExplorationTools, mcpRetryCount } from './mcp-client.js';
 import { buildToolSchemas, newRunState, type ToolDeps } from './tools.js';
@@ -183,6 +183,9 @@ export interface EvalTaskCtx {
   localRuntime?: MalloyRuntime;
   store: MalloyStore;
   symbols: Set<string>;
+  kinds: Map<string, FieldKind>;
+  viewNames: Set<string>;
+  allowSqlFallback: boolean;
   scorer: Scorer;
   database: string;
   author: string;
@@ -243,6 +246,9 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
         localRuntime: ctx.localRuntime,
         store: ctx.store,
         symbols: ctx.symbols,
+        kinds: ctx.kinds,
+        viewNames: ctx.viewNames,
+        allowSqlFallback: ctx.allowSqlFallback,
         database: ctx.database,
         mcpTools,
         state,
@@ -337,7 +343,7 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
       malloy_provenance: ctx.prov.malloy_provenance, malloy_model_hash: ctx.prov.malloy_model_hash,
       malloy_source: state.finalMalloy ?? null, malloy_source_chars: state.finalMalloy?.length ?? 0,
       compiled_sql: state.finalCompiledSql ?? null, compiled_sql_chars: state.finalCompiledSql?.length ?? 0,
-      translation_match: state.translationMatch ?? null,
+      translation_match: state.translationMatch ?? null, answer_kind: state.answerKind ?? null,
       predicted_result: scoreResp.predicted_answer, gold_result: q.answer,
       is_correct: scoreResp.is_correct, correctness_level: scoreResp.correctness, match_source: scoreResp.match_source,
       escalated: result?.escalated ?? false,
@@ -359,7 +365,7 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
     question: q.question, guidelines: q.guidelines, gold_answer: q.answer,
     predicted_answer: scoreResp.predicted_answer, is_correct: scoreResp.is_correct, correctness: scoreResp.correctness,
     match_source: scoreResp.match_source, malloy_source: state.finalMalloy ?? null, compiled_sql: state.finalCompiledSql ?? null,
-    translation_match: state.translationMatch ?? null,
+    translation_match: state.translationMatch ?? null, answer_kind: state.answerKind ?? null,
     escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
     files_read: state.filesRead, lint_fixes: state.lintFixesTotal, elapsed_s: +(elapsedMs / 1000).toFixed(2),
     cost_usd: result?.usage.cost ?? 0, prompt_tokens: result?.usage.promptTokens ?? 0, completion_tokens: result?.usage.completionTokens ?? 0,
@@ -416,6 +422,9 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const escalateAfter = Number(flags['escalate-after'] ?? 2);
   const maxAuthorTurns = Number(flags['max-author-turns'] ?? 20);
   const maxFixerTurns = Number(flags['max-fixer-turns'] ?? 6);
+  // SQL fallback (submit_sql) is ON by default; --no-sql-fallback forces a
+  // Malloy-only arm. Recorded in run_metadata so arms are distinguishable.
+  const allowSqlFallback = !flags['no-sql-fallback'];
   const reasoning = (flags.reasoning as string) || 'low';
   // Pin OpenRouter to one upstream provider (e.g. "anthropic") — flag wins, else
   // the OPENROUTER_PROVIDER env, else unset (OpenRouter's default routing).
@@ -444,7 +453,14 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   // The ubiquitous-language glossary (if the layer shipped one) maps the question's
   // vocabulary to layer concepts/surfaces — the question→layer bridge at answer time.
   const glossaryBlock = renderGlossaryForAnswering(await loadGlossaryArtifact(META_DIR));
-  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}${glossaryBlock ? `\n\n============ DOMAIN GLOSSARY (question terms → layer concepts) ============\n${glossaryBlock}` : ''}\n===============================`;
+  let systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}${glossaryBlock ? `\n\n============ DOMAIN GLOSSARY (question terms → layer concepts) ============\n${glossaryBlock}` : ''}\n===============================`;
+
+  // Malloy-only arm: the static skill describes a two-mode (Malloy | SQL) contract,
+  // so when the fallback is OFF we override it here — otherwise the prompt would
+  // advertise a (now absent) submit_sql tool. Makes --no-sql-fallback a clean condition.
+  if (!allowSqlFallback) {
+    systemPrompt += '\n\n[MALLOY-ONLY RUN: the SQL fallback is DISABLED and `submit_sql` is unavailable. Disregard any guidance about "two ways to answer" or falling back to SQL; answer EVERY question with Malloy via `submit_answer`.]';
+  }
 
   await mkdir(RESULTS_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T', 'T').slice(0, 15) + 'Z';
@@ -462,7 +478,10 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   // Warning-only translation diagnostic: run the same Malloy against the local
   // DuckDB snapshot and compare the result shape to the scored MotherDuck rows.
   const localRuntime = new MalloyRuntime();
-  const symbols = buildSymbolSet(await runtime.describe());
+  const inv = await runtime.describe();
+  const symbols = buildSymbolSet(inv);
+  const kinds = buildKindMap(inv); // field-kind for the linter's select: split
+  const viewNames = new Set(Object.values(inv.viewsBySource).flat()); // tag view-selection answers
   const scorer = new ScoreClient();
 
   // Reproducibility: the recorded commit_sha only describes this run if the
@@ -477,7 +496,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     console.warn('');
   }
 
-  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency}${provider ? ` · provider=${provider}` : ''}`);
+  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency} · sql_fallback=${allowSqlFallback ? 'on' : 'off'}${provider ? ` · provider=${provider}` : ''}`);
 
   let correct = 0;
   let completed = 0;
@@ -493,7 +512,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   });
 
   const ctx: EvalTaskCtx = {
-    systemPrompt, runtime, localRuntime, store, symbols, scorer, database,
+    systemPrompt, runtime, localRuntime, store, symbols, kinds, viewNames, allowSqlFallback, scorer, database,
     author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, reasoning, provider,
     runClass, prov, runId, split,
   };
@@ -512,6 +531,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
           escalate_after: escalateAfter,
           max_author_turns: maxAuthorTurns,
           max_fixer_turns: maxFixerTurns,
+          allow_sql_fallback: allowSqlFallback,
           reasoning,
           provider: provider ?? null,
           substrate: 'motherduck',
@@ -662,6 +682,18 @@ async function cmdSummary(file: string) {
   const byCat: Record<string, number> = {};
   for (const r of rows) byCat[r.correctness] = (byCat[r.correctness] ?? 0) + 1;
   console.log('breakdown:', JSON.stringify(byCat));
+  // Answer-kind split + accuracy within each kind (how much Malloy vs SQL carried,
+  // and how reliable each was). Rows from older runs without answer_kind → 'unknown'.
+  const byKind: Record<string, { n: number; correct: number }> = {};
+  for (const r of rows) {
+    const k = (r.answer_kind as string) ?? (r.submitted === false ? 'no-submission' : 'unknown');
+    (byKind[k] ??= { n: 0, correct: 0 }).n++;
+    if (r.is_correct) byKind[k].correct++;
+  }
+  const kindStr = Object.entries(byKind)
+    .map(([k, v]) => `${k}: ${v.n} (${v.correct}/${v.n} correct)`)
+    .join(' · ');
+  console.log('answer_kind:', kindStr);
 }
 
 function loadDotEnv(): void {
@@ -703,8 +735,9 @@ async function main() {
       console.log('            tool-error rules are recommend-only unless --apply-skill-fixes;');
       console.log('            --re-eval measures edits as SMOKE — commit, then `evaluate --run-class official` to record a number)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
-      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic]');
+      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic] [--no-sql-fallback]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
+      console.log('           (--no-sql-fallback disables submit_sql for a Malloy-only arm; SQL fallback is on by default)');
       console.log('  upload [--database agentic_malloy_logs]   # controllog JSONL -> MotherDuck for the dive');
   }
 }

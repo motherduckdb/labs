@@ -11,11 +11,17 @@
  * warning-only translation diagnostic.
  */
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { ALLOWED_TOOLS, callMcpTool } from './mcp-client.js';
+import { ALLOWED_TOOLS, callMcpTool, runSqlPositional } from './mcp-client.js';
 import type { MalloyRuntime } from './malloy-runtime.js';
 import type { MalloyStore } from './malloy-store.js';
-import { lintMalloy } from './linter.js';
+import { lintMalloy, detectRawSqlInMalloy, type FieldKind } from './linter.js';
 import type { ToolSchema } from './llm-client.js';
+
+/** How the scored answer was produced — instrumentation for the experiment:
+ *   - 'view-selection': Malloy that reuses a named layer view (the goal path)
+ *   - 'authored-malloy': Malloy authored from scratch (no named view referenced)
+ *   - 'sql': raw SQL submitted via submit_sql (the fallback) */
+export type AnswerKind = 'view-selection' | 'authored-malloy' | 'sql';
 
 export interface RunState {
   submitted: boolean;
@@ -25,6 +31,8 @@ export interface RunState {
   /** Did the local-DuckDB run of the compiled query match the MotherDuck result?
    *  Warning diagnostic only (DuckDB/MotherDuck skew detector); null = couldn't check. */
   translationMatch?: boolean | null;
+  /** How the submitted answer was produced (set on submit_answer/submit_sql). */
+  answerKind?: AnswerKind;
   filesRead: string[];
   lintFixesTotal: number;
 }
@@ -53,6 +61,14 @@ export interface ToolDeps {
   localRuntime?: MalloyRuntime;
   store: MalloyStore;
   symbols: Set<string>;
+  /** Compiled field-kind map (measure/dimension/view) — drives the linter's
+   *  select: → group_by:/aggregate: split. */
+  kinds?: Map<string, FieldKind>;
+  /** Names of the layer's named views — used to tag a Malloy answer as
+   *  view-selection vs authored-from-scratch. */
+  viewNames?: Set<string>;
+  /** When false, submit_sql is rejected (forces a Malloy-only arm). Default on. */
+  allowSqlFallback?: boolean;
   database?: string;
   mcpTools: ToolSchema[];
   state: RunState;
@@ -65,9 +81,15 @@ export interface DispatchResult {
 
 const MALLOY_TOOL_SCHEMAS: ToolSchema[] = [
   {
+    name: 'list_views',
+    description:
+      'START HERE. One flat catalog of every layer surface (sources + named views) with a one-line summary and how-to-call hint. Find the view that answers the question, then reuse it with a thin `+ { where:/order_by:/limit: }` refinement instead of authoring Malloy from scratch.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'list_malloy_files',
     description:
-      'Browse the Malloy semantic layer. No args -> the model domains. domains=[...] -> the files in those domains with their exported sources/queries.',
+      'Browse the Malloy semantic layer by domain (use list_views first for the full menu). No args -> the model domains. domains=[...] -> the files in those domains with their exported sources/queries.',
     input_schema: { type: 'object', properties: { domains: { type: 'array', items: { type: 'string' } } } },
   },
   {
@@ -88,13 +110,55 @@ const MALLOY_TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'submit_answer',
     description:
-      'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Call exactly once. An unsubmitted run scores zero.',
+      'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Call exactly once. An unsubmitted run scores zero. (Raw SQL wrapped in `duckdb.sql(...)` is NOT a Malloy answer — use submit_sql for that.)',
     input_schema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] },
+  },
+  {
+    name: 'submit_sql',
+    description:
+      'Fallback answer path: submit raw DuckDB SQL whose result IS the answer, when no layer view fits and authoring Malloy is fighting you. Executes on MotherDuck; latches only on success. Call exactly once. Select ONLY the asked value(s).',
+    input_schema: { type: 'object', properties: { sql: { type: 'string' } }, required: ['sql'] },
   },
 ];
 
+// submit_answer's description names submit_sql (correct when the fallback is on). When
+// it's off, swap in a Malloy-only description so no model-visible string points at the
+// (now absent) tool.
+const SUBMIT_ANSWER_DESC_MALLOY_ONLY =
+  'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Call exactly once. An unsubmitted run scores zero. (Do NOT wrap raw SQL in `duckdb.sql(...)`; this run is Malloy-only.)';
+
 export function buildToolSchemas(deps: ToolDeps): ToolSchema[] {
+  // When the SQL fallback is disabled, drop submit_sql AND rewrite submit_answer's
+  // description so no exposed tool steers to the absent path — a clean Malloy-only
+  // condition (no rejected-tool / contradicted-prompt mismatch). dispatchTool still guards it.
+  if (deps.allowSqlFallback === false) {
+    const malloyOnly = MALLOY_TOOL_SCHEMAS.filter((t) => t.name !== 'submit_sql').map((t) =>
+      t.name === 'submit_answer' ? { ...t, description: SUBMIT_ANSWER_DESC_MALLOY_ONLY } : t,
+    );
+    return [...deps.mcpTools, ...malloyOnly];
+  }
   return [...deps.mcpTools, ...MALLOY_TOOL_SCHEMAS];
+}
+
+/** Reject the duckdb.sql("""…""")-in-Malloy hack. Steer to submit_sql when the fallback
+ *  is on; to the layer (submit_answer) when it's off, so the message never names an
+ *  absent tool. */
+function rawSqlReject(sqlOn: boolean): string {
+  return sqlOn
+    ? 'Raw SQL wrapped in Malloy (`duckdb.sql(...)`) is not a Malloy answer. ' +
+        'If you need SQL, call `submit_sql` with the SQL whose result IS the answer — it runs on MotherDuck and is scored the same way. ' +
+        'Otherwise reuse a layer view (see `list_views`) and submit it via `submit_answer`.'
+    : 'Raw SQL wrapped in Malloy (`duckdb.sql(...)`) is not allowed. ' +
+        'Answer with the layer — reuse a view (see `list_views`) or author Malloy, and submit it via `submit_answer`.';
+}
+
+/** Does the submitted Malloy reference a named layer view? (view-selection vs authored.) */
+function referencesView(src: string, viewNames?: Set<string>): boolean {
+  if (!viewNames?.size) return false;
+  for (const v of viewNames) {
+    if (new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(src)) return true;
+  }
+  return false;
 }
 
 function fmtDiagnostics(diags: { message: string }[] | undefined): string {
@@ -143,6 +207,10 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     return { content: res.text, isError: res.isError };
   }
 
+  if (name === 'list_views') {
+    return { content: store.listViews(), isError: false };
+  }
+
   if (name === 'list_malloy_files') {
     const domains = Array.isArray(args.domains) ? (args.domains as string[]) : undefined;
     return { content: store.listFiles(domains), isError: false };
@@ -165,7 +233,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
   }
 
   if (name === 'malloy_lint') {
-    const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols);
+    const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols, deps.kinds);
     state.lintFixesTotal += fixes.length;
     const c = await runtime.compile(fixedSrc);
     if (!c.ok) return { content: fmtDiagnostics(c.diagnostics), isError: true };
@@ -174,7 +242,8 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
   }
 
   if (name === 'run_malloy') {
-    const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols);
+    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback !== false), isError: true };
+    const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols, deps.kinds);
     state.lintFixesTotal += fixes.length;
     // Run via Malloy's native runtime (connected to MotherDuck for eval) — compile
     // and execute on the SAME engine, so no cross-engine SQL skew.
@@ -188,7 +257,8 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
 
   if (name === 'submit_answer') {
     if (state.submitted) return { content: 'ERROR: answer already submitted', isError: true };
-    const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols);
+    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback !== false) + '\nThe answer was NOT recorded.', isError: true };
+    const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols, deps.kinds);
     state.lintFixesTotal += fixes.length;
     // Run via Malloy's native runtime (MotherDuck for eval) — same engine for
     // compile + execute, so the generated SQL always binds. The scored answer
@@ -201,6 +271,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     state.finalMalloy = fixedSrc;
     state.finalCompiledSql = r.sql;
     state.finalRows = r.rows!.map((o) => cols.map((cn) => jsonSafeCell(o[cn]))); // positional for score.py (BigInt-safe)
+    state.answerKind = referencesView(fixedSrc, deps.viewNames) ? 'view-selection' : 'authored-malloy';
     if (localRuntime) {
       try {
         const local = await localRuntime.run(fixedSrc, ANSWER_ROW_LIMIT);
@@ -212,6 +283,29 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
       state.translationMatch = null;
     }
     return { content: `Submitted. ${r.rows!.length} row(s).`, isError: false };
+  }
+
+  if (name === 'submit_sql') {
+    if (state.submitted) return { content: 'ERROR: answer already submitted', isError: true };
+    if (deps.allowSqlFallback === false) {
+      return { content: 'submit_sql is disabled for this run (Malloy-only arm). Author the answer as Malloy and use submit_answer.', isError: true };
+    }
+    const sql = String(args.sql ?? '').trim();
+    if (!sql) return { content: 'ERROR: empty sql', isError: true };
+    // Execute on MotherDuck — same substrate + same positional-row shape the
+    // scorer expects, so a SQL answer scores identically to a Malloy one.
+    let rows: unknown[][];
+    try {
+      rows = await runSqlPositional(client, sql, database);
+    } catch (e) {
+      return { content: `SQL error:\n${e instanceof Error ? e.message : String(e)}\nThe answer was NOT recorded — fix and resubmit.`, isError: true };
+    }
+    state.submitted = true;
+    state.finalCompiledSql = sql; // predicted_sql for the scorer
+    state.finalRows = rows.map((r) => (Array.isArray(r) ? r.map(jsonSafeCell) : [jsonSafeCell(r)]));
+    state.translationMatch = null;
+    state.answerKind = 'sql';
+    return { content: `Submitted (SQL). ${rows.length} row(s).`, isError: false };
   }
 
   return { content: `Unknown tool: ${name}`, isError: true };

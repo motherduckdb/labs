@@ -76,27 +76,48 @@ export interface TraceItem {
   status?: 'ok' | 'error'; // function_call_output
 }
 
-const FIXER_INSTRUCTION =
-  'You are the senior fixer. The author got stuck (repeated Malloy compile/execution errors or ran out of turns). ' +
-  'Review the conversation and the diagnostics above, then write CORRECT Malloy and call submit_answer. ' +
-  'Prefer reusing the central layer; keep the per-query Malloy minimal.';
+// All three steer/recovery/fixer prompts are FLAG-AWARE on the SQL fallback: when
+// it's disabled (Malloy-only arm), they must NOT mention submit_sql — otherwise the
+// run measures a rejected-tool/contradicted-prompt mismatch instead of a clean
+// no-SQL condition (submit_sql is also dropped from the tool schemas when off).
+function fixerInstruction(sqlOn: boolean): string {
+  return (
+    'You are the senior fixer. The author got stuck (repeated Malloy compile/execution errors or ran out of turns). ' +
+    'Review the conversation and the diagnostics above, then ' +
+    (sqlOn
+      ? 'either write CORRECT Malloy and call submit_answer, or — if Malloy is the problem — compute the answer in SQL and call submit_sql (scored identically). '
+      : 'write CORRECT Malloy and call submit_answer. ') +
+    'Prefer reusing a layer view (see list_views); keep the per-query Malloy minimal.'
+  );
+}
 
 // Before escalating terminal prose to the expensive fixer, give the SAME author
 // one forced recovery turn: it already has the working context, so the common
 // "stopped without submitting" case is usually a missing tool call, not a hard
 // authoring failure. Only if recovery still doesn't submit do we hand off.
-const AUTHOR_RECOVERY_INSTRUCTION =
-  'You stopped without calling submit_answer, so nothing was recorded and this scores zero. ' +
-  'Do NOT explain — call submit_answer now with the Malloy whose compiled-SQL result IS the answer. ' +
-  'Reuse the work above.';
+function authorRecoveryInstruction(sqlOn: boolean): string {
+  return (
+    'You stopped without submitting, so nothing was recorded and this scores zero. Do NOT explain — ' +
+    (sqlOn
+      ? 'call submit_answer now with the Malloy whose compiled-SQL result IS the answer (or submit_sql with raw SQL if Malloy is the blocker). '
+      : 'call submit_answer now with the Malloy whose compiled-SQL result IS the answer. ') +
+    'Reuse the work above.'
+  );
+}
 
 // Shown once when run_malloy/submit_answer fails with the SAME error twice in a
 // row — the agent is looping, usually on a layer defect it cannot fix by editing
-// its query. Steer it off the dead view to the SQL-backed fallback. Generic.
-const SAME_ERROR_STEER =
-  'That run_malloy attempt failed with the SAME error as your previous one — re-running or re-reading layer files will NOT fix it. ' +
-  'If the error is inside the COMPILED SQL (e.g. a binder/scope error like "Referenced table ... not found"), it is a defect in the central layer view, not in your query — stop using that view. ' +
-  'Instead: use the `query` (SQL) tool ONCE to compute the answer directly, then call submit_answer with self-contained Malloy that does NOT depend on the failing view — e.g. `run: duckdb.sql("""<your SQL>""") -> { ... }`.';
+// its query. Steer it off the dead view: to the SQL fallback when enabled, else to
+// a different view/source.
+function sameErrorSteer(sqlOn: boolean): string {
+  return (
+    'That run_malloy attempt failed with the SAME error as your previous one — re-running or re-reading layer files will NOT fix it. ' +
+    'If the error is inside the COMPILED SQL (e.g. a binder/scope error like "Referenced table ... not found"), it is a defect in the central layer view, not in your query — stop using that view. ' +
+    (sqlOn
+      ? 'Instead: use the `query` (SQL) tool to compute the answer directly, then call `submit_sql` with that SQL — it runs on MotherDuck and is scored exactly like a Malloy answer. Do NOT wrap SQL inside Malloy (`duckdb.sql(...)` is rejected).'
+      : 'Instead: pivot to a DIFFERENT layer view or source that does not depend on the broken one, and submit_answer with that Malloy.')
+  );
+}
 
 /** Collapse an error message to a signature (drop digits/aliases/punctuation) so
  *  "table m_0 not found" and "table mm_1 not found" compare equal. */
@@ -199,7 +220,14 @@ export async function streamOneTurn(opts: {
 
 export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   const { deps, taskId, runId } = opts;
-  const taskPrompt = `Question: ${opts.question}\n\nGuidelines: ${opts.guidelines || '(none)'}\n\nFollow the skill: browse the Malloy layer, then author Malloy and submit_answer. The answer must be Malloy.`;
+  // SQL fallback on unless explicitly disabled — gates the submit_sql wording in
+  // the fixer/recovery/steer prompts so a --no-sql-fallback run is a clean no-SQL
+  // condition (submit_sql is also absent from the tool schemas then).
+  const sqlOn = deps.allowSqlFallback !== false;
+  const howToAnswer = sqlOn
+    ? 'Follow the skill: find a layer view (or author Malloy) and submit_answer; if no view fits and Malloy fights you, compute it in SQL and submit_sql.'
+    : 'Follow the skill: browse the Malloy layer, then author Malloy and submit_answer. The answer must be Malloy.';
+  const taskPrompt = `Question: ${opts.question}\n\nGuidelines: ${opts.guidelines || '(none)'}\n\n${howToAnswer}`;
   const messages: ChatMessage[] = [{ role: 'user', content: taskPrompt }];
   // Full bundled conversation for the dive's complete trace view (not just tool I/O).
   const trace: TraceItem[] = [{ step: 'user', content: taskPrompt }];
@@ -227,7 +255,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     activeModel = opts.fixerModel;
     role = 'fixer';
     consecutiveErrors = 0;
-    messages.push({ role: 'user', content: FIXER_INSTRUCTION });
+    messages.push({ role: 'user', content: fixerInstruction(sqlOn) });
     opts.onEvent?.({ kind: 'escalate', detail: reason });
   };
 
@@ -293,7 +321,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
         if (!authorRecoveryUsed) {
           authorRecoveryUsed = true;
           messages.push({ role: 'assistant', content: parsed.assistantBlocks });
-          messages.push({ role: 'user', content: AUTHOR_RECOVERY_INSTRUCTION });
+          messages.push({ role: 'user', content: authorRecoveryInstruction(sqlOn) });
           opts.onEvent?.({ kind: 'author_recovery', detail: 'terminal text — forced submit-now' });
           continue;
         }
@@ -334,7 +362,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     // fallback instead of letting it burn turns re-running the same thing.
     const errSig = malloyErr ? normErrSig(malloyErr) : null;
     if (errSig && errSig === prevMalloyErrSig) {
-      messages.push({ role: 'user', content: SAME_ERROR_STEER });
+      messages.push({ role: 'user', content: sameErrorSteer(sqlOn) });
       opts.onEvent?.({ kind: 'repeat_error_steer', detail: errSig.slice(0, 80) });
     }
     prevMalloyErrSig = errSig;

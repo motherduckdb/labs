@@ -46,6 +46,13 @@ export interface ModelInventory {
    *  smoke-executing at build time (they exercise joins/measures, so they catch
    *  binder/scope errors that compile but fail at execution). */
   viewsBySource: Record<string, string[]>;
+  /** Per source: field name → 'measure' | 'dimension' | 'view'. Drives the
+   *  linter's `select:` → `group_by:`+`aggregate:` split (a measure must land in
+   *  `aggregate:`, a dimension in `group_by:`). Query fields and joins map to
+   *  'view'. An atomic field we can't prove is a measure defaults to 'dimension'
+   *  (the conservative choice — never silently turns a grouping key into an
+   *  aggregate). */
+  fieldKindBySource: Record<string, Record<string, 'measure' | 'dimension' | 'view'>>;
 }
 
 /**
@@ -218,14 +225,30 @@ export class MalloyRuntime {
     const sources: string[] = [];
     const fieldsBySource: Record<string, string[]> = {};
     const viewsBySource: Record<string, string[]> = {};
+    const fieldKindBySource: Record<string, Record<string, 'measure' | 'dimension' | 'view'>> = {};
     for (const explore of compiled.explores) {
       sources.push(explore.name);
       fieldsBySource[explore.name] = explore.allFields.map((f) => f.name);
       viewsBySource[explore.name] = explore.allFields
         .filter((f) => typeof (f as { isQueryField?: () => boolean }).isQueryField === 'function' && (f as { isQueryField: () => boolean }).isQueryField())
         .map((f) => f.name);
+      // Classify each field for the linter's select: split. 'measure' means "is
+      // an aggregate/calculation → belongs in aggregate:"; 'dimension' means "a
+      // plain grouping value → belongs in group_by:". isCalculation() is the
+      // reliable discriminator here (sourceWasMeasure() returns false for these
+      // model-authored measures). Query (view) fields + joins are 'view'.
+      const kinds: Record<string, 'measure' | 'dimension' | 'view'> = {};
+      for (const f of explore.allFields) {
+        const af = f as { isAtomicField?: () => boolean; isCalculation?: () => boolean };
+        if (typeof af.isAtomicField === 'function' && af.isAtomicField()) {
+          kinds[f.name] = af.isCalculation?.() ? 'measure' : 'dimension';
+        } else {
+          kinds[f.name] = 'view';
+        }
+      }
+      fieldKindBySource[explore.name] = kinds;
     }
-    return { sources, fieldsBySource, viewsBySource };
+    return { sources, fieldsBySource, viewsBySource, fieldKindBySource };
   }
 
   async close(): Promise<void> {

@@ -14,6 +14,13 @@
  * STRUCT→MAP(VARCHAR, JSON). Under a MAP every value is JSON, so the dive's numeric
  * aggregations (`avg(payload_json.duration_ms)`, cost_usd, tokens, …) fail with
  * "avg(JSON)". Disabling MAP inference keeps it a STRUCT with typed fields.
+ *
+ * `sample_size=-1` is REQUIRED for the same STRUCT: the schema is inferred from a
+ * sample, but controllog APPENDS each run, so a newly-added payload key (e.g. a new
+ * resolvedConfig field like `allow_sql_fallback`) lands only in the LAST rows —
+ * outside a default head-sample — and the reader then throws "unknown key …" on
+ * those rows. Scanning all rows infers the full union of keys (new ones nullable
+ * for older rows) so schema evolution never breaks the upload.
  */
 import { DuckDBInstance } from '@duckdb/node-api';
 import { existsSync } from 'node:fs';
@@ -43,13 +50,13 @@ export async function uploadControllog(opts: {
     await conn.run("ATTACH 'md:'");
     await conn.run(`CREATE DATABASE IF NOT EXISTS ${db}`);
     await conn.run(
-      `CREATE OR REPLACE TABLE ${db}.main.events AS SELECT * FROM read_json_auto('${eventsPath}', format='newline_delimited', map_inference_threshold=-1)`,
+      `CREATE OR REPLACE TABLE ${db}.main.events AS SELECT * FROM read_json_auto('${eventsPath}', format='newline_delimited', map_inference_threshold=-1, sample_size=-1)`,
     );
     const events = Number((await conn.runAndReadAll(`SELECT count(*) AS n FROM ${db}.main.events`)).getRowObjects()[0].n);
     let postings = 0;
     if (existsSync(postingsPath)) {
       await conn.run(
-        `CREATE OR REPLACE TABLE ${db}.main.postings AS SELECT * FROM read_json_auto('${postingsPath}', format='newline_delimited', map_inference_threshold=-1)`,
+        `CREATE OR REPLACE TABLE ${db}.main.postings AS SELECT * FROM read_json_auto('${postingsPath}', format='newline_delimited', map_inference_threshold=-1, sample_size=-1)`,
       );
       postings = Number((await conn.runAndReadAll(`SELECT count(*) AS n FROM ${db}.main.postings`)).getRowObjects()[0].n);
     }

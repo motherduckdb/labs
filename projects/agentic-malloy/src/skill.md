@@ -1,32 +1,43 @@
 # Malloy Payments Analyst Skill
 
 You answer factoid questions about a synthetic Adyen-like payments dataset by
-authoring **Malloy** against a central semantic layer. **Your final answer is
-submitted as Malloy** (`submit_answer`) — its compiled-SQL result IS the answer.
-Plain SQL tools are for *exploration only* and never produce the answer.
+authoring **Malloy** against a central semantic layer. Your answer is normally
+submitted as **Malloy** (`submit_answer`) — its compiled-SQL result IS the answer.
+When no layer view fits and authoring Malloy fights you, you may instead submit raw
+**SQL** (`submit_sql`), which executes on MotherDuck and is scored identically. The
+read-only SQL tools (`query`, `list_tables`, …) are for *exploration* and never
+auto-submit — you submit explicitly via one of those two tools.
 
 ## Workflow (follow every time)
 
-1. **Browse the layer first.** `list_malloy_files()` → domains; then
-   `list_malloy_files(domains=[...])` → the files + their exported sources/queries;
-   then `get_file([...])` (read every file you'll need in ONE call). Files are
-   static — never re-read a file; reuse the central sources/measures rather than
-   re-deriving logic the layer encodes.
-2. **Explore the data if needed** with `query`, `list_tables`, `list_columns`,
-   `search_catalog`, `ask_docs_question` (MotherDuck MCP). Exploration only.
-3. **Author per-query Malloy** that points at the central model. Keep it thin —
-   reference the layer's sources/measures; avoid re-implementing joins or filters
-   the layer provides.
-4. **Iterate with `run_malloy`** (lint → compile → run on MotherDuck). Read the
-   compiled SQL and the rows; fix compile diagnostics before resubmitting.
-   **If a named layer view/measure ERRORS AT RUNTIME** (a binder/scope error such
-   as `Referenced table … not found`, i.e. the error is in the compiled SQL, not
-   your source text), that view is a layer defect you cannot fix here — do NOT
-   retry it or re-read layer files. Pivot ONCE: use `query` (SQL) to compute the
-   value, then submit self-contained Malloy (`run: duckdb.sql("""…""") -> { … }`)
-   that doesn't depend on the broken view.
-5. **`submit_answer(source=...)`** with the Malloy whose result IS the answer.
-   Select exactly the asked value(s) — no extra columns, labels, or prose.
+There are exactly TWO ways to answer: reuse a layer **view** (preferred), or fall
+back to **SQL**. Prefer reusing a view; author Malloy from scratch only when no view
+fits; drop to SQL when authoring fights you.
+
+1. **Find the view first.** Call `list_views()` — the full menu of layer surfaces
+   (sources + named views) with one-line summaries and how-to-call hints. Pick the
+   view that already answers the question. `get_file([...])` only to confirm a
+   view's fields (files are static — never re-read one).
+2. **Reuse the view with a thin refinement.** Author MINIMAL per-query Malloy:
+   `run: <source> -> <view> + { where: …; order_by: …; limit: … }`. Reference the
+   layer's views/measures; do not re-derive joins or fee logic the layer encodes.
+   Iterate with `run_malloy` (lint → compile → run on MotherDuck); read the compiled
+   SQL + rows and fix any compile diagnostics. (`run_malloy`/`submit_answer` lint
+   common SQL-habit slips for you — `select:`→`group_by:`+`aggregate:`, `calculate:`
+   of a sum→`aggregate:`, an aggregate in `where:`→`having:`, `string_type(x)`→
+   `x::string` — but write it right when you can.)
+3. **Explore the data if needed** with `query`, `list_tables`, `list_columns`,
+   `search_catalog`, `ask_docs_question` (MotherDuck MCP). SQL exploration only.
+4. **If no view fits — or authoring Malloy is fighting you — use SQL.** Compute the
+   answer with `query`, then call **`submit_sql(sql=…)`** with the SQL whose result
+   IS the answer. It runs on MotherDuck and is scored exactly like a Malloy answer.
+   **Do NOT wrap SQL inside Malloy** — `duckdb.sql("""…""")` is rejected; submit it
+   as SQL. Likewise, if a named layer view ERRORS AT RUNTIME (a binder/scope error
+   in the compiled SQL, e.g. `Referenced table … not found`), it's a layer defect
+   you can't fix here — stop retrying it and answer via `submit_sql`.
+5. **Submit once.** `submit_answer(source=…)` for a Malloy answer or
+   `submit_sql(sql=…)` for a SQL answer. Select exactly the asked value(s) — no extra
+   columns, labels, or prose. An unsubmitted run scores zero.
 
 ## Malloy query syntax (common pitfalls)
 
@@ -79,6 +90,12 @@ Plain SQL tools are for *exploration only* and never produce the answer.
 - **Final stage selects ONLY the asked value(s).** After you find the answer with a
   ranked/grouped query, add a final `select:` (or project) that drops the measure you
   sorted by, counts, and labels. "Which X?" → exactly one column (X), one row.
+- **Return the KEY/identifier the question asks for, not a descriptive label joined to it.**
+  When the layer exposes both an entity's code/key and a human-readable description of it,
+  and the question asks for the entity by its identifier, `group_by`/`select` the **key**,
+  not the label (e.g. a category *code*, not the category's display name). Mirror the form
+  of the value the question/guideline names; a description column is for your understanding,
+  not the answer. (When the identifier itself IS a name, that name is the answer.)
 - Apply the exact rounding stated, inside the Malloy/SQL.
 - Match the guideline's separators/brackets/case exactly — re-read the guideline
   verbatim before submitting and check value count, type, delimiter, and brackets.
