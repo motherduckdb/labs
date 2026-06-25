@@ -15,6 +15,7 @@ import { ALLOWED_TOOLS, callMcpTool, runSqlPositional } from './mcp-client.js';
 import type { MalloyRuntime } from './malloy-runtime.js';
 import type { MalloyStore } from './malloy-store.js';
 import { lintMalloy, detectRawSqlInMalloy, type FieldKind } from './linter.js';
+import { answerShapeWarnings, type ShapeWarning } from './answer-shape.js';
 import type { ToolSchema } from './llm-client.js';
 
 /** How the scored answer was produced — instrumentation for the experiment:
@@ -33,6 +34,10 @@ export interface RunState {
   translationMatch?: boolean | null;
   /** How the submitted answer was produced (set on submit_answer/submit_sql). */
   answerKind?: AnswerKind;
+  /** The pre-submit answer-shape linter has warned once this task (one-shot soft
+   *  warn): a first submit with a shape warning is NOT latched (the agent may
+   *  reconsider/resubmit); any subsequent submit latches unconditionally. */
+  shapeWarned?: boolean;
   filesRead: string[];
   lintFixesTotal: number;
 }
@@ -70,6 +75,10 @@ export interface ToolDeps {
   /** When false, submit_sql is rejected (forces a Malloy-only arm). Default on. */
   allowSqlFallback?: boolean;
   database?: string;
+  /** the task's question + answer guidelines — feed the pre-submit answer-shape
+   *  linter (its checks are no-ops when both are absent). */
+  question?: string | null;
+  guidelines?: string | null;
   mcpTools: ToolSchema[];
   state: RunState;
 }
@@ -159,6 +168,22 @@ function referencesView(src: string, viewNames?: Set<string>): boolean {
     if (new RegExp(`\\b${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(src)) return true;
   }
   return false;
+}
+
+/** The one-shot soft-warn message returned on the FIRST submit that has a shape
+ *  warning (NOT latched — the agent may reconsider or resubmit-to-confirm). */
+function shapeWarnMessage(warnings: ShapeWarning[]): string {
+  return (
+    `⚠ NOT YET RECORDED — a pre-submit answer-shape check found ${warnings.length} possible issue(s):\n` +
+    warnings.map((w) => `  - ${w.message}`).join('\n') +
+    `\nIf the answer is correct as-is, call submit again to confirm and record it; otherwise fix it and resubmit.`
+  );
+}
+
+/** A terse note appended to a LATCHED submit when warnings were present (so the
+ *  shape concern is in the record without blocking the recorded answer). */
+function shapeWarnNote(warnings: ShapeWarning[]): string {
+  return warnings.length ? ` (answer-shape notes: ${warnings.map((w) => w.code).join(', ')})` : '';
 }
 
 function fmtDiagnostics(diags: { message: string }[] | undefined): string {
@@ -267,10 +292,19 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     const r = await runtime.run(fixedSrc, ANSWER_ROW_LIMIT);
     if (!r.ok) return { content: fmtDiagnostics(r.diagnostics) + '\nThe answer was NOT recorded — fix and resubmit.', isError: true };
     const cols = r.rows!.length ? Object.keys(r.rows![0]) : [];
+    const positional = r.rows!.map((o) => cols.map((cn) => jsonSafeCell(o[cn]))); // positional for score.py (BigInt-safe)
+    // Pre-submit answer-shape lint (advisory, one-shot): a first submit with a shape
+    // warning is NOT latched, so the agent can reconsider/resubmit; the resubmit
+    // always records (no non-submission/correctness regression).
+    const warnings = answerShapeWarnings({ question: deps.question, guidelines: deps.guidelines, source: fixedSrc, columns: cols, rows: positional });
+    if (warnings.length && !state.shapeWarned) {
+      state.shapeWarned = true;
+      return { content: shapeWarnMessage(warnings), isError: false };
+    }
     state.submitted = true;
     state.finalMalloy = fixedSrc;
     state.finalCompiledSql = r.sql;
-    state.finalRows = r.rows!.map((o) => cols.map((cn) => jsonSafeCell(o[cn]))); // positional for score.py (BigInt-safe)
+    state.finalRows = positional;
     state.answerKind = referencesView(fixedSrc, deps.viewNames) ? 'view-selection' : 'authored-malloy';
     if (localRuntime) {
       try {
@@ -282,7 +316,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     } else {
       state.translationMatch = null;
     }
-    return { content: `Submitted. ${r.rows!.length} row(s).`, isError: false };
+    return { content: `Submitted. ${r.rows!.length} row(s).${shapeWarnNote(warnings)}`, isError: false };
   }
 
   if (name === 'submit_sql') {
@@ -300,12 +334,21 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     } catch (e) {
       return { content: `SQL error:\n${e instanceof Error ? e.message : String(e)}\nThe answer was NOT recorded — fix and resubmit.`, isError: true };
     }
+    const positional = rows.map((r) => (Array.isArray(r) ? r.map(jsonSafeCell) : [jsonSafeCell(r)]));
+    // Same one-shot answer-shape lint on the SQL path (it otherwise bypasses ALL
+    // format discipline). Column names aren't available from positional SQL rows, so
+    // the >1-column check infers the count from the first row.
+    const warnings = answerShapeWarnings({ question: deps.question, guidelines: deps.guidelines, source: sql, rows: positional });
+    if (warnings.length && !state.shapeWarned) {
+      state.shapeWarned = true;
+      return { content: shapeWarnMessage(warnings), isError: false };
+    }
     state.submitted = true;
     state.finalCompiledSql = sql; // predicted_sql for the scorer
-    state.finalRows = rows.map((r) => (Array.isArray(r) ? r.map(jsonSafeCell) : [jsonSafeCell(r)]));
+    state.finalRows = positional;
     state.translationMatch = null;
     state.answerKind = 'sql';
-    return { content: `Submitted (SQL). ${rows.length} row(s).`, isError: false };
+    return { content: `Submitted (SQL). ${rows.length} row(s).${shapeWarnNote(warnings)}`, isError: false };
   }
 
   return { content: `Unknown tool: ${name}`, isError: true };

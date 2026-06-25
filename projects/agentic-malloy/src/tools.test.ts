@@ -116,3 +116,43 @@ describe('answer_kind + SQL fallback', () => {
     expect(off.content).toContain('submit_answer');
   });
 });
+
+describe('answer-shape one-shot soft-warn (both submit paths)', () => {
+  it('first submit with a shape issue warns + does NOT latch; resubmit latches', async () => {
+    const d = deps({ runtime: runtimeReturning([{ pct: 0.114862 }]), question: 'What percentage of transactions are fraudulent?', guidelines: 'Round to 6 decimals.' });
+    const first = await dispatchTool(d, 'submit_answer', { source: 'run: x -> { aggregate: pct }' });
+    expect(first.isError).toBe(false);
+    expect(first.content).toContain('NOT YET RECORDED');
+    expect(d.state.submitted).toBe(false);
+    expect(d.state.shapeWarned).toBe(true);
+    // resubmit (even the same answer) latches — the soft-warn never hard-blocks.
+    const second = await dispatchTool(d, 'submit_answer', { source: 'run: x -> { aggregate: pct }' });
+    expect(second.isError).toBe(false);
+    expect(d.state.submitted).toBe(true);
+  });
+
+  it('a clean-shaped answer latches on the first submit (no warning)', async () => {
+    const d = deps({ runtime: runtimeReturning([{ pct: 11.486208 }]), question: 'What percentage of transactions are fraudulent?' });
+    const r = await dispatchTool(d, 'submit_answer', { source: 'run: x -> { aggregate: pct }' });
+    expect(d.state.submitted).toBe(true);
+    expect(r.content).toContain('Submitted');
+  });
+
+  it('an answer submitted with no question/guideline context is never warned', async () => {
+    // deps() has no question/guidelines → linter is a no-op even on an odd shape.
+    const d = deps({ runtime: runtimeReturning([{ pct: 0.5 }]) });
+    await dispatchTool(d, 'submit_answer', { source: 'run: x -> { aggregate: pct }' });
+    expect(d.state.submitted).toBe(true);
+  });
+
+  it('warns on the submit_sql path too, then latches on resubmit', async () => {
+    const client = { callTool: async () => ({ structuredContent: { rows: [[0.62]] } }) } as unknown as ToolDeps['client'];
+    const d = deps({ client, allowSqlFallback: true, database: 'agentic_malloy', question: 'What percentage of x are fraudulent?', guidelines: 'a percentage' });
+    const first = await dispatchTool(d, 'submit_sql', { sql: 'select 0.62' });
+    expect(first.content).toContain('NOT YET RECORDED');
+    expect(d.state.submitted).toBe(false);
+    const second = await dispatchTool(d, 'submit_sql', { sql: 'select 0.62' });
+    expect(d.state.submitted).toBe(true);
+    expect(d.state.answerKind).toBe('sql');
+  });
+});

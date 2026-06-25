@@ -78,9 +78,46 @@ fits; drop to SQL when authoring fights you.
   (e.g. `card_scheme='NexPay' and is_credit = true` MISSES the `is_credit is null`
   rules that also apply to credit). This mirrors the empty-list rule for list fields:
   every scalar match field needs its `or … is null` branch.
-- Fee questions are the hard ones: a transaction matches MANY fee rules and ALL
-  matching fees are summed (no "most specific wins"). The central layer encodes this —
-  reuse its measures/views, don't rebuild the matching yourself.
+- **EXCEPTION — the most/least-expensive-X RANKING of a SPECIFIC transaction.** ONLY
+  when the question asks for the most/least expensive {ACI|MCC|scheme|account_type} a
+  *specific, fully-described* transaction would incur AND it fixes that transaction's
+  type ("for a **credit** transaction of N on GlobalCard, the most expensive ACI"):
+  match `is_credit = true` (or `is_credit = false`) STRICTLY and drop the
+  `is_credit is null` wildcard rules. This strict rule is ONLY for that ranking
+  template. An **AVERAGE-fee** question ("the **average** fee for credit transactions")
+  KEEPS the wildcard (`is_credit is null or = true`) even though it mentions credit —
+  an average over the rule population includes the wildcard rules (see the two
+  families below).
+- Fee questions split into TWO families — read the phrasing and pick the measure (a
+  transaction matches MANY fee rules; no "most specific wins"):
+  - **AVERAGE-SCENARIO family (the DEFAULT — most c3 questions).** Phrasings: "the
+    **average** fee a scheme charges", "in the **average scenario**", "most/least
+    expensive {scheme|MCC|ACI} **in general**", or any fee-magnitude question that does
+    NOT pin one concrete transaction's credit/debit type. These are answered by the
+    AVERAGE over the matching rule population — exactly what the layer's `avg_fee_*` /
+    `avg_by_*` / `cheapest_*` / `most_expensive_*` views compute, so REUSE those views
+    (with the WILDCARD credit filter). For "list all" ties, compute the max and return
+    every group at it via `having`, not `limit 1`.
+  - **SPECIFIC-TRANSACTION TOTAL family (the narrow case).** ONLY when ONE concrete
+    transaction is fully described — its **credit/debit type is fixed** (usually its
+    scheme too): "for a **credit** transaction of N on GlobalCard, the most expensive
+    ACI". The fee THAT transaction incurs is the **SUM of ALL matching rules**; rank
+    entities by that SUM, with STRICT credit and the PARTICIPATING universe (below).
+    The `avg_fee_*` / `most_expensive_*_on_N` views are NOT this — author the SUM (or
+    use a total-fee surface if one exists).
+  - **When unsure:** if the question says "average" / "in general", or does NOT fix the
+    transaction's credit/debit type, it is the AVERAGE-SCENARIO family — use the avg
+    views, never a hand-authored SUM.
+- **When authoring the SPECIFIC-TRANSACTION SUM ranking, rank over the PARTICIPATING
+  universe** — the values that appear in the fee rules (e.g. `SELECT DISTINCT
+  UNNEST(aci) FROM fees`), not the manual's full code list; a code that appears ONLY
+  via wildcard rules has no distinguishing fee and must be EXCLUDED from the ranking.
+  (Mirror: "what are the **possible values** of field X" DOES use the manual's full
+  defined domain — see the answer conventions below.)
+- The central layer encodes the fee-matching joins/wildcards — reuse its sources to
+  avoid rebuilding the matching, but choose the right MEASURE (SUM vs AVG) per above;
+  do not blindly defer to a pre-built ranking view whose aggregation may not match the
+  question.
 - **A matching/fee measure that returns 0 (or implausibly small) over rows you know
   exist is a red flag**, not an answer — suspect a wildcard/encoding or tier-domain
   mismatch, probe the keys, and re-check before submitting.
@@ -135,6 +172,28 @@ fits; drop to SQL when authoring fights you.
 - A concept the data/manual does not define → `Not Applicable`. An empty result
   set for a real metric → the empty string, not `Not Applicable` (and a NULL inside a
   list is a bug to filter out, not a value to emit).
+
+## DABstep answer conventions (apply verbatim — the gold scores these)
+
+- **Percentage → 0–100, never 0–1.** Any value the question/guideline calls a
+  "percentage" or "%" is on a 0–100 scale — multiply a 0–1 ratio by 100 (e.g. a rate
+  of `0.114862` is `11.486208`%), THEN apply the stated rounding. A bare ratio in
+  [0,1] for a "percentage" answer is wrong.
+- **"Shopper" / "customer" = a non-null `email_address`.** Identify/count shoppers by
+  DISTINCT non-null email (a NULL email is not a shopper). "average X per shopper" =
+  the **average of the per-shopper values** (compute X per shopper, then average those),
+  NOT `SUM(X) / COUNT(DISTINCT shopper)`.
+- **"The dataset" = the `payments` table.** "merchants / shoppers in the dataset"
+  means those PRESENT IN `payments`, not the `merchants` reference table or a
+  merchants-grain layer surface.
+- **"Possible values of field X" = the manual's DEFINED domain** for X (including
+  codes that have zero rows in the data), NOT `SELECT DISTINCT` over the data. (This is
+  the opposite of the RANKING rule above, which uses only the participating values.)
+- **Multiple-choice answer → "X. Y".** When the question lists lettered options,
+  return the option letter AND its value in that exact form (e.g. `B. BE`).
+- **Manual-knowledge questions → answer from the manual's stated relationships**, not
+  an empirical computation, when the question asks what the manual says (e.g. which
+  field a fee depends on).
 
 ## Auto-added robustness rules (layer-improve)
 - Teach Malloy operator rules: use `group_by`+`aggregate` (not `select`) in grouping queries; use `aggregate:` (not `calculate:`) for sums/avgs/counts — `calculate:` is only for window ops over already-grouped rows; to pick the max-of-aggregate row, compute the aggregate in an inner query then filter/top in an outer stage rather than using HAVING with a window; cast with `field::type` using the bare type keyword (string/number/date), not function-call syntax like `string_type(...)`.  _(why: submit_answer errored 42% of the time: Agent repeatedly misuses Malloy query operators (select in grouping, calculate with aggregates, HAVING with window funcs, bad cast syntax))_

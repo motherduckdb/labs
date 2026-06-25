@@ -23,10 +23,11 @@ import {
   evidenceBlock,
   analyzeMiss,
   nonTrainTaskIds,
+  viewMissClusters,
   type MissAnalysis,
   type MissClassification,
 } from './miss-analysis.js';
-import { traceBlock } from './miss-verdict.js';
+import { traceBlock, MISS_SYSTEM } from './miss-verdict.js';
 import type { TaskTrace } from './run-log.js';
 import type { MalloyRuntime } from './malloy-runtime.js';
 
@@ -396,6 +397,74 @@ describe('layer_listing_null (phantom NULL key in an enumeration answer)', () =>
     const c = classifyMiss(listingMiss({ reExecSmells: [] }));
     expect(c.category).toBe('query_wrong_answer');
     expect(c.layerSuspected).toBe(false);
+  });
+});
+
+// --- 2B.1 view-miss clustering (the detection unlock) ------------------------
+
+describe('viewMissClusters (closed-book: keys only on view + is_correct)', () => {
+  const rows = [
+    // a view reused ONLY by a miss (passCount=0) — the §4.1 "ranks cleanly by the
+    // wrong measure" blind spot → flagged by default (minMisses=1, missRate=1.0).
+    { task_id: '1451', is_correct: false, submitted: true, malloy_source: 'run: rules_lens -> by_card_scheme_avg_fee + { limit: 1 }' },
+    // a view reused by BOTH a miss and a pass → missRate=0.5 < 1.0 → NOT flagged.
+    { task_id: 'a', is_correct: false, submitted: true, malloy_source: 'run: fee_match -> total_fees_by_merchant_year' },
+    { task_id: 'b', is_correct: true, submitted: true, malloy_source: 'run: fee_match -> total_fees_by_merchant_year + { where: x }' },
+    // a healthy high-pass view (only passes) → never flagged.
+    { task_id: 'c', is_correct: true, submitted: true, malloy_source: 'run: fees_base -> by_card_scheme' },
+    // a non-submission (no malloy) must be ignored without throwing.
+    { task_id: 'd', is_correct: false, submitted: false, malloy_source: null },
+  ];
+
+  it('flags a view reused only by misses; protects any view a pass used', () => {
+    const c = viewMissClusters(rows, INDEX);
+    expect([...c.keys()]).toEqual(['rules_lens -> by_card_scheme_avg_fee']);
+    const stat = c.get('rules_lens -> by_card_scheme_avg_fee')!;
+    expect(stat).toMatchObject({ source: 'rules_lens', view: 'by_card_scheme_avg_fee', file: 'dabstep.malloy', missCount: 1, passCount: 0 });
+    expect(stat.missRate).toBe(1);
+    expect(c.has('fee_match -> total_fees_by_merchant_year')).toBe(false); // 1 miss + 1 pass → 0.5
+    expect(c.has('fees_base -> by_card_scheme')).toBe(false); // pass-only
+  });
+
+  it('respects a higher minMisses threshold (a lone miss no longer clusters)', () => {
+    expect(viewMissClusters(rows, INDEX, { minMisses: 2 }).size).toBe(0);
+  });
+
+  it('respects a lower missRate threshold (a mixed view can cluster)', () => {
+    const c = viewMissClusters(rows, INDEX, { minMissRate: 0.5 });
+    expect(c.has('fee_match -> total_fees_by_merchant_year')).toBe(true); // 0.5 now qualifies
+    expect(c.has('fees_base -> by_card_scheme')).toBe(false); // still pass-only (0.0)
+  });
+});
+
+// --- 2B.2 verdict: faithful-reuse owner relaxation ---------------------------
+
+describe('traceBlock faithful-reuse signal (2B.2)', () => {
+  const trace: TaskTrace = { taskId: '1451', steps: [{ name: 'submit_answer', ok: true }], exploredLayer: true, runMalloyErrors: 0, submitErrors: 0, toolCalls: 1 };
+
+  it('names the reused view and frames it as a LAYER-attributable faithful reuse', () => {
+    const tb = traceBlock(trace, '[A]', true, ['c3_avg_fee_by_aci -> most_expensive_aci_on_100']);
+    expect(tb).toMatch(/FAITHFUL REUSE/);
+    expect(tb).toContain('most_expensive_aci_on_100');
+    expect(tb).toMatch(/LAYER/);
+  });
+
+  it('frames an inline (no named view) answer as the agent\'s OWN query (skill)', () => {
+    const tb = traceBlock(trace, '[A]', false);
+    expect(tb).toMatch(/its OWN inline query/);
+    expect(tb).toMatch(/skill/i);
+  });
+});
+
+describe('MISS_SYSTEM owner rule (2B.2 relaxed, still closed-book)', () => {
+  it('permits owner=layer for a faithfully-reused named view, keeps inline=skill', () => {
+    expect(MISS_SYSTEM).toMatch(/FAITHFULLY REUSED a NAMED layer view/);
+    expect(MISS_SYSTEM).toMatch(/owner is "layer"/);
+    expect(MISS_SYSTEM).toMatch(/own inline query[\s\S]*owner is "skill"/i);
+  });
+  it('stays closed-book on the gold value', () => {
+    expect(MISS_SYSTEM).toMatch(/NOT given the gold answer/);
+    expect(MISS_SYSTEM).toMatch(/MUST NOT tune anything to a value/);
   });
 });
 

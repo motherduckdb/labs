@@ -15,6 +15,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
+import { extremumViewNames, viewRankingAggregation, type AggMode } from './malloy-source.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MODELS_DIR = path.join(REPO_ROOT, 'malloy', 'models');
@@ -161,8 +162,31 @@ export class MalloyStore {
         lines.push(`- ${e.name} [${e.kind}] (${f.file}) — ${e.summary}`);
         if (e.usage) lines.push(`    usage: ${e.usage}`);
       }
+      // 3.1 — DERIVED aggregation semantics for ranking views, so the catalog can't
+      // misroute "most expensive X" to a view that secretly ranks by an AVERAGE.
+      // Sourced from the .malloy measure definitions (stays in sync), so the meta
+      // prose can't drift from what the view actually computes.
+      for (const view of extremumViewNames(f.body)) {
+        const agg = viewRankingAggregation(f.body, view);
+        if (!agg) continue; // can't resolve → no tag (never guess)
+        // Informational, NOT a verdict: whether an average or a total is "right"
+        // depends on the question (an "average-scenario" question wants the AVERAGE;
+        // a specific transaction's incurred fee wants the SUM). Surface the fact;
+        // let the skill decide. (Editorializing "avg is wrong" over-steers
+        // average-scenario questions off their correct view.)
+        const gloss = agg === 'avg'
+          ? ' — an average over the grouped rows (for "average fee"/"average scenario" questions)'
+          : agg === 'sum'
+            ? ' — a total/sum over the matching rows (for "the total a specific transaction incurs")'
+            : '';
+        lines.push(`    ↳ \`${view}\` ranks by ${AGG_LABEL[agg]}${gloss}`);
+      }
     }
     if (lines.length === 1) lines.push('(no exports declared in _meta sidecars)');
     return lines.join('\n');
   }
 }
+
+const AGG_LABEL: Record<AggMode, string> = {
+  avg: 'AVERAGE', sum: 'TOTAL/SUM', min: 'MIN', max: 'MAX', count: 'COUNT',
+};
