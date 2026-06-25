@@ -78,8 +78,9 @@ export interface TraceItem {
 
 const FIXER_INSTRUCTION =
   'You are the senior fixer. The author got stuck (repeated Malloy compile/execution errors or ran out of turns). ' +
-  'Review the conversation and the diagnostics above, then write CORRECT Malloy and call submit_answer. ' +
-  'Prefer reusing the central layer; keep the per-query Malloy minimal.';
+  'Review the conversation and the diagnostics above, then either write CORRECT Malloy and call submit_answer, ' +
+  'or — if Malloy is the problem — compute the answer in SQL and call submit_sql (scored identically). ' +
+  'Prefer reusing a layer view (see list_views); keep the per-query Malloy minimal.';
 
 // Before escalating terminal prose to the expensive fixer, give the SAME author
 // one forced recovery turn: it already has the working context, so the common
@@ -96,7 +97,7 @@ const AUTHOR_RECOVERY_INSTRUCTION =
 const SAME_ERROR_STEER =
   'That run_malloy attempt failed with the SAME error as your previous one — re-running or re-reading layer files will NOT fix it. ' +
   'If the error is inside the COMPILED SQL (e.g. a binder/scope error like "Referenced table ... not found"), it is a defect in the central layer view, not in your query — stop using that view. ' +
-  'Instead: use the `query` (SQL) tool ONCE to compute the answer directly, then call submit_answer with self-contained Malloy that does NOT depend on the failing view — e.g. `run: duckdb.sql("""<your SQL>""") -> { ... }`.';
+  'Instead: use the `query` (SQL) tool to compute the answer directly, then call `submit_sql` with that SQL — it runs on MotherDuck and is scored exactly like a Malloy answer. Do NOT wrap SQL inside Malloy (`duckdb.sql(...)` is rejected).';
 
 /** Collapse an error message to a signature (drop digits/aliases/punctuation) so
  *  "table m_0 not found" and "table mm_1 not found" compare equal. */

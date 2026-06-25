@@ -147,4 +147,22 @@ export class MalloyStore {
     for (const f of this.byFile.values()) for (const e of f.exports) names.push(e.name);
     return names;
   }
+
+  /**
+   * One flat catalog of every exported surface (sources + named views) across all
+   * files, each with its one-line summary and how-to-call hint — the menu the
+   * agent picks from before authoring. A single call replaces the multi-step
+   * list_malloy_files → get_file discovery (and costs only one-liners, not source).
+   */
+  listViews(): string {
+    const lines = ['Malloy layer surfaces — pick one, then refine with `+ { where:/order_by:/limit: }` (avoid authoring from scratch):'];
+    for (const f of this.byFile.values()) {
+      for (const e of f.exports) {
+        lines.push(`- ${e.name} [${e.kind}] (${f.file}) — ${e.summary}`);
+        if (e.usage) lines.push(`    usage: ${e.usage}`);
+      }
+    }
+    if (lines.length === 1) lines.push('(no exports declared in _meta sidecars)');
+    return lines.join('\n');
+  }
 }

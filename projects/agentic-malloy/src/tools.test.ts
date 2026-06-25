@@ -46,3 +46,53 @@ describe('submit_answer translation diagnostic', () => {
     expect(d.state.translationMatch).toBeNull();
   });
 });
+
+describe('answer_kind + SQL fallback', () => {
+  it('tags a view-referencing Malloy answer as view-selection', async () => {
+    const d = deps({ viewNames: new Set(['cheapest_aci_on_100']) });
+    await dispatchTool(d, 'submit_answer', { source: 'run: c3 -> cheapest_aci_on_100 + { limit: 1 }' });
+    expect(d.state.answerKind).toBe('view-selection');
+  });
+
+  it('tags a from-scratch Malloy answer as authored-malloy', async () => {
+    const d = deps({ viewNames: new Set(['cheapest_aci_on_100']) });
+    await dispatchTool(d, 'submit_answer', { source: 'run: payments_base -> { aggregate: n is count() }' });
+    expect(d.state.answerKind).toBe('authored-malloy');
+  });
+
+  it('rejects duckdb.sql wrapped in Malloy and steers to submit_sql', async () => {
+    const d = deps();
+    const run = await dispatchTool(d, 'run_malloy', { source: 'run: duckdb.sql("""select 1""") -> { select: x }' });
+    expect(run.isError).toBe(true);
+    expect(run.content).toContain('submit_sql');
+    const sub = await dispatchTool(d, 'submit_answer', { source: 'run: duckdb.sql("""select 1""") -> { select: x }' });
+    expect(sub.isError).toBe(true);
+    expect(d.state.submitted).toBe(false);
+  });
+
+  it('submit_sql executes on MotherDuck, latches rows + sql, tags sql', async () => {
+    const client = { callTool: async () => ({ structuredContent: { rows: [['Visa']] } }) } as unknown as ToolDeps['client'];
+    const d = deps({ client, allowSqlFallback: true, database: 'agentic_malloy' });
+    const result = await dispatchTool(d, 'submit_sql', { sql: 'select card_scheme from x limit 1' });
+    expect(result.isError).toBe(false);
+    expect(d.state.submitted).toBe(true);
+    expect(d.state.answerKind).toBe('sql');
+    expect(d.state.finalCompiledSql).toBe('select card_scheme from x limit 1');
+    expect(d.state.finalRows).toEqual([['Visa']]);
+    expect(d.state.finalMalloy).toBeUndefined();
+  });
+
+  it('submit_sql is rejected when SQL fallback is disabled', async () => {
+    const d = deps({ allowSqlFallback: false });
+    const result = await dispatchTool(d, 'submit_sql', { sql: 'select 1' });
+    expect(result.isError).toBe(true);
+    expect(d.state.submitted).toBe(false);
+  });
+
+  it('list_views returns the store catalog', async () => {
+    const d = deps({ store: { listViews: () => 'CATALOG-LINE' } as unknown as ToolDeps['store'] });
+    const result = await dispatchTool(d, 'list_views', {});
+    expect(result.isError).toBe(false);
+    expect(result.content).toBe('CATALOG-LINE');
+  });
+});
