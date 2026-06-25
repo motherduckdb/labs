@@ -18,6 +18,7 @@ tokens, and far harder to author. The bottleneck is the **substrate**, not the m
 | Malloy layer | sonnet-4.6 + opus-4.7 | 370/419 = 88.3% | 312/348 (89.7%) | 58/71 | 94,747 | 43.3M | $40.06 | 11 | 1 |
 | Malloy layer | gemini-3-flash | 295/419 = 70.4% | 243/348 (69.8%) | 52/71 | 106,609 | 65.3M | $11.81 | 135 | 43 |
 | Malloy layer · **new harness, reasoning=high** | gemini-3-flash | **362/419 = 86.4%** | 304/348 (87.4%) | 58/71 | 87,857 | 43.3M | $14.56 | 54 | 5 |
+| Malloy layer · **new harness** | sonnet-4.6 + opus-4.8 | 354/419 = 84.5% | 307/348 (88.2%) | 47/71 (66.2%) | 80,420 | 35.4M | $35.33 | 12 | 1 |
 
 The only empty cell (baseline + sonnet/opus) was not run: the baseline already maxes at
 99.8% on the *cheap* model, so a premium-model baseline cannot change the verdict.
@@ -45,6 +46,28 @@ structural token inflation (layer + per-query Malloy + catalog is just more cont
 But the accuracy gap shrank from **~29 pts to ~13**, and you no longer need the premium stack
 to get there. (Caveat: this arm changes *two* variables vs the gemini row above — harness
 *and* reasoning; a low-reasoning new-harness run would separate the two.)
+
+### Update (2026-06-25) — the harness is a cheap-model accelerant, not a universal win
+
+Running the **premium arm on the new harness** (sonnet-4.6 author + opus-4.8 fixer, low
+reasoning — only the harness differs from the 88.3% row) *regressed*: **354/419 = 84.5%, down
+from 88.3%.** Hard held (88.2% vs 89.7%) but **easy collapsed (66.2% vs 81.7%, −15.5 pts).** A
+per-question diff vs the old premium run: **24 regressions, 8 gains (net −16; easy −11, hard
+−5), and half the regressions landed on the new paths** (view-selection 9, SQL fallback 3). The
+easy misses: the SQL fallback returning a wrong value / a 100× unit slip / a premature
+`Not Applicable` where direct authoring was right; composite and per-row answer shapes; and
+precision drift from picking a view instead of authoring directly.
+
+The reading: **friction-reduction is pure win when authoring friction is the bottleneck (the
+cheap model, thrashing) and net-negative when it isn't (the strong model, which wasn't).** The
+view-selection-first push and the SQL escape hatch add error-prone decision points — *which
+view? fall back to SQL?* — and on easy questions direct authoring was already optimal. So the
+harness lifts the cheap model to ≈premium accuracy *from below* while slightly eroding the top;
+it should **not** be applied to the premium tier as-is (model-aware gating, or a tighter/disabled
+SQL fallback for strong models, is the follow-up). The premium arm did get cheaper/leaner
+($40→$35, 95k→80k median tokens) — the regression buys efficiency, not accuracy. (Minor
+confound: opus 4.7→4.8 on the ~12 escalations, mostly hard; the easy damage is author/harness-
+side, and sonnet@temp-0 is near-deterministic, so the effect is real, not noise.)
 
 ## The controlled result — fix the model, swap only the substrate
 
