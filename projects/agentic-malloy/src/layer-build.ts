@@ -241,6 +241,12 @@ export function sourceNamesIn(src: string): string[] {
  * this repo's layer + the MalloyRuntime default DB (back-compat for callers that
  * pass only a file name).
  */
+/** Per-view execution budget during build/repair validation. A view that exceeds
+ *  this is almost always an intractable grain (a full cross-join over a large
+ *  candidate domain) — fail it FAST so the repair loop fixes it, rather than
+ *  wedging the whole build on one query. Generous for legitimate heavy views. */
+export const VIEW_VALIDATION_TIMEOUT_MS = 45_000;
+
 export async function validateModel(
   modelFile?: string,
   opts: { modelsDir?: string; dbPath?: string; checkQuality?: boolean } = {},
@@ -258,7 +264,7 @@ export async function validateModel(
       for (const s of inv.sources) {
         if (!mine.has(s)) continue;
         for (const view of inv.viewsBySource[s] ?? []) {
-          const r = await rt.run(`run: ${s} -> ${view}`, cap);
+          const r = await rt.run(`run: ${s} -> ${view}`, cap, VIEW_VALIDATION_TIMEOUT_MS);
           if (!r.ok) {
             const errText = (r.diagnostics ?? []).map((d) => d.message).join('\n');
             // Only the binder/scope class points to the join_many materialization
