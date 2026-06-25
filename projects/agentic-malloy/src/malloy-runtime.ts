@@ -190,10 +190,20 @@ export class MalloyRuntime {
       // wedging the caller. The underlying query may keep running, but the caller
       // proceeds. Only applied when a timeout is requested (build validation).
       if (timeoutMs && timeoutMs > 0) {
-        const timeout = new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error(`execution exceeded ${Math.round(timeoutMs / 1000)}s — likely an intractable grain (e.g. a full cross-join over a large candidate domain); reduce the materialized product or scope the candidate set`)), timeoutMs),
-        );
-        return await Promise.race([exec, timeout]);
+        // Hold the timer handle so we can clear it once the race settles — otherwise
+        // a successful fast run leaves the timer pending and keeps the event loop
+        // alive until it fires (a 114ms run kept the process up ~5.6s on a 5s timer).
+        // unref() is a belt-and-suspenders guard so the timer never blocks exit.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, rej) => {
+          timer = setTimeout(() => rej(new Error(`execution exceeded ${Math.round(timeoutMs / 1000)}s — likely an intractable grain (e.g. a full cross-join over a large candidate domain); reduce the materialized product or scope the candidate set`)), timeoutMs);
+          timer.unref?.();
+        });
+        try {
+          return await Promise.race([exec, timeout]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       }
       return await exec;
     } catch (err) {
