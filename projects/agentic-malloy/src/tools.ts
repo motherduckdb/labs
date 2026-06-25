@@ -121,19 +121,36 @@ const MALLOY_TOOL_SCHEMAS: ToolSchema[] = [
   },
 ];
 
+// submit_answer's description names submit_sql (correct when the fallback is on). When
+// it's off, swap in a Malloy-only description so no model-visible string points at the
+// (now absent) tool.
+const SUBMIT_ANSWER_DESC_MALLOY_ONLY =
+  'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Call exactly once. An unsubmitted run scores zero. (Do NOT wrap raw SQL in `duckdb.sql(...)`; this run is Malloy-only.)';
+
 export function buildToolSchemas(deps: ToolDeps): ToolSchema[] {
-  // When the SQL fallback is disabled, don't even expose submit_sql — a clean
-  // Malloy-only condition (no rejected-tool mismatch). dispatchTool still guards it.
-  const malloyTools =
-    deps.allowSqlFallback === false ? MALLOY_TOOL_SCHEMAS.filter((t) => t.name !== 'submit_sql') : MALLOY_TOOL_SCHEMAS;
-  return [...deps.mcpTools, ...malloyTools];
+  // When the SQL fallback is disabled, drop submit_sql AND rewrite submit_answer's
+  // description so no exposed tool steers to the absent path — a clean Malloy-only
+  // condition (no rejected-tool / contradicted-prompt mismatch). dispatchTool still guards it.
+  if (deps.allowSqlFallback === false) {
+    const malloyOnly = MALLOY_TOOL_SCHEMAS.filter((t) => t.name !== 'submit_sql').map((t) =>
+      t.name === 'submit_answer' ? { ...t, description: SUBMIT_ANSWER_DESC_MALLOY_ONLY } : t,
+    );
+    return [...deps.mcpTools, ...malloyOnly];
+  }
+  return [...deps.mcpTools, ...MALLOY_TOOL_SCHEMAS];
 }
 
-/** Steer the agent off the duckdb.sql("""…""")-in-Malloy hack to the clean SQL path. */
-const RAW_SQL_REJECT =
-  'Raw SQL wrapped in Malloy (`duckdb.sql(...)`) is not a Malloy answer. ' +
-  'If you need SQL, call `submit_sql` with the SQL whose result IS the answer — it runs on MotherDuck and is scored the same way. ' +
-  'Otherwise reuse a layer view (see `list_views`) and submit it via `submit_answer`.';
+/** Reject the duckdb.sql("""…""")-in-Malloy hack. Steer to submit_sql when the fallback
+ *  is on; to the layer (submit_answer) when it's off, so the message never names an
+ *  absent tool. */
+function rawSqlReject(sqlOn: boolean): string {
+  return sqlOn
+    ? 'Raw SQL wrapped in Malloy (`duckdb.sql(...)`) is not a Malloy answer. ' +
+        'If you need SQL, call `submit_sql` with the SQL whose result IS the answer — it runs on MotherDuck and is scored the same way. ' +
+        'Otherwise reuse a layer view (see `list_views`) and submit it via `submit_answer`.'
+    : 'Raw SQL wrapped in Malloy (`duckdb.sql(...)`) is not allowed. ' +
+        'Answer with the layer — reuse a view (see `list_views`) or author Malloy, and submit it via `submit_answer`.';
+}
 
 /** Does the submitted Malloy reference a named layer view? (view-selection vs authored.) */
 function referencesView(src: string, viewNames?: Set<string>): boolean {
@@ -225,7 +242,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
   }
 
   if (name === 'run_malloy') {
-    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: RAW_SQL_REJECT, isError: true };
+    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback !== false), isError: true };
     const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols, deps.kinds);
     state.lintFixesTotal += fixes.length;
     // Run via Malloy's native runtime (connected to MotherDuck for eval) — compile
@@ -240,7 +257,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
 
   if (name === 'submit_answer') {
     if (state.submitted) return { content: 'ERROR: answer already submitted', isError: true };
-    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: RAW_SQL_REJECT + '\nThe answer was NOT recorded.', isError: true };
+    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback !== false) + '\nThe answer was NOT recorded.', isError: true };
     const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols, deps.kinds);
     state.lintFixesTotal += fixes.length;
     // Run via Malloy's native runtime (MotherDuck for eval) — same engine for

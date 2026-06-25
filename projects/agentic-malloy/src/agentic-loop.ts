@@ -224,7 +224,10 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   // the fixer/recovery/steer prompts so a --no-sql-fallback run is a clean no-SQL
   // condition (submit_sql is also absent from the tool schemas then).
   const sqlOn = deps.allowSqlFallback !== false;
-  const taskPrompt = `Question: ${opts.question}\n\nGuidelines: ${opts.guidelines || '(none)'}\n\nFollow the skill: browse the Malloy layer, then author Malloy and submit_answer. The answer must be Malloy.`;
+  const howToAnswer = sqlOn
+    ? 'Follow the skill: find a layer view (or author Malloy) and submit_answer; if no view fits and Malloy fights you, compute it in SQL and submit_sql.'
+    : 'Follow the skill: browse the Malloy layer, then author Malloy and submit_answer. The answer must be Malloy.';
+  const taskPrompt = `Question: ${opts.question}\n\nGuidelines: ${opts.guidelines || '(none)'}\n\n${howToAnswer}`;
   const messages: ChatMessage[] = [{ role: 'user', content: taskPrompt }];
   // Full bundled conversation for the dive's complete trace view (not just tool I/O).
   const trace: TraceItem[] = [{ step: 'user', content: taskPrompt }];
