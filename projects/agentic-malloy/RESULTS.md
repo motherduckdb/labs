@@ -17,9 +17,34 @@ tokens, and far harder to author. The bottleneck is the **substrate**, not the m
 | **markdown+SQL** (baseline) | gemini-3-flash | **418/419 = 99.8%** | 348/348 (100%) | 70/71 | 42,370 | 18.0M | $8.58 | 0 | 0 |
 | Malloy layer | sonnet-4.6 + opus-4.7 | 370/419 = 88.3% | 312/348 (89.7%) | 58/71 | 94,747 | 43.3M | $40.06 | 11 | 1 |
 | Malloy layer | gemini-3-flash | 295/419 = 70.4% | 243/348 (69.8%) | 52/71 | 106,609 | 65.3M | $11.81 | 135 | 43 |
+| Malloy layer · **new harness, reasoning=high** | gemini-3-flash | **362/419 = 86.4%** | 304/348 (87.4%) | 58/71 | 87,857 | 43.3M | $14.56 | 54 | 5 |
 
 The only empty cell (baseline + sonnet/opus) was not run: the baseline already maxes at
 99.8% on the *cheap* model, so a premium-model baseline cannot change the verdict.
+
+### Update (2026-06-25) — the gap narrows (PR #71)
+
+A follow-up attacked the **authoring** friction (not the data logic) with three
+tool/skill changes — *view-selection* (a one-call `list_views` catalog so the agent reuses
+a named view instead of authoring from scratch), a *clean SQL fallback* (`submit_sql`, with
+`duckdb.sql(...)`-in-Malloy rejected), and *deterministic linting* of the SQL-habit Malloy
+errors (`select`→`group_by`/`aggregate`, `calculate`→`aggregate`, `where`→`having`, casts) —
+and re-ran the cheap model at `reasoning=high`. The **layer is unchanged** (`d7a2545e`,
+still `model_authored`).
+
+On the same 419 held-out, gemini-3-flash rose **70.4% → 86.4% (+16 pts)**; escalations
+135→54, hit-limit 43→5 (11%→1.2%), at roughly flat cost ($11.81→$14.56) and *fewer* tokens
+(median 106.6k→87.9k — the one-call catalog trims discovery). The diagnostic: with a view to
+select and a SQL exit, the cheap model stops thrashing, and the remaining misses are
+reasoning, not failed authoring. It now **nearly matches the premium sonnet/opus arm (88.3%)
+at ~1/3 the cost.**
+
+**The verdict holds, narrowed.** markdown+SQL still wins on every axis — accuracy (99.8% vs
+86.4%), cost ($8.58 vs $14.56), and prompt tokens (42k vs 88k median); the substrate's
+structural token inflation (layer + per-query Malloy + catalog is just more context) persists.
+But the accuracy gap shrank from **~29 pts to ~13**, and you no longer need the premium stack
+to get there. (Caveat: this arm changes *two* variables vs the gemini row above — harness
+*and* reasoning; a low-reasoning new-harness run would separate the two.)
 
 ## The controlled result — fix the model, swap only the substrate
 

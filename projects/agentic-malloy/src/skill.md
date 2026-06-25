@@ -87,6 +87,12 @@ fits; drop to SQL when authoring fights you.
 - **Final stage selects ONLY the asked value(s).** After you find the answer with a
   ranked/grouped query, add a final `select:` (or project) that drops the measure you
   sorted by, counts, and labels. "Which X?" → exactly one column (X), one row.
+- **Return the KEY/identifier the question asks for, not a descriptive label joined to it.**
+  When the layer exposes both an entity's code/key and a human-readable description of it,
+  and the question asks for the entity by its identifier, `group_by`/`select` the **key**,
+  not the label (e.g. a category *code*, not the category's display name). Mirror the form
+  of the value the question/guideline names; a description column is for your understanding,
+  not the answer. (When the identifier itself IS a name, that name is the answer.)
 - Apply the exact rounding stated, inside the Malloy/SQL.
 - Match the guideline's separators/brackets/case exactly — re-read the guideline
   verbatim before submitting and check value count, type, delimiter, and brackets.
