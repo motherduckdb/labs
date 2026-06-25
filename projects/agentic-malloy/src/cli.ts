@@ -453,7 +453,14 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   // The ubiquitous-language glossary (if the layer shipped one) maps the question's
   // vocabulary to layer concepts/surfaces — the question→layer bridge at answer time.
   const glossaryBlock = renderGlossaryForAnswering(await loadGlossaryArtifact(META_DIR));
-  const systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}${glossaryBlock ? `\n\n============ DOMAIN GLOSSARY (question terms → layer concepts) ============\n${glossaryBlock}` : ''}\n===============================`;
+  let systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}${glossaryBlock ? `\n\n============ DOMAIN GLOSSARY (question terms → layer concepts) ============\n${glossaryBlock}` : ''}\n===============================`;
+
+  // Malloy-only arm: the static skill describes a two-mode (Malloy | SQL) contract,
+  // so when the fallback is OFF we override it here — otherwise the prompt would
+  // advertise a (now absent) submit_sql tool. Makes --no-sql-fallback a clean condition.
+  if (!allowSqlFallback) {
+    systemPrompt += '\n\n[MALLOY-ONLY RUN: the SQL fallback is DISABLED and `submit_sql` is unavailable. Disregard any guidance about "two ways to answer" or falling back to SQL; answer EVERY question with Malloy via `submit_answer`.]';
+  }
 
   await mkdir(RESULTS_DIR, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T', 'T').slice(0, 15) + 'Z';

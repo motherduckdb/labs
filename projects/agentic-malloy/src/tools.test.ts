@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dispatchTool, newRunState, type ToolDeps } from './tools.js';
+import { buildToolSchemas, dispatchTool, newRunState, type ToolDeps } from './tools.js';
 import type { MalloyRuntime } from './malloy-runtime.js';
 
 function runtimeReturning(rows: Record<string, unknown>[], ok = true): MalloyRuntime {
@@ -94,5 +94,12 @@ describe('answer_kind + SQL fallback', () => {
     const result = await dispatchTool(d, 'list_views', {});
     expect(result.isError).toBe(false);
     expect(result.content).toBe('CATALOG-LINE');
+  });
+
+  it('exposes submit_sql by default but omits it when SQL fallback is disabled', () => {
+    expect(buildToolSchemas(deps()).map((t) => t.name)).toContain('submit_sql');
+    const offNames = buildToolSchemas(deps({ allowSqlFallback: false })).map((t) => t.name);
+    expect(offNames).not.toContain('submit_sql');
+    expect(offNames).toContain('submit_answer'); // Malloy path still present
   });
 });

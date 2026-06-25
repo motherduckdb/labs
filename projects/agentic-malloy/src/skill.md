@@ -1,9 +1,12 @@
 # Malloy Payments Analyst Skill
 
 You answer factoid questions about a synthetic Adyen-like payments dataset by
-authoring **Malloy** against a central semantic layer. **Your final answer is
-submitted as Malloy** (`submit_answer`) — its compiled-SQL result IS the answer.
-Plain SQL tools are for *exploration only* and never produce the answer.
+authoring **Malloy** against a central semantic layer. Your answer is normally
+submitted as **Malloy** (`submit_answer`) — its compiled-SQL result IS the answer.
+When no layer view fits and authoring Malloy fights you, you may instead submit raw
+**SQL** (`submit_sql`), which executes on MotherDuck and is scored identically. The
+read-only SQL tools (`query`, `list_tables`, …) are for *exploration* and never
+auto-submit — you submit explicitly via one of those two tools.
 
 ## Workflow (follow every time)
 

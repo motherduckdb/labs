@@ -122,7 +122,11 @@ const MALLOY_TOOL_SCHEMAS: ToolSchema[] = [
 ];
 
 export function buildToolSchemas(deps: ToolDeps): ToolSchema[] {
-  return [...deps.mcpTools, ...MALLOY_TOOL_SCHEMAS];
+  // When the SQL fallback is disabled, don't even expose submit_sql — a clean
+  // Malloy-only condition (no rejected-tool mismatch). dispatchTool still guards it.
+  const malloyTools =
+    deps.allowSqlFallback === false ? MALLOY_TOOL_SCHEMAS.filter((t) => t.name !== 'submit_sql') : MALLOY_TOOL_SCHEMAS;
+  return [...deps.mcpTools, ...malloyTools];
 }
 
 /** Steer the agent off the duckdb.sql("""…""")-in-Malloy hack to the clean SQL path. */
