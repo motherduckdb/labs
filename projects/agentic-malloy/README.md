@@ -53,7 +53,7 @@ npx tsx src/spike-fees.ts   # reproduce task 1711's 29.93 via a Malloy fee match
 npx tsx bin/asm-malloy.ts load              # build the local compile DB
 npx tsx bin/asm-malloy.ts malloy-preflight  # compile + local run sanity check
 npx tsx bin/asm-malloy.ts evaluate --task-id 1711 --author sonnet --fixer opus
-npx tsx bin/asm-malloy.ts evaluate --split templates --run-class official
+npx tsx bin/asm-malloy.ts evaluate --split templates --run-class official --no-steer  # official requires --no-steer (opus failover; in-place steer is the smoke default)
 npx tsx bin/asm-malloy.ts summary results/<file>.jsonl
 npx tsx bin/asm-malloy.ts usage-report results/<file>.jsonl   # substrate-value metrics (read-only, local)
 ```
@@ -88,6 +88,10 @@ honest:
 - `evaluate --run-class official` **fails fast** unless that marker exists, says
   `model_authored`, AND the on-disk layer still hashes to the recorded
   `malloy_model_hash`. A hand-edit breaks the hash → the run is refused.
+- An official run also requires **`--no-steer`** (the canonical sonnet-author /
+  opus-**failover** tiering). The in-place steer is the opus-free *smoke* default;
+  the gate refuses an official run without `--no-steer` rather than silently coercing
+  it — same "refuse, don't coerce" pattern as the author/fixer-model checks.
 - **Never hand-edit `malloy/models/*` to improve answers.** If the layer misses
   questions, change the `layer-build` prompt / `skill.md` / `layer-build.ts` and
   **rerun `layer-build`** — then re-run `evaluate`. Hand-edits make the run

@@ -785,9 +785,10 @@ async function main() {
       console.log('            tool-error rules are recommend-only unless --apply-skill-fixes;');
       console.log('            --re-eval measures edits as SMOKE — commit, then `evaluate --run-class official` to record a number)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
-      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic] [--no-sql-fallback]');
+      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic] [--no-sql-fallback] [--no-steer]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
       console.log('           (--no-sql-fallback disables submit_sql for a Malloy-only arm; SQL fallback is on by default)');
+      console.log('           (in-place steer is the default/opus-free; --no-steer restores the opus failover and is REQUIRED for --run-class official)');
       console.log('  upload [--database agentic_malloy_logs]   # controllog JSONL -> MotherDuck for the dive');
       console.log('  usage-report <results.jsonl> [--json out.json]   # substrate-value metrics for a run (read-only, local)');
   }
