@@ -112,6 +112,32 @@ describe('runTask no-submit recovery', () => {
     expect(r.authorRecoveryUsed).toBe(false); // tool-error escalation, not the prose-recovery path
   });
 
+  it('steerInsteadOfEscalate: consecutive errors steer the AUTHOR in place — no model switch', async () => {
+    const state = { submitted: false };
+    const events: { kind: string }[] = [];
+    // Two consecutive run_malloy errors (would escalate by default); then a submit.
+    streamMock
+      .mockResolvedValueOnce(sseTurn({ tool: { name: 'run_malloy', input: { source: 'bad1' } } }))
+      .mockResolvedValueOnce(sseTurn({ tool: { name: 'run_malloy', input: { source: 'bad2' } } }))
+      .mockResolvedValueOnce(sseTurn({ tool: { name: 'submit_answer', input: { source: 'good' } } }));
+    dispatchMock.mockImplementation(async (_deps: unknown, name: string) => {
+      if (name === 'submit_answer') { state.submitted = true; return { content: 'Submitted. 1 row(s).', isError: false }; }
+      return { content: "Malloy compile error:\n  - 'transaction_date' is not defined", isError: true };
+    });
+
+    const r = await runTask({
+      ...baseOpts(state),
+      steerInsteadOfEscalate: true,
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(r.escalated).toBe(false); // never failed over to the fixer model
+    expect(r.submitted).toBe(true);
+    expect(events.some((e) => e.kind === 'stuck_author_steer')).toBe(true);
+    // EVERY turn ran on the author model — the fixer model was never used.
+    for (const call of streamMock.mock.calls) expect(call[0].model).toBe('author-model');
+  });
+
   it('a stream failure ends the loop with a streamFailureReason (not a silent hit-limit)', async () => {
     const state = { submitted: false };
     streamMock.mockRejectedValueOnce(new Error('stream setup exploded'));

@@ -20,6 +20,8 @@ import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
 import { hashLayerOnDisk, PROVENANCE_PATH, META_DIR } from './layer-build.js';
 import { loadGlossaryArtifact, renderGlossaryForAnswering } from './glossary.js';
+import { loadLayerIndex } from './miss-analysis.js';
+import { computeUsageReport, formatUsageReport } from './usage-report.js';
 import { buildDabstepLayer } from './dabstep-build.js';
 import { improveLayer } from './layer-improve.js';
 import { uploadControllog } from './upload.js';
@@ -193,6 +195,7 @@ export interface EvalTaskCtx {
   escalateAfter: number;
   maxAuthorTurns: number;
   maxFixerTurns: number;
+  steerInsteadOfEscalate: boolean;
   reasoning: string;
   provider?: string; // pinned OpenRouter upstream provider (or undefined)
   runClass: string;
@@ -260,6 +263,7 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
         toolSchemas: buildToolSchemas(deps), deps,
         authorModel: ctx.author, fixerModel: ctx.fixer,
         escalateAfter: ctx.escalateAfter, maxAuthorTurns: ctx.maxAuthorTurns, maxFixerTurns: ctx.maxFixerTurns,
+        steerInsteadOfEscalate: ctx.steerInsteadOfEscalate,
         reasoningEffort: ctx.reasoning, provider: ctx.provider, taskId: tid, runId: ctx.runId,
       });
     } catch (e) {
@@ -364,11 +368,12 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
 
   const row: Record<string, unknown> = {
     task_id: tid, level: q.level, split: ctx.split, author_model: ctx.author, fixer_model: ctx.fixer, run_class: ctx.runClass,
+    steer_instead_of_escalate: ctx.steerInsteadOfEscalate,
     question: q.question, guidelines: q.guidelines, gold_answer: q.answer,
     predicted_answer: scoreResp.predicted_answer, is_correct: scoreResp.is_correct, correctness: scoreResp.correctness,
     match_source: scoreResp.match_source, malloy_source: state.finalMalloy ?? null, compiled_sql: state.finalCompiledSql ?? null,
     translation_match: state.translationMatch ?? null, answer_kind: state.answerKind ?? null,
-    escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
+    escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, steers_used: result?.steersUsed ?? 0, tool_calls: result?.toolCallCount ?? 0,
     files_read: state.filesRead, lint_fixes: state.lintFixesTotal, elapsed_s: +(elapsedMs / 1000).toFixed(2),
     cost_usd: result?.usage.cost ?? 0, prompt_tokens: result?.usage.promptTokens ?? 0, completion_tokens: result?.usage.completionTokens ?? 0,
     cached_tokens: result?.usage.cachedTokens ?? 0, cache_write_tokens: result?.usage.cacheWriteTokens ?? 0, provider: ctx.provider ?? null,
@@ -391,7 +396,17 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
 async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const split = (flags.split as string) || 'templates';
   const author = resolveModel((flags.author as string) || 'sonnet');
-  const fixer = resolveModel((flags.fixer as string) || 'opus');
+  // Steer-instead-of-escalate is the DEFAULT (opus-free): on repeated compile errors
+  // the AUTHOR is steered in place (see agentic-loop.ts) rather than failing over to a
+  // fixer model. The 27-task × 3-pass A/B showed it non-inferior to the opus failover
+  // (79/81 vs 77/81, within per-pass noise) at ~15% lower cost on that escalation-prone
+  // subset. Opt back into the opus failover with --no-steer (required for an official run).
+  const steerInsteadOfEscalate = !flags['no-steer'];
+  let fixer = resolveModel((flags.fixer as string) || (steerInsteadOfEscalate ? 'sonnet' : 'opus'));
+  if (steerInsteadOfEscalate) {
+    if (flags.fixer) console.warn(`⚠️  --fixer ${String(flags.fixer)} ignored: the in-place steer (default) is opus-free; pass --no-steer to use a fixer failover.`);
+    fixer = author; // no failover model in steer mode; any residual escalate() stays on the author
+  }
 
   // run_class is EXPLICIT (default smoke). It is NOT inferred from model flags —
   // that would mislabel runs (e.g. cheap gemini/gemini as "official"). Only an
@@ -409,7 +424,10 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     if (prov.malloy_provenance !== 'model_authored') reasons.push(`layer is ${prov.malloy_provenance} (${prov.reason}) — run a full \`layer-build\``);
     if (prov.manual_included !== true) reasons.push(`layer built without the manual (manual_included=${prov.manual_included})`);
     if (author !== resolveModel('sonnet')) reasons.push(`author must be sonnet (got ${author})`);
-    if (fixer !== resolveModel('opus')) reasons.push(`fixer must be opus (got ${fixer})`);
+    // The official baseline is the canonical sonnet-author / opus-FAILOVER tiering.
+    // The in-place steer is the everyday default, so an official run must opt out of it.
+    if (steerInsteadOfEscalate) reasons.push('the opus failover is required for an official run — pass --no-steer (the in-place steer is the default for smoke/experiment runs)');
+    else if (fixer !== resolveModel('opus')) reasons.push(`fixer must be opus (got ${fixer})`);
     // An official number must be REPRODUCIBLE from the recorded commit_sha. A dirty
     // tracked tree (e.g. layer-improve having modified src/skill.md, or any layer
     // edit) means the scored prompt/layer state isn't committed — refuse, don't
@@ -498,7 +516,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     console.warn('');
   }
 
-  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency} · sql_fallback=${allowSqlFallback ? 'on' : 'off'}${provider ? ` · provider=${provider}` : ''}`);
+  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency} · sql_fallback=${allowSqlFallback ? 'on' : 'off'}${steerInsteadOfEscalate ? ' · steer-instead-of-escalate (opus-free)' : ''}${provider ? ` · provider=${provider}` : ''}`);
 
   let correct = 0;
   let completed = 0;
@@ -515,7 +533,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
 
   const ctx: EvalTaskCtx = {
     systemPrompt, runtime, localRuntime, store, symbols, kinds, viewNames, allowSqlFallback, scorer, database,
-    author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, reasoning, provider,
+    author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, steerInsteadOfEscalate, reasoning, provider,
     runClass, prov, runId, split,
   };
 
@@ -534,6 +552,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
           max_author_turns: maxAuthorTurns,
           max_fixer_turns: maxFixerTurns,
           allow_sql_fallback: allowSqlFallback,
+          steer_instead_of_escalate: steerInsteadOfEscalate,
           reasoning,
           provider: provider ?? null,
           substrate: 'motherduck',
@@ -660,7 +679,7 @@ async function cmdLayerImprove(flags: Record<string, string | boolean>) {
     // commit-then-official flow for a recordable number.
     const reEvalRunClass = (flags['run-class'] === 'official') ? 'smoke' : ((flags['run-class'] as string) || 'smoke');
     if (flags['run-class'] === 'official') {
-      console.log(`\nℹ️  re-eval runs as SMOKE: the just-edited layer/provenance${res.skillFixesApplied.length ? '/skill' : ''} is uncommitted, and an official run requires a clean tree. To record an official number: commit the edits, then run \`asm-malloy evaluate --split ${(flags.split as string) || 'templates'} --run-class official\`.`);
+      console.log(`\nℹ️  re-eval runs as SMOKE: the just-edited layer/provenance${res.skillFixesApplied.length ? '/skill' : ''} is uncommitted, and an official run requires a clean tree. To record an official number: commit the edits, then run \`asm-malloy evaluate --split ${(flags.split as string) || 'templates'} --run-class official --no-steer\`.`);
     }
     console.log(`\n▶ re-evaluating ${ids.length} task-id(s) from ${path.basename(fromPath)} to measure the improvement (run_class=${reEvalRunClass}) …`);
     await cmdEvaluate({ ...flags, 'run-class': reEvalRunClass, 'task-id': ids.join(','), from: undefined as unknown as string });
@@ -698,6 +717,33 @@ async function cmdSummary(file: string) {
   console.log('answer_kind:', kindStr);
 }
 
+/**
+ * usage-report: substrate-value metrics over a completed run's results JSONL —
+ * answer-path economics, share-of-logic, central-vs-per-query, view utilization, and
+ * the answer-time context-token breakdown. Read-only + local (loads the on-disk layer
+ * + skill/primer/glossary; no MCP/network). `--json <path>` writes the report object.
+ */
+async function cmdUsageReport(flags: Record<string, string | boolean>, file: string) {
+  if (!file) throw new Error('usage: asm-malloy usage-report <results.jsonl> [--json out.json]');
+  const rows = (await readFile(file, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+  const store = new MalloyStore();
+  await store.load();
+  const layerIndex = await loadLayerIndex();
+  const skill = await readFile(SKILL_PATH, 'utf8');
+  const primer = await readFile(path.join(REPO_ROOT, 'docs', 'malloy', 'malloy-primer.md'), 'utf8');
+  const glossaryBlock = renderGlossaryForAnswering(await loadGlossaryArtifact(META_DIR));
+  const report = computeUsageReport(rows, {
+    centralLayerChars: store.centralLayerChars(),
+    layerIndex,
+    contextChars: { skill: skill.length, primer: primer.length, glossary: glossaryBlock.length },
+  });
+  console.log(formatUsageReport(report, file));
+  if (typeof flags.json === 'string') {
+    await writeFile(flags.json, JSON.stringify(report, null, 2));
+    console.log(`\nwrote ${flags.json}`);
+  }
+}
+
 function loadDotEnv(): void {
   try {
     process.loadEnvFile(path.join(REPO_ROOT, '.env'));
@@ -725,8 +771,10 @@ async function main() {
       return cmdUpload(flags);
     case 'summary':
       return cmdSummary(rest[0]);
+    case 'usage-report':
+      return cmdUsageReport(flags, rest[0]);
     default:
-      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|layer-improve|evaluate|upload|summary> [flags]');
+      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|layer-improve|evaluate|upload|summary|usage-report> [flags]');
       console.log('  load [--motherduck --database agentic_malloy]');
       console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3] [--provider anthropic]');
       console.log('  layer-improve --from results/RUN.jsonl [--model opus --reasoning medium --max-rounds 4] \\');
@@ -735,12 +783,14 @@ async function main() {
       console.log('           (triages a run\'s misses by MANNER of failure + runs a tool-error meta-analysis;');
       console.log('            edits the layer ONLY for structural defects from TRAIN-only runs, never tunes to a gold answer;');
       console.log('            tool-error rules are recommend-only unless --apply-skill-fixes;');
-      console.log('            --re-eval measures edits as SMOKE — commit, then `evaluate --run-class official` to record a number)');
+      console.log('            --re-eval measures edits as SMOKE — commit, then `evaluate --run-class official --no-steer` to record a number)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
-      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic] [--no-sql-fallback]');
+      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic] [--no-sql-fallback] [--no-steer]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
       console.log('           (--no-sql-fallback disables submit_sql for a Malloy-only arm; SQL fallback is on by default)');
+      console.log('           (in-place steer is the default/opus-free; --no-steer restores the opus failover and is REQUIRED for --run-class official)');
       console.log('  upload [--database agentic_malloy_logs]   # controllog JSONL -> MotherDuck for the dive');
+      console.log('  usage-report <results.jsonl> [--json out.json]   # substrate-value metrics for a run (read-only, local)');
   }
 }
 

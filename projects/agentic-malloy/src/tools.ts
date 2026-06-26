@@ -1,7 +1,7 @@
 /**
  * Tool surface for the Malloy agent:
- *   - MCP exploration tools (query/list_tables/list_columns/search_catalog/
- *     ask_docs_question) — SQL exploration on MotherDuck, never the final answer.
+ *   - MCP exploration tools (query/list_tables/list_columns/search_catalog) —
+ *     SQL exploration on MotherDuck, never the final answer.
  *   - Malloy layer tools (list_malloy_files, get_file, malloy_lint, run_malloy).
  *   - submit_answer — the scored path: lint -> Malloy run on MotherDuck.
  *

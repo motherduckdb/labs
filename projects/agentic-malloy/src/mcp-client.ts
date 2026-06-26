@@ -60,13 +60,15 @@ async function withTransportRetry<T>(client: Client | null, label: string, fn: (
   throw lastErr instanceof Error ? lastErr : new Error(`MCP ${label} failed`);
 }
 
+// Read-only exploration tools exposed to the agent. Each tool's schema is in the
+// prompt every turn, so unused tools are pure prefix overhead: list_databases is
+// useless (the DB is pinned in the preamble) and ask_docs_question saw 0 calls
+// across the held-out runs — both dropped.
 export const ALLOWED_TOOLS = new Set([
   'query',
   'list_tables',
   'list_columns',
-  'list_databases',
   'search_catalog',
-  'ask_docs_question',
 ]);
 
 export interface MCPTool {
