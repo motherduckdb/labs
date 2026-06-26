@@ -193,6 +193,7 @@ export interface EvalTaskCtx {
   escalateAfter: number;
   maxAuthorTurns: number;
   maxFixerTurns: number;
+  steerInsteadOfEscalate: boolean;
   reasoning: string;
   provider?: string; // pinned OpenRouter upstream provider (or undefined)
   runClass: string;
@@ -260,6 +261,7 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
         toolSchemas: buildToolSchemas(deps), deps,
         authorModel: ctx.author, fixerModel: ctx.fixer,
         escalateAfter: ctx.escalateAfter, maxAuthorTurns: ctx.maxAuthorTurns, maxFixerTurns: ctx.maxFixerTurns,
+        steerInsteadOfEscalate: ctx.steerInsteadOfEscalate,
         reasoningEffort: ctx.reasoning, provider: ctx.provider, taskId: tid, runId: ctx.runId,
       });
     } catch (e) {
@@ -364,11 +366,12 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
 
   const row: Record<string, unknown> = {
     task_id: tid, level: q.level, split: ctx.split, author_model: ctx.author, fixer_model: ctx.fixer, run_class: ctx.runClass,
+    steer_instead_of_escalate: ctx.steerInsteadOfEscalate,
     question: q.question, guidelines: q.guidelines, gold_answer: q.answer,
     predicted_answer: scoreResp.predicted_answer, is_correct: scoreResp.is_correct, correctness: scoreResp.correctness,
     match_source: scoreResp.match_source, malloy_source: state.finalMalloy ?? null, compiled_sql: state.finalCompiledSql ?? null,
     translation_match: state.translationMatch ?? null, answer_kind: state.answerKind ?? null,
-    escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, tool_calls: result?.toolCallCount ?? 0,
+    escalated: result?.escalated ?? false, fixer_turns: result?.fixerTurns ?? 0, steers_used: result?.steersUsed ?? 0, tool_calls: result?.toolCallCount ?? 0,
     files_read: state.filesRead, lint_fixes: state.lintFixesTotal, elapsed_s: +(elapsedMs / 1000).toFixed(2),
     cost_usd: result?.usage.cost ?? 0, prompt_tokens: result?.usage.promptTokens ?? 0, completion_tokens: result?.usage.completionTokens ?? 0,
     cached_tokens: result?.usage.cachedTokens ?? 0, cache_write_tokens: result?.usage.cacheWriteTokens ?? 0, provider: ctx.provider ?? null,
@@ -391,7 +394,17 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
 async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const split = (flags.split as string) || 'templates';
   const author = resolveModel((flags.author as string) || 'sonnet');
-  const fixer = resolveModel((flags.fixer as string) || 'opus');
+  // Steer-instead-of-escalate is the DEFAULT (opus-free): on repeated compile errors
+  // the AUTHOR is steered in place (see agentic-loop.ts) rather than failing over to a
+  // fixer model. The 27-task × 3-pass A/B showed it non-inferior to the opus failover
+  // (79/81 vs 77/81, within per-pass noise) at ~15% lower cost on that escalation-prone
+  // subset. Opt back into the opus failover with --no-steer (required for an official run).
+  const steerInsteadOfEscalate = !flags['no-steer'];
+  let fixer = resolveModel((flags.fixer as string) || (steerInsteadOfEscalate ? 'sonnet' : 'opus'));
+  if (steerInsteadOfEscalate) {
+    if (flags.fixer) console.warn(`⚠️  --fixer ${String(flags.fixer)} ignored: the in-place steer (default) is opus-free; pass --no-steer to use a fixer failover.`);
+    fixer = author; // no failover model in steer mode; any residual escalate() stays on the author
+  }
 
   // run_class is EXPLICIT (default smoke). It is NOT inferred from model flags —
   // that would mislabel runs (e.g. cheap gemini/gemini as "official"). Only an
@@ -409,7 +422,10 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     if (prov.malloy_provenance !== 'model_authored') reasons.push(`layer is ${prov.malloy_provenance} (${prov.reason}) — run a full \`layer-build\``);
     if (prov.manual_included !== true) reasons.push(`layer built without the manual (manual_included=${prov.manual_included})`);
     if (author !== resolveModel('sonnet')) reasons.push(`author must be sonnet (got ${author})`);
-    if (fixer !== resolveModel('opus')) reasons.push(`fixer must be opus (got ${fixer})`);
+    // The official baseline is the canonical sonnet-author / opus-FAILOVER tiering.
+    // The in-place steer is the everyday default, so an official run must opt out of it.
+    if (steerInsteadOfEscalate) reasons.push('the opus failover is required for an official run — pass --no-steer (the in-place steer is the default for smoke/experiment runs)');
+    else if (fixer !== resolveModel('opus')) reasons.push(`fixer must be opus (got ${fixer})`);
     // An official number must be REPRODUCIBLE from the recorded commit_sha. A dirty
     // tracked tree (e.g. layer-improve having modified src/skill.md, or any layer
     // edit) means the scored prompt/layer state isn't committed — refuse, don't
@@ -498,7 +514,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
     console.warn('');
   }
 
-  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency} · sql_fallback=${allowSqlFallback ? 'on' : 'off'}${provider ? ` · provider=${provider}` : ''}`);
+  console.log(`split=${split} · ${questions.length} q · author=${author} fixer=${fixer} · run_class=${runClass} · provenance=${prov.malloy_provenance} · db=${database} · conc=${concurrency} · sql_fallback=${allowSqlFallback ? 'on' : 'off'}${steerInsteadOfEscalate ? ' · steer-instead-of-escalate (opus-free)' : ''}${provider ? ` · provider=${provider}` : ''}`);
 
   let correct = 0;
   let completed = 0;
@@ -515,7 +531,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
 
   const ctx: EvalTaskCtx = {
     systemPrompt, runtime, localRuntime, store, symbols, kinds, viewNames, allowSqlFallback, scorer, database,
-    author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, reasoning, provider,
+    author, fixer, escalateAfter, maxAuthorTurns, maxFixerTurns, steerInsteadOfEscalate, reasoning, provider,
     runClass, prov, runId, split,
   };
 
@@ -534,6 +550,7 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
           max_author_turns: maxAuthorTurns,
           max_fixer_turns: maxFixerTurns,
           allow_sql_fallback: allowSqlFallback,
+          steer_instead_of_escalate: steerInsteadOfEscalate,
           reasoning,
           provider: provider ?? null,
           substrate: 'motherduck',
