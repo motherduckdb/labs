@@ -181,23 +181,27 @@ export function auditAggregationSetCompleteness(body: string): GateFinding[] {
  *  domain is data-derivable (`SELECT DISTINCT UNNEST(col)`). Hardcoding it drifts
  *  from the data (zero-row codes, missing codes). Pure. */
 export function auditHardcodedDerivableDomain(body: string): GateFinding[] {
-  // Universe columns enumerated by a hardcoded `(VALUES (...)) AS alias(col)` literal.
-  // This catches BOTH the inline c3 pattern (VALUES cross-joined in one duckdb.sql)
-  // AND the cleaner isolated-source pattern (a tiny `<col>_universe is duckdb.sql(
-  // "SELECT * FROM (VALUES …) AS t(col)")` source matched via Malloy joins elsewhere).
+  // Universe columns enumerated by a HARDCODED literal, in either of two shapes:
+  //  (a) `(VALUES (...)) AS alias(col)` — the inline c3 pattern AND the cleaner
+  //      isolated-source pattern (`<col>_universe is duckdb.sql("… (VALUES …) AS t(col)")`).
+  //  (b) `UNNEST([<literal list>]) AS col` — a list literal exploded. NOTE: only a
+  //      bracketed LITERAL (`[...]`) counts; `UNNEST(<column>)` is data-DERIVED and is
+  //      deliberately NOT matched (it has no `[`).
   const findings: GateFinding[] = [];
   const seen = new Set<string>();
-  for (const m of body.matchAll(/\(\s*VALUES\b[\s\S]{0,4000}?\)\s*AS\s+\w+\s*\(\s*([A-Za-z_]\w*)\s*\)/gi)) {
-    const col = m[1];
+  const cols: string[] = [];
+  for (const m of body.matchAll(/\(\s*VALUES\b[\s\S]{0,4000}?\)\s*AS\s+\w+\s*\(\s*([A-Za-z_]\w*)\s*\)/gi)) cols.push(m[1]);
+  for (const m of body.matchAll(/\bUNNEST\s*\(\s*\[[^\]]*\]\s*\)\s+AS\s+([A-Za-z_]\w*)/gi)) cols.push(m[1]);
+  for (const col of cols) {
     if (seen.has(col)) continue;
     // The enumerated column is matched against a LIST column via list_contains →
-    // its domain is data-derivable (DISTINCT UNNEST). A VALUES set NOT used in a
+    // its domain is data-derivable (DISTINCT UNNEST). A literal set NOT used in a
     // list match (e.g. a static lookup) is left alone.
     if (!new RegExp(`list_contains[^)]*\\b${col}\\b`, 'i').test(body)) continue;
     seen.add(col);
     findings.push({
       code: 'hardcoded_derivable_domain',
-      message: `Hardcoded universe: \`${col}\` is enumerated by a literal \`(VALUES (...))\` set but matched with \`list_contains\`, so its domain is data-derivable. Derive it instead — \`SELECT DISTINCT UNNEST(<list col>) FROM <base>\` — so it can't drift from the data (a hardcoded set can include a value present in zero rules, or miss one).`,
+      message: `Hardcoded universe: \`${col}\` is enumerated by a literal set (\`VALUES (...)\` or \`UNNEST([...])\`) but matched with \`list_contains\`, so its domain is data-derivable. Derive it instead — \`SELECT DISTINCT UNNEST(<list col>) FROM <base>\` — so it can't drift from the data (a hardcoded set can include a value present in zero rules, or miss one).`,
     });
   }
   return findings;

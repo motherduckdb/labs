@@ -123,6 +123,21 @@ source: priced is payments_enriched extend {
     const body = `source: bucket_lut is duckdb.sql("SELECT * FROM (VALUES ('low'),('high')) AS t(bucket)")`;
     expect(auditHardcodedDerivableDomain(body)).toEqual([]);
   });
+  it('flags an UNNEST([literal]) universe matched via list_contains (equivalent to the VALUES defect)', () => {
+    const body = `source: aci_universe is duckdb.sql("SELECT DISTINCT UNNEST(['A','B','C','D','E','F','G']) AS candidate_aci")
+source: priced is x extend {
+  view: by_aci is { group_by: candidate_aci where: list_contains!boolean(fees.aci, candidate_aci) }
+}`;
+    const f = auditHardcodedDerivableDomain(body);
+    expect(f.length).toBe(1);
+    expect(f[0].code).toBe('hardcoded_derivable_domain');
+    expect(f[0].message).toContain('candidate_aci');
+  });
+  it('does NOT flag UNNEST(<column>) — that is data-derived, not a literal', () => {
+    const body = `source: u is duckdb.sql("SELECT DISTINCT UNNEST(aci) AS aci FROM fees")
+source: m is x extend { view: v is { group_by: aci where: list_contains!boolean(fees.aci, aci) } }`;
+    expect(auditHardcodedDerivableDomain(body)).toEqual([]);
+  });
 });
 
 describe('GATE 3 — name-vs-aggregation mismatch', () => {

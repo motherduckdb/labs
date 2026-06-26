@@ -119,13 +119,13 @@ const MALLOY_TOOL_SCHEMAS: ToolSchema[] = [
   {
     name: 'submit_answer',
     description:
-      'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Call exactly once. An unsubmitted run scores zero. (Raw SQL wrapped in `duckdb.sql(...)` is NOT a Malloy answer — use submit_sql for that.)',
+      'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Submit once when ready — but a pre-submit answer-shape check may return a one-time warning; if so, fix the issue or call submit again to confirm, and it records then. An unsubmitted run scores zero. (Raw SQL wrapped in `duckdb.sql(...)` is NOT a Malloy answer — use submit_sql for that.)',
     input_schema: { type: 'object', properties: { source: { type: 'string' } }, required: ['source'] },
   },
   {
     name: 'submit_sql',
     description:
-      'Fallback answer path: submit raw DuckDB SQL whose result IS the answer, when no layer view fits and authoring Malloy is fighting you. Executes on MotherDuck; latches only on success. Call exactly once. Select ONLY the asked value(s).',
+      'Fallback answer path: submit raw DuckDB SQL whose result IS the answer, when no layer view fits and authoring Malloy is fighting you. Executes on MotherDuck; latches only on success. Submit once when ready — but a pre-submit answer-shape check may return a one-time warning; if so, fix the issue or call submit again to confirm, and it records then. Select ONLY the asked value(s).',
     input_schema: { type: 'object', properties: { sql: { type: 'string' } }, required: ['sql'] },
   },
 ];
@@ -134,7 +134,7 @@ const MALLOY_TOOL_SCHEMAS: ToolSchema[] = [
 // it's off, swap in a Malloy-only description so no model-visible string points at the
 // (now absent) tool.
 const SUBMIT_ANSWER_DESC_MALLOY_ONLY =
-  'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Call exactly once. An unsubmitted run scores zero. (Do NOT wrap raw SQL in `duckdb.sql(...)`; this run is Malloy-only.)';
+  'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Submit once when ready — but a pre-submit answer-shape check may return a one-time warning; if so, fix the issue or call submit again to confirm, and it records then. An unsubmitted run scores zero. (Do NOT wrap raw SQL in `duckdb.sql(...)`; this run is Malloy-only.)';
 
 export function buildToolSchemas(deps: ToolDeps): ToolSchema[] {
   // When the SQL fallback is disabled, drop submit_sql AND rewrite submit_answer's
