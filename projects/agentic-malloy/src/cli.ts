@@ -20,6 +20,8 @@ import { runTask } from './agentic-loop.js';
 import { resolveModel } from './llm-client.js';
 import { hashLayerOnDisk, PROVENANCE_PATH, META_DIR } from './layer-build.js';
 import { loadGlossaryArtifact, renderGlossaryForAnswering } from './glossary.js';
+import { loadLayerIndex } from './miss-analysis.js';
+import { computeUsageReport, formatUsageReport } from './usage-report.js';
 import { buildDabstepLayer } from './dabstep-build.js';
 import { improveLayer } from './layer-improve.js';
 import { uploadControllog } from './upload.js';
@@ -715,6 +717,33 @@ async function cmdSummary(file: string) {
   console.log('answer_kind:', kindStr);
 }
 
+/**
+ * usage-report: substrate-value metrics over a completed run's results JSONL —
+ * answer-path economics, share-of-logic, central-vs-per-query, view utilization, and
+ * the answer-time context-token breakdown. Read-only + local (loads the on-disk layer
+ * + skill/primer/glossary; no MCP/network). `--json <path>` writes the report object.
+ */
+async function cmdUsageReport(flags: Record<string, string | boolean>, file: string) {
+  if (!file) throw new Error('usage: asm-malloy usage-report <results.jsonl> [--json out.json]');
+  const rows = (await readFile(file, 'utf8')).split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+  const store = new MalloyStore();
+  await store.load();
+  const layerIndex = await loadLayerIndex();
+  const skill = await readFile(SKILL_PATH, 'utf8');
+  const primer = await readFile(path.join(REPO_ROOT, 'docs', 'malloy', 'malloy-primer.md'), 'utf8');
+  const glossaryBlock = renderGlossaryForAnswering(await loadGlossaryArtifact(META_DIR));
+  const report = computeUsageReport(rows, {
+    centralLayerChars: store.centralLayerChars(),
+    layerIndex,
+    contextChars: { skill: skill.length, primer: primer.length, glossary: glossaryBlock.length },
+  });
+  console.log(formatUsageReport(report, file));
+  if (typeof flags.json === 'string') {
+    await writeFile(flags.json, JSON.stringify(report, null, 2));
+    console.log(`\nwrote ${flags.json}`);
+  }
+}
+
 function loadDotEnv(): void {
   try {
     process.loadEnvFile(path.join(REPO_ROOT, '.env'));
@@ -742,8 +771,10 @@ async function main() {
       return cmdUpload(flags);
     case 'summary':
       return cmdSummary(rest[0]);
+    case 'usage-report':
+      return cmdUsageReport(flags, rest[0]);
     default:
-      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|layer-improve|evaluate|upload|summary> [flags]');
+      console.log('usage: asm-malloy <load|malloy-preflight|layer-build|layer-improve|evaluate|upload|summary|usage-report> [flags]');
       console.log('  load [--motherduck --database agentic_malloy]');
       console.log('  layer-build --model opus --reasoning medium [--no-manual] [--max-rounds 3] [--provider anthropic]');
       console.log('  layer-improve --from results/RUN.jsonl [--model opus --reasoning medium --max-rounds 4] \\');
@@ -758,6 +789,7 @@ async function main() {
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
       console.log('           (--no-sql-fallback disables submit_sql for a Malloy-only arm; SQL fallback is on by default)');
       console.log('  upload [--database agentic_malloy_logs]   # controllog JSONL -> MotherDuck for the dive');
+      console.log('  usage-report <results.jsonl> [--json out.json]   # substrate-value metrics for a run (read-only, local)');
   }
 }
 
