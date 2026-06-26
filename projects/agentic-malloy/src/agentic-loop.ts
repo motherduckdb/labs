@@ -24,6 +24,11 @@ export interface RunTaskOpts {
   escalateAfter: number;
   maxAuthorTurns: number;
   maxFixerTurns: number;
+  /** When true, the consecutive-compile-error trigger injects a content-bearing
+   *  steer and keeps the AUTHOR model (up to STEER_BUDGET times) instead of
+   *  failing over to the fixer model. The arm is opus-free only if the caller also
+   *  pins fixerModel === authorModel (the CLI flag does this). Default false. */
+  steerInsteadOfEscalate?: boolean;
   reasoningEffort?: string;
   provider?: string; // pin OpenRouter to a single upstream provider
   taskId: string;
@@ -57,6 +62,8 @@ export interface TaskResult {
   streamFailureReason: string | null;
   /** True if the author was given its one forced submit-now recovery turn. */
   authorRecoveryUsed: boolean;
+  /** In-place stuck-author steers issued (--steer-instead-of-escalate); 0 otherwise. */
+  steersUsed: number;
   /** Total OpenRouter stream-setup retries across all turns (telemetry). */
   retryCount: number;
   /** The full bundled conversation (OpenAI Responses-item shape: user / message /
@@ -116,6 +123,23 @@ function sameErrorSteer(sqlOn: boolean): string {
     (sqlOn
       ? 'Instead: use the `query` (SQL) tool to compute the answer directly, then call `submit_sql` with that SQL — it runs on MotherDuck and is scored exactly like a Malloy answer. Do NOT wrap SQL inside Malloy (`duckdb.sql(...)` is rejected).'
       : 'Instead: pivot to a DIFFERENT layer view or source that does not depend on the broken one, and submit_answer with that Malloy.')
+  );
+}
+
+// Shown (in --steer-instead-of-escalate mode) on N consecutive Malloy-authoring
+// errors INSTEAD of escalating to the fixer model. Operationalizes what opus did
+// when it "rescued" these tasks: read the exact field names rather than guessing,
+// apply the Malloy form named in the diagnostic, switch off a broken view, or fall
+// back to submit_sql. General (no dataset-specific nouns); flag-aware on SQL.
+function stuckAuthorSteer(n: number, sqlOn: boolean): string {
+  return (
+    `You've hit ${n} Malloy compile errors in a row — re-running the same shape will NOT clear them. Diagnose by cause, then fix:\n` +
+    "- \"'X' is not defined\": you are guessing a column name. Do NOT guess — call list_columns (or get_file on the source) and use the EXACT field names verbatim.\n" +
+    '- select / avg / aggregate / date-type errors: these are SQL habits Malloy rejects. Read the diagnostic literally — a reduction uses group_by: + aggregate:, never select:.\n' +
+    '- If the COMPILED SQL errors (a binder/scope error), the layer view itself is broken — switch to a DIFFERENT view or source.\n' +
+    (sqlOn
+      ? 'If Malloy keeps fighting you, compute the answer with the `query` (SQL) tool and call `submit_sql` — it runs on MotherDuck and is scored identically. Do NOT wrap SQL inside Malloy.'
+      : 'Pivot to a DIFFERENT layer view/source that does not depend on the broken one, and submit_answer with that Malloy.')
   );
 }
 
@@ -244,6 +268,8 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   let authorRecoveryUsed = false; // the author's one forced submit-now turn
   let retryCount = 0;
   let prevMalloyErrSig: string | null = null; // last turn's run_malloy/submit error signature
+  let steersUsed = 0; // stuck-author steers issued (--steer-instead-of-escalate)
+  const STEER_BUDGET = 2; // after this many in-place steers, fall back to escalate()
   const usage: TaskUsage = { promptTokens: 0, completionTokens: 0, cost: 0, cachedTokens: 0, cacheWriteTokens: 0 };
   // Hard ceiling only; each role is bounded separately below so the expensive
   // fixer can never run past --max-fixer-turns regardless of when it escalated.
@@ -357,24 +383,30 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     }
     messages.push({ role: 'user', content: toolResults });
 
-    // Repeated-IDENTICAL Malloy error → the agent is looping (often on a layer
-    // binder/scope bug it can't fix by rewriting). Steer it ONCE to the SQL
-    // fallback instead of letting it burn turns re-running the same thing.
+    if (deps.state.submitted) break;
+
     const errSig = malloyErr ? normErrSig(malloyErr) : null;
-    if (errSig && errSig === prevMalloyErrSig) {
+    consecutiveErrors = anyError ? consecutiveErrors + 1 : 0;
+    // Author max-turns escalation is handled at the top of the loop; here we act
+    // on repeated tool errors. Exactly one of these fires per turn:
+    //  1. steer-in-place (flagged): keep the author model, inject a steer, continue;
+    //  2. escalate to the fixer (default, or after the steer budget is spent);
+    //  3. one-shot same-error nudge when neither (1) nor (2) tripped this turn.
+    const stuck = role === 'author' && consecutiveErrors >= opts.escalateAfter;
+    if (stuck && opts.steerInsteadOfEscalate && steersUsed < STEER_BUDGET) {
+      messages.push({ role: 'user', content: stuckAuthorSteer(consecutiveErrors, sqlOn) });
+      opts.onEvent?.({ kind: 'stuck_author_steer', detail: errSig?.slice(0, 80) ?? null });
+      steersUsed++;
+      consecutiveErrors = 0; // give the author a fresh streak after the steer
+    } else if (stuck) {
+      escalate(`${consecutiveErrors} consecutive tool errors`);
+    } else if (errSig && errSig === prevMalloyErrSig) {
+      // Looping on the SAME error (often a layer binder/scope bug it can't fix by
+      // rewriting). One-shot nudge off the dead view.
       messages.push({ role: 'user', content: sameErrorSteer(sqlOn) });
       opts.onEvent?.({ kind: 'repeat_error_steer', detail: errSig.slice(0, 80) });
     }
     prevMalloyErrSig = errSig;
-
-    if (deps.state.submitted) break;
-
-    consecutiveErrors = anyError ? consecutiveErrors + 1 : 0;
-    // Author max-turns escalation is handled at the top of the loop; here we
-    // only escalate early on repeated tool errors.
-    if (role === 'author' && consecutiveErrors >= opts.escalateAfter) {
-      escalate(`${consecutiveErrors} consecutive tool errors`);
-    }
   }
 
   const hitLimit = !deps.state.submitted;
@@ -391,6 +423,7 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     hitLimit,
     streamFailureReason,
     authorRecoveryUsed,
+    steersUsed,
     retryCount,
     trace,
   };
