@@ -149,7 +149,7 @@ human) complement to the rule above: it triages a run's misses and edits the lay
   controllog build run. `--re-eval` then re-runs the same task-ids to measure —
   always as a **smoke** run (the just-edited layer/skill is uncommitted, and an
   official run requires a clean tree), so commit the edits and run
-  `evaluate --run-class official` separately to record an official number.
+  `evaluate --run-class official --no-steer` separately to record an official number.
 
 ## Harness status
 
