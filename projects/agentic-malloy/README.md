@@ -55,7 +55,15 @@ npx tsx bin/asm-malloy.ts malloy-preflight  # compile + local run sanity check
 npx tsx bin/asm-malloy.ts evaluate --task-id 1711 --author sonnet --fixer opus
 npx tsx bin/asm-malloy.ts evaluate --split templates --run-class official
 npx tsx bin/asm-malloy.ts summary results/<file>.jsonl
+npx tsx bin/asm-malloy.ts usage-report results/<file>.jsonl   # substrate-value metrics (read-only, local)
 ```
+
+`usage-report` aggregates a completed run into the substrate-value metrics:
+answer-path economics (view-selection / authored-malloy / sql), **share-of-logic**
+(authored Malloy chars / authored Malloy+SQL chars), central-vs-per-query Malloy size
++ Malloy→SQL expansion, **view utilization** (how many layer views are actually
+reused), and the answer-time context-token breakdown. `--json <path>` writes the
+report object. Read-only and local — no MCP/eval spend.
 
 `evaluate` runs the two-model author→fixer loop, explores via MotherDuck MCP,
 executes the compiled Malloy answer on MotherDuck, scores via the Python sidecar,
