@@ -38,6 +38,7 @@ import {
   steeringVocabulary,
   evidenceBlock,
   referencedViews,
+  viewMissClusters,
   loadTrainIds,
   nonTrainTaskIds,
   type MissRow,
@@ -213,6 +214,16 @@ export async function improveLayer(opts: {
     //    doesn't show, and held-out runs never edit.
     const defectsByFile = new Map<string, string[]>();
     const additiveFiles = new Set<string>(); // files whose defect is a coverage gap (add by analogy)
+
+    // 2B.1 — View-miss CLUSTERING (the detection unlock). Across the WHOLE run,
+    // a named view whose reuses land ONLY in misses (passCount===0) is
+    // structurally suspect even when it runs+ranks cleanly (the AVG-where-a-total-
+    // is-wanted blind spot). Closed-book: keys only on (view, is_correct,
+    // usedNamedView). Used below to PROMOTE a clean-running miss to layer-suspected
+    // so the verdict can blame the named view; the triple gate still guards edits.
+    const viewClusters = viewMissClusters(allRows, index);
+    if (viewClusters.size) console.log(`  view-miss clusters (reused only by misses): ${[...viewClusters.keys()].join(' · ')}`);
+
     for (const row of misses) {
       const a = await analyzeMiss(row, rt, index);
       let cls = classifyMiss(a);
@@ -225,7 +236,33 @@ export async function improveLayer(opts: {
         if (gap) cls = gap;
       }
       const trace = runId ? taskTrace(events, runId, a.taskId) : null;
-      const usedNamedView = a.malloySource ? referencedViews(a.malloySource, index).length > 0 : false;
+      const refViews = a.malloySource ? referencedViews(a.malloySource, index) : [];
+      const usedNamedView = refViews.length > 0;
+      const namedViewLabels = refViews.map((v) => `${v.source} -> ${v.view}`);
+
+      // 2B.1 promotion: a FAITHFUL reuse — a thin refinement of a named view that
+      // RAN CLEAN and returned rows (not the agent's own broken/empty inline
+      // query) — of a view that clustered to misses-only ⇒ promote to
+      // layer-suspected even with NO degeneracy smell. This only UNBLOCKS the
+      // model verdict to say 'layer'; the triple gate (trainOnly && layerSuspected
+      // && verdict.owner==='layer') still guards the actual edit, so a false
+      // positive costs at most one extra closed-book verdict call.
+      const faithfulReuse = usedNamedView && !!a.reExec?.ok && (a.reExec?.rowCount ?? 0) > 0 && (trace === null || trace.runMalloyErrors <= 1);
+      if (!cls.layerSuspected && faithfulReuse) {
+        const hit = refViews.find((v) => viewClusters.has(`${v.source} -> ${v.view}`));
+        if (hit) {
+          const stat = viewClusters.get(`${hit.source} -> ${hit.view}`)!;
+          cls = {
+            ...cls,
+            layerSuspected: true,
+            suggestedOwner: 'layer',
+            implicatedFiles: stat.file ? [stat.file, ...cls.implicatedFiles.filter((f) => f !== stat.file)] : cls.implicatedFiles,
+            note: `${cls.note}\nVIEW-MISS CLUSTER: the agent faithfully reused named view \`${hit.source} -> ${hit.view}\`, which across this run is reused ONLY by misses (${stat.missCount} miss / ${stat.passCount} pass). A view that runs and ranks cleanly yet is reused only by failures is structurally suspect — it likely ranks/aggregates by the wrong measure for these questions.`,
+          };
+          console.log(`    ↑ ${a.taskId}: promoted to layer-suspected via view-miss cluster \`${hit.source} -> ${hit.view}\` (${stat.missCount}m/${stat.passCount}p)`);
+        }
+      }
+
       // Closed-book vocabulary gap: question words the layer doesn't speak.
       const vocab = questionVocabularyGap(a.question ?? '', layerVocab);
       const evidence = evidenceBlock(a, cls) + (vocab.uncovered.length
@@ -242,7 +279,7 @@ export async function improveLayer(opts: {
       if (mannerEnabled || cls.layerSuspected) {
         const v = await missVerdict({
           evidence,
-          trace: traceBlock(trace, a.predictedAnswer, usedNamedView),
+          trace: traceBlock(trace, a.predictedAnswer, usedNamedView, namedViewLabels),
           implicatedFile: file,
           implicatedFileSrc: file && existsSync(path.join(MODELS_DIR, file)) ? await readFile(path.join(MODELS_DIR, file), 'utf8') : null,
           profiles,

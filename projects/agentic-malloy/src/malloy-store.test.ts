@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { MalloyStore } from './malloy-store.js';
 
 // Stable fixture layer (not the live malloy/ dir, which changes per build).
@@ -48,5 +51,35 @@ describe('MalloyStore', () => {
   it('reports central layer size and export names', () => {
     expect(store.centralLayerChars()).toBeGreaterThan(0);
     expect(store.allExportNames()).toContain('payments_base');
+  });
+});
+
+describe('MalloyStore.listViews aggregation tags (3.1 — stop misrouting)', () => {
+  it('tags an avg-ranked extremum view with an AVERAGE caution; a sum-ranked one as TOTAL', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'asm-store-'));
+    const models = path.join(dir, 'models');
+    const meta = path.join(dir, 'meta');
+    mkdirSync(models);
+    mkdirSync(meta);
+    writeFileSync(
+      path.join(models, 'c.malloy'),
+      `source: c is base extend {
+        dimension: f is fixed_amount
+        measure: avg_f is f.avg()
+        measure: total_f is f.sum()
+        view: most_expensive_x is { group_by: x aggregate: avg_f order_by: avg_f desc limit: 1 }
+        view: top_x_by_total is { group_by: x aggregate: total_f order_by: total_f desc limit: 1 }
+      }\n`,
+    );
+    try {
+      const store = new MalloyStore(models, meta);
+      await store.load();
+      const out = store.listViews();
+      // Informational aggregation labels (no over-steering "wrong" verdict).
+      expect(out).toMatch(/most_expensive_x` ranks by AVERAGE/);
+      expect(out).toMatch(/top_x_by_total` ranks by TOTAL\/SUM/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

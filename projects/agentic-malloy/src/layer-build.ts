@@ -27,8 +27,14 @@ import { DuckDBInstance } from '@duckdb/node-api';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { viewQualitySmells, smellSummary } from './view-quality.js';
+import { layerSourceGate } from './malloy-source.js';
 import { extractGlossary, groundGlossary, renderGlossary, type GlossaryEntry } from './glossary.js';
 import * as cl from './controllog.js';
+
+// Re-export the deterministic build gates (2A.3) so they conceptually "live with"
+// layer-build per the plan's file index, while staying a dependency-light pure
+// module (malloy-source.ts) the lean answer-time store can also import.
+export { layerSourceGate, viewRankingAggregation, extremumViewNames, type GateFinding } from './malloy-source.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Repo-relative locations. The layer + its docs live here by default; a generic
@@ -164,6 +170,8 @@ MODELING DISCIPLINE — verify against the data, never trust prose alone (genera
 - JOIN_MANY DOUBLE-COUNTS: a \`join_many\` multiplies each base row by the number of matched rows on the other side. Define the per-match measure at the joined grain — \`joined.sum(<expr combining joined columns and base columns>)\` — and NEVER re-aggregate a base-grain column (a volume, a count, an amount) after a join_many, or it is multiplied by the match count. State in the source's _meta which measures are base-grain vs match-grain.
 - SYMMETRIC AGGREGATES ACROSS A JOIN (compile error, very common): you CANNOT write a bare \`avg(joined.col)\` / \`min(joined.col)\` / \`max(joined.col)\` / \`sum(joined.col)\` over a joined relationship — Malloy rejects it ("Cannot compute \`avg\` across \`join_many\` relationship X; use \`X.col.avg()\`" and "Symmetric aggregate \`min\` must be written as \`min(expression)\` or \`path.to.field.min()\`"). ALWAYS use the path form on the joined source: \`joined.col.avg()\`, \`joined.col.min()\`, \`joined.col.max()\`, \`joined.col.sum()\` (or define the per-row expression as a dimension on the joined source first, then \`joined.that_dim.avg()\`). Never \`avg(joined.col)\`.
 - JOIN_MANY ON-CLAUSE SCOPE (critical, causes execution-only failures): a \`join_many ... on\` predicate must reference ONLY columns physically present on the two sources being joined. Do NOT reference a column reached through ANOTHER join — including a pass-through \`dimension: x is other_join.col\`. A pass-through dimension is just an ALIAS for the joined column, NOT a real column; it often COMPILES but the generated SQL references an out-of-scope alias and FAILS AT EXECUTION ("Referenced table … not found"). FIX (use this exact shape for fact×rule matching): (1) build an enriched fact source with a PROJECTION that turns the needed joined attributes into REAL local columns — \`source: enriched is fact_base extend { join_one: m is dim ... } -> { select: *, attr_a is m.col_a, attr_b is m.col_b, ... }\`; (2) then \`source: matched is enriched extend { join_many: rules on (len!number(rules.x)=0 or list_contains!boolean(rules.x, attr_a)) and ... }\` referencing ONLY \`enriched\`'s local columns. Keep the fan-out exactly ONE join level deep.
+- AGGREGATION COMPLETENESS — expose the FULL standard set, not one mode. For each per-row quantity you measure, define ALL of \`sum\`, \`avg\`, \`min\`, \`max\`, and a \`count\` of the rows, grouped by each relevant dimension. Different questions need DIFFERENT aggregations of the SAME quantity ("the total a group accumulates" = SUM vs "the typical value across the group" = AVG); exposing only one mode silently forces the wrong answer. And do NOT pre-bake "answer" views that freeze an aggregation + a tiebreak + a \`limit: 1\` (a \`most_X\` / \`cheapest_X … limit: 1\` view) — they hard-code ONE interpretation of a ranking question. Expose the measures + the dimensions and let the caller compose the ranking (order_by + limit) last-mile. A view NAMED for an extremum/total ("most/least/cheapest/highest") must rank by a true total or extremum, never by an average.
+- DERIVE ENUM/LIST UNIVERSES FROM THE DATA — never hardcode them. When you must explode a list/array column to group or rank by its elements, build the candidate universe from the column's OWN observed values (\`SELECT DISTINCT UNNEST(col) FROM <base>\`), NOT a literal \`(VALUES (...))\` set. A hardcoded literal drifts from the data — it can include a value that appears in zero rows (which then wins/loses a ranking on nothing) or miss one. (The full DEFINED domain — including zero-row codes — belongs ONLY in an explicitly-named "possible values of X" surface, never baked into a ranking source.)
 - A VIEW THAT COMPILES IS NOT DONE — IT MUST EXECUTE. Every view/measure you author will be run end-to-end at build time; one that compiles but errors at execution (binder/scope) is a FAILED build and will be sent back to you to fix. Author each source so a query through its joins actually returns rows.
 
 COMMENT DISCIPLINE — the .malloy and the _meta sidecar have DIFFERENT jobs; do not duplicate prose across them:
@@ -455,19 +463,29 @@ async function authorStage(opts: {
       cl.toolResult({ taskId: opts.label, runId: opts.runId, name: 'compile_check', callId, ok: v.ok, durationMs: Date.now() - cv0, model: opts.model, output: v.ok ? (v.smellDiag ? `ok (degenerate: ${v.smellDiag.slice(0, 400)})` : 'ok') : v.diag.slice(0, 1500) });
     }
     if (v.ok) {
-      // B2: the file executes. If a view is DEGENERATE (runs but doesn't compute
-      // what its name implies), nudge the author ONCE with the smell + the
-      // wildcard/grain fix — but ONLY when a re-author round remains. Smells are
-      // ADVISORY: they must NEVER turn a passing build into a failure, so a smell
-      // that first appears on the final allowed round is accepted, not nudged.
-      if (v.smellDiag && !smellNudged && round < opts.maxRounds) {
+      // B2 + 2A.3: the file executes. Run the deterministic build GATES (general
+      // name/structure heuristics over the source) AND the degeneracy smells; if
+      // EITHER fires, nudge the author ONCE with the combined diagnostics and force
+      // a re-author — but ONLY when a re-author round remains. Both are ADVISORY: a
+      // finding that first appears on the final allowed round is ACCEPTED, never
+      // converted into a hard build FAILURE (which would block the whole layer
+      // regeneration).
+      const gateFindings = layerSourceGate(malloy);
+      const gateDiag = gateFindings.length
+        ? `Build-gate findings (general modeling defects — fix them):\n${gateFindings.map((f) => `  - ${f.message}`).join('\n')}`
+        : '';
+      const smellHint = v.smellDiag
+        ? `${v.smellDiag}\n\nThis is usually a WRONG-GRAIN bug: an aggregate that folds in "applies-to-all"/wildcard rows (which are common to every group and don't discriminate) collapses the ranking. FIX generically: rank/compare by the ENTITY-SPECIFIC rows, or expose BOTH a specific-only and an effective (incl. wildcard) measure so the answer can pick. Re-author this file to fix the degenerate view(s).`
+        : '';
+      const qualityDiag = [smellHint, gateDiag].filter(Boolean).join('\n\n');
+      if (qualityDiag && !smellNudged && round < opts.maxRounds) {
         smellNudged = true;
         forceFull = true;
-        diag = `${v.smellDiag}\n\nThis is usually a WRONG-GRAIN bug: an aggregate that folds in "applies-to-all"/wildcard rows (which are common to every group and don't discriminate) collapses the ranking. FIX generically: rank/compare by the ENTITY-SPECIFIC rows, or expose BOTH a specific-only and an effective (incl. wildcard) measure so the answer can pick. Re-author this file to fix the degenerate view(s).`;
-        console.log(`  ⚠ ${opts.label} round ${round}: degenerate view — nudging once:\n${v.smellDiag.split('\n').slice(0, 4).map((l) => '      ' + l).join('\n')}`);
+        diag = qualityDiag;
+        console.log(`  ⚠ ${opts.label} round ${round}: quality findings — nudging once:\n${qualityDiag.split('\n').slice(0, 5).map((l) => '      ' + l).join('\n')}`);
         continue;
       }
-      console.log(`  ✓ ${opts.label} (round ${round}, ${mode}, $${agg.cost.toFixed(4)})${v.smellDiag ? ' [accepted with degeneracy smell]' : ''}`);
+      console.log(`  ✓ ${opts.label} (round ${round}, ${mode}, $${agg.cost.toFixed(4)})${qualityDiag ? ' [accepted with quality findings]' : ''}`);
       return { ok: true, ...agg };
     }
     console.log(`  ✗ ${opts.label} round ${round} (${mode}) error:\n${v.diag.split('\n').slice(0, 6).map((l) => '      ' + l).join('\n')}`);

@@ -16,7 +16,7 @@ import type { MissOwner } from './miss-analysis.js';
 /** Summarize one task's tool trace for a model prompt — the agent's OWN actions
  *  (tool calls, args, ok/error), how it explored the layer, and its answer shape.
  *  No gold answer; the predicted answer feeds only the coarse answer-shape. */
-export function traceBlock(trace: TaskTrace | null, predicted: unknown, usedNamedView: boolean): string {
+export function traceBlock(trace: TaskTrace | null, predicted: unknown, usedNamedView: boolean, namedViews: string[] = []): string {
   const shape = answerShape(predicted);
   const lines: string[] = [];
   if (trace) {
@@ -30,7 +30,17 @@ export function traceBlock(trace: TaskTrace | null, predicted: unknown, usedName
   } else {
     lines.push(`(no tool trace available for this task — judging from the submitted Malloy + answer shape only)`);
   }
-  lines.push(`Reused a NAMED layer view/measure in the final answer: ${usedNamedView ? 'yes' : 'NO'}.`);
+  // 2B.2 — distinguish a FAITHFUL REUSE of a named layer view (the wrong
+  // computation may be baked into the VIEW → owner can be 'layer') from the
+  // agent's OWN inline query (wrongness there → 'skill'). Structural only; no gold.
+  if (usedNamedView) {
+    const list = namedViews.length ? ` (${namedViews.join(', ')})` : '';
+    lines.push(
+      `Reused a NAMED layer view/measure in the final answer: yes${list}. This is a FAITHFUL REUSE — a thin where/order_by/limit refinement of a PRE-BUILT layer view, NOT the agent's own inline group_by/aggregate/order_by. If the wrong ranking/aggregation/grain is BAKED INTO that named view, the agent cannot fix it from its query → the defect is the LAYER's.`,
+    );
+  } else {
+    lines.push(`Reused a NAMED layer view/measure in the final answer: NO — the agent wrote its OWN inline query (any wrongness in its filter/field/ranking is a skill issue).`);
+  }
   lines.push(`Submitted answer shape: ${shape.kind}${shape.count > 1 ? ` (${shape.count} items)` : ''}.`);
   return lines.join('\n');
 }
@@ -68,7 +78,7 @@ export interface ModelCallMeta {
   raw: string;
 }
 
-const MISS_SYSTEM = `You are triaging a FAILED data question answered against a Malloy semantic layer. You must report (a) the MANNER of failure, (b) WHERE the fix belongs, and (c) the fix.
+export const MISS_SYSTEM = `You are triaging a FAILED data question answered against a Malloy semantic layer. You must report (a) the MANNER of failure, (b) WHERE the fix belongs, and (c) the fix.
 
 (a) manner — exactly one of:
 - "overspecified": the answer is broader / more precise than asked (extra rows, extra columns, too many decimals, a list where one value was wanted).
@@ -86,7 +96,7 @@ const MISS_SYSTEM = `You are triaging a FAILED data question answered against a 
 
 (c) fix.kind ∈ {skill, linter, layer, model} with a one-line GENERAL detail (a reusable rule — NEVER a DABstep-specific fact or a target value).
 
-CONSTRAINTS: you are given STRUCTURAL evidence and the agent's own trace ONLY. You are NOT given the gold answer and MUST NOT tune anything to a value. If the submitted query runs and returns rows and the wrongness is in the agent's own filter/field/ranking, the owner is "skill", not "layer".
+CONSTRAINTS: you are given STRUCTURAL evidence and the agent's own trace ONLY. You are NOT given the gold answer and MUST NOT tune anything to a value. Attribute the wrongness by WHO produced it. If the agent wrote its OWN inline query (its own group_by/aggregate/filter/order_by) and that logic is wrong, the owner is "skill". BUT if the agent FAITHFULLY REUSED a NAMED layer view (a thin where/order_by/limit refinement of a pre-built ranking/aggregating view) and the wrong ranking/aggregation/grain is BAKED INTO that named view — e.g. it ranks groups by an AVERAGE where a total or true extremum is wanted, or over the wrong grain/candidate universe — the owner is "layer": the named view itself encodes the wrong computation and the agent cannot fix it from its query. A view that runs and returns rows can STILL be a layer defect when its baked-in aggregation/grain is the wrong measure for the question.
 
 Return ONLY JSON: {"manner":"...","owner":"layer|skill|model","file":"<implicated .malloy file or null>","defect":"<one-line structural defect or empty>","fix":{"kind":"skill|linter|layer|model","detail":"<general rule>"},"rationale":"<one sentence>"}.`;
 

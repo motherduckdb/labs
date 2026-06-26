@@ -214,6 +214,78 @@ export function referencedViews(src: string, index: LayerIndex): Array<{ source:
 }
 
 // ---------------------------------------------------------------------------
+// View-miss CLUSTERING (2B.1) — the closed-book detection unlock. A named layer
+// view can RUN cleanly yet rank by the WRONG measure (§4.1: AVG where the
+// question wants a total), so the binary/structural probes never flag it. The
+// only gold-free signal left is the BINARY correct/incorrect improve already
+// has: a named view whose reuses CONCENTRATE in misses is structurally suspect.
+//
+// Keys ONLY on (source-scoped view name, is_correct, did-the-answer-reuse-it) —
+// no gold VALUE, no task_id, no dataset noun — so it respects the no-leakage
+// constitution. The default thresholds flag a view reused ONLY by misses
+// (passCount===0); a view ANY passing question used has missRate<1.0 and is
+// never flagged, so a healthy high-pass view is protected. Pure + testable.
+// ---------------------------------------------------------------------------
+
+export interface ViewReuseStat {
+  source: string;
+  view: string;
+  file: string | undefined;
+  /** reuses (this view referenced in the final answer) that landed in a MISS. */
+  missCount: number;
+  /** reuses that landed in a PASS. */
+  passCount: number;
+  /** missCount / (missCount + passCount). */
+  missRate: number;
+}
+
+/** A row shape sufficient for clustering: the binary correctness + the submitted
+ *  Malloy. Deliberately NOT MissRow so callers can pass either passers or misses. */
+export interface ClusterRow {
+  task_id?: string | number;
+  is_correct?: boolean;
+  submitted?: boolean;
+  malloy_source?: string | null;
+}
+
+/**
+ * Per-(source-scoped)-view reuse stats across a WHOLE run, returning only the
+ * views whose reuse is suspect: `missCount >= minMisses` AND `missRate >=
+ * minMissRate`. Defaults (minMisses=1, minMissRate=1.0) flag a view reused only
+ * by misses (passCount===0) — exactly the "ranks cleanly by the wrong measure"
+ * blind spot — while never flagging a view that any passing question reused.
+ * Pure; keyed `${source} -> ${view}`.
+ */
+export function viewMissClusters(
+  rows: ClusterRow[],
+  index: LayerIndex,
+  opts: { minMisses?: number; minMissRate?: number } = {},
+): Map<string, ViewReuseStat> {
+  const minMisses = opts.minMisses ?? 1;
+  const minMissRate = opts.minMissRate ?? 1.0;
+  const stats = new Map<string, ViewReuseStat>();
+  for (const row of rows) {
+    const src = (row.malloy_source ?? '').trim();
+    if (!src) continue; // no submitted Malloy → no view reuse to attribute
+    const isMiss = row.is_correct === false;
+    for (const { source, view } of referencedViews(src, index)) {
+      const key = `${source} -> ${view}`;
+      const s = stats.get(key) ?? { source, view, file: index.fileOfSource.get(source), missCount: 0, passCount: 0, missRate: 0 };
+      if (isMiss) s.missCount++;
+      else s.passCount++;
+      stats.set(key, s);
+    }
+  }
+  const flagged = new Map<string, ViewReuseStat>();
+  for (const [key, s] of stats) {
+    const total = s.missCount + s.passCount;
+    s.missRate = total ? s.missCount / total : 0;
+    if (s.missCount >= minMisses && s.missRate >= minMissRate) flagged.set(key, s);
+  }
+  return flagged;
+}
+
+// ---------------------------------------------------------------------------
 // Per-miss analysis (re-execution evidence) + deterministic classification.
 // ---------------------------------------------------------------------------
 

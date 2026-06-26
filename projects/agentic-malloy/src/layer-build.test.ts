@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { columnProfiles, renderQA, SEMANTIC_LAYER_POLICY, DUCKDB_NOTES, quoteDuckRef, safeTableName, normalizeTables } from './layer-build.js';
+import { columnProfiles, renderQA, SEMANTIC_LAYER_POLICY, DUCKDB_NOTES, quoteDuckRef, safeTableName, normalizeTables, layerSourceGate } from './layer-build.js';
 
 let dir: string;
 let dbPath: string;
@@ -104,6 +104,32 @@ describe('generic builder: anti-benchmark rendering', () => {
     // DUCKDB_NOTES is generic discipline — it must not bake in DABstep entities.
     expect(DUCKDB_NOTES).not.toMatch(/\bfee\b|\bmerchant\b|payments|acquirer/i);
     expect(DUCKDB_NOTES).toContain("duckdb.table('<table>')"); // placeholder, not a real table
+  });
+});
+
+// --- 2A: build prompt text + deterministic gates -----------------------------
+
+describe('2A build prompt + gates (general only)', () => {
+  it('DUCKDB_NOTES teaches the full aggregation set + data-derived universes (no dataset nouns)', () => {
+    expect(DUCKDB_NOTES).toMatch(/AGGREGATION COMPLETENESS/);
+    expect(DUCKDB_NOTES).toMatch(/sum.*avg.*min.*max/i);
+    expect(DUCKDB_NOTES).toMatch(/DISTINCT UNNEST/);
+    expect(DUCKDB_NOTES).toMatch(/limit:\s*1/); // warns against pre-baked argmax answer views
+    expect(DUCKDB_NOTES).not.toMatch(/\bfee\b|\bmerchant\b|payments|acquirer/i); // still general
+  });
+
+  it('layerSourceGate (re-exported from layer-build) flags the three c3-like defects', () => {
+    const codes = layerSourceGate(`source: s is duckdb.sql("""
+        WITH u AS (SELECT aci FROM (VALUES ('A'),('B')) AS t(aci))
+        SELECT f.*, u.aci AS aci FROM fees f CROSS JOIN u WHERE list_contains(f.aci, u.aci)
+      """) extend {
+        measure: avg_x is q.avg()
+        measure: rule_count is count()
+        view: most_expensive_x is { group_by: x aggregate: avg_x order_by: avg_x desc limit: 1 }
+      }`).map((f) => f.code);
+    expect(codes).toContain('hardcoded_derivable_domain');
+    expect(codes).toContain('aggregation_set_incomplete');
+    expect(codes).toContain('name_vs_aggregation');
   });
 });
 

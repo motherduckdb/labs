@@ -250,6 +250,8 @@ export async function runEvalTask(q: Question, ctx: EvalTaskCtx): Promise<EvalTa
         viewNames: ctx.viewNames,
         allowSqlFallback: ctx.allowSqlFallback,
         database: ctx.database,
+        question: q.question,
+        guidelines: q.guidelines,
         mcpTools,
         state,
       };
