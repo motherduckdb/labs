@@ -96,8 +96,8 @@ questions.
 
 A data-backed MotherDuck Dive presents all of the above with live queries and drill-down
 off-ramps (the matrix, the always-fail template, the harness/prompts, view-utilization, agent
-traces): **https://app.motherduck.com/dives/malloy-vs-context-e1093927-da06-4bf1-85df-73dd476ea8b1**
-(org-shared). It is built from `dive/` — `dive/story-load.ts` curates the `agentic_malloy_story`
+traces): **https://app.motherduck.com/dives/185458c7-c49c-4f6b-a131-58872ff45f8b**
+It is built from `dive/` — `dive/story-load.ts` curates the `agentic_malloy_story`
 MotherDuck database; `dive/bundle.mjs` produces the single-file dive.
 
 ## Reproduce

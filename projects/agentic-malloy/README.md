@@ -21,8 +21,8 @@ DABstep (more tokens, no accuracy gain, the layer mostly bypassed — while the 
 Malloy itself is accurate and generalizes). Best held-out: **382/419 = 91.2%** (sonnet+opus,
 official) vs the markdown+SQL baseline's **418/419 = 99.8%**, at ~2.5× the prompt tokens at a
 fixed model. Full numbers, findings, and scope: **`RESULTS.md`**. The story is also a live,
-data-backed MotherDuck Dive (built from `dive/`, org-shared):
-https://app.motherduck.com/dives/malloy-vs-context-e1093927-da06-4bf1-85df-73dd476ea8b1
+data-backed MotherDuck Dive (built from `dive/`):
+https://app.motherduck.com/dives/185458c7-c49c-4f6b-a131-58872ff45f8b
 
 ## Layout
 
