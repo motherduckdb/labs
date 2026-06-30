@@ -4,21 +4,27 @@ import { N, rows, STORY, INK, ARM, PATH, SERIF, SANS, MONO, Head, Figure, Loadin
 export default function BuildTab() {
   const surf = useSQLQuery(`SELECT
       (SELECT length(content) FROM "agentic_malloy_story"."main"."documents" WHERE kind='skill') AS malloy_skill,
+      (SELECT coalesce(length(content),0) FROM "agentic_malloy_story"."main"."documents" WHERE kind='primer') AS malloy_primer,
+      (SELECT coalesce(length(content),0) FROM "agentic_malloy_story"."main"."documents" WHERE kind='glossary') AS malloy_glossary,
       (SELECT coalesce(sum(length(content)),0) FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer') AS malloy_layer,
       (SELECT count(*) FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer') AS malloy_layer_n,
-      (SELECT coalesce(length(content),0) FROM "agentic_malloy_story"."main"."documents" WHERE kind='provenance') AS malloy_meta,
+      (SELECT coalesce(sum(length(content)),0) FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer_meta') AS malloy_meta,
+      (SELECT count(*) FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer_meta') AS malloy_meta_n,
       (SELECT length(content) FROM "agentic_malloy_story"."main"."documents" WHERE kind='baseline_skill') AS base_skill,
       (SELECT count(*) FROM "agentic_malloy_story"."main"."documents" WHERE kind='baseline_context') AS base_ctx_n,
       (SELECT sum(length(content)) FROM "agentic_malloy_story"."main"."documents" WHERE kind='baseline_context') AS base_ctx_chars`);
   const ctxList = useSQLQuery(`SELECT title, length(content) AS chars FROM "agentic_malloy_story"."main"."documents" WHERE kind='baseline_context' ORDER BY title`);
   const layerList = useSQLQuery(`SELECT title, length(content) AS chars FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer' ORDER BY title`);
+  const metaList = useSQLQuery(`SELECT title, length(content) AS chars FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer_meta' ORDER BY title`);
 
   const [doc, setDoc] = useDiveState<string>("build_doc", "malloy_skill");
   const docQ = useSQLQuery(
     doc === "malloy_skill" ? `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='skill' LIMIT 1`
+    : doc === "primer" ? `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='primer' LIMIT 1`
+    : doc === "glossary" ? `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='glossary' LIMIT 1`
     : doc === "baseline_skill" ? `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='baseline_skill' LIMIT 1`
-    : doc === "provenance" ? `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='provenance' LIMIT 1`
     : doc.startsWith("layer::") ? `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer' AND title='${doc.slice(7).replace(/'/g, "''")}' LIMIT 1`
+    : doc.startsWith("meta::") ? `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='layer_meta' AND title='${doc.slice(6).replace(/'/g, "''")}' LIMIT 1`
     : `SELECT content FROM "agentic_malloy_story"."main"."documents" WHERE kind='baseline_context' AND title='${doc.replace(/'/g, "''")}' LIMIT 1`,
   );
 
@@ -29,21 +35,34 @@ export default function BuildTab() {
   const lf = rows(layerFiles.data)[0] || {};
 
   const s = rows(surf.data)[0] || {};
-  // Fair comparison: each arm = answer-time SKILL + its broader knowledge surface
-  // (retrievable context items for the baseline; the model-authored Malloy layer + provenance metadata for Malloy).
-  const mSkill = N(s.malloy_skill), mLayer = N(s.malloy_layer), mMeta = N(s.malloy_meta);
-  const malloyTotal = mSkill + mLayer + mMeta;
+  // Fair comparison by WORKFLOW: each arm = what it INJECTS into every prompt +
+  // the deeper surface it RETRIEVES on demand. Itemized to every curated artifact.
+  //   Malloy injected: skill.md + Malloy primer + glossary (cli.ts system prompt)
+  //   Malloy retrieved: .malloy models + _meta sidecars (list_views / get_file)
+  //   Baseline injected: SKILL.md ; retrieved: context items (semantic_lookup)
+  const mSkill = N(s.malloy_skill), mPrimer = N(s.malloy_primer), mGloss = N(s.malloy_glossary);
+  const mLayer = N(s.malloy_layer), mMeta = N(s.malloy_meta);
+  const malloyTotal = mSkill + mPrimer + mGloss + mLayer + mMeta;
   const bSkill = N(s.base_skill), bCtx = N(s.base_ctx_chars);
   const baseTotal = bSkill + bCtx;
   const maxTotal = Math.max(malloyTotal, baseTotal) || 1;
   const mult = baseTotal ? malloyTotal / baseTotal : 0;   // Malloy surface vs baseline surface
+  // Malloy blues (injected → darker, retrieved → lighter); baseline greens.
   const surfaceBars = [
-    { arm: "Malloy arm", color: ARM.malloy, total: malloyTotal, files: 1 + N(s.malloy_layer_n) + (mMeta ? 1 : 0),
-      segs: [{ label: "skill.md", chars: mSkill },
-             { label: `semantic layer + metadata (${N(s.malloy_layer_n)} .malloy)`, chars: mLayer + mMeta }] },
-    { arm: "Baseline", color: ARM.baseline, total: baseTotal, files: 1 + N(s.base_ctx_n),
-      segs: [{ label: "SKILL.md", chars: bSkill },
-             { label: `${N(s.base_ctx_n)} context items`, chars: bCtx }] },
+    { arm: "Malloy arm", labelColor: ARM.malloy, total: malloyTotal,
+      files: 1 + 1 + 1 + N(s.malloy_layer_n) + N(s.malloy_meta_n),
+      segs: [
+        { label: "skill.md", chars: mSkill, role: "injected", color: "#0a6aa8" },
+        { label: "Malloy primer", chars: mPrimer, role: "injected", color: "#2f86c2" },
+        { label: "domain glossary (YAML)", chars: mGloss, role: "injected", color: "#5aa0d0" },
+        { label: `${N(s.malloy_layer_n)} .malloy models`, chars: mLayer, role: "retrieved", color: "#a9cce6" },
+        { label: `${N(s.malloy_meta_n)} _meta sidecars (YAML)`, chars: mMeta, role: "retrieved", color: "#cfe3f2" },
+      ] },
+    { arm: "Baseline", labelColor: ARM.baseline, total: baseTotal, files: 1 + N(s.base_ctx_n),
+      segs: [
+        { label: "SKILL.md", chars: bSkill, role: "injected", color: "#2d6a2d" },
+        { label: `${N(s.base_ctx_n)} context items`, chars: bCtx, role: "retrieved", color: "#9cc49c" },
+      ] },
   ];
   const flow = ["explore (MCP SQL)", "list_views / get_file", "author Malloy", "run_malloy → compile → exec", "submit (Malloy or SQL)"];
   const buildFlow = ["read manual + 26 train Q/A + schema", "author the layer (source-per-entity → joins → views)", "compile + execute every view (P0 gate)", "repair loop on failures", "hash + lock provenance"];
@@ -93,29 +112,46 @@ export default function BuildTab() {
 
       <Rule />
 
-      <Head kicker="is the comparison fair?" title="The tuning asymmetry">Neither arm is “just” its answer-time skill. The baseline pairs SKILL.md with retrievable context items; the Malloy arm pairs skill.md with a model-authored semantic layer. Counted fairly — skill <b>plus</b> surface — the Malloy arm is the <b>larger</b>, more-tuned surface. So the gap isn’t “less context to work with.”</Head>
-      <Figure caption={<>Total knowledge surface, in characters — each arm’s answer-time <b>skill</b> (darker) stacked with its broader <b>surface</b> (lighter): {N(s.base_ctx_n)} retrievable context items for the baseline, the model-authored semantic layer + provenance metadata for Malloy. Counted this way the Malloy arm is {mult ? `${mult.toFixed(1)}×` : ""} the baseline’s surface — so the easy-question gap isn’t a resourcing gap. The layer is there; it just goes largely unused (next section).</>}>
+      <Head kicker="is the comparison fair?" title="The tuning asymmetry">Neither arm is “just” its answer-time skill. Each one <b>injects</b> a skill into every prompt and <b>browses</b> a deeper surface on demand. Itemized fairly — every curated artifact each arm carries — the Malloy arm is {mult ? `${mult.toFixed(1)}×` : ""} the baseline’s surface. So the gap isn’t “less context to work with.”</Head>
+      <Figure caption={<>Every curated artifact in each arm’s surface, in characters. <b>Injected</b> into every prompt (left of the divider): the baseline’s SKILL.md; the Malloy arm’s skill.md + Malloy primer + domain glossary. <b>Browsed on demand</b> (right): the baseline’s {N(s.base_ctx_n)} context items via <i>semantic_lookup</i>; the Malloy arm’s {N(s.malloy_layer_n)} .malloy models + {N(s.malloy_meta_n)} _meta sidecars via <i>list_views</i>/<i>get_file</i> — the navigation path into the models. The Malloy arm is {mult ? `${mult.toFixed(1)}×` : ""} the baseline’s surface; the easy-question gap isn’t a resourcing gap. (These are authored-artifact sizes — only part of each enters a given prompt: e.g. the {N(s.malloy_glossary).toLocaleString()}-ch glossary renders to ~8.6K. Under-use is the next section’s point.)</>}>
         {surf.isLoading ? <Loading label="measuring…" /> : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 560 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 620 }}>
             {surfaceBars.map((b) => (
               <div key={b.arm}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontFamily: SANS, fontSize: 12, marginBottom: 3 }}>
-                  <span style={{ color: b.color, fontWeight: 600 }}>{b.arm}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", fontFamily: SANS, fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ color: b.labelColor, fontWeight: 600 }}>{b.arm}</span>
                   <span style={{ fontFamily: MONO, color: INK.muted }}>{N(b.total).toLocaleString()} ch · {b.files} files</span>
                 </div>
-                <div style={{ display: "flex", height: 18, width: `${(b.total / maxTotal) * 100}%`, minWidth: 3, borderRadius: 2, overflow: "hidden" }}>
-                  {b.segs.map((seg, i) => (
-                    <div key={seg.label} title={`${seg.label} — ${N(seg.chars).toLocaleString()} ch`}
-                      style={{ width: `${b.total ? (seg.chars / b.total) * 100 : 0}%`, background: b.color, opacity: i === 0 ? 0.95 : 0.4 }} />
-                  ))}
+                <div style={{ display: "flex", height: 20, width: `${(b.total / maxTotal) * 100}%`, minWidth: 3, borderRadius: 2, overflow: "hidden", border: `1px solid ${INK.rule}` }}>
+                  {b.segs.map((seg, i) => {
+                    const boundary = i > 0 && seg.role === "retrieved" && b.segs[i - 1].role === "injected";
+                    return (
+                      <div key={seg.label} title={`${seg.label} — ${N(seg.chars).toLocaleString()} ch · ${seg.role}`}
+                        style={{ width: `${b.total ? (seg.chars / b.total) * 100 : 0}%`, background: seg.color,
+                          boxShadow: "inset -1px 0 0 rgba(255,255,255,0.7)", borderLeft: boundary ? `2px solid ${INK.text}` : "none" }} />
+                    );
+                  })}
                 </div>
-                <div style={{ display: "flex", gap: 12, marginTop: 4, fontFamily: SANS, fontSize: 10.5, color: INK.faint, flexWrap: "wrap" }}>
-                  {b.segs.map((seg, i) => (
-                    <span key={seg.label} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                      <span style={{ width: 8, height: 8, borderRadius: 1, background: b.color, opacity: i === 0 ? 0.95 : 0.4 }} />
-                      {seg.label} · {N(seg.chars).toLocaleString()} ch
-                    </span>
-                  ))}
+                <div style={{ display: "flex", gap: 20, marginTop: 6, flexWrap: "wrap" }}>
+                  {(["injected", "retrieved"] as const).map((role) => {
+                    const segs = b.segs.filter((x) => x.role === role);
+                    if (!segs.length) return null;
+                    return (
+                      <div key={role} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <span style={{ fontFamily: SANS, fontSize: 9.5, letterSpacing: "0.06em", textTransform: "uppercase", color: INK.faint }}>
+                          {role === "injected" ? "injected every prompt" : "browsed on demand"}
+                        </span>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          {segs.map((seg) => (
+                            <span key={seg.label} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: SANS, fontSize: 10.5, color: INK.muted }}>
+                              <span style={{ width: 9, height: 9, borderRadius: 1, background: seg.color, border: `1px solid ${INK.rule}` }} />
+                              {seg.label} <span style={{ fontFamily: MONO, color: INK.faint }}>{N(seg.chars).toLocaleString()}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -126,15 +162,21 @@ export default function BuildTab() {
       <Head title="Read the prompts">&nbsp;</Head>
       <div style={{ marginBottom: 10, fontFamily: SANS, fontSize: 12 }}>
         <select value={doc} onChange={(e) => setDoc(e.target.value)} style={sel}>
-          <option value="malloy_skill">Malloy arm — skill.md</option>
-          <optgroup label="Malloy semantic layer (.malloy models)">
+          <optgroup label="Malloy — injected every prompt">
+            <option value="malloy_skill">skill.md ({N(mSkill)} ch)</option>
+            <option value="primer">malloy-primer.md ({N(mPrimer)} ch)</option>
+            <option value="glossary">_glossary.yaml ({N(mGloss)} ch)</option>
+          </optgroup>
+          <optgroup label="Malloy — semantic layer, .malloy models (browsed)">
             {rows(layerList.data).map((c) => <option key={`layer::${c.title}`} value={`layer::${c.title}`}>{String(c.title)} ({N(c.chars)} ch)</option>)}
           </optgroup>
-          <optgroup label="Malloy metadata">
-            <option value="provenance">.provenance.json ({N(mMeta)} ch)</option>
+          <optgroup label="Malloy — _meta navigation sidecars, YAML (browsed)">
+            {rows(metaList.data).map((c) => <option key={`meta::${c.title}`} value={`meta::${c.title}`}>{String(c.title)} ({N(c.chars)} ch)</option>)}
           </optgroup>
-          <option value="baseline_skill">Baseline — SKILL.md</option>
-          <optgroup label="Baseline context items">
+          <optgroup label="Baseline — injected every prompt">
+            <option value="baseline_skill">SKILL.md ({N(bSkill)} ch)</option>
+          </optgroup>
+          <optgroup label="Baseline — context items (browsed)">
             {rows(ctxList.data).map((c) => <option key={String(c.title)} value={String(c.title)}>{String(c.title)} ({N(c.chars)} ch)</option>)}
           </optgroup>
         </select>

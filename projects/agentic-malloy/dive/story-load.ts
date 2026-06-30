@@ -28,7 +28,10 @@ const BASELINE_FILE = path.join(ASC, 'results', 'test_20260624T203750Z.jsonl');
 const BASELINE_SKILL = path.join(ASC, 'skill', 'SKILL.md');
 const BASELINE_CTX_GLOB = path.join(ASC, 'context', 'items', '*.md');
 const LAYER_GLOB = path.join(MALLOY_ROOT, 'malloy', 'models', '*.malloy');
+const META_GLOB = path.join(MALLOY_ROOT, 'malloy', '_meta', '*.yaml');     // navigation sidecars (list_views/get_file) + the glossary
+const GLOSSARY = path.join(MALLOY_ROOT, 'malloy', '_meta', '_glossary.yaml'); // injected term→concept block (renderGlossaryForAnswering)
 const SKILL_FILE = path.join(MALLOY_ROOT, 'src', 'skill.md');
+const PRIMER = path.join(MALLOY_ROOT, 'docs', 'malloy', 'malloy-primer.md'); // injected every answer-time prompt (cli.ts)
 const DOCS_GLOB = path.join(MALLOY_ROOT, 'docs', '*.md');
 const PROVENANCE = path.join(MALLOY_ROOT, 'malloy', '.provenance.json');
 
@@ -188,11 +191,23 @@ async function main() {
         CASE WHEN TRY_CAST(task_id AS INTEGER) BETWEEN 1443 AND 1462 THEN 'aci_most_expensive_template' END AS family
       FROM read_json_auto('${BASELINE_FILE}')`);
 
-    // ── documents (Malloy skill + layer + docs, AND the baseline skill + context) ──
+    // ── documents — the curated knowledge surface of BOTH arms, by workflow role ──
+    //   Malloy injected every prompt (cli.ts): skill + primer + glossary(rendered)
+    //   Malloy retrieved on demand (list_views/get_file): layer (.malloy) + layer_meta (_meta sidecars)
+    //   Baseline injected: baseline_skill ; retrieved (semantic_lookup): baseline_context
+    //   doc/provenance are NOT part of the answer-time surface (kept for reference only).
+    // The glossary lives under _meta/ too, so layer_meta excludes it (counted separately).
     await run(`CREATE OR REPLACE TABLE ${S}.documents AS
       SELECT 'skill' AS kind, 'skill.md' AS title, 'md' AS lang, regexp_replace(filename,'.*/','') AS file, content FROM read_text('${SKILL_FILE}')
       UNION ALL BY NAME
+      SELECT 'primer' AS kind, 'malloy-primer.md' AS title, 'md' AS lang, 'malloy-primer.md' AS file, content FROM read_text('${PRIMER}')
+      UNION ALL BY NAME
+      SELECT 'glossary' AS kind, '_glossary.yaml' AS title, 'yaml' AS lang, '_glossary.yaml' AS file, content FROM read_text('${GLOSSARY}')
+      UNION ALL BY NAME
       SELECT 'layer' AS kind, regexp_replace(filename,'.*/','') AS title, 'malloy' AS lang, regexp_replace(filename,'.*/','') AS file, content FROM read_text('${LAYER_GLOB}')
+      UNION ALL BY NAME
+      SELECT 'layer_meta' AS kind, regexp_replace(filename,'.*/','') AS title, 'yaml' AS lang, regexp_replace(filename,'.*/','') AS file, content
+        FROM read_text('${META_GLOB}') WHERE filename NOT LIKE '%_glossary.yaml'
       UNION ALL BY NAME
       SELECT 'doc' AS kind, regexp_replace(filename,'.*/','') AS title, 'md' AS lang, regexp_replace(filename,'.*/','') AS file, content FROM read_text('${DOCS_GLOB}')
       UNION ALL BY NAME
