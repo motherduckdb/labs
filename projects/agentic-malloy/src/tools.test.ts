@@ -60,8 +60,8 @@ describe('answer_kind + SQL fallback', () => {
     expect(d.state.answerKind).toBe('authored-malloy');
   });
 
-  it('rejects duckdb.sql wrapped in Malloy and steers to submit_sql', async () => {
-    const d = deps();
+  it('rejects duckdb.sql wrapped in Malloy and steers to submit_sql (when fallback enabled)', async () => {
+    const d = deps({ allowSqlFallback: true });
     const run = await dispatchTool(d, 'run_malloy', { source: 'run: duckdb.sql("""select 1""") -> { select: x }' });
     expect(run.isError).toBe(true);
     expect(run.content).toContain('submit_sql');
@@ -96,21 +96,23 @@ describe('answer_kind + SQL fallback', () => {
     expect(result.content).toBe('CATALOG-LINE');
   });
 
-  it('exposes submit_sql by default but omits it when SQL fallback is disabled', () => {
-    const onSchemas = buildToolSchemas(deps());
-    expect(onSchemas.map((t) => t.name)).toContain('submit_sql');
-    const offSchemas = buildToolSchemas(deps({ allowSqlFallback: false }));
+  it('omits submit_sql by default (Malloy-only) and exposes it only when the fallback is enabled', () => {
+    // Default (SQL prohibited): submit_sql is absent; submit_answer is present and
+    // its description must not steer to the absent tool.
+    const offSchemas = buildToolSchemas(deps());
     expect(offSchemas.map((t) => t.name)).not.toContain('submit_sql');
-    expect(offSchemas.map((t) => t.name)).toContain('submit_answer'); // Malloy path still present
-    // No exposed tool may steer to the absent submit_sql in the Malloy-only arm.
+    expect(offSchemas.map((t) => t.name)).toContain('submit_answer');
     const offSubmit = offSchemas.find((t) => t.name === 'submit_answer')!;
     expect(offSubmit.description).not.toContain('submit_sql');
+    // Opt-in arm: submit_sql exposed; submit_answer keeps the SQL-path hint.
+    const onSchemas = buildToolSchemas(deps({ allowSqlFallback: true }));
+    expect(onSchemas.map((t) => t.name)).toContain('submit_sql');
     const onSubmit = onSchemas.find((t) => t.name === 'submit_answer')!;
     expect(onSubmit.description).toContain('duckdb.sql'); // on-arm keeps the SQL-path hint
   });
 
-  it('duckdb.sql reject does NOT name submit_sql when the fallback is disabled', async () => {
-    const off = await dispatchTool(deps({ allowSqlFallback: false }), 'run_malloy', { source: 'run: duckdb.sql("""select 1""") -> { select: x }' });
+  it('duckdb.sql reject does NOT name submit_sql in the default (Malloy-only) arm', async () => {
+    const off = await dispatchTool(deps(), 'run_malloy', { source: 'run: duckdb.sql("""select 1""") -> { select: x }' });
     expect(off.isError).toBe(true);
     expect(off.content).not.toContain('submit_sql');
     expect(off.content).toContain('submit_answer');

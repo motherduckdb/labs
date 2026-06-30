@@ -244,10 +244,11 @@ export async function streamOneTurn(opts: {
 
 export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   const { deps, taskId, runId } = opts;
-  // SQL fallback on unless explicitly disabled — gates the submit_sql wording in
-  // the fixer/recovery/steer prompts so a --no-sql-fallback run is a clean no-SQL
-  // condition (submit_sql is also absent from the tool schemas then).
-  const sqlOn = deps.allowSqlFallback !== false;
+  // SQL fallback OFF unless explicitly enabled (SQL is prohibited as an answer
+  // substrate by default) — gates the submit_sql wording in the fixer/recovery/steer
+  // prompts so the default run is a clean no-SQL condition (submit_sql is also absent
+  // from the tool schemas then). Opt in with --sql-fallback.
+  const sqlOn = deps.allowSqlFallback === true;
   const howToAnswer = sqlOn
     ? 'Follow the skill: find a layer view (or author Malloy) and submit_answer; if no view fits and Malloy fights you, compute it in SQL and submit_sql.'
     : 'Follow the skill: browse the Malloy layer, then author Malloy and submit_answer. The answer must be Malloy.';

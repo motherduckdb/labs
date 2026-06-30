@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { lintMalloy, buildKindMap, detectRawSqlInMalloy, type FieldKind } from './linter.js';
+import { lintMalloy, buildKindMap, detectRawSqlInMalloy, countRawSqlInMalloy, type FieldKind } from './linter.js';
 import type { ModelInventory } from './malloy-runtime.js';
 
 const SYMBOLS = new Set(['payments_base', 'fees', 'transaction_count', 'eur_amount', 'aci']);
@@ -181,5 +181,28 @@ describe('detectRawSqlInMalloy', () => {
     expect(detectRawSqlInMalloy('run: duckdb.sql("""select 1""") -> { select: x }')).toBe(true);
     expect(detectRawSqlInMalloy('run: duckdb . sql ( """select 1""" ) -> {}')).toBe(true);
     expect(detectRawSqlInMalloy('run: payments_base -> { aggregate: transaction_count }')).toBe(false);
+  });
+
+  it('is stable across repeated calls (shared global regex lastIndex is reset)', () => {
+    const src = 'source: u is duckdb.sql("SELECT 1")';
+    expect(detectRawSqlInMalloy(src)).toBe(true);
+    expect(detectRawSqlInMalloy(src)).toBe(true); // would flip to false if lastIndex leaked
+  });
+});
+
+describe('countRawSqlInMalloy', () => {
+  it('counts each duckdb.sql(...) block — drives the build harness add-only gate', () => {
+    expect(countRawSqlInMalloy('run: payments_base -> { aggregate: n is count() }')).toBe(0);
+    expect(countRawSqlInMalloy('source: u is duckdb.sql("SELECT DISTINCT aci FROM payments")')).toBe(1);
+    const two = 'source: a is duckdb.sql("""SELECT 1""")\nsource: b is duckdb . sql ("""SELECT 2""")';
+    expect(countRawSqlInMalloy(two)).toBe(2);
+  });
+
+  it('detects an edit that ADDS a block (count grows) vs one that does not (grandfathered)', () => {
+    const existing = 'source: u is duckdb.sql("SELECT 1")\nview: v is { group_by: x }';
+    const editAddsSql = existing + '\nsource: w is duckdb.sql("SELECT 2")';
+    const editNoSql = existing + '\nview: v2 is { group_by: y }';
+    expect(countRawSqlInMalloy(editAddsSql) > countRawSqlInMalloy(existing)).toBe(true);
+    expect(countRawSqlInMalloy(editNoSql) > countRawSqlInMalloy(existing)).toBe(false);
   });
 });

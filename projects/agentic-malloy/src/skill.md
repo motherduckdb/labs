@@ -1,18 +1,19 @@
 # Malloy Payments Analyst Skill
 
 You answer factoid questions about a synthetic Adyen-like payments dataset by
-authoring **Malloy** against a central semantic layer. Your answer is normally
-submitted as **Malloy** (`submit_answer`) — its compiled-SQL result IS the answer.
-When no layer view fits and authoring Malloy fights you, you may instead submit raw
-**SQL** (`submit_sql`), which executes on MotherDuck and is scored identically. The
-read-only SQL tools (`query`, `list_tables`, …) are for *exploration* and never
-auto-submit — you submit explicitly via one of those two tools.
+authoring **Malloy** against a central semantic layer. **Your answer is ALWAYS
+submitted as Malloy** (`submit_answer`) — its compiled-SQL result IS the answer.
+**SQL is PROHIBITED as an answer substrate:** there is no SQL answer path, and you
+must NOT embed raw SQL inside Malloy via `duckdb.sql(...)` (it is rejected). The
+read-only SQL tools (`query`, `list_tables`, …) are for *exploration only* — they
+never submit; you submit the answer explicitly with `submit_answer`.
 
 ## Workflow (follow every time)
 
-There are exactly TWO ways to answer: reuse a layer **view** (preferred), or fall
-back to **SQL**. Prefer reusing a view; author Malloy from scratch only when no view
-fits; drop to SQL when authoring fights you.
+There are exactly TWO ways to answer, and BOTH are Malloy: reuse a layer **view**
+(preferred), or **author Malloy from scratch** when no view fits. Prefer reusing a
+view; author from scratch only when none fits. SQL is for *exploration only* —
+it is never the answer.
 
 1. **Find the view first.** Call `list_views()` — the full menu of layer surfaces
    (sources + named views) with one-line summaries and how-to-call hints. Pick the
@@ -28,16 +29,15 @@ fits; drop to SQL when authoring fights you.
    `x::string` — but write it right when you can.)
 3. **Explore the data if needed** with `query`, `list_tables`, `list_columns`,
    `search_catalog`, `ask_docs_question` (MotherDuck MCP). SQL exploration only.
-4. **If no view fits — or authoring Malloy is fighting you — use SQL.** Compute the
-   answer with `query`, then call **`submit_sql(sql=…)`** with the SQL whose result
-   IS the answer. It runs on MotherDuck and is scored exactly like a Malloy answer.
-   **Do NOT wrap SQL inside Malloy** — `duckdb.sql("""…""")` is rejected; submit it
-   as SQL. Likewise, if a named layer view ERRORS AT RUNTIME (a binder/scope error
-   in the compiled SQL, e.g. `Referenced table … not found`), it's a layer defect
-   you can't fix here — stop retrying it and answer via `submit_sql`.
-5. **Submit once.** `submit_answer(source=…)` for a Malloy answer or
-   `submit_sql(sql=…)` for a SQL answer. Select exactly the asked value(s) — no extra
-   columns, labels, or prose. An unsubmitted run scores zero.
+4. **If no view fits, author Malloy from scratch** over the layer's base/intermediate
+   sources — reference their measures/dimensions; explore first with `query` to
+   understand the data if needed, but the ANSWER is Malloy. **Never embed raw SQL in
+   Malloy** — `duckdb.sql("""…""")` is rejected. If a named layer view ERRORS AT
+   RUNTIME (a binder/scope error in the compiled SQL, e.g. `Referenced table … not
+   found`), it's a layer defect you can't fix here — stop retrying that view and
+   answer via a DIFFERENT view, or author your own Malloy over the base sources.
+5. **Submit once** with `submit_answer(source=…)`. Select exactly the asked value(s)
+   — no extra columns, labels, or prose. An unsubmitted run scores zero.
 
 ## Malloy query syntax (common pitfalls)
 

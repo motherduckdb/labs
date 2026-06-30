@@ -28,6 +28,7 @@ import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { viewQualitySmells, smellSummary } from './view-quality.js';
 import { layerSourceGate } from './malloy-source.js';
+import { detectRawSqlInMalloy } from './linter.js';
 import { extractGlossary, groundGlossary, renderGlossary, type GlossaryEntry } from './glossary.js';
 import * as cl from './controllog.js';
 
@@ -160,7 +161,7 @@ export const DUCKDB_NOTES = `Malloy-on-DuckDB specifics (in addition to the prim
 - Reference a table by NAME: \`duckdb.table('<table>')\` — never a file path. The model files compile as ONE unit (concatenated), so do NOT use \`import\`; every source sees every other.
 - Do NOT redefine an existing table column as a dimension/measure (e.g. \`dimension: x is ...\` when an \`x\` column exists → "Cannot redefine"). Only ADD derived fields with NEW names.
 - ANY DuckDB SQL function the primer doesn't list needs the TYPED raw escape \`fn!returntype(args)\` — e.g. \`list_contains!boolean(col, x)\`, \`len!number(col)\`, \`lpad!string(x, 3, '0')\`, \`strftime!string(d, '%Y')\`, \`make_date!date(y, m, d)\`. Plain \`lpad(...)\`/\`strftime(...)\` fail with "Unknown function". There is no native list-membership operator — use \`list_contains!boolean\` for list columns. Prefer Malloy-native date ops (\`@2023\`, \`.month\`, \`::date\`) over SQL date formatting where possible.
-- MALLOY-FIRST (important): express joins, group-bys, filters, and aggregates in MALLOY — \`join_one\`/\`join_many\`, \`view:\`, \`nest:\`, filtered aggregates. Do NOT write joins or group-bys inside \`duckdb.sql(...)\`. Use a \`duckdb.sql("...")\` source ONLY for logic Malloy genuinely cannot express, and keep it minimal.
+- MALLOY-ONLY — RAW SQL IS PROHIBITED (hard rule, enforced by the build gate): express EVERYTHING in Malloy — \`join_one\`/\`join_many\`, \`view:\`, \`nest:\`, filtered aggregates, \`extend\`, parameterized sources. **\`duckdb.sql(...)\` is FORBIDDEN** — a file that contains it is REJECTED and sent back to you. Do NOT wrap joins, group-bys, CROSS JOINs, or \`SELECT DISTINCT\`/\`UNNEST\` value universes in raw SQL. Build a value universe in Malloy instead (e.g. a query/source that \`group_by\`s the column over the base table, or unnests a list column with the typed escape), and use the typed raw-FUNCTION escape \`fn!returntype(args)\` for individual DuckDB functions Malloy doesn't natively expose. The \`fn!returntype(...)\` function escape is ALLOWED; a \`duckdb.sql(...)\` block is NOT.
 
 MODELING DISCIPLINE — verify against the data, never trust prose alone (general principles; apply them to ANY dataset):
 - A COLUMN PROFILE (per-column type, NULL count, and either the full DISTINCT domain, a numeric range, or samples; for list columns the NULL-vs-empty split) is given for every table below. It is GROUND TRUTH — when the prose docs and the profile disagree about encoding or domain, the profile wins.
@@ -441,6 +442,16 @@ async function authorStage(opts: {
 
     if (!malloy) {
       diag = 'You did not return a ```malloy fenced block. Return exactly one ```malloy block and one ```yaml block.';
+      continue;
+    }
+    // RAW-SQL GATE (hard): the layer must be Malloy-only — `duckdb.sql(...)` is
+    // prohibited. Reject BEFORE persisting (an edit can't restructure a SQL block
+    // away, so force a full re-author) so a SQL-containing file is never written.
+    if (detectRawSqlInMalloy(malloy)) {
+      diag =
+        'PROHIBITED: this file uses `duckdb.sql(...)` (raw SQL embedded in Malloy). Raw SQL is not allowed in the semantic layer. Re-express the logic in PURE Malloy: joins via `join_one`/`join_many`, a value universe via a Malloy query/source that `group_by`s (or unnests with the typed escape) the column over the base table, and individual DuckDB functions via the typed escape `fn!returntype(...)`. Remove EVERY `duckdb.sql(...)` block and re-emit the full file.';
+      console.log(`  ✗ ${opts.label} round ${round} (${mode}): REJECTED — contains duckdb.sql(...) (raw SQL prohibited)`);
+      forceFull = true;
       continue;
     }
     await writeFile(path.join(opts.modelsDir, opts.modelFile), malloy + '\n');

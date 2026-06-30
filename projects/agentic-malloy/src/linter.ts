@@ -44,12 +44,25 @@ export function buildKindMap(inv: ModelInventory): Map<string, FieldKind> {
   return m;
 }
 
-/** True if the agent's per-query Malloy wraps raw SQL via `duckdb.sql(...)`. Such
- *  an answer isn't Malloy authoring — the harness rejects it and steers to the
- *  dedicated SQL answer path (`submit_sql`). Scans the agent's source only, never
- *  the layer. */
+/** The `duckdb.sql(...)` raw-SQL escape hatch, matched tolerant of whitespace
+ *  (`duckdb . sql (`). Used by both the eval (reject agent answers that embed raw
+ *  SQL) and the build harness (reject a layer that embeds raw SQL). */
+const RAW_SQL_RE = /\bduckdb\s*\.\s*sql\s*\(/gi;
+
+/** True if `src` wraps raw SQL via `duckdb.sql(...)`. The escape hatch is
+ *  PROHIBITED — both in the agent's per-query Malloy answer AND in the authored
+ *  semantic layer. The eval steers the agent off it (to submit_answer / the SQL
+ *  arm when enabled); the build gate rejects it. */
 export function detectRawSqlInMalloy(src: string): boolean {
-  return /\bduckdb\s*\.\s*sql\s*\(/i.test(src);
+  RAW_SQL_RE.lastIndex = 0;
+  return RAW_SQL_RE.test(src);
+}
+
+/** How many `duckdb.sql(...)` escape hatches appear in `src`. The build harness
+ *  uses this so a layer EDIT that ADDS a new raw-SQL block is rejected while a
+ *  pre-existing block (grandfathered) does not block an unrelated edit. */
+export function countRawSqlInMalloy(src: string): number {
+  return (src.match(RAW_SQL_RE) ?? []).length;
 }
 
 /** Aggregate functions for SYNTACTIC detection in the select/calculate/where

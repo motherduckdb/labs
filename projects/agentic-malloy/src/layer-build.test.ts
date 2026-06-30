@@ -118,6 +118,12 @@ describe('2A build prompt + gates (general only)', () => {
     expect(DUCKDB_NOTES).not.toMatch(/\bfee\b|\bmerchant\b|payments|acquirer/i); // still general
   });
 
+  it('DUCKDB_NOTES prohibits the duckdb.sql(...) raw-SQL escape but allows the fn!returntype escape', () => {
+    expect(DUCKDB_NOTES).toMatch(/PROHIBITED|FORBIDDEN/);
+    expect(DUCKDB_NOTES).toMatch(/duckdb\.sql/);
+    expect(DUCKDB_NOTES).toMatch(/fn!returntype/); // the typed FUNCTION escape stays allowed
+  });
+
   it('layerSourceGate (re-exported from layer-build) flags the three c3-like defects', () => {
     const codes = layerSourceGate(`source: s is duckdb.sql("""
         WITH u AS (SELECT aci FROM (VALUES ('A'),('B')) AS t(aci))

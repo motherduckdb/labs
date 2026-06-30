@@ -72,7 +72,8 @@ export interface ToolDeps {
   /** Names of the layer's named views — used to tag a Malloy answer as
    *  view-selection vs authored-from-scratch. */
   viewNames?: Set<string>;
-  /** When false, submit_sql is rejected (forces a Malloy-only arm). Default on. */
+  /** SQL is prohibited as an answer substrate by DEFAULT: submit_sql is dropped +
+   *  rejected unless this is explicitly `true`. Pass true to opt into the SQL arm. */
   allowSqlFallback?: boolean;
   database?: string;
   /** the task's question + answer guidelines — feed the pre-submit answer-shape
@@ -137,10 +138,11 @@ const SUBMIT_ANSWER_DESC_MALLOY_ONLY =
   'Submit the Malloy whose compiled-SQL result IS the answer. Compiles + executes on MotherDuck; latches only on success. Submit once when ready — but a pre-submit answer-shape check may return a one-time warning; if so, fix the issue or call submit again to confirm, and it records then. An unsubmitted run scores zero. (Do NOT wrap raw SQL in `duckdb.sql(...)`; this run is Malloy-only.)';
 
 export function buildToolSchemas(deps: ToolDeps): ToolSchema[] {
-  // When the SQL fallback is disabled, drop submit_sql AND rewrite submit_answer's
-  // description so no exposed tool steers to the absent path — a clean Malloy-only
-  // condition (no rejected-tool / contradicted-prompt mismatch). dispatchTool still guards it.
-  if (deps.allowSqlFallback === false) {
+  // SQL fallback is OFF unless explicitly enabled: drop submit_sql AND rewrite
+  // submit_answer's description so no exposed tool steers to the absent path — a
+  // clean Malloy-only condition (no rejected-tool / contradicted-prompt mismatch).
+  // dispatchTool still guards it.
+  if (deps.allowSqlFallback !== true) {
     const malloyOnly = MALLOY_TOOL_SCHEMAS.filter((t) => t.name !== 'submit_sql').map((t) =>
       t.name === 'submit_answer' ? { ...t, description: SUBMIT_ANSWER_DESC_MALLOY_ONLY } : t,
     );
@@ -267,7 +269,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
   }
 
   if (name === 'run_malloy') {
-    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback !== false), isError: true };
+    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback === true), isError: true };
     const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols, deps.kinds);
     state.lintFixesTotal += fixes.length;
     // Run via Malloy's native runtime (connected to MotherDuck for eval) — compile
@@ -282,7 +284,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
 
   if (name === 'submit_answer') {
     if (state.submitted) return { content: 'ERROR: answer already submitted', isError: true };
-    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback !== false) + '\nThe answer was NOT recorded.', isError: true };
+    if (detectRawSqlInMalloy(String(args.source ?? ''))) return { content: rawSqlReject(deps.allowSqlFallback === true) + '\nThe answer was NOT recorded.', isError: true };
     const { fixedSrc, fixes } = lintMalloy(String(args.source ?? ''), symbols, deps.kinds);
     state.lintFixesTotal += fixes.length;
     // Run via Malloy's native runtime (MotherDuck for eval) — same engine for
@@ -321,8 +323,8 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
 
   if (name === 'submit_sql') {
     if (state.submitted) return { content: 'ERROR: answer already submitted', isError: true };
-    if (deps.allowSqlFallback === false) {
-      return { content: 'submit_sql is disabled for this run (Malloy-only arm). Author the answer as Malloy and use submit_answer.', isError: true };
+    if (deps.allowSqlFallback !== true) {
+      return { content: 'submit_sql is disabled for this run (SQL is prohibited as an answer substrate — Malloy-only). Author the answer as Malloy and use submit_answer.', isError: true };
     }
     const sql = String(args.sql ?? '').trim();
     if (!sql) return { content: 'ERROR: empty sql', isError: true };

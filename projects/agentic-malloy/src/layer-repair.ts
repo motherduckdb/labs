@@ -14,6 +14,7 @@ import path from 'node:path';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { DUCKDB_NOTES, MODELS_DIR, META_DIR, parseEdits, validateModel, PROVENANCE_PATH, VIEW_VALIDATION_TIMEOUT_MS } from './layer-build.js';
+import { countRawSqlInMalloy } from './linter.js';
 import * as cl from './controllog.js';
 
 const REPAIR_SYSTEM_HEADER = `You are a Malloy expert REPAIRING one file of an existing semantic layer. A view/source in this file has a STRUCTURAL defect (it errors at execution, or returns 0/empty over rows that exist, or computes at the wrong grain). Fix the DEFECT generically — make the layer correct per the manual + the data's actual encodings (the column profile).
@@ -110,6 +111,17 @@ export async function repairFileStage(opts: {
       console.log(`  … improve ${opts.file} round ${round}: no edits applied`);
       // No applicable edit: if we already have a failing diag, keep trying; else give up.
       if (round === opts.maxRounds) return { ok: false, file: opts.file, rounds: round, applied: totalApplied, diag: diag || 'model returned no applicable edits', ...agg };
+      continue;
+    }
+    // RAW-SQL GATE (hard): the layer must stay Malloy-only. An edit may NOT introduce
+    // a NEW `duckdb.sql(...)` block (pre-existing blocks are grandfathered — an edit
+    // elsewhere isn't blocked by them, but the count must not grow). Reject WITHOUT
+    // writing so the bad edit never persists, and force a retry.
+    if (countRawSqlInMalloy(patched) > countRawSqlInMalloy(current)) {
+      diag =
+        'PROHIBITED: your edit introduces a NEW `duckdb.sql(...)` raw-SQL block. Raw SQL is not allowed in the semantic layer. Re-do the fix in PURE Malloy (joins via join_one/join_many, value universes via a Malloy query/group_by or the typed unnest escape over the base table, individual functions via `fn!returntype(...)`). Return edits with no `duckdb.sql(...)`.';
+      console.log(`  ✗ improve ${opts.file} round ${round}: REJECTED — edit adds duckdb.sql(...) (raw SQL prohibited)`);
+      if (round === opts.maxRounds) return { ok: false, file: opts.file, rounds: round, applied: totalApplied, diag, ...agg };
       continue;
     }
     totalApplied += applied;

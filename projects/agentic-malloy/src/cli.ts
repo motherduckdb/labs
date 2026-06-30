@@ -442,9 +442,11 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const escalateAfter = Number(flags['escalate-after'] ?? 2);
   const maxAuthorTurns = Number(flags['max-author-turns'] ?? 20);
   const maxFixerTurns = Number(flags['max-fixer-turns'] ?? 6);
-  // SQL fallback (submit_sql) is ON by default; --no-sql-fallback forces a
-  // Malloy-only arm. Recorded in run_metadata so arms are distinguishable.
-  const allowSqlFallback = !flags['no-sql-fallback'];
+  // SQL fallback (submit_sql) is OFF by default — this experiment PROHIBITS SQL as
+  // an answer substrate; every answer must be Malloy (submit_answer). Opt back into
+  // the SQL arm with --sql-fallback (--no-sql-fallback also forces it off, and wins
+  // if both are passed). Recorded in run_metadata so arms are distinguishable.
+  const allowSqlFallback = !!flags['sql-fallback'] && !flags['no-sql-fallback'];
   const reasoning = (flags.reasoning as string) || 'low';
   // Pin OpenRouter to one upstream provider (e.g. "anthropic") — flag wins, else
   // the OPENROUTER_PROVIDER env, else unset (OpenRouter's default routing).
@@ -475,11 +477,12 @@ async function cmdEvaluate(flags: Record<string, string | boolean>) {
   const glossaryBlock = renderGlossaryForAnswering(await loadGlossaryArtifact(META_DIR));
   let systemPrompt = `You are an expert data analyst answering factoid questions about a payments dataset by authoring Malloy.\n\nThe MotherDuck database is \`${database}\` (schema main, tables: payments, fees, merchants, acquirer_countries, merchant_category_codes). Exploration tools default to this database.\n\n============ SKILL ============\n${skill}\n\n============ MALLOY PRIMER ============\n${primer}${glossaryBlock ? `\n\n============ DOMAIN GLOSSARY (question terms → layer concepts) ============\n${glossaryBlock}` : ''}\n===============================`;
 
-  // Malloy-only arm: the static skill describes a two-mode (Malloy | SQL) contract,
-  // so when the fallback is OFF we override it here — otherwise the prompt would
-  // advertise a (now absent) submit_sql tool. Makes --no-sql-fallback a clean condition.
-  if (!allowSqlFallback) {
-    systemPrompt += '\n\n[MALLOY-ONLY RUN: the SQL fallback is DISABLED and `submit_sql` is unavailable. Disregard any guidance about "two ways to answer" or falling back to SQL; answer EVERY question with Malloy via `submit_answer`.]';
+  // The skill now describes the DEFAULT Malloy-only contract (no SQL answer path).
+  // When the SQL fallback is explicitly opted into (--sql-fallback), append a note
+  // that RE-ENABLES the submit_sql arm so the otherwise-Malloy-only skill doesn't
+  // contradict the now-present tool. (duckdb.sql(...) stays prohibited either way.)
+  if (allowSqlFallback) {
+    systemPrompt += '\n\n[SQL FALLBACK ENABLED for this run: the `submit_sql` tool is available. If no layer view fits and authoring Malloy is fighting you, you MAY compute the answer with the `query` tool and submit it via `submit_sql` (it runs on MotherDuck and is scored identically). Embedding raw SQL inside Malloy via `duckdb.sql(...)` remains prohibited.]';
   }
 
   await mkdir(RESULTS_DIR, { recursive: true });
@@ -785,9 +788,9 @@ async function main() {
       console.log('            tool-error rules are recommend-only unless --apply-skill-fixes;');
       console.log('            --re-eval measures edits as SMOKE — commit, then `evaluate --run-class official --no-steer` to record a number)');
       console.log('  evaluate --split templates|test|all --task-id ID --author sonnet --fixer opus \\');
-      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic] [--no-sql-fallback] [--no-steer]');
+      console.log('           --run-class smoke|official --escalate-after 2 --concurrency 4 --limit N [--provider anthropic] [--sql-fallback] [--no-steer]');
       console.log('           (--provider pins the OpenRouter upstream; defaults to $OPENROUTER_PROVIDER)');
-      console.log('           (--no-sql-fallback disables submit_sql for a Malloy-only arm; SQL fallback is on by default)');
+      console.log('           (SQL is prohibited as an answer substrate — answers must be Malloy; duckdb.sql(...) is rejected. --sql-fallback re-enables the submit_sql arm; OFF by default)');
       console.log('           (in-place steer is the default/opus-free; --no-steer restores the opus failover and is REQUIRED for --run-class official)');
       console.log('  upload [--database agentic_malloy_logs]   # controllog JSONL -> MotherDuck for the dive');
       console.log('  usage-report <results.jsonl> [--json out.json]   # substrate-value metrics for a run (read-only, local)');
