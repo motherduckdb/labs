@@ -154,9 +154,17 @@ source: c5_aci_rerouting is c3_transactions_enriched extend {
 
   // fee per candidate ACI (scope by merchant + time + has_fraudulent_dispute;
   // order total_fee asc, candidate_aci asc, limit 1 -> preferred ACI)
+  // DEDUP the rule fan-out: collapse to one applicable rule per (txn,candidate ACI)
+  // FIRST, then aggregate per ACI -- raw fees.sum over the fan-out double-counts.
   view: fee_by_candidate_aci is {
+    group_by: candidate_aci, psp_reference
+    aggregate: txn_fee is min(fees.fixed_amount + fees.rate * eur_amount / 10000)
+  } -> {
     group_by: candidate_aci
-    aggregate: transaction_count, total_fee, avg_fee
+    aggregate:
+      transaction_count is count()
+      total_fee is txn_fee.sum()
+      avg_fee is txn_fee.avg()
     order_by: total_fee asc, candidate_aci asc
   }
 }

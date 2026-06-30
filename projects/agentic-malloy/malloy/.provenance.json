@@ -1,6 +1,6 @@
 {
   "malloy_provenance": "model_authored",
-  "malloy_model_hash": "d4399f56d0415210",
+  "malloy_model_hash": "1cba09d2056255a7",
   "context_included": true,
   "authoring_model": "anthropic/claude-opus-4.8",
   "central_only": false,
@@ -19,5 +19,23 @@
     "merchants_base.malloy",
     "payments_base.malloy"
   ],
-  "manual_included": true
+  "manual_included": true,
+  "improve_round": 1,
+  "improve_lineage": [
+    {
+      "from_hash": "d4399f56d0415210",
+      "to_hash": "1cba09d2056255a7",
+      "round": 1,
+      "improve_model": "anthropic/claude-opus-4.8",
+      "edited_files": [
+        "c5_transaction_fees.malloy"
+      ],
+      "from_run": "templates_2026-06-30T1957Z.jsonl",
+      "from_splits": [
+        "train"
+      ],
+      "train_only": true,
+      "at": "2026-06-30T20:37:40.653Z"
+    }
+  ]
 }
