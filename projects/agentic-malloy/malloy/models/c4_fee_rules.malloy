@@ -1,0 +1,145 @@
+##! experimental.parameters
+// Fee-rule scenario layer: parameterized fee formula + wildcard match helpers,
+// and average/cheapest/most-expensive scenario surfaces across card schemes,
+// ACIs, and MCCs. Source params carry the supplied context (transaction value +
+// optional characteristic filters); unspecified params (null) = "don't constrain".
+// fee = fixed_amount + rate * transaction_value / 10000.
+
+// ---- scheme-level average scenario + applicable-rule listing (scalar match fields) ----
+source: c4_fee_rules(
+  transaction_value::number is 0,
+  for_card_scheme::string is null,
+  for_account_type::string is null,
+  for_aci::string is null,
+  for_is_credit::boolean is null,
+  for_intracountry::boolean is null
+) is fees_base extend {
+
+  dimension: fee_amount is fixed_amount + rate * transaction_value / 10000
+
+  // every supplied characteristic gets a wildcard branch:
+  // list fields wildcard = empty list (len=0); scalar fields wildcard = NULL.
+  dimension: matches_context is
+    (for_card_scheme is null or card_scheme is null or card_scheme = for_card_scheme)
+    and (for_account_type is null or len!number(account_type) = 0
+         or list_contains!boolean(account_type, for_account_type))
+    and (for_aci is null or len!number(aci) = 0
+         or list_contains!boolean(aci, for_aci))
+    and (for_is_credit is null or is_credit is null or is_credit = for_is_credit)
+    and (for_intracountry is null or intracountry is null or is_intracountry = for_intracountry)
+
+  measure: avg_fee is fee_amount.avg()
+  measure: min_fee is fee_amount.min()
+  measure: max_fee is fee_amount.max()
+  measure: total_fee is fee_amount.sum()
+  measure: fee_rule_count is count()
+
+  // average fee per scheme over the matching rule set (cheapest/most-expensive scheme:
+  // caller orders by avg_fee asc/desc and limits)
+  view: avg_fee_by_scheme is {
+    where: matches_context
+    group_by: card_scheme
+    aggregate: avg_fee, min_fee, max_fee, fee_rule_count
+    order_by: avg_fee asc
+  }
+
+  // distinct applicable fee-rule IDs for the supplied context
+  view: matching_rule_ids is {
+    where: matches_context
+    group_by: ID
+    order_by: ID
+  }
+
+  // per-rule fee detail for the supplied context
+  view: matching_rule_fees is {
+    where: matches_context
+    group_by: ID, card_scheme, fixed_amount, rate
+    aggregate: per_rule_fee is fee_amount.max()  // single value per ID; max == that value
+    order_by: ID
+  }
+}
+
+// ---- ACI-level scenario: explode rule ACI lists (incl. empty-list wildcard) over the
+//      observed ACI universe so every candidate ACI has its applicable rules. ----
+source: c4_fee_by_aci(
+  transaction_value::number is 0,
+  for_card_scheme::string is null,
+  for_account_type::string is null,
+  for_is_credit::boolean is null
+) is duckdb.sql("""
+  SELECT f.ID, f.card_scheme, f.account_type, f.is_credit,
+         f.fixed_amount, f.rate, u.aci_value
+  FROM fees f
+  CROSS JOIN (SELECT DISTINCT aci AS aci_value FROM payments) u
+  WHERE len(f.aci) = 0 OR list_contains(f.aci, u.aci_value)   -- empty list = applies to all ACIs
+""") extend {
+
+  dimension: fee_amount is fixed_amount + rate * transaction_value / 10000
+
+  dimension: matches_context is
+    (for_card_scheme is null or card_scheme = for_card_scheme)
+    and (for_account_type is null or len!number(account_type) = 0
+         or list_contains!boolean(account_type, for_account_type))
+    and (for_is_credit is null or is_credit is null or is_credit = for_is_credit)
+
+  measure: avg_fee is fee_amount.avg()
+  measure: min_fee is fee_amount.min()
+  measure: max_fee is fee_amount.max()
+  measure: fee_rule_count is count()
+
+  // cheapest/most-expensive ACI: caller orders by avg_fee asc/desc (tie-break aci_value asc)
+  view: ranked is {
+    where: matches_context
+    group_by: aci_value
+    aggregate: avg_fee, min_fee, max_fee, fee_rule_count
+    order_by: avg_fee asc, aci_value asc
+  }
+}
+
+// ---- MCC-level scenario: explode rule MCC lists (incl. empty-list wildcard) over the
+//      MCC universe observed in the fee rules themselves. ----
+source: c4_fee_by_mcc(
+  transaction_value::number is 0,
+  for_card_scheme::string is null,
+  for_account_type::string is null,
+  for_aci::string is null,
+  for_is_credit::boolean is null
+) is duckdb.sql("""
+  SELECT f.ID, f.card_scheme, f.account_type, f.is_credit, f.aci,
+         f.fixed_amount, f.rate, u.mcc_value
+  FROM fees f
+  CROSS JOIN (SELECT DISTINCT unnest(merchant_category_code) AS mcc_value FROM fees) u
+  WHERE len(f.merchant_category_code) = 0
+     OR list_contains(f.merchant_category_code, u.mcc_value)   -- empty list = applies to all MCCs
+""") extend {
+
+  dimension: fee_amount is fixed_amount + rate * transaction_value / 10000
+
+  dimension: matches_context is
+    (for_card_scheme is null or card_scheme = for_card_scheme)
+    and (for_account_type is null or len!number(account_type) = 0
+         or list_contains!boolean(account_type, for_account_type))
+    and (for_aci is null or len!number(aci) = 0
+         or list_contains!boolean(aci, for_aci))
+    and (for_is_credit is null or is_credit is null or is_credit = for_is_credit)
+
+  measure: avg_fee is fee_amount.avg()
+  measure: min_fee is fee_amount.min()
+  measure: max_fee is fee_amount.max()
+  measure: fee_rule_count is count()
+
+  // cheapest/most-expensive MCC in general: caller orders by avg_fee (or max_fee) desc/asc
+  view: ranked is {
+    where: matches_context
+    group_by: mcc_value
+    aggregate: avg_fee, min_fee, max_fee, fee_rule_count
+    order_by: avg_fee desc, mcc_value asc
+  }
+
+  // average fee per scheme within an MCC (caller filters mcc_value + scheme)
+  view: avg_fee_by_scheme is {
+    where: matches_context
+    group_by: mcc_value, card_scheme
+    aggregate: avg_fee, min_fee, max_fee, fee_rule_count
+  }
+}

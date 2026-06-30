@@ -1,103 +1,48 @@
-// dabstep.malloy
-//
-// Thin top-level semantic layer. Everything here is a re-export or a
-// micro-wrapper over the intermediate sources (c1–c5). Each top-level
-// answer surface is a NAMED, reusable view/query — questions are answered
-// by a thin `+ { where: ... }` (and optional `limit:`) on top.
-//
-// Index of analytical surfaces → where to query:
-//
-//   AVERAGE-SCENARIO PRICING (no payments, just fee rules)
-//     • cheapest/most expensive card_scheme @ notional N
-//         c3_average_fee_scenarios -> avg_by_card_scheme
-//         (sort + limit 1 for argmin/argmax; or use the prebuilt
-//          cheapest_card_scheme_on_50 / _on_100 / _on_1k / _on_4321 etc.)
-//     • cheapest/most expensive ACI @ notional, with wildcard ACIs unnested
-//         c3_avg_fee_by_aci -> avg_by_aci / cheapest_aci_on_100 / most_expensive_aci_on_100
-//     • cheapest/most expensive MCC @ notional, with wildcard MCCs unnested
-//         c3_avg_fee_by_mcc -> avg_by_mcc / cheapest_mcc_on_50k / most_expensive_mcc_on_50k
-//     • avg fee by account_type (with wildcard rules exploded)
-//         c3_avg_fee_by_account_type -> avg_by_account_type
-//
-//   APPLICABLE FEE RULES (merchant × window)
-//     • year / month / day grain
-//         c4_fee_applicability -> applicable_fees_by_merchant_year
-//                              -> applicable_fees_by_merchant_month
-//                              -> applicable_fees_by_merchant_day
-//     • merchants affected by fee X
-//         c4_fee_applicability -> merchants_by_fee
-//
-//   FEE RULES MATCHING A (account_type, aci) PAIR (rule-grain, no merchant)
-//     • use fees_base with wildcard-aware filters (see view below)
-//
-//   TOTAL FEES PAID & CARD-SCHEME STEERING
-//     • c5_payments_priced -> total_fees_by_merchant_year
-//                          -> total_fees_by_merchant_month
-//                          -> total_fees_by_merchant_day
-//                          -> card_scheme_ranking_by_merchant_year
-//                          -> card_scheme_ranking_by_merchant_month
-//
-//   COUNTERFACTUALS
-//     • rate / fixed_amount override on a target fee_id:
-//         c5_payments_priced -> fee_override_context_by_year/_month/_day
-//         delta_rate(new)   = (new − matched_rate) * matched_eur_volume / 10000
-//         delta_fixed(new)  = (new − matched_fixed_amount) * match_count
-//     • ACI steering of fraudulent transactions (argmin over candidate ACIs):
-//         c5_payments_priced_aci_steering -> fraud_fee_ranking_by_aci_year/_month
-//     • MCC reassignment (delta vs current MCC):
-//         c5_payments_priced_mcc_counterfactual
-//           -> total_fees_by_merchant_candidate_mcc_year/_month
-//     • Rule-scope tightening (which merchants affected if fee X only
-//       applied to account_type=Y, MCC=Z, ...):
-//         c4_fee_applicability_account_type_scope -> affected_merchants
-//         c4_fee_applicability_mcc_scope          -> affected_merchants
-//
-//   PAYMENT SLICES (no fee logic)
-//     • payments_base -> by_merchant / by_card_scheme / by_aci /
-//                        by_issuing_country / by_country_pair / by_month / ...
-//
+// Thin reusable entry points over the c1–c5 semantic sources.
+// All matching/fee logic lives in the intermediate sources; these only
+// name the canonical call shapes so a question is a filter+select on top.
+// NOTE: c4_*/c5_* are parameterized sources — supply context/overrides at the
+// run site, e.g. `run: c4_fee_rules(transaction_value is 50) -> avg_fee_by_scheme`.
 
-// ─────────────────────────────────────────────────────────────────────
-// Fees-only rule lookup helper.
-//
-// Find fee IDs that apply to a (account_type?, aci?, card_scheme?,
-// is_credit?, mcc?, capture_delay?, monthly_volume?, monthly_fraud_level?,
-// intracountry?) tuple, respecting wildcard semantics on every condition.
-//
-// Use by filtering the dimensions you care about; the unspecified ones
-// are left to whatever the rule says (wildcards survive automatically).
-//
-// Example — "fee IDs that apply to account_type = D and aci = F":
-//
-//   run: fee_rule_lookup -> matching_fee_ids + {
-//     where:
-//       (len!number(account_type) = 0
-//        or list_contains!boolean(account_type, 'D'))
-//       and (len!number(aci) = 0
-//           or list_contains!boolean(aci, 'F'))
-//   }
-// ─────────────────────────────────────────────────────────────────────
+// ---- Average-scenario fee by card scheme (default notional 0; override param) ----
+// cheapest scheme: order_by avg_fee asc + limit 1 ; most expensive: avg_fee desc.
+query: avg_scenario_fee_by_scheme is c4_fee_rules -> avg_fee_by_scheme
 
-source: fee_rule_lookup is fees_base extend {
-  view: matching_fee_ids is {
-    group_by:  fee_id is ID
-    order_by:  fee_id
-  }
+// applicable fee-rule IDs for a supplied scalar characteristic context
+// (e.g. account_type + aci) — caller sets the for_* params on the source.
+query: fee_rules_for_context is c4_fee_rules -> matching_rule_ids
 
-  view: matching_fee_detail is {
-    select:
-      ID,
-      card_scheme,
-      account_type,
-      merchant_category_code,
-      aci,
-      is_credit,
-      intracountry,
-      capture_delay,
-      monthly_volume,
-      monthly_fraud_level,
-      fixed_amount,
-      rate
-    order_by: ID
-  }
-}
+// per-rule fee detail for a supplied context
+query: fee_rule_detail_for_context is c4_fee_rules -> matching_rule_fees
+
+// ---- Cheapest / most expensive ACI in the average scenario (A..G universe) ----
+query: avg_scenario_fee_by_aci is c4_fee_by_aci -> ranked
+
+// ---- Cheapest / most expensive MCC in the average scenario ----
+query: avg_scenario_fee_by_mcc is c4_fee_by_mcc -> ranked
+// average fee per scheme within an MCC (caller filters mcc_value + scheme)
+query: avg_scenario_fee_by_mcc_scheme is c4_fee_by_mcc -> avg_fee_by_scheme
+
+// ---- Per-merchant realized fees over a time window (scope merchant + day/month) ----
+// applicable fee IDs actually hit by a merchant's transactions in the window.
+query: merchant_applicable_fee_ids is c5_transaction_fees -> applicable_fee_ids
+// total fees per merchant over the scoped window.
+query: merchant_total_fees is c5_transaction_fees -> fees_by_merchant
+// one row per transaction with its computed fee.
+query: merchant_transaction_fees is c5_transaction_fees -> per_transaction_fee
+// merchants whose transactions match a given rule (scope: where fees.ID = X).
+query: rule_affected_merchants is c5_transaction_fees -> affected_merchants
+
+// ---- Traffic-steering: total fee per candidate card scheme (scope merchant + time) ----
+// min fee: order total_fee asc + limit 1 ; max fee: total_fee desc + limit 1.
+query: steering_fee_by_scheme is c5_steering -> fee_by_scheme
+
+// ---- Fraud ACI re-routing: total fee per candidate ACI ----
+// scope: merchant + time + has_fraudulent_dispute ; preferred ACI = total_fee asc, aci asc.
+query: fraud_aci_rerouting is c5_aci_rerouting -> fee_by_candidate_aci
+
+// ---- Generic transaction slices (pre-fee) for value/volume analytics ----
+// average transaction value by issuing country (scope merchant/scheme/time, order asc).
+query: avg_value_by_issuing_country is payments_base -> by_issuing_country
+query: payments_by_card_scheme is payments_base -> by_card_scheme
+query: payments_by_month is payments_base -> by_month

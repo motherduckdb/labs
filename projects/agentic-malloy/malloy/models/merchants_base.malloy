@@ -1,94 +1,49 @@
-// merchants_base.malloy
-// Authoritative merchant dimension: one row per merchant partner.
-// Provides merchant attributes (account type, MCC, capture delay, acquirers)
-// plus derived buckets used when matching merchants against fee rules.
-
 source: merchants_base is duckdb.table('merchants') extend {
-  primary_key: merchant
 
-  //
-  // ── Derived dimensions ───────────────────────────────────────────────
-  //
-
-  // Human-readable label for the account_type code (per the Merchant Guide).
-  dimension: account_type_description is
-    pick 'Enterprise - Retail'      when account_type = 'R'
-    pick 'Enterprise - Digital'     when account_type = 'D'
+  // ---------- dimensions ----------
+  dimension: account_type_label is pick 'Enterprise - Retail' when account_type = 'R'
+    pick 'Enterprise - Digital' when account_type = 'D'
     pick 'Enterprise - Hospitality' when account_type = 'H'
-    pick 'Platform - Franchise'     when account_type = 'F'
-    pick 'Platform - SaaS'          when account_type = 'S'
-    pick 'Other'                    when account_type = 'O'
-    else 'Unknown'
+    pick 'Platform - Franchise' when account_type = 'F'
+    pick 'Platform - SaaS' when account_type = 'S'
+    else 'Other'
 
-  // Bucket the merchant's capture_delay string into the vocabulary used by
-  // fees.capture_delay rules: 'immediate', '<3', '3-5', '>5', 'manual'.
-  // The merchants table stores numeric-day strings ('1','2','7') plus the
-  // literal labels 'immediate' and 'manual'.
-  dimension: capture_delay_bucket is
+  // merchant numeric capture days mapped onto fee-rule bands.
+  // safe-cast ::: yields null for 'immediate'/'manual' so the numeric
+  // branches stay false instead of erroring on a non-numeric string.
+  dimension: capture_delay_band is
     pick 'immediate' when capture_delay = 'immediate'
-    pick 'manual'    when capture_delay = 'manual'
-    pick '<3'        when capture_delay = '1' or capture_delay = '2'
-    pick '3-5'       when capture_delay = '3' or capture_delay = '4' or capture_delay = '5'
-    pick '>5'        when capture_delay = '6' or capture_delay = '7'
-                       or capture_delay = '8' or capture_delay = '9'
-    else capture_delay
+    pick 'manual' when capture_delay = 'manual'
+    pick '<3' when capture_delay:::number < 3
+    pick '3-5' when capture_delay:::number >= 3 and capture_delay:::number <= 5
+    pick '>5' when capture_delay:::number > 5
+    else null
 
-  // Numeric form of capture_delay where meaningful (NULL for 'immediate'/'manual').
-  dimension: capture_delay_days is
-    pick null when capture_delay = 'immediate'
-    pick null when capture_delay = 'manual'
-    else capture_delay::number
+  dimension: capture_delay_days is capture_delay:::number  // null for immediate/manual
 
-  // Number of acquirers this merchant uses.
   dimension: acquirer_count is len!number(acquirer)
 
-  // Whether this merchant uses multiple acquirers.
-  dimension: is_multi_acquirer is len!number(acquirer) > 1
-
-  //
-  // ── Measures (merchant-grain) ───────────────────────────────────────
-  //
-
+  // ---------- measures ----------
   measure: merchant_count is count()
+  measure: account_type_count is count(account_type)
+  measure: mcc_count is count(merchant_category_code)
+  measure: avg_acquirer_count is acquirer_count.avg()
+  measure: min_acquirer_count is acquirer_count.min()
+  measure: max_acquirer_count is acquirer_count.max()
 
-  measure: distinct_mcc_count is count(merchant_category_code)
-
-  measure: distinct_account_type_count is count(account_type)
-
-  measure: avg_acquirer_count is avg(acquirer_count)
-
-  //
-  // ── Reusable views ──────────────────────────────────────────────────
-  //
-
+  // ---------- views ----------
   view: by_account_type is {
-    group_by: account_type, account_type_description
+    group_by: account_type, account_type_label
     aggregate: merchant_count
-    order_by: merchant_count desc
+  }
+
+  view: by_capture_delay is {
+    group_by: capture_delay, capture_delay_band
+    aggregate: merchant_count
   }
 
   view: by_mcc is {
     group_by: merchant_category_code
     aggregate: merchant_count
-    order_by: merchant_count desc
-  }
-
-  view: by_capture_delay_bucket is {
-    group_by: capture_delay_bucket
-    aggregate: merchant_count
-    order_by: merchant_count desc
-  }
-
-  view: merchant_directory is {
-    select:
-      merchant,
-      account_type,
-      account_type_description,
-      merchant_category_code,
-      capture_delay,
-      capture_delay_bucket,
-      acquirer,
-      acquirer_count
-    order_by: merchant asc
   }
 }

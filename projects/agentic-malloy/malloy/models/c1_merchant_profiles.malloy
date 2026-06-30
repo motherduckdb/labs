@@ -1,0 +1,32 @@
+// Merchant entity enriched for fee-rule matching.
+// MCC code (BIGINT here) joined to its textual description (VARCHAR mcc) via ::string cast.
+source: c1_merchant_profiles is merchants_base extend {
+  primary_key: merchant
+
+  // lookup join: merchants.merchant_category_code (BIGINT) -> mcc (VARCHAR) catalog
+  join_one: mcc_info is merchant_category_codes_base
+    on merchant_category_code::string = mcc_info.mcc
+
+  // resolved description for the merchant's category code
+  dimension: mcc_description is mcc_info.description
+
+  // --- reusable profile view: every attribute that drives fee matching ---
+  view: profile is {
+    group_by:
+      merchant,
+      account_type,
+      account_type_label,
+      merchant_category_code,
+      mcc_description,
+      capture_delay,
+      capture_delay_band,
+      capture_delay_days,
+      acquirer_count
+  }
+
+  // merchants per resolved MCC description (slicing dimension)
+  view: by_mcc_description is {
+    group_by: merchant_category_code, mcc_description
+    aggregate: merchant_count
+  }
+}

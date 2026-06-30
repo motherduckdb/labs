@@ -1,150 +1,40 @@
-// c2_merchant_monthly_metrics.malloy
-//
-// Per-merchant × natural-month aggregation of the payments fact.
-// Produces the merchant-grain attributes that fee-rule matching needs:
-//   • monthly_volume_bucket     — fees.monthly_volume vocabulary
-//   • monthly_fraud_level_bucket — fees.monthly_fraud_level vocabulary
-// Both buckets use the EXACT string domains observed in fees (see profile).
-//
-// Grain: one row per (merchant, natural calendar month).
-
-source: c2_merchant_monthly_metrics is duckdb.sql("""
-  SELECT
-    merchant,
-    year,
-    date_trunc(
-      'month',
-      make_date(year, 1, 1) + (day_of_year - 1) * INTERVAL '1 day'
-    )::DATE                                                       AS month_start,
-    SUM(eur_amount)                                               AS total_eur_volume,
-    SUM(CASE WHEN has_fraudulent_dispute THEN eur_amount ELSE 0 END)
-                                                                  AS fraudulent_eur_volume,
-    COUNT(*)                                                      AS transaction_count,
-    SUM(CASE WHEN has_fraudulent_dispute THEN 1 ELSE 0 END)       AS fraudulent_transaction_count
-  FROM payments
-  GROUP BY 1, 2, 3
-""") extend {
-
-  // Composite identity (merchant, month_start). No single-col PK.
-  // -> downstream joins must use explicit `on` predicates.
-
-  //
-  // ── Derived dimensions ───────────────────────────────────────────────
-  //
-
-  // Monthly fraud ratio (by volume) — the metric the manual defines.
-  dimension: fraud_rate is
-    fraudulent_eur_volume / nullif!number(total_eur_volume, 0)
-
-  // Same, expressed as a percentage (0..100) for readability.
-  dimension: fraud_rate_pct is fraud_rate * 100.0
-
-  // Calendar conveniences.
-  dimension: transaction_month is month_start.month
-  dimension: transaction_quarter is month_start.quarter
-  dimension: month_num is month_start.month::number
-
-  //
-  // ── Bucket dimensions — MUST equal fees.* string domains exactly ─────
-  //
-  // fees.monthly_volume distinct values:
-  //   '<100k', '100k-1m', '1m-5m', '>5m'   (NULL = wildcard, handled at match-time)
-  //
-  dimension: monthly_volume_bucket is
-    pick '<100k'    when total_eur_volume <   100000
-    pick '100k-1m'  when total_eur_volume <  1000000
-    pick '1m-5m'    when total_eur_volume <  5000000
+// Per-merchant, per-natural-month volume + fraud-rate, mapped onto fee-rule bands.
+// Built as a query-result source so the band labels are REAL columns usable
+// downstream for fee-rule join_many matching (monthly_volume / monthly_fraud_level).
+source: c2_merchant_monthly_metrics is payments_base -> {
+  group_by: merchant, `year`, transaction_month
+  aggregate:
+    monthly_volume_amount is total_amount         // SUM(eur_amount) in the natural month
+    monthly_transaction_count is transaction_count
+    monthly_avg_amount is avg_amount
+    monthly_fraud_amount is fraud_amount
+    monthly_fraud_volume_rate is fraud_volume_rate  // fraud volume / total volume
+} extend {
+  // numeric monthly volume -> fee-rule banded string (exact rule domain)
+  dimension: monthly_volume_band is
+    pick '<100k' when monthly_volume_amount < 100000
+    pick '100k-1m' when monthly_volume_amount < 1000000
+    pick '1m-5m' when monthly_volume_amount < 5000000
     else '>5m'
 
-  // fees.monthly_fraud_level distinct values:
-  //   '<7.2%', '7.2%-7.7%', '7.7%-8.3%', '>8.3%'  (NULL = wildcard)
-  // Convention: lower-inclusive, upper-exclusive.
-  dimension: monthly_fraud_level_bucket is
-    pick '<7.2%'     when fraud_rate < 0.072
-    pick '7.2%-7.7%' when fraud_rate < 0.077
-    pick '7.7%-8.3%' when fraud_rate < 0.083
+  // fraud-volume ratio -> fee-rule banded string (thresholds 7.2/7.7/8.3 %)
+  dimension: monthly_fraud_band is
+    pick '<7.2%' when monthly_fraud_volume_rate < 0.072
+    pick '7.2%-7.7%' when monthly_fraud_volume_rate < 0.077
+    pick '7.7%-8.3%' when monthly_fraud_volume_rate < 0.083
     else '>8.3%'
 
-  //
-  // ── Measures (merchant-month grain) ──────────────────────────────────
-  //
-  measure: month_row_count             is count()
-  measure: distinct_merchant_count     is count(merchant)
-  measure: distinct_month_count        is count(month_start)
-
-  measure: total_eur_volume_sum        is total_eur_volume.sum()
-  measure: fraudulent_eur_volume_sum   is fraudulent_eur_volume.sum()
-  measure: transaction_count_sum       is transaction_count.sum()
-  measure: fraudulent_transaction_count_sum is fraudulent_transaction_count.sum()
-
-  measure: avg_monthly_volume          is total_eur_volume.avg()
-  measure: avg_monthly_fraud_rate      is fraud_rate.avg()
-  measure: max_monthly_volume          is total_eur_volume.max()
-  measure: max_monthly_fraud_rate      is fraud_rate.max()
-
-  //
-  // ── Reusable views ───────────────────────────────────────────────────
-  //
-
-  // The canonical per-merchant per-month profile — the row a downstream
-  // rule-matching source pulls to find a merchant's bucket strings for a
-  // given month.
-  view: profile is {
-    select:
-      merchant,
-      `year`,
-      month_start,
-      transaction_month,
-      transaction_count,
-      total_eur_volume,
-      fraudulent_eur_volume,
-      fraud_rate,
-      fraud_rate_pct,
-      monthly_volume_bucket,
-      monthly_fraud_level_bucket
-    order_by: merchant asc, month_start asc
-  }
-
-  // Coverage of how merchant-months distribute across the fee-rule volume buckets.
-  view: by_monthly_volume_bucket is {
-    group_by:  monthly_volume_bucket
-    aggregate: month_row_count, total_eur_volume_sum
-    order_by:  month_row_count desc
-  }
-
-  // Coverage across the fee-rule fraud-level buckets.
-  view: by_monthly_fraud_level_bucket is {
-    group_by:  monthly_fraud_level_bucket
-    aggregate: month_row_count, fraudulent_eur_volume_sum
-    order_by:  month_row_count desc
-  }
-
-  // Per-merchant calendar of bucket assignments — useful for spot-checking
-  // why a particular rule did/didn't apply in a given month.
-  view: merchant_bucket_calendar is {
+  view: by_merchant_month is {
     group_by:
       merchant,
-      month_start,
-      monthly_volume_bucket,
-      monthly_fraud_level_bucket
-    aggregate:
-      total_eur_volume_sum,
-      fraudulent_eur_volume_sum,
-      transaction_count_sum
-    order_by: merchant asc, month_start asc
-  }
-
-  // Annual roll-up per merchant (sum of monthly volumes; avg of monthly
-  // fraud rates) — a convenience for year-grain questions.
-  view: by_merchant_year is {
-    group_by: merchant, `year`
-    aggregate:
-      total_eur_volume_sum,
-      fraudulent_eur_volume_sum,
-      transaction_count_sum,
-      avg_monthly_fraud_rate,
-      max_monthly_volume,
-      max_monthly_fraud_rate
-    order_by: merchant asc, `year` asc
+      `year`,
+      transaction_month,
+      monthly_volume_band,
+      monthly_fraud_band,
+      monthly_volume_amount,
+      monthly_transaction_count,
+      monthly_avg_amount,
+      monthly_fraud_amount,
+      monthly_fraud_volume_rate
   }
 }

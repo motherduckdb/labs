@@ -1,0 +1,59 @@
+file: c4_fee_rules.malloy
+domain: Payment processing fee optimization — fee-rule pricing scenarios
+summary: >
+  Scenario layer over the fee-rule dataset that computes the per-transaction
+  processing fee (fee = fixed_amount + rate * transaction_value / 10000) for a
+  caller-supplied context, and ranks the resulting fee across card schemes,
+  ACIs, and MCCs. Each source takes a parameterized transaction value plus
+  optional characteristic filters (card scheme, account type, ACI, is_credit,
+  intracountry); a null/omitted parameter means "do not constrain that field".
+  Rule matching applies a wildcard branch on EVERY characteristic — list fields
+  (account_type, aci, merchant_category_code) treat the empty list as "applies
+  to all", scalar fields treat NULL as "applies to all". The ACI and MCC sources
+  explode each rule's list (including empty-list wildcard rows) over the value
+  universe observed in the data, so every candidate ACI/MCC sees all applicable
+  rules. These power the "average scenario", "cheapest/most-expensive option",
+  and "applicable fee IDs" question shapes without restating any join or match.
+exports:
+  - name: c4_fee_rules
+    kind: source
+    summary: >
+      Fee rules with a parameterized fee formula and scalar/list wildcard
+      matching. Params: transaction_value, for_card_scheme, for_account_type,
+      for_aci, for_is_credit, for_intracountry (all optional except value).
+    usage: >
+      Average scenario / scheme ranking: run c4_fee_rules(transaction_value is 50)
+      -> avg_fee_by_scheme then order_by avg_fee asc (cheapest) or desc (most
+      expensive) limit 1. Add context e.g. (transaction_value is 100,
+      for_account_type is 'H', for_is_credit is true). Applicable rule IDs for a
+      context: -> matching_rule_ids. Per-rule fee detail: -> matching_rule_fees.
+  - name: c4_fee_by_aci
+    kind: source
+    summary: >
+      Fee rules exploded over the ACI universe (A–G) with empty-list wildcard
+      expansion, so every candidate ACI has its applicable rules. Params:
+      transaction_value, for_card_scheme, for_account_type, for_is_credit.
+    usage: >
+      Cheapest/most-expensive ACI for a context: run c4_fee_by_aci(
+      transaction_value is 100, for_card_scheme is 'GlobalCard', for_is_credit is
+      true) -> ranked then order_by avg_fee desc (most expensive) / asc (cheapest),
+      tie-break aci_value asc, limit 1.
+  - name: c4_fee_by_mcc
+    kind: source
+    summary: >
+      Fee rules exploded over the MCC universe observed in the fee rules (empty
+      MCC list = applies to all MCCs). Params: transaction_value, for_card_scheme,
+      for_account_type, for_aci, for_is_credit.
+    usage: >
+      Most/least expensive MCC in general: run c4_fee_by_mcc(transaction_value is
+      50000) -> ranked, order_by avg_fee desc, optionally keep all ties on the top
+      value. Average fee per scheme for a specific MCC: c4_fee_by_mcc(
+      transaction_value is 1000, for_account_type is 'H') -> avg_fee_by_scheme +
+      { where: mcc_value = 4121 and card_scheme = 'GlobalCard' }.
+provides_for:
+  - "Average scenario: cheapest/most expensive card scheme for a given transaction value (and optional account type / MCC / credit context)"
+  - "Average fee a card scheme charges for a given context and transaction value"
+  - "Cheapest/most expensive ACI for a credit/non-credit transaction on a scheme"
+  - "Most/least expensive MCC in general for a transaction value"
+  - "Applicable fee-rule IDs for a supplied set of characteristics"
+  - "Per-rule fee amounts at a parameterized notional value"

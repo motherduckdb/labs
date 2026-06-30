@@ -1,22 +1,29 @@
 file: merchant_category_codes_base.malloy
-domain: Payments / merchant taxonomy
-summary: |
-  Base semantic source over the merchant_category_codes lookup table. Provides
-  the canonical mapping between four-digit MCC strings and their industry
-  descriptions, plus a numeric form of the MCC for matching against the
-  integer MCC lists carried by fee rules, and an uppercase description form
-  for case-insensitive lookup by name.
+domain: Payment processing — Merchant Category Code (MCC) reference lookup
+summary: >
+  Base semantic source over the merchant_category_codes reference table: one row per
+  four-digit MCC and its textual description. Serves as the code-to-description lookup
+  used to resolve merchant_category_code values referenced by merchants and fee rules.
+  Contains dimensions/measures only — no joins.
 exports:
   - name: merchant_category_codes_base
     kind: source
-    summary: |
-      One row per MCC. Dimensions: mcc (string), mcc_code (numeric form for
-      list-membership matching against fees.merchant_category_code),
-      description, description_upper (case-insensitive match key),
-      mcc_category_prefix (first two digits = broad category). Measures:
-      mcc_count, distinct_mcc_count, distinct_description_count. Views:
-      catalog (full listing), by_category_prefix (rows per two-digit group).
+    summary: >
+      MCC reference dimension. Grain: one row per MCC (769 codes). Columns: mcc (4-digit
+      code string), description (business-type text). Adds mcc_category_prefix (first two
+      digits = top-level category) and count measures.
+    usage: >
+      Use as a lookup/dimension source. Resolve a description for a code with
+      `where: mcc = '5812'` then `select: mcc, description`, or list all via the
+      `code_list` view. Group counts by category with `by_category_prefix`.
+  - name: by_category_prefix
+    kind: view
+    summary: Count of MCC codes grouped by their two-digit top-level category prefix.
+    usage: "run: merchant_category_codes_base -> by_category_prefix"
+  - name: code_list
+    kind: view
+    summary: Full code-to-description listing ordered by MCC.
+    usage: "run: merchant_category_codes_base -> code_list; refine with + { where: description ~ r'AIR' }"
 provides_for:
-  - "Merchant Category Code (MCC): resolve code ↔ description and expose a numeric mcc_code for joining/list-membership against fee rules"
-  - "Wildcard rule semantics: numeric mcc_code is the value tested with list_contains against fees.merchant_category_code (empty list = any)"
-  - "Catalog browsing and grouping of MCCs by two-digit category prefix"
+  - "MCC code-to-description resolution for merchants.merchant_category_code and fees.merchant_category_code"
+  - "join target (by mcc) for enriching merchant/fee data with category descriptions"

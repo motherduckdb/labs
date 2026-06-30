@@ -1,0 +1,72 @@
+file: c5_transaction_fees.malloy
+domain: Payment processing fee analytics — matching transactions to applicable fee rules and evaluating counterfactual pricing/routing scenarios.
+summary: >
+  Joins each enriched transaction (c3_transactions_enriched: merchant profile +
+  monthly volume/fraud bands materialized as local columns) to every fee rule it
+  matches, with a wildcard branch on every characteristic (empty list = applies to
+  all for account_type/merchant_category_code/aci; NULL = applies to all for
+  card_scheme/capture_delay/monthly_volume/monthly_fraud_level/is_credit/intracountry).
+  Fee per (transaction,rule) = fixed_amount + rate*eur_amount/10000, summed at the
+  joined grain so the join_many fan-out never double-counts the base row. Provides
+  the applicable-fee-rule listing, per-transaction and total fees, single-rule
+  parameter-override delta, merchant-MCC counterfactual, card-scheme steering, and
+  fraud-ACI re-routing — each as a thin filter+select on a named view/measure.
+exports:
+  - name: c5_transaction_fees
+    kind: source
+    summary: >
+      Central transaction×fee-rule match (full characteristic match). Params:
+      override_fee_id+override_rate/override_fixed (re-price ONE rule, rule set
+      unchanged → fee_delta exact); override_mcc (counterfactual merchant MCC, which
+      changes the matched rule set → diff two instantiations for the delta). Measures:
+      transaction_count, applicable_rule_count, total_fee, avg_fee, min_fee, max_fee,
+      total_fee_scenario, fee_delta.
+    usage: >
+      Applicable fee IDs: `c5_transaction_fees -> applicable_fee_ids` with
+      `where: merchant = 'X' and transaction_date ? @2023-10` (or day_of_year = N, or
+      @2023). Total fees a merchant pays: `-> fees_by_merchant` scoped by merchant +
+      time, read total_fee. Per-day/per-transaction fee: `-> per_transaction_fee`.
+      Rule-pricing delta (e.g. rate of ID 141 → 1): instantiate
+      `c5_transaction_fees(override_fee_id is 141, override_rate is 1) -> fees_by_merchant`
+      and read fee_delta scoped by merchant + window. MCC-change delta: diff total_fee
+      of `c5_transaction_fees(override_mcc is 7523)` vs `c5_transaction_fees` for the
+      same merchant + window. Merchants affected by a rule:
+      `-> affected_merchants` with `where: fees.ID = 64` (add `and account_type = 'S'`
+      for a rule-scope counterfactual) over the period.
+  - name: c5_steering
+    kind: source
+    summary: >
+      Card-scheme steering counterfactual — card_scheme dropped from the match so each
+      transaction is re-priced under every candidate scheme. Measures: transaction_count,
+      total_fee, avg_fee.
+    usage: >
+      `c5_steering -> fee_by_scheme` with `where: merchant = 'X' and transaction_date ? @2023`
+      (or a month); order_by total_fee asc + `limit 1` = scheme to steer to for minimum
+      fees, desc for maximum. Format result as {candidate_scheme}:{total_fee rounded 2}.
+  - name: c5_aci_rerouting
+    kind: source
+    summary: >
+      Fraud-ACI re-routing counterfactual — each transaction subset re-priced under
+      every candidate ACI (A..G materialized as a local column). Measures:
+      transaction_count, total_fee, avg_fee.
+    usage: >
+      `c5_aci_rerouting -> fee_by_candidate_aci` with
+      `where: merchant = 'X' and has_fraudulent_dispute and transaction_date ? @2023-02`;
+      order_by total_fee asc, candidate_aci asc + `limit 1` = preferred (cheapest) ACI.
+  - name: fee_rules_keyed
+    kind: source
+    summary: fees_base with primary_key ID so join_many fan-out dedupes symmetric aggregates.
+    usage: Internal join target; query fees_base directly for rule-level analytics.
+  - name: aci_universe
+    kind: source
+    summary: Distinct observed ACI values (A..G) used to enumerate re-routing candidates.
+    usage: Internal cross-join source for c5_aci_rerouting.
+provides_for:
+  - "Applicable fee IDs / fee rules for a merchant over a year, month, or single day"
+  - "Total fees in euros a merchant pays over a period (year, month, single day)"
+  - "Per-transaction fee detail"
+  - "Card-scheme steering to minimize or maximize a merchant's total fees"
+  - "Fraud-ACI re-routing: preferred ACI minimizing fees on fraudulent transactions"
+  - "Delta in fees from re-pricing a single fee rule's rate/fixed amount"
+  - "Delta in fees from a counterfactual change to a merchant's MCC"
+  - "Merchants affected by a given fee rule (optionally under a rule-scope change)"

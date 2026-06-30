@@ -1,34 +1,23 @@
 file: acquirer_countries_base.malloy
-domain: payments / fee modeling — acquirer reference data
-summary: |
-  Base semantic source over the `acquirer_countries` reference table, which
-  maps each acquirer (bank) to the country in which it acquires transactions.
-  This is the authoritative lookup used to resolve a payment's acquirer
-  country (and therefore the domestic vs. cross-border / intracountry flag)
-  from the `acquirer` attribute. Provides dimensions for acquirer, country
-  code, a derived region bucket, and a Eurozone flag, plus simple count
-  measures and small browsing views. Contains no joins.
+domain: Payment processing — acquiring banks and the countries in which they acquire
+summary: >
+  Base semantic source over the acquirer_countries lookup table. Each row maps an
+  acquiring bank (acquirer) to a country it operates/acquires in (country_code,
+  ISO-2: FR, GB, IT, NL, US). Used to determine the acquirer country for a
+  transaction, which drives the intracountry / local-acquiring distinction
+  (issuer country == acquirer country) in fee-rule matching. No join logic here.
 exports:
   - name: acquirer_countries_base
     kind: source
-    summary: |
-      One row per acquirer × acquiring-country mapping (8 acquirers across
-      5 countries: FR, GB, IT, NL, US). Exposes acquirer, country_code, a
-      friendly acquirer_label, a coarse acquirer_region (Europe / North
-      America / Other), and an is_eurozone_acquirer flag. Measures cover
-      row counts and distinct counts of acquirers and countries. Intended
-      to be joined from a payments source via payments.acquirer = acquirer.
-  - name: acquirer_directory
-    kind: view
-    summary: Alphabetical roster of acquirers with their country and region.
-  - name: acquirers_by_country
-    kind: view
-    summary: Count of acquirers operating in each country.
-  - name: acquirers_by_region
-    kind: view
-    summary: Count of acquirers operating in each derived region bucket.
+    summary: >
+      One row per (acquirer, country_code) pairing. Dimensions: acquirer (8 distinct
+      banks e.g. gringotts, medici, lehman_brothers), country_code (FR/GB/IT/NL/US),
+      column0 (row index). Measures: row_count, acquirer_count (distinct acquirers),
+      country_count (distinct countries).
+    usage: >
+      Reference for acquirer→country mapping. e.g. `run: acquirer_countries_base -> {
+      group_by: acquirer; aggregate: country_count }` for how many countries each
+      acquirer covers, or filter `where: acquirer = 'gringotts'` to list its countries.
 provides_for:
-  - Resolve acquirer_country for a payment by joining payments.acquirer to acquirer.
-  - Derive the intracountry flag (issuing_country = acquirer_country) needed for fee-rule matching.
-  - Slice payments / fees by acquirer country or region.
-  - Enumerate the set of acquirers and the countries they cover.
+  - "intracountry / local-acquiring determination (acquirer country vs issuing country)"
+  - "acquirer-to-country lookup for transaction enrichment"

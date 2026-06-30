@@ -1,0 +1,76 @@
+// Per-transaction fact enriched with merchant profile + monthly band metrics.
+// Materialized via projection so every fee-matching attribute is a REAL local
+// column (downstream fee join_many references only these, never a pass-through).
+source: c3_transactions_enriched is payments_base extend {
+  join_one: merchant_profile is c1_merchant_profiles with merchant
+  // c2 has no primary key -> match on merchant + natural month
+  join_one: monthly is c2_merchant_monthly_metrics
+    on merchant = monthly.merchant
+    and `year` = monthly.`year`
+    and transaction_month = monthly.transaction_month
+} -> {
+  select:
+    *,                                                   // all payments columns + derived dims already present
+    // merchant profile attributes (fee-rule match fields)
+    account_type is merchant_profile.account_type,
+    merchant_category_code is merchant_profile.merchant_category_code,
+    capture_delay_band is merchant_profile.capture_delay_band,
+    mcc_description is merchant_profile.mcc_description,
+    // monthly banded metrics (fee-rule match fields)
+    monthly_volume_band is monthly.monthly_volume_band,
+    monthly_fraud_band is monthly.monthly_fraud_band
+} extend {
+
+  // ---------- measures (re-declared at this grain after the projection) ----------
+  measure: transaction_count is count()
+  measure: total_amount is eur_amount.sum()
+  measure: avg_amount is eur_amount.avg()
+  measure: min_amount is eur_amount.min()
+  measure: max_amount is eur_amount.max()
+
+  measure: fraud_transaction_count is count() { where: has_fraudulent_dispute }
+  measure: fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
+  measure: credit_count is count() { where: is_credit }
+  measure: intracountry_count is count() { where: is_intracountry }
+
+  measure: distinct_merchants is count(merchant)
+
+  // ---------- reusable slicing views ----------
+  view: by_merchant is {
+    group_by: merchant
+    aggregate: transaction_count, total_amount, avg_amount
+  }
+
+  view: by_issuing_country is {
+    group_by: issuing_country
+    aggregate: transaction_count, total_amount, avg_amount
+    order_by: avg_amount asc
+  }
+
+  view: by_card_scheme is {
+    group_by: card_scheme
+    aggregate: transaction_count, total_amount, avg_amount
+  }
+
+  view: by_aci is {
+    group_by: aci
+    aggregate: transaction_count, total_amount, avg_amount
+  }
+
+  // every match attribute for one transaction grain (inspection / debugging)
+  view: match_attributes is {
+    group_by:
+      merchant,
+      card_scheme,
+      account_type,
+      merchant_category_code,
+      mcc_description,
+      capture_delay_band,
+      is_credit,
+      aci,
+      is_intracountry,
+      monthly_volume_band,
+      monthly_fraud_band
+    aggregate: transaction_count, total_amount
+  }
+}

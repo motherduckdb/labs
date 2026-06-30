@@ -1,17 +1,41 @@
 file: merchants_base.malloy
-domain: payments / merchant dimension
-summary: |
-  Base source over the merchants table — one authoritative row per merchant
-  partner. Exposes merchant attributes (account type, MCC, capture delay,
-  acquirers) and derives the capture-delay bucket vocabulary used when
-  matching merchants against fee-rule conditions. No joins; intended to be
-  joined into payments and fee-matching layers downstream.
+domain: Payment processing — merchant profiles that drive fee-rule applicability
+summary: >
+  Base semantic source over the `merchants` table (one row per merchant). Exposes
+  the fixed merchant profile attributes — account type, merchant category code (MCC),
+  capture delay, and acquirers — used to determine which fee rules apply to a merchant.
+  Adds derived dimensions that translate raw merchant values into the banded encodings
+  used by fee rules (capture_delay_band) and a human-readable account-type label, plus
+  count/profile measures. No joins are defined here; join logic to payments/fees/MCC
+  belongs in a separate composing source.
 exports:
   - name: merchants_base
     kind: source
-    summary: Merchant dimension keyed by merchant name, with descriptive labels, capture-delay bucketing, acquirer-list helpers, and reusable breakdown views.
+    summary: >
+      One row per merchant. Dimensions: merchant, account_type (R/D/H/F/S), account_type_label,
+      merchant_category_code, capture_delay (raw: '1','2','7','immediate','manual'),
+      capture_delay_band (fee-rule band: '<3','3-5','>5','immediate','manual'),
+      capture_delay_days (numeric days or null), acquirer (list), acquirer_count.
+      Measures: merchant_count, account_type_count, mcc_count, and avg/min/max acquirer_count.
+    usage: >
+      `run: merchants_base -> { group_by: account_type_label; aggregate: merchant_count }`.
+      Filter a single merchant with `where: merchant = 'FitHub'`. Use capture_delay_band
+      (not raw capture_delay) when matching against fee-rule capture_delay thresholds.
+  - name: by_account_type
+    kind: view
+    summary: Merchant counts grouped by account_type and its descriptive label.
+    usage: "`run: merchants_base -> by_account_type`; refine with `+ { order_by: merchant_count desc }`."
+  - name: by_capture_delay
+    kind: view
+    summary: Merchant counts grouped by raw capture_delay and its fee-rule band.
+    usage: "`run: merchants_base -> by_capture_delay`."
+  - name: by_mcc
+    kind: view
+    summary: Merchant counts grouped by merchant_category_code.
+    usage: "`run: merchants_base -> by_mcc`; join to MCC descriptions in a composing source."
 provides_for:
-  - Resolving merchant attributes (account_type, MCC, capture_delay bucket, acquirers) used as the merchant side of fee-rule applicability matching.
-  - Merchant-grain counts and breakdowns by account type, MCC, and capture-delay bucket.
-  - Joining as a dimension into payments-level analyses (payments.merchant → merchants_base.merchant).
-  - Translating raw capture_delay values ('1','2','7','immediate','manual') into the fee-rule bucket vocabulary ('immediate','<3','3-5','>5','manual').
+  - "Merchant entity profile (account type, MCC, capture delay, acquirers) for fee-rule matching"
+  - "Capture-delay band translation (numeric merchant days → fee-rule banded thresholds)"
+  - "Account-type slicing and labeling"
+  - "Merchant counts and acquirer-count profile measures"
+---

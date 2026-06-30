@@ -1,31 +1,52 @@
 file: fees_base.malloy
-domain: payments-fees
-summary: |
-  Base semantic source over the fee-rule catalog (one row per rule). Exposes
-  the raw rule columns plus derived wildcard flags (NULL scalar or empty list
-  ⇒ "applies to all"), a specificity score, readable labels for is_credit and
-  intracountry, and pricing measures (fixed_amount, rate, and fee-per-unit on
-  several reference notionals). Contains NO joins; downstream sources are
-  expected to join this catalog to merchant context and/or transactions to
-  perform wildcard-aware rule matching and fee computation.
+domain: Payment processing fee rules
+summary: >
+  Base semantic source over the `fees` rule table (one row per fee rule ID).
+  Each row is a pricing rule specifying the characteristics (card scheme, account
+  type, capture delay, monthly fraud level, monthly volume, MCC, is_credit, ACI,
+  intracountry) under which a fixed_amount + variable rate apply. A fee is computed
+  as `fixed_amount + rate * transaction_value / 10000`. Wildcard semantics: list
+  fields (account_type, merchant_category_code, aci) use an EMPTY list to mean
+  "applies to all"; scalar fields (card_scheme, capture_delay, monthly_fraud_level,
+  monthly_volume, is_credit, intracountry) use NULL to mean "applies to all". This
+  file carries measures and dimensions only — no join logic. Matching rules to
+  merchants/transactions belongs in a downstream source that joins this one.
 exports:
   - name: fees_base
     kind: source
-    summary: |
-      Fee-rule catalog with primary_key ID. Dimensions: card_scheme,
-      account_type, capture_delay, monthly_fraud_level, monthly_volume,
-      merchant_category_code, is_credit (+is_credit_label), aci, intracountry
-      (+intracountry_flag), wildcard flags per condition column,
-      wildcard_condition_count, specificity, fee_per_unit, fee_eur_on_{1,10,100,1k,10k}.
-      Measures: rule_count, fixed_amount_{avg,min,max,sum}, rate_{avg,min,max},
-      fee_per_unit_{avg,min,max}, and wildcard-rule counts per condition column.
-      Views: by_card_scheme, by_capture_delay, by_monthly_volume,
-      by_monthly_fraud_level, by_is_credit, by_intracountry,
-      pricing_extrema_by_scheme.
+    summary: >
+      Fee-rule grain (one row per rule ID). Exposes the rule characteristic columns,
+      derived wildcard flags, a readable rate fraction and intracountry flag, and the
+      full standard aggregate set (sum/avg/min/max/count) over fixed_amount and rate.
+    usage: >
+      `run: fees_base -> by_card_scheme` for per-scheme rollups, or compose directly:
+      `run: fees_base -> { where: card_scheme = 'NexPay'; group_by: aci; aggregate: avg_fixed_amount, avg_rate, rule_count }`.
+      To compute a fee at a notional, project `fee is fixed_amount + rate * <value> / 10000`
+      in a select stage. For wildcard-aware matching use the `applies_to_all_*` flags
+      and `len!number(list)=0 or list_contains!boolean(list, x)` in a downstream join source.
+  - name: by_card_scheme
+    kind: view
+    summary: Rule count and average fixed_amount/rate per card scheme.
+    usage: "`run: fees_base -> by_card_scheme` (optionally `+ { where: ... }`)."
+  - name: by_credit
+    kind: view
+    summary: Rule count and averages split by is_credit (true/false/null=all).
+    usage: "`run: fees_base -> by_credit`."
+  - name: by_capture_delay
+    kind: view
+    summary: Rule count and averages per capture_delay band (null = applies to all).
+    usage: "`run: fees_base -> by_capture_delay`."
+  - name: by_monthly_volume
+    kind: view
+    summary: Rule count and averages per monthly_volume band (null = applies to all).
+    usage: "`run: fees_base -> by_monthly_volume`."
+  - name: by_monthly_fraud_level
+    kind: view
+    summary: Rule count and averages per monthly_fraud_level band (null = applies to all).
+    usage: "`run: fees_base -> by_monthly_fraud_level`."
 provides_for:
-  - Wildcard-aware fee-rule matching against merchant and transaction context
-  - Comparison of pricing (fixed_amount, rate, fee_per_unit) across card schemes, ACIs, MCCs, account types, capture delays, volume tiers and fraud-level tiers
-  - Argmin/argmax selection over scheme/ACI/MCC to find cheapest or most expensive options
-  - Parameterized fee evaluation on a hypothetical transaction notional
-  - Counterfactual rule-edit scenarios (override rate or fixed_amount on a specific ID)
-  - Average-fee scenarios that marginalize over unspecified condition columns
+  - "Fee rule entity: one row per fee rule ID with its characteristic constraints"
+  - "Payment processing fee computation: fixed_amount + rate * transaction_value / 10000"
+  - "Average/min/max/total fixed_amount and rate across rules, sliceable by any characteristic"
+  - "Wildcard-aware matching primitives (applies_to_all_* flags) for downstream applicable-fee-rule joins"
+  - "Card scheme, ACI, account type, MCC, capture delay, fraud level, volume, credit, intracountry dimensions"

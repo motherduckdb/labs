@@ -1,148 +1,63 @@
-// fees_base.malloy
-// Base semantic source for the fee-rule catalog (duckdb.table('fees')).
-// One row = one fee rule. Condition columns use wildcard semantics:
-//   - scalar columns: NULL means "applies to all values"
-//   - list   columns: empty list ([]) means "applies to all values"
-// Pricing per matched rule: fee_eur = fixed_amount + rate * transaction_value / 10000
-
 source: fees_base is duckdb.table('fees') extend {
+  // transaction_value is the notional the variable rate applies to;
+  // fee = fixed_amount + rate * transaction_value / 10000
+  // parameterized so callers can compute fee at any notional
+  // (default 0 => fee equals fixed_amount only)
 
-  primary_key: ID
+  // --- derived dimensions ---
+  // wildcard encoding: list fields use empty list (len=0); scalar fields use NULL
+  dimension: applies_to_all_account_types is len!number(account_type) = 0
+  dimension: applies_to_all_mccs is len!number(merchant_category_code) = 0
+  dimension: applies_to_all_acis is len!number(aci) = 0
+  dimension: applies_to_all_schemes is card_scheme is null
+  dimension: applies_to_all_capture_delay is capture_delay is null
+  dimension: applies_to_all_fraud_level is monthly_fraud_level is null
+  dimension: applies_to_all_volume is monthly_volume is null
+  dimension: applies_to_all_credit is is_credit is null
+  dimension: applies_to_all_intracountry is intracountry is null
 
-  //
-  // ─── Wildcard flags (per condition column) ──────────────────────────────
-  // True iff the rule places no restriction on that attribute.
-  //
-  dimension: is_wildcard_account_type        is len!number(account_type) = 0
-  dimension: is_wildcard_mcc                 is len!number(merchant_category_code) = 0
-  dimension: is_wildcard_aci                 is len!number(aci) = 0
-  dimension: is_wildcard_capture_delay       is capture_delay is null
-  dimension: is_wildcard_monthly_fraud_level is monthly_fraud_level is null
-  dimension: is_wildcard_monthly_volume      is monthly_volume is null
-  dimension: is_wildcard_is_credit           is is_credit is null
-  dimension: is_wildcard_intracountry        is intracountry is null
+  // rate is stored as basis-points/10000 multiplier; expose as effective fraction
+  dimension: rate_fraction is rate / 10000.0
 
-  //
-  // ─── Derived semantic dimensions ────────────────────────────────────────
-  //
-  // intracountry is stored as 0/1 double; expose a readable label.
-  dimension: intracountry_flag is
-    pick 'domestic'      when intracountry = 1
-    pick 'international' when intracountry = 0
-    else 'any'
+  // intracountry stored as 0/1 double; expose readable flag (null = applies to all)
+  dimension: is_intracountry is pick true when intracountry = 1 pick false when intracountry = 0 else null
 
-  dimension: is_credit_label is
-    pick 'credit' when is_credit = true
-    pick 'debit'  when is_credit = false
-    else 'any'
-
-  // Number of condition columns left unrestricted — higher = more general rule.
-  dimension: wildcard_condition_count is
-    (pick 1 when is_wildcard_account_type        else 0)
-  + (pick 1 when is_wildcard_mcc                 else 0)
-  + (pick 1 when is_wildcard_aci                 else 0)
-  + (pick 1 when is_wildcard_capture_delay       else 0)
-  + (pick 1 when is_wildcard_monthly_fraud_level else 0)
-  + (pick 1 when is_wildcard_monthly_volume      else 0)
-  + (pick 1 when is_wildcard_is_credit           else 0)
-  + (pick 1 when is_wildcard_intracountry        else 0)
-
-  dimension: specificity is 8 - wildcard_condition_count
-
-  // Fee on a EUR 1 transaction (smallest meaningful notional) — useful for
-  // comparing pricing curves independent of transaction size.
-  dimension: fee_per_unit is fixed_amount + rate / 10000.0
-
-  //
-  // ─── Measures ───────────────────────────────────────────────────────────
-  //
+  // --- measures over fixed_amount ---
   measure: rule_count is count()
+  measure: total_fixed_amount is fixed_amount.sum()
+  measure: avg_fixed_amount is fixed_amount.avg()
+  measure: min_fixed_amount is fixed_amount.min()
+  measure: max_fixed_amount is fixed_amount.max()
 
-  measure: fixed_amount_avg is fixed_amount.avg()
-  measure: fixed_amount_min is fixed_amount.min()
-  measure: fixed_amount_max is fixed_amount.max()
-  measure: fixed_amount_sum is fixed_amount.sum()
+  // --- measures over rate ---
+  measure: total_rate is rate.sum()
+  measure: avg_rate is rate.avg()
+  measure: min_rate is rate.min()
+  measure: max_rate is rate.max()
 
-  measure: rate_avg is rate.avg()
-  measure: rate_min is rate.min()
-  measure: rate_max is rate.max()
-
-  measure: fee_per_unit_avg is fee_per_unit.avg()
-  measure: fee_per_unit_min is fee_per_unit.min()
-  measure: fee_per_unit_max is fee_per_unit.max()
-
-  // Counts of rules that wildcard a given attribute.
-  measure: wildcard_account_type_rules
-    is count() { where: is_wildcard_account_type }
-  measure: wildcard_mcc_rules
-    is count() { where: is_wildcard_mcc }
-  measure: wildcard_aci_rules
-    is count() { where: is_wildcard_aci }
-  measure: wildcard_capture_delay_rules
-    is count() { where: is_wildcard_capture_delay }
-  measure: wildcard_monthly_fraud_level_rules
-    is count() { where: is_wildcard_monthly_fraud_level }
-  measure: wildcard_monthly_volume_rules
-    is count() { where: is_wildcard_monthly_volume }
-  measure: wildcard_is_credit_rules
-    is count() { where: is_wildcard_is_credit }
-  measure: wildcard_intracountry_rules
-    is count() { where: is_wildcard_intracountry }
-
-  //
-  // ─── Parameterized fee evaluation ───────────────────────────────────────
-  // Fee in EUR on a given notional, per matched rule.
-  // Use as e.g.  aggregate: avg_fee_1000 is fee_eur_on(1000).avg()
-  //
-  dimension: fee_eur_on_1   is fixed_amount + rate * 1   / 10000.0
-  dimension: fee_eur_on_10  is fixed_amount + rate * 10  / 10000.0
-  dimension: fee_eur_on_100 is fixed_amount + rate * 100 / 10000.0
-  dimension: fee_eur_on_1k  is fixed_amount + rate * 1000 / 10000.0
-  dimension: fee_eur_on_10k is fixed_amount + rate * 10000 / 10000.0
-
-  //
-  // ─── Reusable views ─────────────────────────────────────────────────────
-  //
+  // --- standard views ---
   view: by_card_scheme is {
-    group_by:  card_scheme
-    aggregate: rule_count, fixed_amount_avg, rate_avg, fee_per_unit_avg
-    order_by:  rule_count desc
+    group_by: card_scheme
+    aggregate: rule_count, avg_fixed_amount, avg_rate
+  }
+
+  view: by_credit is {
+    group_by: is_credit
+    aggregate: rule_count, avg_fixed_amount, avg_rate
   }
 
   view: by_capture_delay is {
-    group_by:  capture_delay
-    aggregate: rule_count, fee_per_unit_avg
-    order_by:  capture_delay
+    group_by: capture_delay
+    aggregate: rule_count, avg_fixed_amount, avg_rate
   }
 
   view: by_monthly_volume is {
-    group_by:  monthly_volume
-    aggregate: rule_count, fee_per_unit_avg
-    order_by:  monthly_volume
+    group_by: monthly_volume
+    aggregate: rule_count, avg_fixed_amount, avg_rate
   }
 
   view: by_monthly_fraud_level is {
-    group_by:  monthly_fraud_level
-    aggregate: rule_count, fee_per_unit_avg
-    order_by:  monthly_fraud_level
-  }
-
-  view: by_is_credit is {
-    group_by:  is_credit_label
-    aggregate: rule_count, fee_per_unit_avg
-  }
-
-  view: by_intracountry is {
-    group_by:  intracountry_flag
-    aggregate: rule_count, fee_per_unit_avg
-  }
-
-  view: pricing_extrema_by_scheme is {
-    group_by:  card_scheme
-    aggregate:
-      rule_count,
-      fee_per_unit_min, fee_per_unit_max,
-      fixed_amount_min, fixed_amount_max,
-      rate_min,         rate_max
+    group_by: monthly_fraud_level
+    aggregate: rule_count, avg_fixed_amount, avg_rate
   }
 }

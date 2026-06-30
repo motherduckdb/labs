@@ -1,0 +1,63 @@
+file: c3_transactions_enriched.malloy
+domain: Payment processing fee optimization (Adyen-style merchant fee analytics)
+summary: >
+  Per-transaction fact source. Each payment is enriched with its merchant's
+  profile (account_type, MCC code + description, capture_delay band) via
+  c1_merchant_profiles and with that merchant's natural-month banded metrics
+  (monthly_volume_band, monthly_fraud_band) via c2_merchant_monthly_metrics.
+  All attributes a fee rule matches on are materialized as REAL local columns
+  through a projection, so the downstream fee-matching layer can join_many on
+  this source's own columns (never a pass-through alias). Grain = one row per
+  payment (psp_reference). Calendar slicing is available via transaction_date,
+  transaction_month, year, and day_of_year; domestic vs international via
+  is_intracountry; the variable fee base via eur_amount / amount_basis_points.
+exports:
+  - name: c3_transactions_enriched
+    kind: source
+    summary: >
+      Payments joined to merchant profile + monthly band metrics. Exposes the
+      full fee-match attribute set as local columns (card_scheme, account_type,
+      merchant_category_code, mcc_description, capture_delay_band, is_credit,
+      aci, is_intracountry, monthly_volume_band, monthly_fraud_band) plus
+      transaction value and calendar dimensions, with the standard
+      sum/avg/min/max/count aggregation set over eur_amount.
+    usage: >
+      `run: c3_transactions_enriched -> { where: merchant = 'X' and year = 2023 ... }`.
+      Filter by merchant / transaction_date / transaction_month / day_of_year to
+      scope a period; the materialized match-attribute columns feed the fee-rule
+      join_many downstream.
+  - name: by_merchant
+    kind: view
+    summary: Transaction count, total and average eur_amount per merchant.
+    usage: "`run: c3_transactions_enriched -> by_merchant` (add `where:` for a period)."
+  - name: by_issuing_country
+    kind: view
+    summary: >
+      Transaction count, total and average eur_amount per issuing country,
+      sorted ascending by average (for grouped average-transaction-value asks).
+    usage: >
+      `run: c3_transactions_enriched -> by_issuing_country + { where: merchant='X'
+      and card_scheme='NexPay' and transaction_date ? @2023-05 to @2023-07 }`.
+  - name: by_card_scheme
+    kind: view
+    summary: Transaction count, total and average eur_amount per card scheme.
+    usage: "`run: c3_transactions_enriched -> by_card_scheme + { where: ... }`."
+  - name: by_aci
+    kind: view
+    summary: Transaction count, total and average eur_amount per ACI.
+    usage: "`run: c3_transactions_enriched -> by_aci + { where: ... }`."
+  - name: match_attributes
+    kind: view
+    summary: >
+      One row per distinct combination of all fee-rule match attributes, with
+      transaction count and total amount; useful to inspect which rule keys a
+      merchant's traffic carries.
+    usage: "`run: c3_transactions_enriched -> match_attributes + { where: merchant='X' and year=2023 }`."
+provides_for:
+  - "Total fees a merchant pays over a period (per-transaction fee matching downstream)"
+  - "Applicable fee IDs for a merchant in a time window"
+  - "Merchants affected by a given fee rule"
+  - "Card-scheme / ACI traffic-steering counterfactuals"
+  - "Fraud-ACI re-routing scenarios (fraud subset by ACI)"
+  - "Average transaction value grouped by issuing_country / scheme / merchant"
+  - "Calendar slicing by year, natural month, and day-of-year"
