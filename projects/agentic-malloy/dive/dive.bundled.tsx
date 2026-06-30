@@ -202,16 +202,18 @@ function StoryTab() {
   return (
     <div>
       <Chapter n={1} title="The thesis">
-        <Lede>Could a <b>Malloy semantic layer</b> be a more token-efficient substrate for an analytics
-          agent than a tuned <b>markdown + SQL context layer</b> — without losing accuracy?</Lede>
-        <p>A semantic layer promises one definition per metric and a governed, queryable surface. The test
-          is a conjunction — win on tokens, don’t lose accuracy — run on <b>DABstep</b>: 26 training questions,
-          419 held out, changing only the substrate the agent reads from.</p>
+        <Lede>A semantic layer is supposed to be the clean way to hand an analytics agent its definitions —
+          one source of truth per metric, governed and queryable. I wanted to know whether that actually
+          helps the agent, or just feels tidy to us.</Lede>
+        <p>So I ran the experiment: a <b>Malloy semantic layer</b> head-to-head against a tuned
+          <b> markdown + SQL context layer</b> on <b>DABstep</b> — 26 training questions, 419 held out. The bar
+          is a conjunction — the layer has to win on tokens <i>and</i> not lose accuracy. Same model, same
+          scorer, same data. The only thing that changes is the substrate the agent reads from.</p>
       </Chapter>
 
-      <Chapter n={2} title="What we tested">
-        <p>Same data, same scorer. Both arms explore with SQL on MotherDuck; the treatment submits a compiled
-          Malloy answer. Only the substrate differs.</p>
+      <Chapter n={2} title="What I tested">
+        <p>Both arms explore the data with SQL on MotherDuck. The difference is the final answer: the baseline
+          submits SQL, the Malloy arm submits compiled Malloy. That’s the only knob I turned.</p>
         <div style={{ display: "flex", gap: 14, margin: "12px 0", flexWrap: "wrap" }}>
           {[["Baseline", ARM.baseline, "Markdown context items + SQL patterns the agent adapts per question."],
             ["Treatment", ARM.malloy, "A model-authored Malloy layer: one source per entity, joins, views."]].map(([t, c, d]) => (
@@ -221,9 +223,10 @@ function StoryTab() {
             </div>
           ))}
         </div>
-        <p style={{ fontSize: 13.5, color: INK.muted }}><b style={{ color: INK.text }}>A model authored the layer, not a human</b> —
-          read the manual, the 26 Q/A, and the schema; write the layer; compile-and-execute gate; repair loop; lock
-          provenance. This is not a “bad Malloy” story. <Link onClick={go("build")}>how the layer was built</Link></p>
+        <p style={{ fontSize: 13.5, color: INK.muted }}><b style={{ color: INK.text }}>A model wrote the layer, not me</b> —
+          it read the manual, the 26 Q/A, and the schema, authored the Malloy, cleared a compile-and-execute gate and a
+          repair loop, then had its provenance locked. So before you ask: I didn’t hand-tune Malloy to lose. This is not
+          a “bad Malloy” story. <Link onClick={go("build")}>how the layer was built</Link></p>
       </Chapter>
 
       <Chapter n={3} title="The result">
@@ -280,26 +283,26 @@ function StoryTab() {
       </Chapter>
 
       <Chapter n={5} title="The verdict">
-        <p>As the agent’s primary answering substrate, Malloy was slower, heavier, and less accurate than
-          context + SQL. When the path was obvious it could match — at a token and latency premium. When it
-          wasn’t, executable views froze the wrong interpretation while prose adapted.</p>
-        <p style={{ marginTop: 10 }}>And <b>models write accurate Malloy</b> — this layer compiles, runs, and generalizes. The failure is
-          using it as the thinking medium, not authoring it. <Link onClick={go("build")}>how the layer was built</Link></p>
+        <p>Used as the agent’s primary answering substrate, Malloy was slower, heavier, and less accurate than
+          context + SQL. When the path was obvious it could match the baseline — at a token and latency premium.
+          When it wasn’t, the executable view froze the wrong interpretation while prose just adapted.</p>
+        <p style={{ marginTop: 10 }}>Here’s the part I didn’t expect: <b>models write good Malloy</b>. This layer compiles, runs, and
+          generalizes. The failure isn’t the authoring — it’s using the layer as the thinking medium. <Link onClick={go("build")}>how the layer was built</Link></p>
         <div style={{ marginTop: 12, padding: "10px 14px", borderLeft: `3px solid ${INK.faint}`, background: INK.panel }}>
           <span style={{ fontFamily: SANS, fontSize: 12.5, color: INK.text }}>
-            <b>Scope.</b> One benchmark, one harness, one layer build — about Malloy <i>as an LLM substrate</i>. It
-            says nothing about a semantic layer as a deterministic interface for non-agent systems, which we didn’t test.</span>
+            <b>Scope.</b> One benchmark, one harness, one layer build — this is about Malloy <i>as an LLM substrate</i>. It
+            says nothing about a semantic layer as a deterministic interface for non-agent systems, which I didn’t test.</span>
         </div>
       </Chapter>
 
-      <Chapter n={6} title="What we’d build — and how much we tested">
+      <Chapter n={6} title="What I’d build next">
         <p>The layer’s value isn’t helping the model reason — it’s making chosen definitions <b>executable,
           governed, testable, and reusable outside the LLM loop</b>: provenance, permissions, lineage, metric
           contracts, regression tests, interoperability with non-agent tools. The shape:</p>
         <ul style={{ paddingLeft: 18, margin: "8px 0", display: "flex", flexDirection: "column", gap: 5 }}>
           <li><b>Context is the authoring and reasoning substrate</b>; SQL is the execution language.</li>
           <li><b>Semantic-layer objects are promoted artifacts</b>, not the default medium — promotion requires tests, so a bad interpretation can’t freeze.</li>
-          <li><b>Force a governed lookup first, with clear off-ramps</b> — if it doesn’t fit, use the layer as <i>context</i> for a SQL answer, and log a promotion candidate. <span style={{ color: INK.muted }}>(Our stance; force-first vs. optional is open.)</span></li>
+          <li><b>Force a governed lookup first, with clear off-ramps</b> — if it doesn’t fit, use the layer as <i>context</i> for a SQL answer, and log a promotion candidate. <span style={{ color: INK.muted }}>(My stance; force-first vs. optional is still open.)</span></li>
         </ul>
         <Figure caption={<>The strongest proxy — the {best ? pct(best.acc_pct) : ""} hybrid. Governed lookup (<b style={{ color: APATH.view }}>view-selection</b>) carried only {pN("view")} of {pTot}; the agent <b style={{ color: APATH.sql }}>off-ramped to SQL</b> for {pN("sql")}. The off-ramp helped — the lookup couldn’t carry most questions. <b>Enough to validate the direction, not the protocol.</b></>}>
           {pathQ.isLoading ? <div className="animate-pulse" style={{ height: 38, background: "#eceae3", borderRadius: 3 }} /> : (
@@ -590,8 +593,8 @@ function BuildTab() {
     <div>
       <Head kicker="this is not a “bad Malloy” story" title="The layer was authored by a model, not a human">
         A procedure builds it: an expensive model reads the manual, the 26 train Q/A, and the schema, then writes the
-        whole layer — compile-and-execute-gated, with a repair loop, then provenance-locked. Humans only tune the build
-        prompt; the layer files are never hand-edited. The result is accurate Malloy that generalizes — the problem is using it.
+        whole layer — compile-and-execute-gated, with a repair loop, then provenance-locked. I only tune the build
+        prompt; I never hand-edit the layer files. The result is accurate Malloy that generalizes — the problem is using it.
       </Head>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center", marginBottom: 12 }}>
         {buildFlow.map((s2, i) => (

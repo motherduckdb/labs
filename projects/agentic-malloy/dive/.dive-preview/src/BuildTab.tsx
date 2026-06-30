@@ -71,8 +71,8 @@ export default function BuildTab() {
     <div>
       <Head kicker="this is not a “bad Malloy” story" title="The layer was authored by a model, not a human">
         A procedure builds it: an expensive model reads the manual, the 26 train Q/A, and the schema, then writes the
-        whole layer — compile-and-execute-gated, with a repair loop, then provenance-locked. Humans only tune the build
-        prompt; the layer files are never hand-edited. The result is accurate Malloy that generalizes — the problem is using it.
+        whole layer — compile-and-execute-gated, with a repair loop, then provenance-locked. I only tune the build
+        prompt; I never hand-edit the layer files. The result is accurate Malloy that generalizes — the problem is using it.
       </Head>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center", marginBottom: 12 }}>
         {buildFlow.map((s2, i) => (
