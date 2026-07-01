@@ -199,15 +199,48 @@ export const SEMANTIC_LAYER_POLICY = `SEMANTIC-LAYER POLICY (applies to ALL gene
 
 /** Parse a JSON array of {old,new} search/replace edits from a repair response. */
 export function parseEdits(text: string): Array<{ old: string; new: string }> {
-  const m = text.match(/\[[\s\S]*\]/);
-  try {
-    const arr = JSON.parse(m ? m[0] : text) as Array<{ old?: unknown; new?: unknown }>;
-    return arr
-      .filter((e) => e && typeof e.old === 'string' && typeof e.new === 'string')
-      .map((e) => ({ old: e.old as string, new: e.new as string }));
-  } catch {
-    return [];
+  const tryParse = (s: string): Array<{ old: string; new: string }> | null => {
+    try {
+      const arr = JSON.parse(s) as unknown;
+      if (!Array.isArray(arr)) return null;
+      return (arr as Array<{ old?: unknown; new?: unknown }>)
+        .filter((e) => e && typeof e.old === 'string' && typeof e.new === 'string')
+        .map((e) => ({ old: e.old as string, new: e.new as string }));
+    } catch {
+      return null;
+    }
+  };
+  // Robust extraction: the old greedy /\[[\s\S]*\]/ spanned the FIRST `[` to the LAST
+  // `]`, so any bracket in reasoning prose or a Malloy list snippet (`['A','B']`,
+  // `col[0]`) around the JSON made JSON.parse throw → [] → "no applicable edits". At
+  // --reasoning high (more bracket-laden reasoning) this failed every round. Instead:
+  // prefer a ```json fence, else collect BALANCED-bracket `[…]` spans and try them
+  // LAST-first (the intended array is emitted after any reasoning).
+  const candidates: string[] = [];
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence && fence[1]) candidates.push(fence[1].trim());
+  const spans: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '[') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === ']' && depth > 0) {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        spans.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
   }
+  candidates.push(...spans.reverse());
+  for (const c of candidates) {
+    const r = tryParse(c);
+    if (r && r.length) return r; // a candidate that parses to a non-empty edit list
+  }
+  return tryParse(text) ?? []; // last resort: the whole response
 }
 
 function extractBlocks(text: string): { malloy?: string; meta?: string } {
