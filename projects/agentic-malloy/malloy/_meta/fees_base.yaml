@@ -1,37 +1,41 @@
 file: fees_base.malloy
-domain: Payment processing fee ruleset — the master table of fee rules keyed by ID that specify a fixed_amount + rate for combinations of merchant/transaction characteristics (card scheme, account type, capture delay, fraud band, volume band, MCC, credit flag, ACI, intracountry).
+domain: Payment processing fee ruleset (acquirer pricing rules)
 summary: >
-  Base semantic source over the `fees` rule table (one row per fee rule ID).
-  Exposes the fee formula (fee = fixed_amount + rate * transaction_value / 10000)
-  as a parameterized notional, the fixed/variable components with the full
-  aggregation set, and wildcard-detection dimensions that make the
-  "null scalar / empty list = applies to all" convention explicit for every
-  criteria field. Contains NO joins — matching a rule to merchants/payments is
-  done in downstream sources by referencing these dimensions.
+  Base semantic layer over the `fees` rule table. Each row is a fee rule
+  identified by ID that defines a two-part tariff (fixed_amount in EUR plus a
+  variable rate applied as rate * transaction_value / 10000) which applies when
+  a transaction/merchant matches the rule's characteristic filters. Rule filters
+  use wildcard semantics: list fields (account_type, merchant_category_code,
+  aci) encode "applies to all" as an EMPTY list, and scalar fields
+  (capture_delay, monthly_fraud_level, monthly_volume, is_credit, intracountry)
+  encode it as NULL. This file carries NO joins; it exposes the rule fields,
+  wildcard-detection helpers, readable labels, and the full standard
+  aggregation set over fixed_amount and rate, plus a parameterized per-rule fee
+  evaluated at a hypothetical notional transaction value. Rule-to-transaction
+  and rule-to-merchant matching lives in downstream sources that join this one.
 exports:
   - name: fees_base
     kind: source
     summary: >
-      One row per fee rule. Parameter `transaction_value::number` sets the
-      notional for the computed-fee measures/dimensions (pass a real payment
-      amount or a hypothetical value; leave unset when only fixed_amount/rate
-      matter). Wildcard fields: list columns (account_type, merchant_category_code,
-      aci) encode "applies to all" as the EMPTY list (len=0); scalar columns
-      (capture_delay, monthly_fraud_level, monthly_volume, is_credit,
-      intracountry) encode it as NULL. intracountry is stored 0/1 — use the
-      boolean `is_intracountry` dimension. All measures are base-grain (safe to
-      sum/avg since there are no joins here).
+      Fee ruleset at rule (ID) grain. Parameter `notional::number` supplies a
+      hypothetical transaction value in EUR used by the fee_at_notional
+      dimension and its measures (fee = fixed_amount + rate * notional / 10000).
+      Dimensions include wildcard flags (applies_to_all_*), readable labels
+      (credit_label, intracountry_label), and constraint counts. Measures cover
+      sum/avg/min/max of fixed_amount and rate plus fee_at_notional, and rule
+      counts.
     usage: >
-      Instantiate with the notional to compute fees, e.g.
-      `run: fees_base(transaction_value is 100) -> { group_by: card_scheme; aggregate: avg_fee, min_fee, max_fee }`.
-      Filter matching rules by combining wildcard branches per field, e.g.
-      `where: (applies_to_all_account_types or ...) and (card_scheme = 'NexPay') ...`.
-      For "average fee scenario" use avg_fee over the matching subset; for
-      cheapest/most-expensive order_by min_fee/max_fee and limit last-mile.
+      Call unparameterized for structural questions:
+      `run: fees_base -> by_card_scheme`. To compare rule pricing at a fixed
+      transaction value pass the notional: `run: fees_base(notional is 100) -> {
+      where: card_scheme = 'NexPay'; aggregate: avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional }`. Filter to a rule with
+      `where: ID = <id>`. Use applies_to_all_* flags or the list/scalar wildcard
+      encoding when reasoning about which rules apply broadly.
 provides_for:
-  - fee formula and fixed/variable fee components at a parameterizable notional
-  - applicable-fee-rule matching (wildcard null-scalar / empty-list detection dimensions)
-  - average / minimum / maximum / total fee across a set of matching rules
-  - fee ruleset breakdowns by card scheme, capture delay, credit flag, volume band, fraud band
-  - relative fee (rate) and fixed fee amount statistics
----
+  - Fee rule entity lookup and per-rule pricing (fixed_amount, rate)
+  - Average / min / max / total fixed_amount and rate across a rule subset
+  - Per-rule and average fee at a parameterized notional transaction value
+  - Wildcard-aware rule inspection (empty-list / NULL = applies to all)
+  - Slicing rules by card_scheme, credit vs debit, domestic vs international
+  - Base layer for downstream rule-matching joins to payments and merchants

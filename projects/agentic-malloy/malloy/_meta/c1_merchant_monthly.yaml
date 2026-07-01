@@ -1,0 +1,48 @@
+file: c1_merchant_monthly.malloy
+domain: Payment processing fees — merchant monthly volume & fraud-level banding
+summary: >
+  Per merchant × natural-calendar-month aggregate surface derived from payments_base:
+  total transaction volume (EUR), transaction count, fraudulent volume, and the
+  volume-weighted fraud ratio. Each merchant-month row is then mapped into the fee
+  ruleset's categorical bands — monthly_volume_band (matches fees.monthly_volume:
+  '<100k','100k-1m','1m-5m','>5m') and monthly_fraud_level_band (matches
+  fees.monthly_fraud_level: '<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'). These band
+  strings are produced EXACTLY as the fee ruleset stores them, so a downstream
+  fact×rule match can equality-compare a merchant-month's band against a fee rule's
+  monthly_volume / monthly_fraud_level field (with the rule's NULL = "applies to all"
+  wildcard branch). Natural months follow the manual definition (day 1 to last day),
+  taken from payments_base.transaction_date truncated to month.
+exports:
+  - name: c1_merchant_monthly
+    kind: source
+    summary: >
+      Merchant × month grain. Columns: merchant, `year`, `month`, monthly_volume_amount,
+      monthly_transaction_count, monthly_fraud_amount, monthly_fraud_rate, plus derived
+      monthly_volume_band and monthly_fraud_level_band. Measures aggregate across months
+      (total/avg/min/max volume, avg/min/max fraud rate) and month_row_count.
+    usage: >
+      Run directly to get band per merchant per month:
+      `run: c1_merchant_monthly -> banded + { where: merchant = 'Crossfit_Hanna' and `month` ? @2023-02 }`.
+      To get a single merchant-month's volume/fraud band for fee-rule matching, filter to that
+      merchant and month and select monthly_volume_band / monthly_fraud_level_band.
+  - name: banded
+    kind: view
+    summary: >
+      One row per merchant × month showing monthly_volume_amount + monthly_volume_band and
+      monthly_fraud_rate + monthly_fraud_level_band — the lookup surface for supplying a
+      merchant-month's volume/fraud band to a fee-rule match.
+    usage: >
+      `run: c1_merchant_monthly -> banded + { where: merchant = 'Rafa_AI' and `month` ? @2023-10 }`
+      to read that merchant-month's bands; drop the month filter for the full year.
+  - name: by_merchant
+    kind: view
+    summary: >
+      Per-merchant rollup across all its months: number of active months, total & average
+      monthly volume, and average monthly fraud rate.
+    usage: >
+      `run: c1_merchant_monthly -> by_merchant` (add `+ { where: merchant = '...' }` to scope).
+provides_for:
+  - "Derive a merchant's monthly_volume band ('<100k'/'100k-1m'/'1m-5m'/'>5m') for a given natural month, matching fees.monthly_volume exactly"
+  - "Derive a merchant's monthly_fraud_level band ('<7.2%'/'7.2%-7.7%'/'7.7%-8.3%'/'>8.3%') for a given natural month, matching fees.monthly_fraud_level exactly"
+  - "Feed the volume/fraud band inputs into applicable-fee-ID rule matching (wildcard rule fields NULL = applies to all)"
+  - "Report a merchant's monthly transaction volume and volume-weighted fraud ratio over natural calendar months"

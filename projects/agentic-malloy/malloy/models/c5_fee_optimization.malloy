@@ -1,0 +1,164 @@
+##! experimental.parameters
+
+// ── Counterfactual fee scenarios for a merchant's ACTUAL transaction mix ──
+// All scenarios re-run the wildcard fact×rule match of c3 but override ONE
+// characteristic (card scheme / ACI / MCC) or one rule parameter (rate),
+// holding real volume + mix fixed, then re-aggregate total fees.
+
+// candidate-value universes (derived from data, not hardcoded)
+source: card_scheme_universe is duckdb.table('payments') -> { group_by: card_scheme }
+// (aci_universe + account_type_universe already exist in c4_fee_scenarios.malloy)
+
+// transaction-grain keys incl. has_fraudulent_dispute (match_keys omits it)
+source: c5_txn_keys is c2_payments_enriched -> {
+  select:
+    psp_reference, merchant, `year`, `month`, day_of_year,
+    card_scheme, account_type, merchant_category_code, aci,
+    capture_delay_band, is_credit, intracountry_value,
+    monthly_volume_band, monthly_fraud_level_band,
+    eur_amount, has_fraudulent_dispute
+}
+
+// ── Card-scheme traffic steering: override each txn's scheme to every
+//    candidate, recompute matching fees. Rank by total_fees for argmin/max. ─
+source: c5_steer_card_scheme is
+  c5_txn_keys
+  extend { join_cross: cand is card_scheme_universe }
+  -> { select: *, candidate_scheme is cand.card_scheme }   // materialize before join_many
+  extend {
+    // override ONLY card_scheme; wildcard branch on every field
+    join_many: rule is fees_rules on
+          (rule.card_scheme is null or rule.card_scheme = candidate_scheme)
+      and (len!number(rule.account_type) = 0
+           or list_contains!boolean(rule.account_type, account_type))
+      and (rule.capture_delay is null or rule.capture_delay = capture_delay_band)
+      and (rule.monthly_fraud_level is null
+           or rule.monthly_fraud_level = monthly_fraud_level_band)
+      and (rule.monthly_volume is null or rule.monthly_volume = monthly_volume_band)
+      and (len!number(rule.merchant_category_code) = 0
+           or list_contains!boolean(rule.merchant_category_code, merchant_category_code))
+      and (rule.is_credit is null or rule.is_credit = is_credit)
+      and (len!number(rule.aci) = 0 or list_contains!boolean(rule.aci, aci))
+      and (rule.intracountry is null or rule.intracountry = intracountry_value)
+
+    measure:
+      txn_count is count(psp_reference)                     // distinct txns, safe across fan-out
+      total_fees is rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+      avg_fee_per_match is rule.avg(rule.fixed_amount + rule.rate * eur_amount / 10000)
+
+    // per merchant × candidate scheme total; caller filters period + picks min/max
+    view: steer_by_card_scheme is {
+      group_by: merchant, candidate_scheme
+      aggregate: txn_count, total_fees
+      order_by: merchant, total_fees
+    }
+  }
+
+// ── ACI steering + fraud ACI re-routing: override each txn's ACI to every
+//    candidate. Fraud re-routing = same, filtered to fraudulent txns. ───────
+source: c5_steer_aci is
+  c5_txn_keys
+  extend { join_cross: cand is aci_universe }
+  -> { select: *, candidate_aci is cand.aci }               // materialize before join_many
+  extend {
+    // override ONLY aci
+    join_many: rule is fees_rules on
+          (rule.card_scheme is null or rule.card_scheme = card_scheme)
+      and (len!number(rule.account_type) = 0
+           or list_contains!boolean(rule.account_type, account_type))
+      and (rule.capture_delay is null or rule.capture_delay = capture_delay_band)
+      and (rule.monthly_fraud_level is null
+           or rule.monthly_fraud_level = monthly_fraud_level_band)
+      and (rule.monthly_volume is null or rule.monthly_volume = monthly_volume_band)
+      and (len!number(rule.merchant_category_code) = 0
+           or list_contains!boolean(rule.merchant_category_code, merchant_category_code))
+      and (rule.is_credit is null or rule.is_credit = is_credit)
+      and (len!number(rule.aci) = 0 or list_contains!boolean(rule.aci, candidate_aci))
+      and (rule.intracountry is null or rule.intracountry = intracountry_value)
+
+    measure:
+      txn_count is count(psp_reference)
+      total_fees is rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+
+    // all-txn ACI steering
+    view: steer_by_aci is {
+      group_by: merchant, candidate_aci
+      aggregate: txn_count, total_fees
+      order_by: merchant, total_fees
+    }
+
+    // fraud-only re-routing (restrict to fraudulent txns, then rank ACIs)
+    view: fraud_reroute_by_aci is {
+      where: has_fraudulent_dispute
+      group_by: merchant, candidate_aci
+      aggregate: txn_count, total_fees
+      order_by: merchant, total_fees
+    }
+  }
+
+// ── Fee-parameter (rate) delta: for a single fee rule ID whose rate becomes
+//    new_rate, sum the change over the merchant's txns that match that rule. ─
+source: c5_fee_rate_delta(fee_id::number is null, new_rate::number is null)
+  is c5_txn_keys extend {
+    join_one: rule is fees_rules on rule.ID = fee_id       // the one rule under study
+
+    // does this txn satisfy that rule's wildcard-aware filters?
+    dimension: matches_rule is
+          (rule.card_scheme is null or rule.card_scheme = card_scheme)
+      and (len!number(rule.account_type) = 0
+           or list_contains!boolean(rule.account_type, account_type))
+      and (rule.capture_delay is null or rule.capture_delay = capture_delay_band)
+      and (rule.monthly_fraud_level is null
+           or rule.monthly_fraud_level = monthly_fraud_level_band)
+      and (rule.monthly_volume is null or rule.monthly_volume = monthly_volume_band)
+      and (len!number(rule.merchant_category_code) = 0
+           or list_contains!boolean(rule.merchant_category_code, merchant_category_code))
+      and (rule.is_credit is null or rule.is_credit = is_credit)
+      and (len!number(rule.aci) = 0 or list_contains!boolean(rule.aci, aci))
+      and (rule.intracountry is null or rule.intracountry = intracountry_value)
+
+    // fixed_amount unchanged ⇒ per-txn delta = (new_rate - rate) * value / 10000
+    dimension: rate_delta_fee is (new_rate - rule.rate) * eur_amount / 10000
+
+    measure:
+      affected_txn_count is count(psp_reference) { where: matches_rule }
+      total_delta is rate_delta_fee.sum() { where: matches_rule }
+
+    view: delta_by_merchant is {
+      where: matches_rule
+      group_by: merchant
+      aggregate: affected_txn_count, total_delta
+      order_by: merchant
+    }
+  }
+
+// ── Merchant MCC-change: recompute total fees with each txn's MCC overridden
+//    to new_mcc (unset = actual ⇒ reproduces baseline for diffing). ─────────
+source: c5_mcc_change(new_mcc::number is null) is c5_txn_keys extend {
+  // effective MCC: param override when set, else the merchant's real MCC
+  dimension: effective_mcc is pick merchant_category_code when new_mcc is null else new_mcc
+
+  join_many: rule is fees_rules on
+        (rule.card_scheme is null or rule.card_scheme = card_scheme)
+    and (len!number(rule.account_type) = 0
+         or list_contains!boolean(rule.account_type, account_type))
+    and (rule.capture_delay is null or rule.capture_delay = capture_delay_band)
+    and (rule.monthly_fraud_level is null
+         or rule.monthly_fraud_level = monthly_fraud_level_band)
+    and (rule.monthly_volume is null or rule.monthly_volume = monthly_volume_band)
+    and (len!number(rule.merchant_category_code) = 0
+         or list_contains!boolean(rule.merchant_category_code, effective_mcc))
+    and (rule.is_credit is null or rule.is_credit = is_credit)
+    and (len!number(rule.aci) = 0 or list_contains!boolean(rule.aci, aci))
+    and (rule.intracountry is null or rule.intracountry = intracountry_value)
+
+  measure:
+    txn_count is count(psp_reference)
+    total_fees is rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+
+  view: total_fees_by_merchant is {
+    group_by: merchant
+    aggregate: txn_count, total_fees
+    order_by: merchant
+  }
+}

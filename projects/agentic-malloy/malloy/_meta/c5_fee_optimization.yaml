@@ -1,0 +1,69 @@
+file: c5_fee_optimization.malloy
+domain: Payment processing fee optimization — merchant counterfactual ("what-if") scenarios
+summary: >
+  Counterfactual re-aggregations of merchant total fees over the merchant's ACTUAL
+  transaction mix. Each source re-runs the same wildcard fact×rule fee match as
+  c3_transaction_fees but overrides ONE lever — the card scheme, the ACI, a merchant's
+  MCC, or a single rule's variable rate — holding real volume and mix fixed, then sums
+  the two-part tariff fee (fixed_amount + rate * eur_amount / 10000) across matching
+  fee rules. Wildcard rule encoding is preserved everywhere (list field len=0 or scalar
+  NULL = "applies to all", with a wildcard branch on every match field). Rank the
+  resulting per-candidate totals last-mile (order_by + limit) to answer traffic-steering
+  and cheapest/most-expensive questions; subtract a scenario total from the baseline
+  (c3_transaction_fees.total_fees_by_merchant) to answer delta questions.
+exports:
+  - name: c5_txn_keys
+    kind: source
+    summary: >
+      Transaction-grain match keys for the payments merchants, including
+      has_fraudulent_dispute (which c2's match_keys omits) so fraud-only scenarios can
+      filter. Carries year/month/day_of_year for period scoping and every wildcard match
+      key (card_scheme, account_type, merchant_category_code, aci, capture_delay_band,
+      is_credit, intracountry_value, monthly_volume_band, monthly_fraud_level_band).
+    usage: >
+      Base building block; usually consumed by the scenario sources below. Query directly
+      only to inspect the per-transaction key surface, e.g. filter merchant + `year` ? @2023.
+  - name: c5_steer_card_scheme
+    kind: source
+    summary: >
+      Card-scheme traffic-steering counterfactual: each transaction is re-matched as if
+      routed to every candidate card scheme; total_fees is the fee sum per merchant ×
+      candidate_scheme.
+    usage: >
+      run: c5_steer_card_scheme -> steer_by_card_scheme + { where: merchant = 'X' and `year` ? @2023 };
+      then order_by total_fees asc/desc and limit 1 for the min/max-fee scheme (format {scheme}:{fee}).
+  - name: c5_steer_aci
+    kind: source
+    summary: >
+      ACI steering counterfactual: each transaction re-matched as if submitted under every
+      candidate ACI. View steer_by_aci covers all transactions; view fraud_reroute_by_aci
+      restricts to fraudulent transactions (fraud ACI re-routing).
+    usage: >
+      Traffic steering — run: c5_steer_aci -> steer_by_aci + { where: merchant = 'X' and <period> }.
+      Fraud re-routing — run: c5_steer_aci -> fraud_reroute_by_aci + { where: merchant = 'X' and <period> };
+      order_by total_fees asc, limit 1 for the lowest-fee ACI (alphabetical candidate_aci tie-break).
+  - name: c5_fee_rate_delta
+    kind: source
+    summary: >
+      Fee-parameter delta: for one fee rule (fee_id) whose variable rate becomes new_rate,
+      the change in total fees summed over the merchant's transactions that match that rule
+      (fixed_amount unchanged, so per-txn delta = (new_rate - rate) * eur_amount / 10000).
+    usage: >
+      run: c5_fee_rate_delta(fee_id is 141, new_rate is 1) -> delta_by_merchant
+      + { where: merchant = 'Rafa_AI' and `month` ? @2023-12 }; read total_delta (round as required).
+  - name: c5_mcc_change
+    kind: source
+    summary: >
+      Merchant MCC-change counterfactual: total fees recomputed with each transaction's MCC
+      overridden to new_mcc. With new_mcc unset the effective MCC equals the merchant's real
+      MCC, so the same view reproduces the baseline for differencing.
+    usage: >
+      Counterfactual — run: c5_mcc_change(new_mcc is 7523) -> total_fees_by_merchant
+      + { where: merchant = 'X' and `year` ? @2023 }; baseline — run c5_mcc_change() (unset)
+      or c3_transaction_fees.total_fees_by_merchant; delta = counterfactual - baseline.
+provides_for:
+  - "Traffic-steering: which card scheme a merchant should route to for minimum/maximum fees (with the fee), any period"
+  - "ACI steering and fraud ACI re-routing: preferred ACI for lowest fees over all or only fraudulent transactions"
+  - "Fee-parameter delta: change in a merchant's total fees when a fee rule's rate is altered, over a period"
+  - "Merchant attribute change: fee delta when a merchant's MCC is changed, over a period"
+  - "Cheapest/most-expensive candidate selection over a merchant's real transaction mix (rank per-candidate total_fees)"

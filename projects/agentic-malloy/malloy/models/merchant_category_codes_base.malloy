@@ -1,22 +1,11 @@
 source: merchant_category_codes_base is duckdb.table('merchant_category_codes') extend {
 
-  // mcc stored as string; expose numeric form to match fee-rule integer MCC lists
-  dimension: mcc_number is mcc::number
+  // MCC as integer, matches list-typed fees.merchant_category_code (integer codes)
+  dimension: mcc_code is mcc::number
 
-  // first two digits = MCC category group (last two = subcategory)
+  // first two digits = MCC category group
   dimension: mcc_category_prefix is substr!string(mcc, 1, 2)
 
   measure: mcc_count is count()
-  measure: distinct_description_count is count(description)
-
-  view: by_category_prefix is {
-    group_by: mcc_category_prefix
-    aggregate: mcc_count
-    order_by: mcc_count desc
-  }
-
-  view: code_directory is {
-    select: mcc, mcc_number, description
-    order_by: mcc
-  }
+  measure: distinct_descriptions is count(description)
 }

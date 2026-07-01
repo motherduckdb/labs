@@ -1,0 +1,65 @@
+file: c4_fee_scenarios.malloy
+domain: Payment processing fees — rule-side ("average scenario") pricing analysis
+summary: >
+  Rule-side pricing scenarios evaluated at a parameterized hypothetical transaction
+  value (notional), independent of any merchant's actual transaction mix. Each fee
+  rule's two-part tariff is scored as fee = fixed_amount + rate * notional / 10000,
+  then averaged / totaled / min / max across the set of rules matching a given set of
+  characteristics. Matching is wildcard-aware on EVERY characteristic: a list rule
+  field that is empty (len=0) or a scalar rule field that is NULL means "applies to
+  all values", so an unset filter parameter simply does not constrain that field.
+  The core source ranks by card_scheme with wildcard-aware filters; sibling sources
+  rank by ACI, MCC, or account type by cross-joining the rule set against that field's
+  element universe (fee aggregated at the joined rule grain so join_cross does not
+  double count). Use these for "in the average scenario which {scheme/ACI/MCC/account
+  type} gives the cheapest/most expensive fee at value X" and for filtered average-fee
+  lookups (e.g. average fee a scheme charges given account type / MCC / credit). All
+  are last-mile ranked by the caller via order_by + limit — no extremum is frozen.
+exports:
+  - name: c4_fee_scenarios
+    kind: source
+    summary: >
+      Rule set scored at a notional, filtered wildcard-aware by account type, MCC, ACI,
+      credit and intracountry, exposing per-rule fee as full sum/avg/min/max plus a
+      matching_rule_count. View by_card_scheme ranks schemes; scenario_summary gives a
+      single filtered aggregate; by_credit splits credit vs debit.
+    usage: >
+      Instantiate with the notional and any filters, e.g.
+      `run: c4_fee_scenarios(notional is 50) -> by_card_scheme` then read the first row
+      ordered by avg_fee for the cheapest scheme (order_by avg_fee desc for the most
+      expensive). Filtered average: `c4_fee_scenarios(notional is 100, acct is 'H') ->
+      by_card_scheme + { where: card_scheme = 'GlobalCard' }` and read avg_fee. Add
+      mcc_val, aci_val, credit, intracountry_val to narrow further.
+  - name: c4_fee_by_aci
+    kind: source
+    summary: >
+      Average / total / min / max rule fee at a notional grouped by ACI value (A–G),
+      with wildcard-aware ACI matching and optional scheme/account/MCC/credit filters.
+    usage: >
+      `run: c4_fee_by_aci(notional is 100, scheme is 'GlobalCard', credit is true) ->
+      by_aci` then order_by the desired mode (avg_fee/max_fee) and limit 1; alphabetical
+      tie-break by ordering aci asc secondarily.
+  - name: c4_fee_by_mcc
+    kind: source
+    summary: >
+      Rule fee at a notional grouped by MCC code + description over the full MCC
+      reference universe, wildcard-aware, with optional scheme/account/ACI/credit
+      filters. Default order surfaces the most expensive MCCs (max_fee desc).
+    usage: >
+      `run: c4_fee_by_mcc(notional is 50000) -> by_mcc` then filter to the extreme
+      value (e.g. having max_fee = its max, or order + limit) to list the priciest MCCs.
+  - name: c4_fee_by_account_type
+    kind: source
+    summary: >
+      Rule fee at a notional grouped by account type (R/D/H/F/S), wildcard-aware, with
+      optional scheme/MCC/ACI/credit filters.
+    usage: >
+      `run: c4_fee_by_account_type(notional is 1000) -> by_account_type` then order_by
+      avg_fee (asc cheapest / desc most expensive) and limit.
+provides_for:
+  - "Average-scenario fee ranking of card schemes at a given transaction value (cheapest / most expensive scheme)"
+  - "Average fee a card scheme charges given account type, MCC and/or credit at a notional"
+  - "Most/least expensive ACI at a notional for given scheme/credit characteristics (with alphabetical tie-break by caller)"
+  - "Most/least expensive MCC at a notional in general"
+  - "Most/least expensive account type at a notional"
+  - "Wildcard-aware fee-rule matching by supplied characteristics at a parameterized notional"

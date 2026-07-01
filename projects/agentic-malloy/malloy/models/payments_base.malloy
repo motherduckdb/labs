@@ -1,37 +1,55 @@
 source: payments_base is duckdb.table('payments') extend {
 
-  // year is always 2023; build calendar date from day-of-year (natural months)
-  dimension: transaction_date is @2023-01-01 + (day_of_year - 1) day
-  dimension: transaction_month is transaction_date.month
+  // ---- derived dimensions (NEW names only; never redefine table columns) ----
 
-  // domestic vs international: issuer country == acquirer country
-  dimension: is_intracountry is issuing_country = acquirer_country
+  // day_of_year -> calendar date; year base built via raw DuckDB make_date
+  dimension: transaction_date is make_date!date(`year`, 1, 1) + (day_of_year - 1) day
+  dimension: `month` is transaction_date.month
+  dimension: `quarter` is transaction_date.quarter
 
-  // volume / value
+  // domestic (intracountry) = issuer country equals acquirer country
+  dimension: is_domestic is issuing_country = acquirer_country
+  dimension: routing_type is pick 'Domestic' when is_domestic else 'International'
+
+  dimension: aci_description is pick 'Card present - Non-authenticated' when aci = 'A'
+    pick 'Card Present - Authenticated' when aci = 'B'
+    pick 'Tokenized card with mobile device' when aci = 'C'
+    pick 'Card Not Present - Card On File' when aci = 'D'
+    pick 'Card Not Present - Recurring Bill Payment' when aci = 'E'
+    pick 'Card Not Present - 3-D Secure' when aci = 'F'
+    pick 'Card Not Present - Non-3-D Secure' when aci = 'G'
+    else 'Unknown'
+
+  dimension: is_ip_country_mismatch is ip_country != issuing_country
+
+  // ---- volume / value measures ----
   measure: transaction_count is count()
   measure: total_amount is eur_amount.sum()
   measure: avg_amount is eur_amount.avg()
   measure: min_amount is eur_amount.min()
   measure: max_amount is eur_amount.max()
 
-  // fraud
-  measure: fraudulent_count is count() { where: has_fraudulent_dispute }
-  measure: fraudulent_amount is eur_amount.sum() { where: has_fraudulent_dispute }
-  measure: fraud_rate is fraudulent_amount / nullif!number(total_amount, 0)  // ratio of fraud volume to total volume
+  measure: merchant_count is count(merchant)
+  measure: card_count is count(card_number)
 
-  // authorization outcome
-  measure: refused_count is count() { where: is_refused_by_adyen }
-  measure: refusal_rate is refused_count / nullif!number(transaction_count, 0)
-
-  // credit / debit split
+  // ---- credit / routing splits ----
   measure: credit_count is count() { where: is_credit }
   measure: credit_amount is eur_amount.sum() { where: is_credit }
-  measure: debit_amount is eur_amount.sum() { where: not is_credit }
+  measure: domestic_count is count() { where: is_domestic }
+  measure: domestic_amount is eur_amount.sum() { where: is_domestic }
 
-  // domestic split
-  measure: intracountry_count is count() { where: is_intracountry }
-  measure: intracountry_amount is eur_amount.sum() { where: is_intracountry }
+  // ---- fraud measures ----
+  measure: fraud_count is count() { where: has_fraudulent_dispute }
+  measure: fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
+  // fraud = fraudulent volume / total volume (manual definition, volume-weighted)
+  measure: fraud_rate is eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
+  measure: fraud_rate_by_count is count() { where: has_fraudulent_dispute } / count()
 
+  // ---- refusal measures ----
+  measure: refused_count is count() { where: is_refused_by_adyen }
+  measure: refused_rate is count() { where: is_refused_by_adyen } / count()
+
+  // ---- reusable views ----
   view: by_merchant is {
     group_by: merchant
     aggregate: transaction_count, total_amount, avg_amount, fraud_rate
@@ -43,8 +61,14 @@ source: payments_base is duckdb.table('payments') extend {
   }
 
   view: by_aci is {
-    group_by: aci
-    aggregate: transaction_count, total_amount, avg_amount
+    group_by: aci, aci_description
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+  }
+
+  view: by_month is {
+    group_by: `month`
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+    order_by: `month`
   }
 
   view: by_issuing_country is {
@@ -52,33 +76,9 @@ source: payments_base is duckdb.table('payments') extend {
     aggregate: transaction_count, total_amount, avg_amount
   }
 
-  view: by_device_type is {
-    group_by: device_type
-    aggregate: transaction_count, total_amount, fraud_rate
-  }
-
-  view: by_month is {
-    group_by: transaction_month
-    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
-    order_by: transaction_month
-  }
-
-  // per-merchant per natural-month volume (basis for fee monthly_volume bands)
-  view: monthly_volume_per_merchant is {
-    group_by: merchant, transaction_month
-    aggregate: total_amount, transaction_count
-    order_by: merchant, transaction_month
-  }
-
-  // per-merchant per natural-month fraud ratio (basis for fee monthly_fraud_level bands)
-  view: monthly_fraud_per_merchant is {
-    group_by: merchant, transaction_month
-    aggregate: total_amount, fraudulent_amount, fraud_rate
-    order_by: merchant, transaction_month
-  }
-
-  view: fraud_overview is {
-    group_by: merchant
-    aggregate: transaction_count, total_amount, fraudulent_count, fraudulent_amount, fraud_rate
+  view: merchant_monthly_volume is {
+    group_by: merchant, `month`
+    aggregate: total_amount, transaction_count, fraud_amount, fraud_rate
+    order_by: merchant, `month`
   }
 }

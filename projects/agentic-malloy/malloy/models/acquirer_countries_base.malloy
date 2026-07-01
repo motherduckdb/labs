@@ -1,10 +1,7 @@
 source: acquirer_countries_base is duckdb.table('acquirer_countries') extend {
-
-  // acquirer -> acquiring country_code mapping (used to derive intracountry/local acquiring)
-
-  measure: row_count is count()
   measure: acquirer_count is count(acquirer)
   measure: country_count is count(country_code)
+  measure: row_count is count()
 
   view: by_country is {
     group_by: country_code

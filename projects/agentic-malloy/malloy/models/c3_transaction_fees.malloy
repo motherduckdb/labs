@@ -1,12 +1,16 @@
-// Central fact×rule fee source (thin top layer): each transaction fans out to
-// EVERY fee rule it satisfies (multi-rule match). Rebuilt on the enriched
-// match-key grain + the keyed `fees_rules` wrapper (both already defined in the
-// intermediate sources). Wildcard encoding: list rule field empty (len=0) OR
-// scalar rule field NULL = "applies to all"; every match field has a wildcard
-// branch. Enumeration/detail views EXCLUDE phantom unmatched left-join rows
-// (rule.ID is null) so a fee/ID column is never a NULL wildcard artifact.
-source: dabstep is c2_payments_enriched -> match_keys extend {
+// Fact×rule wildcard match: each transaction (with match keys materialized by
+// c2_payments_enriched.match_keys) fans out to EVERY fee rule it satisfies.
+// Wildcard encoding — list fields empty (len=0) = "applies to all"; scalar
+// fields NULL = "applies to all". Every match field carries a wildcard branch.
 
+// thin keyed wrapper so join_many can dedupe symmetric aggregates on fee ID
+source: fees_rules is duckdb.table('fees') extend {
+  primary_key: ID
+}
+
+source: c3_transaction_fees is c2_payments_enriched -> match_keys extend {
+
+  // multi-rule fan-out: one row per (transaction, matching fee rule)
   join_many: rule is fees_rules on
         (rule.card_scheme is null or rule.card_scheme = card_scheme)
     and (len!number(rule.account_type) = 0
@@ -29,12 +33,13 @@ source: dabstep is c2_payments_enriched -> match_keys extend {
     matched_rule_count is rule.count()          // (txn,rule) fan-out grain
     applicable_fee_id_count is rule.ID.count()  // distinct matched fee IDs
 
+    // fee aggregations computed at the joined (rule) grain
     total_fees is rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
     avg_fee_per_match is rule.avg(rule.fixed_amount + rule.rate * eur_amount / 10000)
     min_fee_per_match is min(rule.fixed_amount + rule.rate * eur_amount / 10000)
     max_fee_per_match is max(rule.fixed_amount + rule.rate * eur_amount / 10000)
 
-  // ---- enumerations (null rule.ID = unmatched phantom row → excluded) ----
+  // ---- enumerations (exclude phantom unmatched left-join rows: rule.ID null) ----
   view: applicable_fee_ids is {
     where: rule.ID is not null
     group_by: fee_id is rule.ID
@@ -66,9 +71,8 @@ source: dabstep is c2_payments_enriched -> match_keys extend {
     order_by: merchant, day_of_year
   }
 
-  // ---- per (txn,rule) detail row with its fee (matched rules only) ----
+  // ---- per (txn,rule) detail row with its fee ----
   view: transaction_rule_fees is {
-    where: rule.ID is not null
     select:
       psp_reference, merchant, day_of_year, `month`,
       card_scheme, aci, eur_amount,

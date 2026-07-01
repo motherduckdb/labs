@@ -1,0 +1,50 @@
+file: c3_transaction_fees.malloy
+domain: Payment processing fees — fact×rule wildcard matching, per-transaction two-part-tariff fee, applicable fee IDs, affected merchants, and summed total fees by merchant/period.
+summary: >
+  Joins each transaction (with its rule-match keys already materialized from
+  c2_payments_enriched.match_keys) to EVERY applicable fee rule via a wildcard
+  join_many. Wildcard semantics are honored per field: list fields
+  (account_type, merchant_category_code, aci) treat an empty list as
+  "applies to all" (len=0), and scalar fields (card_scheme, capture_delay,
+  monthly_fraud_level, monthly_volume, is_credit, intracountry) treat NULL as
+  "applies to all"; each field carries both branches. The fan-out grain is
+  (transaction, matching rule). Per-row fee = fixed_amount + rate*eur_amount/10000.
+  Distinct transaction counts use count(psp_reference); fee totals are computed
+  at the joined (rule) grain to avoid base-row double counting. Only merchants
+  with transactions (the 5 in payments) can appear.
+exports:
+  - name: c3_transaction_fees
+    kind: source
+    summary: Fact×rule fan-out at (transaction, matching fee rule) grain with the per-row fee dimension and fee/count measures.
+    usage: "Base for all views below; scope with where on merchant, `year`, `month` (date literal e.g. `month` ? @2023-10), day_of_year, or rule.ID before selecting a view."
+  - name: applicable_fee_ids
+    kind: view
+    summary: Distinct fee rule IDs that match the scoped transactions (includes wildcard rules; excludes unmatched phantom rows).
+    usage: "run: c3_transaction_fees -> applicable_fee_ids + { where: merchant = 'Martinis_Fine_Steakhouse' } — add day_of_year/`month` filters for a sub-period; returns the fee_id list."
+  - name: affected_merchants
+    kind: view
+    summary: Merchants whose transactions match a given fee rule (reverse rule-match); supports counterfactual attribute restriction.
+    usage: "run: c3_transaction_fees -> affected_merchants + { where: rule.ID = 17 } — for 'fee only applied to account type S' add and account_type = 'S'."
+  - name: total_fees_by_merchant
+    kind: view
+    summary: Total fees per merchant (sum of each transaction's matching-rule fee) with txn and matched-rule counts.
+    usage: "run: c3_transaction_fees -> total_fees_by_merchant + { where: merchant = 'Belles_cookbook_store' }; total_fees rounded is the fees-paid answer."
+  - name: total_fees_by_merchant_month
+    kind: view
+    summary: Total fees per merchant per natural calendar month.
+    usage: "run: c3_transaction_fees -> total_fees_by_merchant_month + { where: merchant = 'Crossfit_Hanna' and `month` ? @2023-12 }."
+  - name: total_fees_by_merchant_day
+    kind: view
+    summary: Total fees per merchant per day-of-year.
+    usage: "run: c3_transaction_fees -> total_fees_by_merchant_day + { where: merchant = 'Belles_cookbook_store' and day_of_year = 10 }."
+  - name: transaction_rule_fees
+    kind: view
+    summary: One row per (transaction, matching rule) with fee_id and computed fee for inspection/audit.
+    usage: "run: c3_transaction_fees -> transaction_rule_fees + { where: merchant = 'Rafa_AI' and day_of_year = 300 }."
+provides_for:
+  - "Payment processing fee (two-part tariff fixed + rate*value/10000) at transaction grain"
+  - "Total fees paid by a merchant over a period"
+  - "Applicable fee IDs for a merchant (and sub-periods)"
+  - "Merchants affected by a fee rule (reverse match, incl. attribute-restriction counterfactuals)"
+  - "Wildcard rule matching (empty list / NULL = applies to all) across all fee characteristics"
+  - "Fee rule entity identity and per-rule/per-match fee aggregations"

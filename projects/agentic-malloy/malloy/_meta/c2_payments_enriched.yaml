@@ -1,0 +1,55 @@
+file: c2_payments_enriched.malloy
+domain: Payment processing fee optimization — transaction fact enriched with the merchant/transaction characteristics that fee rules match on.
+summary: >
+  Transaction-grain source that joins each payment to its merchant profile
+  (account_type, MCC, capture-delay band), to the MCC description lookup, and to
+  the merchant × natural-month volume/fraud bands. It surfaces EVERY fee-rule
+  match key as a real, row-level dimension — card_scheme, account_type, MCC (code
+  + description), aci, capture_delay_band, is_credit, intracountry_value
+  (1=domestic/0=international), monthly_volume_band, monthly_fraud_level_band — so
+  downstream fee-matching can wildcard-match against fees without re-deriving any
+  key. Row-specific keys (intracountry_value, is_credit, card_scheme, aci) are
+  exposed as GROUP_BY dimensions rather than collapsed measures, so they
+  discriminate rows instead of folding wildcard-common values into a single flag.
+exports:
+  - name: c2_payments_enriched
+    kind: source
+    summary: >
+      Payment transactions (138k rows, 2023) enriched with merchant profile, MCC
+      description, and monthly volume/fraud bands; grain = one row per transaction.
+      All fee-rule match keys are available as dimensions.
+    usage: >
+      Filter to a merchant + time window (e.g. `where: merchant = 'X', `month` ? @2023-02`)
+      then group_by / select the match-key dimensions you need; join downstream to
+      the fee ruleset on the wildcard-aware predicates.
+  - name: match_keys
+    kind: view
+    summary: >
+      Per-transaction projection of every rule-match key plus eur_amount and date
+      fields; use as the fact side of a fact×fee-rule match.
+    usage: >
+      `run: c2_payments_enriched -> match_keys + { where: merchant = 'X' and day_of_year = 10 }`
+      to get each transaction's characteristics for fee lookup.
+  - name: by_merchant_month_keys
+    kind: view
+    summary: >
+      Transaction counts / amounts grouped by merchant, month, and all match keys
+      (card_scheme, account_type, MCC, capture_delay_band, aci, is_credit,
+      intracountry_value, monthly volume/fraud bands). Keys are group_by dims so
+      each combination is a distinct row.
+    usage: >
+      `run: c2_payments_enriched -> by_merchant_month_keys + { where: merchant = 'X' and `month` ? @2023-12 }`;
+      inspect the distinct key combinations that occur for a merchant/period.
+  - name: by_merchant_routing
+    kind: view
+    summary: Domestic vs international split (count/total/avg) per merchant.
+    usage: >
+      `run: c2_payments_enriched -> by_merchant_routing + { where: merchant = 'X' }`
+      to see the intracountry mix that drives local-acquiring fee differences.
+provides_for:
+  - Applicable fee IDs for a merchant (per transaction / per period) — supplies the match keys
+  - Total fees paid by a merchant — supplies per-transaction characteristics for rule-matching
+  - Traffic steering scenarios (card_scheme / ACI counterfactuals) — key mix held fixed per merchant
+  - Fraud ACI re-routing scenarios — fraud-flagged subset with aci and match keys
+  - Merchant attribute change scenarios (MCC / account_type override) — exposes the base attributes to override
+  - Average / min / max transaction value by dimension (issuing_country, card_scheme, routing)

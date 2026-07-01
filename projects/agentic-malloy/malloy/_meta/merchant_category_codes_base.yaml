@@ -1,40 +1,28 @@
 file: merchant_category_codes_base.malloy
 domain: Payment processing — merchant category code (MCC) reference lookup
 summary: >
-  Base semantic source over the MCC reference table (769 rows), which maps a
-  four-digit merchant category code to its industry text description. This is a
-  pure lookup/dimension table used to resolve MCC codes (as referenced on
-  merchants and in fee-rule merchant_category_code lists) to human-readable
-  descriptions, and vice versa. The stored `mcc` is a string; `mcc_number`
-  exposes the integer form so it can be matched against fee-rule MCC lists,
-  which are integer-typed. No joins live here.
+  Base semantic source over the merchant_category_codes reference table, the
+  authoritative code-to-description lookup for four-digit Merchant Category Codes
+  (MCC). Each row maps one MCC (e.g. '5812') to its business-type description.
+  Used to resolve human-readable descriptions for a merchant's or a fee rule's
+  MCC, and to enumerate the full universe of defined MCC values. Contains no join
+  logic; join this into merchant/fee sources on the MCC code.
 exports:
   - name: merchant_category_codes_base
     kind: source
     summary: >
-      MCC reference source. Dimensions: mcc (string code), mcc_number (integer
-      form for matching integer MCC lists on fee rules), description (industry
-      text), mcc_category_prefix (first two digits = category group). Measures:
-      mcc_count (row/code count), distinct_description_count.
+      One row per Merchant Category Code. Fields: mcc (four-digit code string),
+      description (business-type label), mcc_code (integer form of mcc for
+      matching integer-typed MCC columns on fees/merchants), mcc_category_prefix
+      (first two digits = category group). Measures: mcc_count (number of codes),
+      distinct_descriptions.
     usage: >
-      Look up a description with `where: mcc = '5812'` then `select:
-      description`, or reverse-lookup a code from a description with
-      `where: description ~ '%HOTEL%'`. Join from a merchant/fee source on the
-      MCC code to attach descriptions.
-  - name: by_category_prefix
-    kind: view
-    summary: Count of MCC codes grouped by their two-digit category prefix.
-    usage: >
-      `run: merchant_category_codes_base -> by_category_prefix`; refine with
-      `+ { limit: N }` to see the largest category groups.
-  - name: code_directory
-    kind: view
-    summary: Flat directory of every MCC with its numeric form and description.
-    usage: >
-      `run: merchant_category_codes_base -> code_directory`; refine with
-      `+ { where: description ~ '%AIR%' }` to search descriptions.
+      Filter to a code with `where: mcc = '5812'` (or `mcc_code = 5812`) and
+      `select: description` to resolve a label; or `group_by: mcc_category_prefix;
+      aggregate: mcc_count` to summarize the code universe. Join as
+      `join_one: mcc is merchant_category_codes_base with merchant_category_code`
+      (matching on mcc / mcc_code) from a merchant or fee source.
 provides_for:
-  - "MCC code-to-description lookup (resolve merchants.merchant_category_code / fees.merchant_category_code to text)"
-  - "Reverse lookup: find MCC codes from a description keyword"
-  - "Integer MCC (mcc_number) for matching fee-rule integer MCC lists"
-  - "Category grouping via two-digit MCC prefix"
+  - "Merchant Category Code (MCC) code-to-description lookup"
+  - "MCC value universe enumeration"
+  - "resolving MCC descriptions for merchants and fee rules"

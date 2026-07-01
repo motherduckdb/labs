@@ -1,50 +1,45 @@
 source: merchants_base is duckdb.table('merchants') extend {
 
-  // safe numeric cast: 'immediate'/'manual' yield null (non-numeric)
-  dimension: capture_delay_days is capture_delay:::number
+  // ── Dimensions (derived; base columns not redefined) ──────────────────
+  dimension: account_type_description is pick 'Enterprise - Retail'      when account_type = 'R'
+    pick 'Enterprise - Digital'    when account_type = 'D'
+    pick 'Enterprise - Hospitality' when account_type = 'H'
+    pick 'Platform - Franchise'    when account_type = 'F'
+    pick 'Platform - SaaS'         when account_type = 'S'
+    else 'Other'
 
-  // reconcile merchant capture_delay to fee-rule band buckets ('<3','3-5','>5','immediate','manual')
-  // avoid chained comparisons — use explicit and
-  dimension: capture_delay_band is
-    pick 'immediate' when capture_delay = 'immediate'
+  // merchant capture_delay is a numeric-day string (or immediate/manual);
+  // map into the fee ruleset's categorical bands ('<3','3-5','>5',...).
+  dimension: capture_delay_band is pick 'immediate' when capture_delay = 'immediate'
     pick 'manual' when capture_delay = 'manual'
-    pick '<3' when capture_delay_days < 3
-    pick '3-5' when capture_delay_days >= 3 and capture_delay_days <= 5
-    pick '>5' when capture_delay_days > 5
+    pick '<3'  when capture_delay::number < 3
+    pick '3-5' when capture_delay::number >= 3 and capture_delay::number <= 5
+    pick '>5'  when capture_delay::number > 5
     else null
 
-  dimension: account_type_label is
-    pick 'Enterprise - Retail' when account_type = 'R'
-    pick 'Enterprise - Digital' when account_type = 'D'
-    pick 'Enterprise - Hospitality' when account_type = 'H'
-    pick 'Platform - Franchise' when account_type = 'F'
-    pick 'Platform - SaaS' when account_type = 'S'
-    pick 'Other' when account_type = 'O'
-    else account_type
-
-  // empty acquirer list encodes "applies to all acquirers"
+  // acquirer is a LIST col: empty list = "applies to all"; len!number for size.
   dimension: acquirer_count is len!number(acquirer)
   dimension: has_named_acquirer is len!number(acquirer) > 0
 
+  // ── Measures ──────────────────────────────────────────────────────────
   measure: merchant_count is count()
+  measure: account_type_count is count(account_type)
+  measure: mcc_count is count(merchant_category_code)
+  measure: capture_delay_count is count(capture_delay)
 
+  // ── Views ───────────────────────────────────────────────────────────
   view: by_account_type is {
-    group_by: account_type, account_type_label
+    group_by: account_type, account_type_description
     aggregate: merchant_count
   }
 
-  view: by_merchant_category_code is {
+  view: by_mcc is {
     group_by: merchant_category_code
     aggregate: merchant_count
   }
 
   view: by_capture_delay is {
-    group_by: capture_delay
-    aggregate: merchant_count
-  }
-
-  view: by_capture_delay_band is {
-    group_by: capture_delay_band
+    group_by: capture_delay, capture_delay_band
     aggregate: merchant_count
   }
 }

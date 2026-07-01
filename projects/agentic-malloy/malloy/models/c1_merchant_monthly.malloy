@@ -1,0 +1,65 @@
+// Per merchant × natural-month aggregates, then mapped into the fee ruleset's
+// monthly_volume and monthly_fraud_level categorical bands (aggregate-then-band).
+// Natural months come from payments_base.`month` (transaction_date truncated).
+source: c1_merchant_monthly is payments_base -> {
+  group_by:
+    merchant
+    `year`
+    `month`
+  aggregate:
+    // base-grain totals collapsed to the merchant×month grain here
+    monthly_volume_amount     is total_amount
+    monthly_transaction_count is transaction_count
+    monthly_fraud_amount      is fraud_amount
+    // volume-weighted fraud ratio per manual definition
+    monthly_fraud_rate        is fraud_rate
+} extend {
+
+  // ---- map aggregated month values into fee ruleset bands ----
+  // fees.monthly_volume domain: '<100k','100k-1m','1m-5m','>5m'
+  dimension: monthly_volume_band is
+      pick '<100k'   when monthly_volume_amount < 100000
+      pick '100k-1m' when monthly_volume_amount < 1000000
+      pick '1m-5m'   when monthly_volume_amount < 5000000
+      else '>5m'
+
+  // fees.monthly_fraud_level domain: '<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'
+  dimension: monthly_fraud_level_band is
+      pick '<7.2%'     when monthly_fraud_rate < 0.072
+      pick '7.2%-7.7%' when monthly_fraud_rate < 0.077
+      pick '7.7%-8.3%' when monthly_fraud_rate < 0.083
+      else '>8.3%'
+
+  // ---- measures over the merchant×month grain (rows already aggregated) ----
+  measure:
+    month_row_count       is count()
+    total_volume          is monthly_volume_amount.sum()
+    avg_monthly_volume    is monthly_volume_amount.avg()
+    min_monthly_volume    is monthly_volume_amount.min()
+    max_monthly_volume    is monthly_volume_amount.max()
+    avg_monthly_fraud_rate is monthly_fraud_rate.avg()
+    min_monthly_fraud_rate is monthly_fraud_rate.min()
+    max_monthly_fraud_rate is monthly_fraud_rate.max()
+
+  // ---- reusable slices ----
+  view: banded is {
+    group_by:
+      merchant
+      `month`
+      monthly_volume_amount
+      monthly_volume_band
+      monthly_fraud_rate
+      monthly_fraud_level_band
+    order_by: merchant, `month`
+  }
+
+  view: by_merchant is {
+    group_by: merchant
+    aggregate:
+      month_row_count
+      total_volume
+      avg_monthly_volume
+      avg_monthly_fraud_rate
+    order_by: merchant
+  }
+}
