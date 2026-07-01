@@ -13,7 +13,7 @@ import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
-import { DUCKDB_NOTES, MODELS_DIR, META_DIR, parseEdits, validateModel, PROVENANCE_PATH, VIEW_VALIDATION_TIMEOUT_MS } from './layer-build.js';
+import { DUCKDB_NOTES, MODELS_DIR, META_DIR, parseEdits, extractBlocks, validateModel, PROVENANCE_PATH, VIEW_VALIDATION_TIMEOUT_MS } from './layer-build.js';
 import { countRawSqlInMalloy } from './linter.js';
 import * as cl from './controllog.js';
 
@@ -98,6 +98,21 @@ export async function repairFileStage(opts: {
       if (i >= 0) {
         patched = patched.slice(0, i) + e.new + patched.slice(i + e.old.length);
         applied++;
+      }
+    }
+
+    // Additive fallback: Opus often ignores the JSON {old,new} protocol and returns the
+    // new sibling source as a ```malloy block (prose + code) instead — parseEdits then
+    // finds nothing and the additive repair silently no-ops. In ADDITIVE mode, appending
+    // that block IS the intended repair; the raw-SQL gate + full compile/all-views
+    // validation below reject a broken/incomplete/duplicate block and roll back, so this
+    // can only help. (Non-additive fixes still require verbatim {old,new} edits.)
+    if (applied === 0 && opts.allowAdditive) {
+      const block = extractBlocks(resp.text).malloy;
+      if (block && block.trim() && !current.includes(block.trim())) {
+        patched = `${current.replace(/\s*$/, '')}\n\n${block.trim()}\n`;
+        applied = 1;
+        console.log(`  … improve ${opts.file} round ${round}: appended a fenced malloy block (model returned code, not JSON edits)`);
       }
     }
 

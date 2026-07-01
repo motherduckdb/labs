@@ -243,7 +243,7 @@ export function parseEdits(text: string): Array<{ old: string; new: string }> {
   return tryParse(text) ?? []; // last resort: the whole response
 }
 
-function extractBlocks(text: string): { malloy?: string; meta?: string } {
+export function extractBlocks(text: string): { malloy?: string; meta?: string } {
   // 1. Tagged ```malloy block (case-insensitive).
   let malloy = text.match(/```[ \t]*malloy[ \t]*\r?\n([\s\S]*?)```/i)?.[1];
   // 2. Truncation salvage: an opener with no closing fence (hit the token cap).
