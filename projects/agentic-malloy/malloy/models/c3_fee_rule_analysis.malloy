@@ -1,0 +1,232 @@
+##! experimental.parameters
+
+// ---------------------------------------------------------------------------
+// Value universes (derived from the DATA, not hardcoded) used to fan fee rules
+// out over a categorical axis while respecting the empty-list = "applies to all"
+// wildcard: a wildcard rule joins to EVERY candidate value of that axis.
+// ---------------------------------------------------------------------------
+source: aci_universe is payments_base -> { group_by: aci }
+
+source: account_type_universe is merchants_base -> { group_by: account_type }
+
+// mcc_number is mcc::number on the base; universe of every catalogued MCC
+source: mcc_universe is merchant_category_codes_base -> { group_by: mcc_int is mcc_number }
+
+
+// ---------------------------------------------------------------------------
+// Main ruleset-level fee analysis at a parameterized notional.
+// Wildcard-aware matching against caller-supplied characteristics; each match
+// field carries a wildcard branch (empty list for list fields via len=0,
+// NULL for scalar fields) AND a "param unset" branch (param is null).
+// ---------------------------------------------------------------------------
+source: c3_fee_rule_analysis(
+  transaction_value::number is null,
+  card_scheme_param::string is null,
+  account_type_param::string is null,
+  capture_delay_param::string is null,
+  fraud_level_param::string is null,
+  volume_param::string is null,
+  mcc_param::number is null,
+  is_credit_param::boolean is null,
+  aci_param::string is null,
+  intracountry_param::boolean is null
+) is duckdb.table('fees') extend {
+
+  primary_key: ID
+
+  // intracountry stored 0/1 double; NULL = applies to all
+  dimension: is_intracountry is intracountry = 1
+
+  dimension: variable_fee is rate * transaction_value / 10000
+  dimension: fee_at_value is fixed_amount + rate * transaction_value / 10000
+
+  // wildcard-aware applicability against the supplied profile
+  dimension: matches_profile is
+    (card_scheme_param is null or card_scheme = card_scheme_param)
+    and (account_type_param is null or len!number(account_type) = 0 or list_contains!boolean(account_type, account_type_param))
+    and (capture_delay_param is null or capture_delay is null or capture_delay = capture_delay_param)
+    and (fraud_level_param is null or monthly_fraud_level is null or monthly_fraud_level = fraud_level_param)
+    and (volume_param is null or monthly_volume is null or monthly_volume = volume_param)
+    and (mcc_param is null or len!number(merchant_category_code) = 0 or list_contains!boolean(merchant_category_code, mcc_param))
+    and (is_credit_param is null or is_credit is null or is_credit = is_credit_param)
+    and (aci_param is null or len!number(aci) = 0 or list_contains!boolean(aci, aci_param))
+    and (intracountry_param is null or intracountry is null or is_intracountry = intracountry_param)
+
+  // group-size counts
+  measure: rule_count is count()
+  measure: matching_rule_count is count() { where: matches_profile }
+
+  // fixed component
+  measure: avg_fixed_amount is fixed_amount.avg()
+  measure: min_fixed_amount is fixed_amount.min()
+  measure: max_fixed_amount is fixed_amount.max()
+  measure: sum_fixed_amount is fixed_amount.sum()
+
+  // variable rate (basis-point-like)
+  measure: avg_rate is rate.avg()
+  measure: min_rate is rate.min()
+  measure: max_rate is rate.max()
+
+  // computed fee across the matching ruleset at the given notional
+  measure: avg_fee is fee_at_value.avg()
+  measure: min_fee is fee_at_value.min()
+  measure: max_fee is fee_at_value.max()
+  measure: sum_fee is fee_at_value.sum()
+
+  // the fee rules that apply to the supplied profile (IDs + terms)
+  view: applicable_rules is {
+    where: matches_profile
+    group_by: ID, card_scheme, fixed_amount, rate, fee_at_value
+    order_by: ID
+  }
+
+  // single-row average-scenario summary over the matching ruleset
+  view: matching_fee_summary is {
+    where: matches_profile
+    aggregate: matching_rule_count, avg_fee, min_fee, max_fee, sum_fee
+  }
+
+  // per-card-scheme fee (average scenario); caller orders asc/desc + limit 1
+  view: fee_by_card_scheme is {
+    where: matches_profile
+    group_by: card_scheme
+    aggregate: rule_count, avg_fee, min_fee, max_fee, sum_fee
+    order_by: avg_fee
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Per-ACI fee: fan the ruleset over every ACI candidate; wildcard (empty aci)
+// rules replicate into every ACI bucket. Aggregates use joined-source measures
+// (fee.*) so they are computed at fee grain within each ACI group.
+// ---------------------------------------------------------------------------
+source: c3_fee_by_aci(
+  transaction_value::number is null,
+  card_scheme_param::string is null,
+  account_type_param::string is null,
+  capture_delay_param::string is null,
+  fraud_level_param::string is null,
+  volume_param::string is null,
+  mcc_param::number is null,
+  is_credit_param::boolean is null,
+  intracountry_param::boolean is null
+) is aci_universe extend {
+
+  join_many: fee is fees_base(transaction_value is transaction_value)
+    on (len!number(fee.aci) = 0 or list_contains!boolean(fee.aci, aci))
+
+  // profile constraints on the NON-axis fields (each with wildcard + unset branch)
+  dimension: extra_matches is
+    (card_scheme_param is null or fee.card_scheme = card_scheme_param)
+    and (account_type_param is null or len!number(fee.account_type) = 0 or list_contains!boolean(fee.account_type, account_type_param))
+    and (capture_delay_param is null or fee.capture_delay is null or fee.capture_delay = capture_delay_param)
+    and (fraud_level_param is null or fee.monthly_fraud_level is null or fee.monthly_fraud_level = fraud_level_param)
+    and (volume_param is null or fee.monthly_volume is null or fee.monthly_volume = volume_param)
+    and (mcc_param is null or len!number(fee.merchant_category_code) = 0 or list_contains!boolean(fee.merchant_category_code, mcc_param))
+    and (is_credit_param is null or fee.is_credit is null or fee.is_credit = is_credit_param)
+    and (intracountry_param is null or fee.intracountry is null or fee.is_intracountry = intracountry_param)
+
+  measure: candidate_count is count()
+
+  view: ranked is {
+    where: extra_matches
+    group_by: aci
+    aggregate:
+      rule_count is fee.rule_count
+      avg_fee    is fee.avg_fee
+      min_fee    is fee.min_fee
+      max_fee    is fee.max_fee
+      sum_fee    is fee.sum_fee
+    order_by: avg_fee
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Per-account-type fee: fan over account-type candidates (wildcard-aware).
+// ---------------------------------------------------------------------------
+source: c3_fee_by_account_type(
+  transaction_value::number is null,
+  card_scheme_param::string is null,
+  capture_delay_param::string is null,
+  fraud_level_param::string is null,
+  volume_param::string is null,
+  mcc_param::number is null,
+  is_credit_param::boolean is null,
+  aci_param::string is null,
+  intracountry_param::boolean is null
+) is account_type_universe extend {
+
+  join_many: fee is fees_base(transaction_value is transaction_value)
+    on (len!number(fee.account_type) = 0 or list_contains!boolean(fee.account_type, account_type))
+
+  dimension: extra_matches is
+    (card_scheme_param is null or fee.card_scheme = card_scheme_param)
+    and (capture_delay_param is null or fee.capture_delay is null or fee.capture_delay = capture_delay_param)
+    and (fraud_level_param is null or fee.monthly_fraud_level is null or fee.monthly_fraud_level = fraud_level_param)
+    and (volume_param is null or fee.monthly_volume is null or fee.monthly_volume = volume_param)
+    and (mcc_param is null or len!number(fee.merchant_category_code) = 0 or list_contains!boolean(fee.merchant_category_code, mcc_param))
+    and (is_credit_param is null or fee.is_credit is null or fee.is_credit = is_credit_param)
+    and (aci_param is null or len!number(fee.aci) = 0 or list_contains!boolean(fee.aci, aci_param))
+    and (intracountry_param is null or fee.intracountry is null or fee.is_intracountry = intracountry_param)
+
+  measure: candidate_count is count()
+
+  view: ranked is {
+    where: extra_matches
+    group_by: account_type
+    aggregate:
+      rule_count is fee.rule_count
+      avg_fee    is fee.avg_fee
+      min_fee    is fee.min_fee
+      max_fee    is fee.max_fee
+      sum_fee    is fee.sum_fee
+    order_by: avg_fee
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Per-MCC fee: fan over the full catalogued MCC universe (wildcard-aware).
+// mcc_int is double; DuckDB casts against the BIGINT[] element in list_contains.
+// ---------------------------------------------------------------------------
+source: c3_fee_by_mcc(
+  transaction_value::number is null,
+  card_scheme_param::string is null,
+  account_type_param::string is null,
+  capture_delay_param::string is null,
+  fraud_level_param::string is null,
+  volume_param::string is null,
+  is_credit_param::boolean is null,
+  aci_param::string is null,
+  intracountry_param::boolean is null
+) is mcc_universe extend {
+
+  join_many: fee is fees_base(transaction_value is transaction_value)
+    on (len!number(fee.merchant_category_code) = 0 or list_contains!boolean(fee.merchant_category_code, mcc_int))
+
+  dimension: extra_matches is
+    (card_scheme_param is null or fee.card_scheme = card_scheme_param)
+    and (account_type_param is null or len!number(fee.account_type) = 0 or list_contains!boolean(fee.account_type, account_type_param))
+    and (capture_delay_param is null or fee.capture_delay is null or fee.capture_delay = capture_delay_param)
+    and (fraud_level_param is null or fee.monthly_fraud_level is null or fee.monthly_fraud_level = fraud_level_param)
+    and (volume_param is null or fee.monthly_volume is null or fee.monthly_volume = volume_param)
+    and (is_credit_param is null or fee.is_credit is null or fee.is_credit = is_credit_param)
+    and (aci_param is null or len!number(fee.aci) = 0 or list_contains!boolean(fee.aci, aci_param))
+    and (intracountry_param is null or fee.intracountry is null or fee.is_intracountry = intracountry_param)
+
+  measure: candidate_count is count()
+
+  view: ranked is {
+    where: extra_matches
+    group_by: mcc_int
+    aggregate:
+      rule_count is fee.rule_count
+      avg_fee    is fee.avg_fee
+      min_fee    is fee.min_fee
+      max_fee    is fee.max_fee
+      sum_fee    is fee.sum_fee
+    order_by: avg_fee
+  }
+}

@@ -1,63 +1,49 @@
 source: payments_base is duckdb.table('payments') extend {
 
-  // --- derived dimensions (only NEW names; never redefine table columns) ---
-
-  // year(1,1) + offset days -> calendar date; enables month/day slicing
-  dimension: transaction_date is make_date!date(`year`, 1, 1) + (day_of_year - 1) days
+  // year is always 2023; build calendar date from day-of-year (natural months)
+  dimension: transaction_date is @2023-01-01 + (day_of_year - 1) day
   dimension: transaction_month is transaction_date.month
 
-  // domestic transaction: issuer country equals acquirer country
+  // domestic vs international: issuer country == acquirer country
   dimension: is_intracountry is issuing_country = acquirer_country
 
-  // fee variable-base helper (rate * value / 10000 is added to a fixed amount elsewhere)
-  dimension: amount_basis_points is eur_amount / 10000
-
-  // --- measures: full standard aggregation set over eur_amount + counts ---
-
+  // volume / value
   measure: transaction_count is count()
-
   measure: total_amount is eur_amount.sum()
   measure: avg_amount is eur_amount.avg()
   measure: min_amount is eur_amount.min()
   measure: max_amount is eur_amount.max()
 
-  // fraud subset (filtered aggregates)
-  measure: fraud_transaction_count is count() { where: has_fraudulent_dispute }
-  measure: fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
-  // fraud rate as ratio of fraudulent volume to total volume (manual fraud-band measure)
-  measure: fraud_volume_rate is eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
-  measure: fraud_count_rate is count() { where: has_fraudulent_dispute } / count()
+  // fraud
+  measure: fraudulent_count is count() { where: has_fraudulent_dispute }
+  measure: fraudulent_amount is eur_amount.sum() { where: has_fraudulent_dispute }
+  measure: fraud_rate is fraudulent_amount / nullif!number(total_amount, 0)  // ratio of fraud volume to total volume
 
-  // refusal / credit / channel subsets
+  // authorization outcome
   measure: refused_count is count() { where: is_refused_by_adyen }
-  measure: refusal_rate is count() { where: is_refused_by_adyen } / count()
+  measure: refusal_rate is refused_count / nullif!number(transaction_count, 0)
+
+  // credit / debit split
   measure: credit_count is count() { where: is_credit }
   measure: credit_amount is eur_amount.sum() { where: is_credit }
+  measure: debit_amount is eur_amount.sum() { where: not is_credit }
+
+  // domestic split
   measure: intracountry_count is count() { where: is_intracountry }
   measure: intracountry_amount is eur_amount.sum() { where: is_intracountry }
 
-  measure: distinct_merchants is count(merchant)
-  measure: distinct_cards is count(card_number)
-
-  // --- reusable views ---
-
   view: by_merchant is {
     group_by: merchant
-    aggregate: transaction_count, total_amount, avg_amount
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
   }
 
   view: by_card_scheme is {
     group_by: card_scheme
-    aggregate: transaction_count, total_amount, avg_amount
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
   }
 
   view: by_aci is {
     group_by: aci
-    aggregate: transaction_count, total_amount, avg_amount
-  }
-
-  view: by_month is {
-    group_by: transaction_month
     aggregate: transaction_count, total_amount, avg_amount
   }
 
@@ -66,8 +52,33 @@ source: payments_base is duckdb.table('payments') extend {
     aggregate: transaction_count, total_amount, avg_amount
   }
 
+  view: by_device_type is {
+    group_by: device_type
+    aggregate: transaction_count, total_amount, fraud_rate
+  }
+
+  view: by_month is {
+    group_by: transaction_month
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+    order_by: transaction_month
+  }
+
+  // per-merchant per natural-month volume (basis for fee monthly_volume bands)
+  view: monthly_volume_per_merchant is {
+    group_by: merchant, transaction_month
+    aggregate: total_amount, transaction_count
+    order_by: merchant, transaction_month
+  }
+
+  // per-merchant per natural-month fraud ratio (basis for fee monthly_fraud_level bands)
+  view: monthly_fraud_per_merchant is {
+    group_by: merchant, transaction_month
+    aggregate: total_amount, fraudulent_amount, fraud_rate
+    order_by: merchant, transaction_month
+  }
+
   view: fraud_overview is {
     group_by: merchant
-    aggregate: transaction_count, total_amount, fraud_transaction_count, fraud_amount, fraud_volume_rate
+    aggregate: transaction_count, total_amount, fraudulent_count, fraudulent_amount, fraud_rate
   }
 }

@@ -1,0 +1,58 @@
+// Enriched payments: payments_base + merchant attributes + MCC description.
+// join_one chains are safe for symmetric aggregates; on-clause matches by
+// merchant name and by MCC (merchants MCC is BIGINT scalar, mcc_number casts the
+// merchant_category_codes VARCHAR mcc to number for the match).
+source: c1_transactions is payments_base extend {
+
+  join_one: merchant_info is merchants_base
+    on merchant = merchant_info.merchant
+
+  join_one: mcc_info is merchant_category_codes_base
+    on merchant_info.merchant_category_code = mcc_info.mcc_number
+
+  // merchant attributes surfaced as local dimensions (payments has none of these names)
+  dimension: account_type          is merchant_info.account_type
+  dimension: account_type_label    is merchant_info.account_type_label
+  dimension: merchant_capture_delay is merchant_info.capture_delay
+  dimension: capture_delay_band    is merchant_info.capture_delay_band
+  dimension: merchant_category_code is merchant_info.merchant_category_code
+  dimension: mcc_description        is mcc_info.description
+
+  view: by_account_type is {
+    group_by: account_type, account_type_label
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+  }
+
+  view: by_mcc is {
+    group_by: merchant_category_code, mcc_description
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+  }
+
+  view: by_capture_delay_band is {
+    group_by: capture_delay_band
+    aggregate: transaction_count, total_amount, avg_amount
+  }
+
+  view: by_intracountry is {
+    group_by: is_intracountry
+    aggregate: transaction_count, total_amount, avg_amount
+  }
+
+  // avg transaction value by issuing country (thin filter to merchant/scheme/period on top)
+  view: avg_value_by_issuing_country is {
+    group_by: issuing_country
+    aggregate: avg_amount, transaction_count
+    order_by: avg_amount
+  }
+
+  // merchant profile row for fee-rule matching (one row per merchant present in payments)
+  view: merchant_profile is {
+    group_by:
+      merchant,
+      account_type,
+      merchant_category_code,
+      merchant_capture_delay,
+      capture_delay_band
+    aggregate: transaction_count, total_amount
+  }
+}

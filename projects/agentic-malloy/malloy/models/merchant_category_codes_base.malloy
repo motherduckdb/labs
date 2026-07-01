@@ -1,11 +1,12 @@
 source: merchant_category_codes_base is duckdb.table('merchant_category_codes') extend {
-  // mcc and description are physical columns; only add derived fields.
 
-  // first two digits of MCC = top-level category per the manual
+  // mcc stored as string; expose numeric form to match fee-rule integer MCC lists
+  dimension: mcc_number is mcc::number
+
+  // first two digits = MCC category group (last two = subcategory)
   dimension: mcc_category_prefix is substr!string(mcc, 1, 2)
 
   measure: mcc_count is count()
-  measure: distinct_mcc_count is count(mcc)
   measure: distinct_description_count is count(description)
 
   view: by_category_prefix is {
@@ -14,8 +15,8 @@ source: merchant_category_codes_base is duckdb.table('merchant_category_codes') 
     order_by: mcc_count desc
   }
 
-  view: code_list is {
-    select: mcc, description
+  view: code_directory is {
+    select: mcc, mcc_number, description
     order_by: mcc
   }
 }

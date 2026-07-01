@@ -1,0 +1,129 @@
+##! experimental.parameters
+
+// ---------------------------------------------------------------------------
+// Enriched transaction grain: each payment + merchant attributes (account_type,
+// MCC, capture-delay band) + its merchant-month volume/fraud bands, all
+// MATERIALIZED as real local columns (via projection) so the fee fan-out can
+// match on them without reaching through a join (execution-safe).
+// ---------------------------------------------------------------------------
+source: c4_txn_enriched is c1_transactions extend {
+  // one merchant-month profile row per transaction → join_one
+  join_one: mprofile is c2_merchant_profiles
+    on merchant = mprofile.merchant and transaction_month = mprofile.transaction_month
+} -> {
+  select:
+    psp_reference
+    merchant
+    day_of_year
+    transaction_date
+    transaction_month
+    eur_amount
+    card_scheme
+    is_credit
+    aci
+    has_fraudulent_dispute
+    shopper_interaction
+    is_intracountry
+    account_type
+    merchant_category_code
+    capture_delay_band
+    volume_band is mprofile.volume_band
+    fraud_band  is mprofile.fraud_band
+}
+
+
+// ---------------------------------------------------------------------------
+// Core fact × rule fan-out. Each transaction matches ALL applicable fee rules
+// via wildcard-aware predicates (empty list len=0 or NULL scalar = "applies to
+// all"); per-transaction fee = fixed_amount + rate * eur_amount / 10000,
+// computed at the fee (joined) grain so it combines fee cols + base eur_amount.
+//
+// Counterfactual knobs (unset = use the transaction's actual value):
+//   card_scheme_override — re-route every transaction through one scheme (steering)
+//   aci_override         — reassign transactions to one ACI (fraud reallocation)
+//   mcc_override         — pretend the merchant carried a different MCC
+// ---------------------------------------------------------------------------
+source: c4_transaction_fees(
+  card_scheme_override::string is null,
+  aci_override::string        is null,
+  mcc_override::number        is null
+) is c4_txn_enriched extend {
+
+  // primary_key on the joined ruleset → symmetric-aggregate fan-out dedup
+  join_many: fee is duckdb.table('fees') extend { primary_key: ID }
+    on
+      // card_scheme never has a wildcard in the data; override swaps the matched value
+      ( (card_scheme_override is null and fee.card_scheme = card_scheme)
+        or (card_scheme_override is not null and fee.card_scheme = card_scheme_override) )
+      and (len!number(fee.account_type) = 0 or list_contains!boolean(fee.account_type, account_type))
+      and (fee.capture_delay is null or fee.capture_delay = capture_delay_band)
+      and (fee.monthly_fraud_level is null or fee.monthly_fraud_level = fraud_band)
+      and (fee.monthly_volume is null or fee.monthly_volume = volume_band)
+      // MCC: empty list = all; override replaces the merchant's MCC for matching
+      and ( (mcc_override is null and (len!number(fee.merchant_category_code) = 0 or list_contains!boolean(fee.merchant_category_code, merchant_category_code)))
+            or (mcc_override is not null and (len!number(fee.merchant_category_code) = 0 or list_contains!boolean(fee.merchant_category_code, mcc_override))) )
+      and (fee.is_credit is null or fee.is_credit = is_credit)
+      // ACI: empty list = all; override reassigns the transaction's ACI for matching
+      and ( (aci_override is null and (len!number(fee.aci) = 0 or list_contains!boolean(fee.aci, aci)))
+            or (aci_override is not null and (len!number(fee.aci) = 0 or list_contains!boolean(fee.aci, aci_override))) )
+      // intracountry stored 0/1 double; NULL = all
+      and (fee.intracountry is null or (fee.intracountry = 1) = is_intracountry)
+
+  // --- grain counts ---
+  measure: txn_count is count(psp_reference)              // distinct transactions (base grain)
+  measure: match_count is count()                          // (txn, rule) pairs (fan-out grain)
+  measure: applicable_fee_id_count is count(fee.ID)        // distinct applicable fee rules
+
+  // --- fee measures: per-match fee expression evaluated at the fee grain ---
+  // (assumes the ruleset resolves ~one rule per fully-specified transaction;
+  //  total_fees sums the per-transaction fee over all matched (txn,rule) rows)
+  measure: total_fees is fee.sum(fee.fixed_amount + fee.rate * eur_amount / 10000)
+  measure: avg_fee    is fee.avg(fee.fixed_amount + fee.rate * eur_amount / 10000)
+  measure: min_fee    is min(fee.fixed_amount + fee.rate * eur_amount / 10000)
+  measure: max_fee    is max(fee.fixed_amount + fee.rate * eur_amount / 10000)
+
+  // total fees per merchant (thin filter: merchant + period on top)
+  view: total_fees_by_merchant is {
+    group_by: merchant
+    aggregate: txn_count, total_fees, avg_fee, min_fee, max_fee, applicable_fee_id_count
+    order_by: total_fees desc
+  }
+
+  // distinct applicable fee IDs (filter merchant + period; use with card_scheme
+  // /aci/mcc overrides for counterfactual applicability)
+  view: applicable_fee_ids is {
+    group_by: fee_id is fee.ID
+    order_by: fee_id
+  }
+
+  // reverse lookup — merchants affected by a fee rule (filter fee_id)
+  view: merchants_by_fee is {
+    group_by: fee_id is fee.ID, merchant
+    order_by: fee_id, merchant
+  }
+
+  // per-transaction × matched-rule detail (basis for delta / counterfactual math)
+  view: transaction_fee_detail is {
+    group_by:
+      merchant,
+      day_of_year,
+      transaction_month,
+      psp_reference,
+      eur_amount,
+      card_scheme,
+      aci,
+      is_credit,
+      fee_id    is fee.ID,
+      fee_fixed is fee.fixed_amount,
+      fee_rate  is fee.rate
+    aggregate: fee_amount is fee.sum(fee.fixed_amount + fee.rate * eur_amount / 10000)
+    order_by: psp_reference, fee_id
+  }
+
+  // actual per-card-scheme fee breakdown (descriptive; steering uses the override)
+  view: fee_by_card_scheme is {
+    group_by: card_scheme
+    aggregate: txn_count, total_fees, avg_fee, min_fee, max_fee
+    order_by: total_fees
+  }
+}

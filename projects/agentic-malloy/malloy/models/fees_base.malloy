@@ -1,48 +1,51 @@
-source: fees_base is duckdb.table('fees') extend {
-  // transaction_value is the notional the variable rate applies to;
-  // fee = fixed_amount + rate * transaction_value / 10000
-  // parameterized so callers can compute fee at any notional
-  // (default 0 => fee equals fixed_amount only)
+##! experimental.parameters
 
-  // --- derived dimensions ---
-  // wildcard encoding: list fields use empty list (len=0); scalar fields use NULL
+// transaction_value is the notional (a real payment amount or a hypothetical
+// input) used to evaluate the variable component of the fee formula.
+source: fees_base(transaction_value::number is null) is duckdb.table('fees') extend {
+
+  // --- wildcard encoding: list fields use empty-list (len=0) = "applies to all" ---
   dimension: applies_to_all_account_types is len!number(account_type) = 0
-  dimension: applies_to_all_mccs is len!number(merchant_category_code) = 0
-  dimension: applies_to_all_acis is len!number(aci) = 0
-  dimension: applies_to_all_schemes is card_scheme is null
+  dimension: applies_to_all_mcc          is len!number(merchant_category_code) = 0
+  dimension: applies_to_all_aci          is len!number(aci) = 0
+
+  // scalar wildcards encode "applies to all" as NULL
   dimension: applies_to_all_capture_delay is capture_delay is null
-  dimension: applies_to_all_fraud_level is monthly_fraud_level is null
-  dimension: applies_to_all_volume is monthly_volume is null
-  dimension: applies_to_all_credit is is_credit is null
-  dimension: applies_to_all_intracountry is intracountry is null
+  dimension: applies_to_all_fraud_level    is monthly_fraud_level is null
+  dimension: applies_to_all_volume         is monthly_volume is null
+  dimension: applies_to_all_is_credit      is is_credit is null
+  dimension: applies_to_all_intracountry   is intracountry is null
 
-  // rate is stored as basis-points/10000 multiplier; expose as effective fraction
-  dimension: rate_fraction is rate / 10000.0
+  // intracountry stored as 0/1 double; surface a boolean view (null = all)
+  dimension: is_intracountry is intracountry = 1
 
-  // intracountry stored as 0/1 double; expose readable flag (null = applies to all)
-  dimension: is_intracountry is pick true when intracountry = 1 pick false when intracountry = 0 else null
+  // variable portion and full fee at the parameterized notional
+  dimension: variable_fee is rate * transaction_value / 10000
+  dimension: fee_at_value is fixed_amount + rate * transaction_value / 10000
 
-  // --- measures over fixed_amount ---
+  // --- rule population ---
   measure: rule_count is count()
-  measure: total_fixed_amount is fixed_amount.sum()
-  measure: avg_fixed_amount is fixed_amount.avg()
-  measure: min_fixed_amount is fixed_amount.min()
-  measure: max_fixed_amount is fixed_amount.max()
 
-  // --- measures over rate ---
-  measure: total_rate is rate.sum()
-  measure: avg_rate is rate.avg()
-  measure: min_rate is rate.min()
-  measure: max_rate is rate.max()
+  // fixed component (euros per transaction)
+  measure: avg_fixed_amount is avg(fixed_amount)
+  measure: min_fixed_amount is min(fixed_amount)
+  measure: max_fixed_amount is max(fixed_amount)
+  measure: sum_fixed_amount is sum(fixed_amount)
 
-  // --- standard views ---
+  // variable rate (basis-point-like integer, /10000)
+  measure: avg_rate is avg(rate)
+  measure: min_rate is min(rate)
+  measure: max_rate is max(rate)
+
+  // computed fee across the set of matching rules at the given notional
+  measure: avg_fee is avg(fee_at_value)
+  measure: min_fee is min(fee_at_value)
+  measure: max_fee is max(fee_at_value)
+  measure: sum_fee is sum(fee_at_value)
+
+  // --- reusable breakdowns of the ruleset ---
   view: by_card_scheme is {
     group_by: card_scheme
-    aggregate: rule_count, avg_fixed_amount, avg_rate
-  }
-
-  view: by_credit is {
-    group_by: is_credit
     aggregate: rule_count, avg_fixed_amount, avg_rate
   }
 
@@ -51,12 +54,17 @@ source: fees_base is duckdb.table('fees') extend {
     aggregate: rule_count, avg_fixed_amount, avg_rate
   }
 
-  view: by_monthly_volume is {
+  view: by_is_credit is {
+    group_by: is_credit
+    aggregate: rule_count, avg_fixed_amount, avg_rate
+  }
+
+  view: by_volume_band is {
     group_by: monthly_volume
     aggregate: rule_count, avg_fixed_amount, avg_rate
   }
 
-  view: by_monthly_fraud_level is {
+  view: by_fraud_band is {
     group_by: monthly_fraud_level
     aggregate: rule_count, avg_fixed_amount, avg_rate
   }

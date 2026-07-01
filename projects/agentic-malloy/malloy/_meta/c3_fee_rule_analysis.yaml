@@ -1,0 +1,71 @@
+file: c3_fee_rule_analysis.malloy
+domain: Payment processing fee ruleset analysis (Adyen-style fee rules)
+summary: >
+  Ruleset-level ("average scenario") fee analysis at a parameterized transaction
+  notional. Matches fee rules against a supplied merchant/transaction profile
+  using the dataset's wildcard convention (a list field with zero elements or a
+  NULL scalar means "applies to all values"), and exposes reusable average/min/
+  max/sum fee measures broken down per card_scheme, ACI, account_type and MCC.
+  Every match field carries BOTH a wildcard branch and a "parameter unset"
+  branch, so leaving a characteristic unset never over-filters and a wildcard
+  rule is never silently dropped. Fee formula: fee = fixed_amount + rate *
+  transaction_value / 10000. All parameters default to null (unset). The
+  categorical breakdown sources fan the ruleset over a data-derived value
+  universe so wildcard rules correctly count into every candidate bucket.
+exports:
+  - name: c3_fee_rule_analysis
+    kind: source
+    summary: >
+      Parameterized fee ruleset with wildcard-aware profile matching. Params:
+      transaction_value, card_scheme_param, account_type_param,
+      capture_delay_param, fraud_level_param, volume_param, mcc_param,
+      is_credit_param, aci_param, intracountry_param. matches_profile is true for
+      rules that apply to the supplied characteristics. Measures: rule_count,
+      matching_rule_count, avg/min/max/sum_fee (fee_at_value = fixed_amount +
+      rate*transaction_value/10000), avg/min/max/sum_fixed_amount, avg/min/max_rate.
+    usage: >
+      Instantiate with the notional + any known characteristics, then use a view.
+      "which fee IDs apply to account_type=D and aci=F":
+      run: c3_fee_rule_analysis(account_type_param is 'D', aci_param is 'F') -> applicable_rules.
+      "average-scenario cheapest card scheme for 50 EUR":
+      run: c3_fee_rule_analysis(transaction_value is 50) -> fee_by_card_scheme + { limit: 1 }
+      (order_by avg_fee asc is the default; use { order_by: avg_fee desc } for most expensive).
+      "avg fee GlobalCard charges account type H for 100 EUR":
+      run: c3_fee_rule_analysis(transaction_value is 100, card_scheme_param is 'GlobalCard', account_type_param is 'H') -> matching_fee_summary.
+  - name: c3_fee_by_aci
+    kind: source
+    summary: >
+      Average/min/max/sum fee per ACI at a notional, wildcard-aware (empty-aci
+      rules count into every ACI). Same optional profile params as the main
+      source minus the ACI axis. View `ranked` groups by aci.
+    usage: >
+      "most expensive ACI for a 100 EUR credit transaction on GlobalCard":
+      run: c3_fee_by_aci(transaction_value is 100, is_credit_param is true, card_scheme_param is 'GlobalCard') -> ranked + { order_by: avg_fee desc; limit: 1 }.
+      Break ties by lowest alphabetical aci in the caller's order_by.
+  - name: c3_fee_by_account_type
+    kind: source
+    summary: >
+      Average/min/max/sum fee per account_type at a notional, wildcard-aware.
+      Optional profile params minus the account_type axis. View `ranked` groups
+      by account_type.
+    usage: >
+      run: c3_fee_by_account_type(transaction_value is 100, card_scheme_param is 'GlobalCard') -> ranked
+      then order_by avg_fee asc/desc + limit for cheapest/most-expensive account type.
+  - name: c3_fee_by_mcc
+    kind: source
+    summary: >
+      Average/min/max/sum fee per merchant category code (full catalogued MCC
+      universe) at a notional, wildcard-aware. Optional profile params minus the
+      MCC axis. View `ranked` groups by mcc_int.
+    usage: >
+      "most expensive MCC for a transaction of 50000 EUR in general":
+      run: c3_fee_by_mcc(transaction_value is 50000) -> ranked + { order_by: avg_fee desc }
+      then take the top avg_fee and list all mcc_int tied at that value.
+provides_for:
+  - average fee scenario per card scheme (cheapest / most expensive) at a notional
+  - applicable fee IDs for a supplied merchant/transaction profile (wildcard-aware)
+  - which fee IDs apply to given account_type / aci / is_credit / card_scheme constraints
+  - average fee a card scheme charges for a given account type / MCC at a value
+  - most / least expensive ACI for a credit or debit transaction on a scheme
+  - most / least expensive MCC for a given transaction value
+  - min / max / avg / sum fee across the matching ruleset by card_scheme, ACI, account_type, MCC

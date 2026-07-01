@@ -1,48 +1,35 @@
-// Thin reusable entry points over the c1–c5 semantic sources.
-// All matching/fee logic lives in the intermediate sources; these only
-// name the canonical call shapes so a question is a filter+select on top.
-// NOTE: c4_*/c5_* are parameterized sources — supply context/overrides at the
-// run site, e.g. `run: c4_fee_rules(transaction_value is 50) -> avg_fee_by_scheme`.
+// Thin answering surface over the c1–c5 intermediate sources.
+// Each entry is a ready-to-run named query; scope it last-mile with
+//   run: <name> + { where: … ; order_by: … ; limit: … }
+// Parameterized scenarios (average-fee, rate-delta, MCC/scheme/ACI counterfactuals)
+// are instantiated directly on their c3/c4/c5 source with args — see _meta usage.
 
-// ---- Average-scenario fee by card scheme (default notional 0; override param) ----
-// cheapest scheme: order_by avg_fee asc + limit 1 ; most expensive: avg_fee desc.
-query: avg_scenario_fee_by_scheme is c4_fee_rules -> avg_fee_by_scheme
+// --- resolved per-transaction fees (actual routing, no overrides) ---
 
-// applicable fee-rule IDs for a supplied scalar characteristic context
-// (e.g. account_type + aci) — caller sets the for_* params on the source.
-query: fee_rules_for_context is c4_fee_rules -> matching_rule_ids
+// total fees a merchant accumulates; refine with merchant + day_of_year/transaction_month window
+query: total_fees_by_merchant is c4_transaction_fees -> total_fees_by_merchant
 
-// per-rule fee detail for a supplied context
-query: fee_rule_detail_for_context is c4_fee_rules -> matching_rule_fees
+// per-(transaction,rule) fee rows — basis for any custom delta / audit
+query: transaction_fee_detail is c4_transaction_fees -> transaction_fee_detail
 
-// ---- Cheapest / most expensive ACI in the average scenario (A..G universe) ----
-query: avg_scenario_fee_by_aci is c4_fee_by_aci -> ranked
+// distinct applicable fee IDs; refine with merchant + period (add overrides on the source for counterfactuals)
+query: applicable_fee_ids is c4_transaction_fees -> applicable_fee_ids
 
-// ---- Cheapest / most expensive MCC in the average scenario ----
-query: avg_scenario_fee_by_mcc is c4_fee_by_mcc -> ranked
-// average fee per scheme within an MCC (caller filters mcc_value + scheme)
-query: avg_scenario_fee_by_mcc_scheme is c4_fee_by_mcc -> avg_fee_by_scheme
+// reverse lookup: merchants a fee rule applies to; refine with fee_id (+ period)
+query: merchants_by_fee is c4_transaction_fees -> merchants_by_fee
 
-// ---- Per-merchant realized fees over a time window (scope merchant + day/month) ----
-// applicable fee IDs actually hit by a merchant's transactions in the window.
-query: merchant_applicable_fee_ids is c5_transaction_fees -> applicable_fee_ids
-// total fees per merchant over the scoped window.
-query: merchant_total_fees is c5_transaction_fees -> fees_by_merchant
-// one row per transaction with its computed fee.
-query: merchant_transaction_fees is c5_transaction_fees -> per_transaction_fee
-// merchants whose transactions match a given rule (scope: where fees.ID = X).
-query: rule_affected_merchants is c5_transaction_fees -> affected_merchants
+// actual per-scheme fee breakdown (descriptive)
+query: fee_by_card_scheme is c4_transaction_fees -> fee_by_card_scheme
 
-// ---- Traffic-steering: total fee per candidate card scheme (scope merchant + time) ----
-// min fee: order total_fee asc + limit 1 ; max fee: total_fee desc + limit 1.
-query: steering_fee_by_scheme is c5_steering -> fee_by_scheme
+// --- counterfactual routing scenarios (no params needed to run) ---
 
-// ---- Fraud ACI re-routing: total fee per candidate ACI ----
-// scope: merchant + time + has_fraudulent_dispute ; preferred ACI = total_fee asc, aci asc.
-query: fraud_aci_rerouting is c5_aci_rerouting -> fee_by_candidate_aci
+// steering: total/avg fee per candidate card scheme; refine merchant+period, order asc(min)/desc(max), limit 1
+query: steer_by_scheme is c5_scheme_steering -> steer_by_scheme
 
-// ---- Generic transaction slices (pre-fee) for value/volume analytics ----
-// average transaction value by issuing country (scope merchant/scheme/time, order asc).
-query: avg_value_by_issuing_country is payments_base -> by_issuing_country
-query: payments_by_card_scheme is payments_base -> by_card_scheme
-query: payments_by_month is payments_base -> by_month
+// fraud ACI reallocation: fee per candidate ACI for a merchant's fraudulent txns; order asc + limit 1 (cheapest)
+query: fraud_reallocate_by_aci is c5_aci_reallocation -> reallocate_by_aci
+
+// --- descriptive transaction analytics ---
+
+// average transaction value by issuing country; refine merchant/scheme/period, already sorted asc
+query: avg_value_by_issuing_country is c1_transactions -> avg_value_by_issuing_country

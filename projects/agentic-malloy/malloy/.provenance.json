@@ -1,41 +1,23 @@
 {
   "malloy_provenance": "model_authored",
-  "malloy_model_hash": "1cba09d2056255a7",
+  "malloy_model_hash": "7d6235072323dafa",
   "context_included": true,
   "authoring_model": "anthropic/claude-opus-4.8",
   "central_only": false,
   "output_name": "dabstep",
-  "built_at": "2026-06-30T15:50:16.354Z",
+  "built_at": "2026-07-01T08:46:59.782Z",
   "files": [
     "acquirer_countries_base.malloy",
-    "c1_merchant_profiles.malloy",
-    "c2_merchant_monthly_metrics.malloy",
-    "c3_transactions_enriched.malloy",
-    "c4_fee_rules.malloy",
-    "c5_transaction_fees.malloy",
+    "c1_transactions.malloy",
+    "c2_merchant_profiles.malloy",
+    "c3_fee_rule_analysis.malloy",
+    "c4_transaction_fees.malloy",
+    "c5_fee_scenarios.malloy",
     "dabstep.malloy",
     "fees_base.malloy",
     "merchant_category_codes_base.malloy",
     "merchants_base.malloy",
     "payments_base.malloy"
   ],
-  "manual_included": true,
-  "improve_round": 1,
-  "improve_lineage": [
-    {
-      "from_hash": "d4399f56d0415210",
-      "to_hash": "1cba09d2056255a7",
-      "round": 1,
-      "improve_model": "anthropic/claude-opus-4.8",
-      "edited_files": [
-        "c5_transaction_fees.malloy"
-      ],
-      "from_run": "templates_2026-06-30T1957Z.jsonl",
-      "from_splits": [
-        "train"
-      ],
-      "train_only": true,
-      "at": "2026-06-30T20:37:40.653Z"
-    }
-  ]
+  "manual_included": true
 }
