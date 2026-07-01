@@ -124,9 +124,13 @@ it is never the answer.
 
 ## Answer format (the validator is strict)
 
-- **Final stage selects ONLY the asked value(s).** After you find the answer with a
-  ranked/grouped query, add a final `select:` (or project) that drops the measure you
-  sorted by, counts, and labels. "Which X?" → exactly one column (X), one row.
+- **Emit ONLY the asked column(s): author the reduction on the SOURCE, not a pre-built
+  grouping view.** A pre-built view carries extra key/count/sum columns you can't trim off:
+  `+ { … }` only ADDS to the view's stage, and a fresh `-> { … }` stage runs on the view's
+  already-grouped output — where the pre-aggregation `where` and source measures (e.g.
+  `fee_delta`) it needs are out of scope. So write it directly: `run: <source> -> { where: …;
+  group_by: <asked keys>; aggregate: <asked measures> }` — drop `group_by` for a single
+  scalar (one row, one column). "Which X?" → one column, one row.
 - **Return the KEY/identifier the question asks for, not a descriptive label joined to it.**
   When the layer exposes both an entity's code/key and a human-readable description of it,
   and the question asks for the entity by its identifier, `group_by`/`select` the **key**,

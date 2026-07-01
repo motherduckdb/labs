@@ -14,14 +14,21 @@
  */
 
 export interface ShapeWarning {
-  code: 'extra_columns' | 'percentage_ratio' | 'limit_drops_ties' | 'null_in_list';
+  code: 'extra_columns' | 'list_extra_columns' | 'percentage_ratio' | 'limit_drops_ties' | 'null_in_list';
   message: string;
 }
 
-// Single-value intent ("which X?", "what is the …", "how many/much") vs. a
-// multi-value / per-group hint ("for each", "by …", "per …", "list/breakdown").
-const SINGLE_VALUE_RE = /\bwhich\b|\bwhat (is|was|are|were) the\b|\bhow (many|much)\b|\bname the\b/i;
+// Single-value intent ("which X?", "what is the …", "how many/much", "name the", and
+// the MODAL form "what <thing> would/does/will … (pay|be|cost)?" — e.g. "what delta
+// would Crossfit_Hanna pay") vs. a multi-value / per-group hint ("for each", "by …",
+// "per …", "list/breakdown"). The modal form previously slipped through, so a scalar
+// answer built by refining a grouping view leaked its key/measure columns UN-warned.
+const SINGLE_VALUE_RE = /\bwhich\b|\bwhat (is|was|are|were) the\b|\bwhat\b[^\n]{0,40}?\b(would|will|does|did|should|could)\b|\bhow (many|much)\b|\bname the\b/i;
 const MULTI_HINT_RE = /\bfor each\b|\bby each\b|\bper\b|\bbreakdown\b|\bgroup(ed)? by\b|\beach\b/i;
+// A "[key: value, …]" list guideline (e.g. "[grouping_i: amount_i, ]") wants exactly TWO
+// columns per row — the group key, then the one asked measure. >2 columns means a wide
+// grouping view's extra count/sum measures are leaking into each list element.
+const KV_LIST_RE = /\[[^\]\n]*:[^\]\n]*\]/;
 const PERCENT_RE = /percentage|percent\b|\bpct\b|%/i;
 const LIST_ALL_RE = /\blist all\b|\bif there are ties\b|\ball\b[\s\S]{0,40}?\b(that|which)\b|comma[- ]separated|\blist (the|all|every)\b/i;
 // `limit: 1` (Malloy, with colon), `limit 1`/`LIMIT 1` (SQL), `rank()=1`, `top 1`.
@@ -59,6 +66,14 @@ export function answerShapeWarnings(opts: {
   if (ncols > 1 && SINGLE_VALUE_RE.test(text) && !MULTI_HINT_RE.test(text)) {
     const colNote = cols.length ? ` (${cols.join(', ')})` : '';
     out.push({ code: 'extra_columns', message: `The result has ${ncols} columns${colNote} but the question asks for a single value — return ONLY the asked value (drop the key/measure you grouped or sorted by).` });
+  }
+
+  // 1b. a "[key: value]" list guideline but >2 columns per row — a grouping view's extra
+  //     measures (count, sum) leaking into each list element. Distinct from check 1,
+  //     which deliberately skips the per-group ("grouped by"/"for each") answers this hits.
+  if (KV_LIST_RE.test(text) && ncols > 2) {
+    const colNote = cols.length ? ` (${cols.join(', ')})` : '';
+    out.push({ code: 'list_extra_columns', message: `The guideline wants a [key: value] list — exactly TWO columns (the group key, then the asked measure) — but the result has ${ncols} columns${colNote}. Return only those two: group by the key and aggregate only that measure (drop the count/sum you grouped by).` });
   }
 
   // 2. a single numeric scalar in (0,1) when the answer is a "percentage" (the ×100

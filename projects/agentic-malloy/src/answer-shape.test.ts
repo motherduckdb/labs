@@ -31,6 +31,38 @@ describe('answer-shape: extra columns (single-value intent)', () => {
     const w = answerShapeWarnings({ question: 'What is the total volume for each method?', columns: ['method', 'volume'], rows: [['D', 49642]] });
     expect(codes(w)).not.toContain('extra_columns');
   });
+  it('warns on the modal "what <thing> would … pay" single-value form (delta questions)', () => {
+    // previously slipped through: "what delta would" is not "what is the …", so the
+    // grouping-view row (merchant,count,total_fee,delta) submitted UN-warned (tasks 2490/2463).
+    const w = answerShapeWarnings({
+      question: 'In the year 2023 what delta would Crossfit_Hanna pay if the relative fee of the fee with ID=792 changed to 99?',
+      guidelines: 'Answer must be just a number rounded to 14 decimals.',
+      columns: ['merchant', 'transaction_count', 'total_fee', 'delta'],
+      rows: [['Crossfit_Hanna', 55139, 43520.83, 2048.69]],
+    });
+    expect(codes(w)).toContain('extra_columns');
+  });
+});
+
+describe('answer-shape: [key: value] list carries extra columns', () => {
+  it('warns when a [grouping: amount] guideline result has >2 columns (task 347)', () => {
+    const w = answerShapeWarnings({
+      question: "What is the average transaction value grouped by issuing_country for Golfclub_Baron_Friso's NexPay transactions?",
+      guidelines: 'The final answer should be a list of this format: [grouping_i: amount_i, ]. All amounts rounded to 2 decimals.',
+      columns: ['issuing_country', 'transaction_count', 'total_amount', 'avg_amount'],
+      rows: [['FR', 155, 11032.31, 71.18], ['GR', 60, 4653.63, 77.56]],
+    });
+    expect(codes(w)).toContain('list_extra_columns');
+  });
+  it('does NOT warn when the [key: value] result has exactly two columns', () => {
+    const w = answerShapeWarnings({
+      question: 'average value grouped by issuing_country',
+      guidelines: 'list of this format: [grouping_i: amount_i, ]',
+      columns: ['issuing_country', 'avg_amount'],
+      rows: [['FR', 71.18], ['GR', 77.56]],
+    });
+    expect(codes(w)).not.toContain('list_extra_columns');
+  });
 });
 
 describe('answer-shape: percentage on a 0–1 ratio', () => {

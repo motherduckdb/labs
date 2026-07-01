@@ -6,8 +6,8 @@
  */
 
 export const MODEL_ALIASES: Record<string, string> = {
-  opus: 'anthropic/claude-opus-4.7',
-  sonnet: 'anthropic/claude-sonnet-4.6',
+  opus: 'anthropic/claude-opus-4.8',
+  sonnet: 'anthropic/claude-sonnet-5',
   haiku: 'anthropic/claude-haiku-4.5',
   gemini: 'google/gemini-3-flash-preview',
   gpt: 'openai/gpt-5.5',
