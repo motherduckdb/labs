@@ -9,6 +9,46 @@ import { complete } from './llm-client.js';
 import { answerShape, type TaskTrace, type ToolErrorStat } from './run-log.js';
 import type { MissOwner } from './miss-analysis.js';
 
+/** Robustly pull the intended JSON object out of a model response that may wrap it
+ *  in reasoning prose, a ```json fence, or Malloy snippets with stray `{ }`. The
+ *  old greedy `/\{[\s\S]*\}/` spanned the FIRST `{` to the LAST `}`, so any brace
+ *  outside the JSON (a `{ where: … }` in the model's rationale) made JSON.parse
+ *  throw — silently defaulting the verdict to skill/no-edit. Strategy: prefer a
+ *  fenced block, else collect every BALANCED-brace `{…}` span and try them
+ *  LAST-first (the intended JSON is emitted last, after any reasoning). Returns the
+ *  first candidate that parses to an object, else null. */
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  const candidates: string[] = [];
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence && fence[1]) candidates.push(fence[1].trim());
+  const spans: string[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === '}' && depth > 0) {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        spans.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  candidates.push(...spans.reverse()); // the intended JSON comes last → try last-first
+  for (const c of candidates) {
+    try {
+      const parsed = JSON.parse(c) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      /* not this candidate — try the next */
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Trace evidence (the MANNER-of-failure inputs) — structural-only, NO gold.
 // ---------------------------------------------------------------------------
@@ -127,8 +167,8 @@ export async function missVerdict(opts: {
   // Safe default: skill / other, no layer edit.
   let v: MissVerdict = { owner: 'skill', manner: 'other', file: opts.implicatedFile, defect: '', fix: { kind: 'skill', detail: '' }, rationale: 'parse failure → defaulted to skill (no layer edit)' };
   try {
-    const m = resp.text.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(m ? m[0] : resp.text) as Partial<MissVerdict>;
+    const parsed = extractJsonObject(resp.text) as Partial<MissVerdict> | null;
+    if (!parsed) throw new Error('no parseable JSON object in verdict response');
     const owner = parsed.owner;
     const manner = parsed.manner;
     const fix = parsed.fix as MissVerdict['fix'] | undefined;
@@ -177,8 +217,8 @@ export async function diagnoseToolError(opts: {
   const meta: ModelCallMeta = { cost: resp.cost ?? 0, promptTokens: resp.promptTokens, completionTokens: resp.completionTokens, cachedTokens: resp.cachedTokens, cacheWriteTokens: resp.cacheWriteTokens, raw: resp.text };
   let d: ToolDiagnosis = { cause: '', fixKind: 'unknown', detail: '', file: null };
   try {
-    const m = resp.text.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(m ? m[0] : resp.text) as Partial<ToolDiagnosis>;
+    const parsed = extractJsonObject(resp.text) as Partial<ToolDiagnosis> | null;
+    if (!parsed) throw new Error('no parseable JSON object in tool-diagnosis response');
     d = {
       cause: String(parsed.cause ?? ''),
       fixKind: ['skill', 'linter', 'layer', 'unknown'].includes(parsed.fixKind as string) ? (parsed.fixKind as ToolDiagnosis['fixKind']) : 'unknown',
