@@ -161,7 +161,10 @@ export async function missVerdict(opts: {
     userPrompt: user,
     reasoningEffort: opts.reasoningEffort,
     provider: opts.provider,
-    maxTokens: 2500,
+    // Budget = reasoning + JSON. At --reasoning high the thinking alone can exceed a
+    // tight cap, truncating the (tiny) JSON so it never closes → unparseable → silent
+    // skill/no-edit default. Give reasoning ample room; the JSON itself is ~200 tokens.
+    maxTokens: 12000,
   });
   const meta: ModelCallMeta = { cost: resp.cost ?? 0, promptTokens: resp.promptTokens, completionTokens: resp.completionTokens, cachedTokens: resp.cachedTokens, cacheWriteTokens: resp.cacheWriteTokens, raw: resp.text };
   // Safe default: skill / other, no layer edit.
@@ -213,7 +216,7 @@ export async function diagnoseToolError(opts: {
   provider?: string;
 }): Promise<ToolDiagnosis & ModelCallMeta> {
   const user = `## Tool failing too often\nTool: ${opts.stat.tool}\nError rate: ${(opts.stat.rate * 100).toFixed(1)}% (${opts.stat.errors}/${opts.stat.calls} calls)\n\n## Sample error outputs\n${opts.stat.samples.map((s, i) => `${i + 1}. ${s}`).join('\n') || '(none captured)'}\n\nDiagnose the systemic cause and the fix location. Return the JSON now.`;
-  const resp = await complete({ model: opts.model, systemPrompt: TOOL_DIAG_SYSTEM, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 1200 });
+  const resp = await complete({ model: opts.model, systemPrompt: TOOL_DIAG_SYSTEM, userPrompt: user, reasoningEffort: opts.reasoningEffort, provider: opts.provider, maxTokens: 4000 });
   const meta: ModelCallMeta = { cost: resp.cost ?? 0, promptTokens: resp.promptTokens, completionTokens: resp.completionTokens, cachedTokens: resp.cachedTokens, cacheWriteTokens: resp.cacheWriteTokens, raw: resp.text };
   let d: ToolDiagnosis = { cause: '', fixKind: 'unknown', detail: '', file: null };
   try {
