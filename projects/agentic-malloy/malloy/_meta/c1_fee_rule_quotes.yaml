@@ -1,0 +1,76 @@
+file: c1_fee_rule_quotes.malloy
+domain: payment-processing fee rules — "average scenario" quoting at a notional transaction value
+summary: >
+  Parameterized quoting layer over the fee rule table. fee_rule_quotes wraps fees_base
+  with (a) a matches_constraints predicate implementing wildcard rule semantics on every
+  match field (NULL scalar / empty list = applies to all), driven by optional named
+  parameters (card_scheme_filter, account_type_filter, aci_filter, mcc_filter,
+  mcc_description, credit_filter, capture_delay_filter, intracountry_filter,
+  volume_tier_filter, fraud_tier_filter), and (b) join_many fan-outs that explode a
+  rule's list fields against data-derived candidate universes (MCC reference table with
+  descriptions, observed ACI values, observed account types) so per-candidate rankings
+  include wildcard rules in every group. Fee quoted as fixed_amount + rate*notional/10000
+  via the inherited fee_at_notional dimension; avg/min/max are the unweighted
+  "average scenario" over matching rules (no transaction weighting). All aggregates use
+  fan-out-safe forms (base-locality avg/min/max + distinct count(ID)).
+exports:
+  - name: aci_universe
+    kind: source
+    summary: Distinct ACI values observed in payments (candidate set for per-ACI quoting), primary_key aci.
+    usage: "Join target only; rarely queried directly. run: aci_universe -> { group_by: aci }"
+  - name: account_type_universe
+    kind: source
+    summary: Distinct account types observed on merchants (candidate set for per-account-type quoting), primary_key account_type.
+    usage: "Join target only. run: account_type_universe -> { group_by: account_type }"
+  - name: fee_rule_quotes
+    kind: source (parameterized)
+    summary: >
+      Fee rules + wildcard-aware constraint matching + candidate fan-outs + notional fee
+      quoting. Grain: one fee rule (fans to rule×candidate only in the quote_by_aci /
+      quote_by_mcc / quote_by_account_type / *_for_mcc_description views). Always pass
+      notional for fee outputs; unset filters mean "no constraint on that field". Leave a
+      dimension's own filter unset when ranking by that dimension (e.g. aci_filter null
+      when using quote_by_aci). Note: intracountry_filter true=domestic, false=international.
+    usage: "run: fee_rule_quotes(notional is 50, credit_filter is true, card_scheme_filter is 'GlobalCard') -> <view>"
+  - name: matching_rules
+    kind: view
+    summary: One row per fee rule satisfying the current parameter constraints, with full rule detail and fee_at_notional; ordered by ID.
+    usage: "Set constraint params, then run the view to list applicable fee IDs; e.g. fee_rule_quotes(account_type_filter is 'D', aci_filter is 'F') -> matching_rules"
+  - name: quote_summary
+    kind: view
+    summary: Single-row avg/min/max fee at the notional plus rule count and avg fixed/rate over the matching rule set.
+    usage: "Scope with params (scheme, account type, credit, …) + notional; result is one row — e.g. average fee a scheme would charge at X EUR."
+  - name: quote_by_card_scheme
+    kind: view
+    summary: Avg/min/max fee at the notional per card scheme over matching rules; ordered cheapest-first.
+    usage: "Set notional (+ optional constraints, card_scheme_filter unset); first row = cheapest scheme, `order_by avg_fee_at_notional desc` or take last for most expensive."
+  - name: quote_by_aci
+    kind: view
+    summary: Avg/min/max fee at the notional per candidate ACI (wildcard rules counted in every ACI group); ordered fee desc then ACI asc (deterministic tiebreak).
+    usage: "Leave aci_filter unset; set notional + other constraints; limit 1 for most expensive ACI (alphabetical tiebreak built in), reverse order for cheapest."
+  - name: quote_by_account_type
+    kind: view
+    summary: Avg/min/max fee at the notional per candidate account type (universe = types observed on merchants).
+    usage: "Leave account_type_filter unset; set notional; rank by avg_fee_at_notional."
+  - name: quote_by_mcc
+    kind: view
+    summary: Avg/min/max fee at the notional per candidate MCC (code + description from the reference list; wildcard rules common to all MCCs); ordered fee desc.
+    usage: "Leave mcc_filter unset; set notional; top rows = most expensive MCC(s) — report ALL rows tied on the max avg_fee_at_notional."
+  - name: quote_by_credit_scope
+    kind: view
+    summary: Avg/min/max fee at the notional grouped by the rule's own credit scope (credit / debit / any) — descriptive breakdown of the matched rule set.
+    usage: "Set notional + constraints; inspect how credit-only vs debit-only vs wildcard rules price."
+  - name: quote_summary_for_mcc_description
+    kind: view
+    summary: quote_summary restricted to rules applicable to the MCC whose reference description matches the mcc_description parameter (case-insensitive; wildcard MCC rules included).
+    usage: "MUST set mcc_description (exact reference-list description) + notional (+ e.g. card_scheme_filter, account_type_filter); returns one row."
+  - name: quote_by_card_scheme_for_mcc_description
+    kind: view
+    summary: Per-scheme avg/min/max fee at the notional for the described MCC; cheapest-first.
+    usage: "MUST set mcc_description + notional; card_scheme_filter unset; rank by avg_fee_at_notional."
+provides_for:
+  - "average-scenario scheme comparison: cheapest / most expensive card scheme at a notional value"
+  - "hypothetical fee quotes under stated constraints (account type, MCC or MCC description, credit flag, ACI, capture delay, locality, volume/fraud tiers)"
+  - "listing applicable fee rule IDs for a set of rule-field constraints (wildcards honored)"
+  - "choice-variable sweeps over ACI / MCC / account type with wildcard rules common to all groups and deterministic tiebreaks"
+  - "downstream merchant-grain fee attribution layers can reuse aci_universe / account_type_universe as candidate sets"

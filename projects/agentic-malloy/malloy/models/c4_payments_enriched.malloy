@@ -1,0 +1,80 @@
+// enriched transaction grain: joins are resolved into REAL local columns via
+// a projection so downstream fact×rule join_many can reference them in scope
+source: payments_enriched is payments_base extend {
+  join_one: merchant_info is merchants_base with merchant
+  // composite merchant-month key -> single string key on the metrics source
+  join_one: monthly is merchant_monthly_metrics
+    on concat(merchant, '|', `year`::string, '|', month_of_year::string)
+      = monthly.merchant_month_key
+} -> {
+  // * already carries payments_base columns + derived dims (transaction_date,
+  // month_of_year, is_intracountry, intracountry_num)
+  select:
+    *
+    merchant_account_type is merchant_info.account_type
+    merchant_mcc is merchant_info.merchant_category_code
+    merchant_capture_delay is merchant_info.capture_delay
+    capture_delay_bucket is merchant_info.capture_delay_bucket
+    monthly_volume_eur is monthly.monthly_volume_eur
+    monthly_fraud_ratio_pct is monthly.fraud_ratio_pct
+    volume_tier is monthly.volume_tier
+    fraud_tier is monthly.fraud_tier
+} extend {
+  primary_key: psp_reference
+
+  // projection drops upstream measures — re-declare at transaction grain
+  measure:
+    transaction_count is count()
+    total_amount is eur_amount.sum()
+    avg_amount is eur_amount.avg()
+    min_amount is eur_amount.min()
+    max_amount is eur_amount.max()
+    fraud_count is count() { where: has_fraudulent_dispute }
+    fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
+    fraud_volume_ratio is
+      eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
+    credit_share is count() { where: is_credit } / count()
+    intracountry_share is count() { where: is_intracountry } / count()
+
+  // one row per payment with EVERY fee-rule match input materialized locally
+  view: rule_match_inputs is {
+    select:
+      psp_reference, merchant, transaction_date, `year`, day_of_year,
+      month_of_year, card_scheme, aci, is_credit, eur_amount,
+      is_intracountry, intracountry_num,
+      merchant_account_type, merchant_mcc,
+      merchant_capture_delay, capture_delay_bucket,
+      monthly_volume_eur, monthly_fraud_ratio_pct, volume_tier, fraud_tier
+    order_by: psp_reference asc
+  }
+
+  view: amount_by_card_scheme is {
+    group_by: card_scheme
+    aggregate: transaction_count, total_amount, avg_amount, fraud_volume_ratio
+    order_by: total_amount desc
+  }
+
+  view: amount_by_aci is {
+    group_by: aci
+    aggregate: transaction_count, total_amount, avg_amount, credit_share
+    order_by: transaction_count desc
+  }
+
+  view: amount_by_issuing_country is {
+    group_by: issuing_country
+    aggregate: transaction_count, total_amount, avg_amount
+    order_by: avg_amount asc
+  }
+
+  view: amount_by_merchant is {
+    group_by: merchant
+    aggregate: transaction_count, total_amount, avg_amount, fraud_volume_ratio
+    order_by: total_amount desc
+  }
+
+  view: amount_by_merchant_month is {
+    group_by: merchant, month_of_year, volume_tier, fraud_tier
+    aggregate: transaction_count, total_amount, avg_amount, fraud_amount
+    order_by: merchant asc, month_of_year asc
+  }
+}

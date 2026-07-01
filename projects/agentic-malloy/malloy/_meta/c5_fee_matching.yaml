@@ -1,0 +1,73 @@
+file: c5_fee_matching.malloy
+domain: payment processing fees — matching actual transactions to fee rules and pricing them
+summary: >
+  The central fact×rule matching source: payments_enriched (one row per payment,
+  with merchant account type, MCC, capture-delay bucket, monthly volume/fraud
+  tiers, and intracountry flag materialized as local columns) fanned out via
+  join_many to every fee rule that applies, with a wildcard branch on EVERY rule
+  field (NULL scalar / empty list = applies to all). Grain after the join is
+  transaction × matching rule. Per-pair fee = fixed_amount + rate*eur_amount/10000.
+  Measures are labeled by grain: matched_transaction_count / applicable_fee_id_count
+  are distinct-key (fan-out-safe); total_fees_eur, matched_pair_count,
+  matched_amount_eur, avg_fee_per_match, total_fee_delta_at_new_rate are
+  match-grain (intentionally summed over all matching rules). Optional parameters
+  run counterfactuals by overriding one match input before rules are rematched:
+  card_scheme_override / aci_override (steer traffic sweeps — run once per
+  candidate value), merchant_mcc_override (merchant MCC change), rule_account_type_scope
+  (rule restricted to a single account type), new_rate (rate-change delta).
+exports:
+  - name: fee_matching
+    kind: source (parameterized; all params optional/null = actual data)
+    summary: Transaction×rule matched grain with fee measures and what-if override parameters.
+    usage: "run: fee_matching -> <view> + { where: merchant = 'X' and transaction_date ? @2023-10 }; for what-ifs instantiate params, e.g. fee_matching(aci_override is 'E') or fee_matching(new_rate is 99)."
+  - name: total_fees
+    kind: view
+    summary: Total fees in euros (Σ over every matched txn×rule pair) plus txn/rule counts and per-txn average.
+    usage: "Scope with where: merchant + period (transaction_date ? @2023 / @2023-12 / day_of_year = 10); add has_fraudulent_dispute for fraud-only totals; single-row answer."
+  - name: fees_per_transaction
+    kind: view
+    summary: Per-payment fee (sum over its matching rules) with the count of applicable rules.
+    usage: "Scope to merchant/period; one row per psp_reference."
+  - name: applicable_fee_ids
+    kind: view
+    summary: Distinct fee rule IDs that matched any in-scope transaction.
+    usage: "Scope where: merchant = 'X' and transaction_date ? @2023 (or a month); output is the ordered ID list."
+  - name: applicable_fee_ids_by_merchant
+    kind: view
+    summary: Merchant × applicable fee ID matrix.
+    usage: "Scope by period; use for all-merchant rule-coverage questions."
+  - name: merchants_affected
+    kind: view
+    summary: Merchants whose transactions matched the in-scope rules (inverse lookup: rule → merchants).
+    usage: "Scope where: rules.ID = <fee id> and transaction_date ? @2023; for a scope-change what-if instantiate rule_account_type_scope is 'S' first."
+  - name: total_fees_by_merchant
+    kind: view
+    summary: Total fees, transaction count, and per-transaction average per merchant.
+    usage: "Scope by period; order/limit last-mile for rankings."
+  - name: fees_by_card_scheme
+    kind: view
+    summary: Fee totals over ACTUAL traffic per card scheme (steering comparison on observed mix).
+    usage: "Scope to merchant + period; min/max row = cheapest/most expensive scheme. For an all-traffic reroute what-if, run total_fees once per fee_matching(card_scheme_override is <scheme>) and compare."
+  - name: fees_by_aci
+    kind: view
+    summary: Fee totals over actual traffic per ACI.
+    usage: "Scope to merchant + period (add has_fraudulent_dispute for fraud traffic). For ACI-steering counterfactuals run total_fees once per fee_matching(aci_override is <aci>) over the fraudulent slice and pick the minimum."
+  - name: fees_by_month
+    kind: view
+    summary: Monthly fee totals (natural months derived from day_of_year).
+    usage: "Scope to merchant/year; month_of_year is 1–12."
+  - name: rate_change_delta
+    kind: view
+    summary: Per rule ID — matched euro volume, current-rate fee total, and the fee delta if the rate changed to new_rate.
+    usage: "Instantiate fee_matching(new_rate is <r>), scope where: rules.ID = <id> and merchant/period; total_fee_delta_at_new_rate = (new_rate − rate)·Σamount/10000."
+  - name: matched_pair_detail
+    kind: view
+    summary: Raw transaction×rule match rows with the per-pair fee amount.
+    usage: "Debug/inspection surface; always scope tightly (merchant + day/rule) before selecting."
+provides_for:
+  - total fees a merchant paid in a year / month / specific day of year
+  - applicable fee IDs for a merchant over any period, and generic constraint-based rule lookups over actual traffic
+  - which merchants a given fee rule affects (and under a hypothetical account-type restriction of the rule)
+  - card-scheme steering (min/max fees) over actual per-scheme traffic or via card_scheme_override sweeps
+  - ACI steering for fraudulent traffic via aci_override sweeps over the fraud slice
+  - fee delta under a rule rate change (new_rate) and under a merchant MCC change (merchant_mcc_override)

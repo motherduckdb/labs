@@ -1,0 +1,133 @@
+##! experimental.parameters
+
+// candidate universes derived from observed data, never hardcoded literals
+source: aci_universe is payments_base -> { group_by: aci } extend {
+  primary_key: aci
+}
+
+source: account_type_universe is merchants_base -> { group_by: account_type } extend {
+  primary_key: account_type
+}
+
+source: fee_rule_quotes(
+  notional::number is null,
+  card_scheme_filter::string is null,
+  account_type_filter::string is null,
+  aci_filter::string is null,
+  mcc_filter::number is null,
+  mcc_description::string is null,
+  credit_filter::boolean is null,
+  capture_delay_filter::string is null,
+  intracountry_filter::boolean is null,
+  volume_tier_filter::string is null,
+  fraud_tier_filter::string is null
+) is fees_base(notional is notional) extend {
+
+  // fan-out joins: empty list on the rule = wildcard, matches EVERY candidate
+  join_many: mcc_opt is merchant_category_codes_base
+    on len!number(merchant_category_code) = 0
+      or list_contains!boolean(merchant_category_code, mcc_opt.mcc::number)
+  join_many: aci_opt is aci_universe
+    on len!number(aci) = 0
+      or list_contains!boolean(aci, aci_opt.aci)
+  join_many: account_type_opt is account_type_universe
+    on len!number(account_type) = 0
+      or list_contains!boolean(account_type, account_type_opt.account_type)
+
+  // every match field has a wildcard branch: NULL scalar / empty list = applies to all
+  dimension: matches_constraints is
+    (card_scheme_filter is null or card_scheme = card_scheme_filter)
+    and (account_type_filter is null or len!number(account_type) = 0
+      or list_contains!boolean(account_type, account_type_filter))
+    and (aci_filter is null or len!number(aci) = 0
+      or list_contains!boolean(aci, aci_filter))
+    and (mcc_filter is null or len!number(merchant_category_code) = 0
+      or list_contains!boolean(merchant_category_code, mcc_filter))
+    and (credit_filter is null or is_credit is null or is_credit = credit_filter)
+    and (capture_delay_filter is null or capture_delay is null
+      or capture_delay = capture_delay_filter)
+    and (intracountry_filter is null or intracountry is null
+      or intracountry = (pick 1 when intracountry_filter else 0))
+    and (volume_tier_filter is null or monthly_volume is null
+      or monthly_volume = volume_tier_filter)
+    and (fraud_tier_filter is null or monthly_fraud_level is null
+      or monthly_fraud_level = fraud_tier_filter)
+
+  // count(ID) is distinct -> safe under join_many fan-out (count() is NOT)
+  measure: matching_rule_count is count(ID)
+
+  view: matching_rules is {
+    where: matches_constraints
+    select:
+      ID, card_scheme, account_type, capture_delay, monthly_fraud_level,
+      monthly_volume, merchant_category_code, is_credit, aci,
+      fixed_amount, rate, intracountry, fee_at_notional
+    order_by: ID asc
+  }
+
+  view: quote_summary is {
+    where: matches_constraints
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional,
+      max_fee_at_notional, avg_fixed_amount, avg_rate
+  }
+
+  view: quote_by_card_scheme is {
+    where: matches_constraints
+    group_by: card_scheme
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional asc
+  }
+
+  view: quote_by_aci is {
+    where: matches_constraints
+    group_by: candidate_aci is aci_opt.aci
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional desc, candidate_aci asc
+  }
+
+  view: quote_by_account_type is {
+    where: matches_constraints
+    group_by: candidate_account_type is account_type_opt.account_type
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional desc, candidate_account_type asc
+  }
+
+  view: quote_by_mcc is {
+    where: matches_constraints
+    group_by:
+      candidate_mcc is mcc_opt.mcc_code
+      mcc_label is mcc_opt.description
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional desc, candidate_mcc asc
+  }
+
+  view: quote_by_credit_scope is {
+    where: matches_constraints
+    group_by: credit_scope
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional desc
+  }
+
+  // description-scoped variants: mcc_description param MUST be set for these
+  view: quote_summary_for_mcc_description is {
+    where: matches_constraints
+      and mcc_opt.description_lower = lower!string(mcc_description)
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+  }
+
+  view: quote_by_card_scheme_for_mcc_description is {
+    where: matches_constraints
+      and mcc_opt.description_lower = lower!string(mcc_description)
+    group_by: card_scheme
+    aggregate:
+      matching_rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional asc
+  }
+}

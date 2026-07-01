@@ -1,0 +1,46 @@
+file: c2_merchant_profile.malloy
+domain: payments fee optimization — merchant dimension
+summary: >
+  Enriched merchant dimension rooted at merchants_base. Adds the MCC description lookup
+  (join_one to the VARCHAR-coded MCC reference via numeric cast), the account-type
+  description, the capture-delay bucket ('<3'/'3-5'/'>5'/'immediate'/'manual' — the exact
+  encoding fee rules use), and an unnest-style join_many from the list-valued acquirer
+  column to the acquirer→country lookup. Grain is one merchant per row, fanning out to
+  one row per merchant×acquirer through acquirer_map. All merchant-side attributes needed
+  for fee-rule matching (account_type, merchant_category_code, capture_delay_bucket) are
+  exposed as local or aliased fields. Measures use distinct counts, so they stay correct
+  under the acquirer fan-out; do not sum base-grain quantities across acquirer_map.
+exports:
+  - name: merchant_profile
+    kind: source
+    summary: Merchant enriched with MCC description, account-type description, capture-delay bucket, and acquirer→country mapping.
+    usage: "run: merchant_profile -> merchant_attributes + { where: merchant = 'X' } for one merchant's rule-matching attributes; use dot paths (mcc_description, acquirer_map.country_code) in ad-hoc queries."
+  - name: merchant_attributes
+    kind: view
+    summary: One row per merchant with every attribute a fee rule can match on (account type, MCC + description, capture-delay bucket) plus the acquirer list as a string.
+    usage: "Filter with `where: merchant = 'X'` (or account_type / merchant_category_code) and select; no joins needed by the caller."
+  - name: merchant_acquirer_countries
+    kind: view
+    summary: One row per merchant × acquirer with the acquirer's resolved country code (unnested list).
+    usage: "Scope to a merchant to see its acquiring banks and their countries; feeds domestic/international reasoning."
+  - name: merchants_by_acquirer_country
+    kind: view
+    summary: Distinct-merchant and distinct-acquirer counts grouped by acquirer country.
+    usage: "Run as-is; safe under list fan-out (distinct counts)."
+  - name: merchants_by_mcc
+    kind: view
+    summary: Merchant counts per MCC code with its description.
+    usage: "Run as-is, or filter by mcc_description_lower for a case-insensitive category lookup."
+  - name: merchants_by_account_type
+    kind: view
+    summary: Merchant counts per account type with the human-readable description.
+    usage: "Run as-is."
+  - name: merchants_by_capture_delay_bucket
+    kind: view
+    summary: Merchant counts per fee-rule capture-delay bucket (merchant concrete values already mapped).
+    usage: "Run as-is; buckets match fees.capture_delay domain exactly."
+provides_for:
+  - "the enriched-transaction source (c3+) that materializes merchant attributes onto payments before rule matching"
+  - "applicable-fee-rule matching per merchant (account_type / MCC / capture_delay_bucket wildcards)"
+  - "MCC-description → code resolution for what-if MCC and quote questions"
+  - "acquirer-country lookups supporting domestic vs international analysis"

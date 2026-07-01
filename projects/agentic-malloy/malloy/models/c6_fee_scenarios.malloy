@@ -1,0 +1,144 @@
+##! experimental.parameters
+
+// transaction × candidate-ACI grid: cross join materialized into REAL local
+// columns so the downstream fact×rule join_many stays one join level deep
+source: fee_scenario_grid is payments_enriched extend {
+  join_cross: aci_sweep is aci_universe
+} -> {
+  select: *, candidate_aci is aci_sweep.aci
+} extend {
+  dimension: scenario_key is concat(psp_reference::string, '|', candidate_aci)
+  primary_key: scenario_key
+}
+
+source: fee_scenarios(
+  target_fee_id::number is null,           // rule ID for rate-change / affected-merchant scenarios
+  new_rate::number is null,                // counterfactual rate for target_fee_id
+  mcc_override::number is null,            // what-if: merchant had a different MCC
+  rule_account_type_scope::string is null  // what-if: rules apply ONLY to this account type
+) is fee_scenario_grid extend {
+
+  // baseline match on ACTUAL attributes; NULL scalar / empty list = wildcard on every field
+  join_many: rules_actual is fees_base(notional is null) on
+    rules_actual.card_scheme = card_scheme
+    and (len!number(rules_actual.account_type) = 0
+      or list_contains!boolean(rules_actual.account_type, merchant_account_type))
+    and (rules_actual.capture_delay is null or rules_actual.capture_delay = capture_delay_bucket)
+    and (rules_actual.monthly_fraud_level is null or rules_actual.monthly_fraud_level = fraud_tier)
+    and (rules_actual.monthly_volume is null or rules_actual.monthly_volume = volume_tier)
+    and (len!number(rules_actual.merchant_category_code) = 0
+      or list_contains!boolean(rules_actual.merchant_category_code, merchant_mcc))
+    and (rules_actual.is_credit is null or rules_actual.is_credit = is_credit)
+    and (len!number(rules_actual.aci) = 0 or list_contains!boolean(rules_actual.aci, aci))
+    // rules.intracountry is DOUBLE {0,1,NULL}; intracountry_num is the local 0/1 cast
+    and (rules_actual.intracountry is null or rules_actual.intracountry = intracountry_num)
+
+  // scenario match: ACI swept to candidate_aci; MCC / account-type scope overridable
+  join_many: rules_alt is fees_base(notional is null) on
+    rules_alt.card_scheme = card_scheme
+    and (
+      (rule_account_type_scope is null
+        and (len!number(rules_alt.account_type) = 0
+          or list_contains!boolean(rules_alt.account_type, merchant_account_type)))
+      or merchant_account_type = rule_account_type_scope
+    )
+    and (rules_alt.capture_delay is null or rules_alt.capture_delay = capture_delay_bucket)
+    and (rules_alt.monthly_fraud_level is null or rules_alt.monthly_fraud_level = fraud_tier)
+    and (rules_alt.monthly_volume is null or rules_alt.monthly_volume = volume_tier)
+    and (len!number(rules_alt.merchant_category_code) = 0
+      or list_contains!boolean(rules_alt.merchant_category_code,
+          coalesce(mcc_override, merchant_mcc)))
+    and (rules_alt.is_credit is null or rules_alt.is_credit = is_credit)
+    and (len!number(rules_alt.aci) = 0 or list_contains!boolean(rules_alt.aci, candidate_aci))
+    and (rules_alt.intracountry is null or rules_alt.intracountry = intracountry_num)
+
+  // distinct-key counts: safe under both fan-outs
+  measure: txn_count is count(psp_reference)
+  measure: baseline_fee_id_count is count(rules_actual.ID)
+  measure: scenario_fee_id_count is count(rules_alt.ID)
+
+  // match-grain sums computed at each join's locality (symmetric-agg deduped across joins)
+  measure: baseline_total_fees_eur is
+    rules_actual.sum(rules_actual.fixed_amount + rules_actual.rate * eur_amount / 10000)
+  measure: scenario_total_fees_eur is
+    rules_alt.sum(rules_alt.fixed_amount + rules_alt.rate * eur_amount / 10000)
+  measure: fee_delta_eur is scenario_total_fees_eur - baseline_total_fees_eur
+  measure: baseline_avg_fee_per_txn is baseline_total_fees_eur / txn_count
+  measure: scenario_avg_fee_per_txn is scenario_total_fees_eur / txn_count
+
+  // targeted-rule measures (scoped to target_fee_id param)
+  measure: targeted_txn_count is count(psp_reference) { where: rules_actual.ID = target_fee_id }
+  measure: scenario_targeted_txn_count is count(psp_reference) { where: rules_alt.ID = target_fee_id }
+  measure: targeted_amount_eur is
+    rules_actual.sum(eur_amount) { where: rules_actual.ID = target_fee_id }
+  measure: targeted_baseline_fees_eur is
+    rules_actual.sum(rules_actual.fixed_amount + rules_actual.rate * eur_amount / 10000)
+    { where: rules_actual.ID = target_fee_id }
+  // Σ (new_rate − rate) · amount / 10000 over pairs matched to the target rule; null unless new_rate set
+  measure: rate_change_delta_eur is
+    rules_actual.sum((new_rate - rules_actual.rate) * eur_amount / 10000)
+    { where: rules_actual.ID = target_fee_id }
+
+  // sweep views: one row per candidate ACI; scope traffic via where refinement
+  view: fraudulent_aci_sweep is {
+    where: has_fraudulent_dispute
+    group_by: candidate_aci
+    aggregate: txn_count, scenario_total_fees_eur, scenario_avg_fee_per_txn, scenario_fee_id_count
+    order_by: scenario_total_fees_eur asc, candidate_aci asc
+  }
+
+  view: fraudulent_aci_sweep_by_scheme is {
+    where: has_fraudulent_dispute
+    group_by: candidate_aci, card_scheme
+    aggregate: txn_count, scenario_total_fees_eur, scenario_avg_fee_per_txn
+    order_by: scenario_total_fees_eur asc, candidate_aci asc
+  }
+
+  view: aci_sweep is {
+    group_by: candidate_aci
+    aggregate: txn_count, scenario_total_fees_eur, scenario_avg_fee_per_txn, scenario_fee_id_count
+    order_by: scenario_total_fees_eur asc, candidate_aci asc
+  }
+
+  // candidate = actual collapses the sweep back to true transaction grain
+  view: scenario_vs_baseline is {
+    where: candidate_aci = aci
+    aggregate: txn_count, baseline_total_fees_eur, scenario_total_fees_eur, fee_delta_eur
+  }
+
+  view: scenario_vs_baseline_by_merchant is {
+    where: candidate_aci = aci
+    group_by: merchant
+    aggregate: txn_count, baseline_total_fees_eur, scenario_total_fees_eur, fee_delta_eur
+    order_by: merchant asc
+  }
+
+  view: rate_change_impact is {
+    where: candidate_aci = aci
+    aggregate: targeted_txn_count, targeted_amount_eur, targeted_baseline_fees_eur, rate_change_delta_eur
+  }
+
+  view: rate_change_impact_by_merchant is {
+    where: candidate_aci = aci
+    group_by: merchant
+    aggregate: targeted_txn_count, targeted_amount_eur, rate_change_delta_eur
+    order_by: merchant asc
+  }
+
+  // before/after merchant sets against the targeted rule (scenario = overridden scope)
+  view: target_rule_merchants_before_after is {
+    where: candidate_aci = aci
+    group_by: merchant
+    aggregate: targeted_txn_count, scenario_targeted_txn_count
+    having: targeted_txn_count > 0 or scenario_targeted_txn_count > 0
+    order_by: merchant asc
+  }
+
+  // applicable fee IDs under the scenario overrides
+  view: scenario_applicable_fee_ids is {
+    where: candidate_aci = aci and not (rules_alt.ID is null)
+    group_by: fee_id is rules_alt.ID
+    aggregate: txn_count
+    order_by: fee_id asc
+  }
+}

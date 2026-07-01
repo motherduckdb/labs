@@ -1,74 +1,75 @@
 ##! experimental.parameters
 
-// Fee ruleset. `notional` = a hypothetical transaction value (EUR) used to
-// evaluate the two-part tariff fee = fixed_amount + rate * value / 10000.
 source: fees_base(notional::number is null) is duckdb.table('fees') extend {
+  primary_key: ID
 
-  // ---- wildcard-encoding helpers (empty list = "applies to all") ----
+  // wildcard encoding: NULL scalar / empty list = rule applies to all values
   dimension:
-    applies_to_all_account_types is len!number(account_type) = 0
-    applies_to_all_mccs          is len!number(merchant_category_code) = 0
-    applies_to_all_acis          is len!number(aci) = 0
-    // scalar wildcard fields use NULL = "applies to all"
-    applies_to_all_capture_delay is capture_delay is null
-    applies_to_all_fraud_level   is monthly_fraud_level is null
-    applies_to_all_volume        is monthly_volume is null
-    applies_to_all_credit        is is_credit is null
-    applies_to_all_intracountry  is intracountry is null
+    matches_all_account_types is len!number(account_type) = 0
+    matches_all_mccs is len!number(merchant_category_code) = 0
+    matches_all_acis is len!number(aci) = 0
+    matches_all_capture_delays is capture_delay is null
+    matches_all_fraud_levels is monthly_fraud_level is null
+    matches_all_volumes is monthly_volume is null
+    matches_all_credit is is_credit is null
+    matches_all_locality is intracountry is null
 
-  // ---- readable derived dimensions ----
+  // intracountry stored as DOUBLE {0,1,NULL}
   dimension:
-    intracountry_label is pick 'domestic' when intracountry = 1
-                           pick 'international' when intracountry = 0
-                           else 'all'
-    credit_label is pick 'credit' when is_credit = true
-                      pick 'debit' when is_credit = false
-                      else 'all'
-    // number of account types / mccs / acis a rule constrains (0 = all)
-    account_type_count is len!number(account_type)
-    mcc_count is len!number(merchant_category_code)
-    aci_count is len!number(aci)
+    locality_scope is pick 'domestic' when intracountry = 1
+      pick 'international' when intracountry = 0
+      else 'any'
+    credit_scope is pick 'credit' when is_credit = true
+      pick 'debit' when is_credit = false
+      else 'any'
 
-  // ---- per-rule fee at the supplied notional transaction value ----
+  // parsed numeric bounds of tier strings (domains from data profile); null bound = unbounded
+  dimension:
+    volume_min_eur is pick 0 when monthly_volume = '<100k'
+      pick 100000 when monthly_volume = '100k-1m'
+      pick 1000000 when monthly_volume = '1m-5m'
+      pick 5000000 when monthly_volume = '>5m'
+      else null
+    volume_max_eur is pick 100000 when monthly_volume = '<100k'
+      pick 1000000 when monthly_volume = '100k-1m'
+      pick 5000000 when monthly_volume = '1m-5m'
+      else null
+    fraud_min_pct is pick 0 when monthly_fraud_level = '<7.2%'
+      pick 7.2 when monthly_fraud_level = '7.2%-7.7%'
+      pick 7.7 when monthly_fraud_level = '7.7%-8.3%'
+      pick 8.3 when monthly_fraud_level = '>8.3%'
+      else null
+    fraud_max_pct is pick 7.2 when monthly_fraud_level = '<7.2%'
+      pick 7.7 when monthly_fraud_level = '7.2%-7.7%'
+      pick 8.3 when monthly_fraud_level = '7.7%-8.3%'
+      else null
+
+  // fee = fixed + rate * value / 10000; null unless notional param supplied
   dimension:
     fee_at_notional is fixed_amount + rate * notional / 10000
 
-  // ---- measures ----
   measure:
     rule_count is count()
-    fee_id_count is count(ID)
+    avg_fixed_amount is fixed_amount.avg()
+    min_fixed_amount is fixed_amount.min()
+    max_fixed_amount is fixed_amount.max()
+    sum_fixed_amount is fixed_amount.sum()
+    avg_rate is rate.avg()
+    min_rate is rate.min()
+    max_rate is rate.max()
+    sum_rate is rate.sum()
+    avg_fee_at_notional is fee_at_notional.avg()
+    min_fee_at_notional is fee_at_notional.min()
+    max_fee_at_notional is fee_at_notional.max()
+    sum_fee_at_notional is fee_at_notional.sum()
 
-    // fixed_amount (EUR per transaction) — full aggregation set
-    total_fixed_amount is fixed_amount.sum()
-    avg_fixed_amount   is fixed_amount.avg()
-    min_fixed_amount   is fixed_amount.min()
-    max_fixed_amount   is fixed_amount.max()
-
-    // rate (variable, /10000) — full aggregation set
-    total_rate is rate.sum()
-    avg_rate   is rate.avg()
-    min_rate   is rate.min()
-    max_rate   is rate.max()
-
-    // fee at the parameterized notional value across the matching rule set
-    total_fee_at_notional is fee_at_notional.sum()
-    avg_fee_at_notional   is fee_at_notional.avg()
-    min_fee_at_notional   is fee_at_notional.min()
-    max_fee_at_notional   is fee_at_notional.max()
-
-  // ---- reusable slices ----
   view: by_card_scheme is {
     group_by: card_scheme
-    aggregate: rule_count, avg_fixed_amount, avg_rate
+    aggregate: rule_count, avg_fixed_amount, avg_rate, avg_fee_at_notional
   }
 
-  view: by_credit is {
-    group_by: credit_label
-    aggregate: rule_count, avg_fixed_amount, avg_rate
-  }
-
-  view: by_intracountry is {
-    group_by: intracountry_label
-    aggregate: rule_count, avg_fixed_amount, avg_rate
+  view: rule_detail is {
+    select: *
+    order_by: ID
   }
 }

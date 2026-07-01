@@ -1,0 +1,74 @@
+// merchant × natural-month grain: reduce payments first, then bucket into fee-rule tier strings
+source: merchant_monthly_metrics is payments_base -> {
+  group_by:
+    merchant
+    `year`
+    month_num is month_of_year
+    month_start is transaction_month
+  aggregate:
+    monthly_volume_eur is total_amount
+    monthly_fraud_volume_eur is fraud_amount
+    monthly_txn_count is transaction_count
+} extend {
+  // composite grain key -> single primary_key so later join_many dedup works
+  dimension: merchant_month_key is concat(merchant, '|', `year`::string, '|', month_num::string)
+  primary_key: merchant_month_key
+
+  // fraud level = fraudulent VOLUME / total volume (euro-weighted), expressed as percent
+  dimension: fraud_ratio_pct is monthly_fraud_volume_eur / monthly_volume_eur * 100
+
+  // labels reproduce fees.monthly_volume domain EXACTLY: {'<100k','100k-1m','1m-5m','>5m'}
+  dimension: volume_tier is
+    pick '<100k' when monthly_volume_eur < 100000
+    pick '100k-1m' when monthly_volume_eur < 1000000
+    pick '1m-5m' when monthly_volume_eur < 5000000
+    else '>5m'
+
+  // labels reproduce fees.monthly_fraud_level domain EXACTLY: {'<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'}
+  dimension: fraud_tier is
+    pick '<7.2%' when fraud_ratio_pct < 7.2
+    pick '7.2%-7.7%' when fraud_ratio_pct < 7.7
+    pick '7.7%-8.3%' when fraud_ratio_pct < 8.3
+    else '>8.3%'
+
+  measure:
+    month_count is count()
+    avg_monthly_volume_eur is monthly_volume_eur.avg()
+    min_monthly_volume_eur is monthly_volume_eur.min()
+    max_monthly_volume_eur is monthly_volume_eur.max()
+    total_volume_eur is monthly_volume_eur.sum()
+    total_fraud_volume_eur is monthly_fraud_volume_eur.sum()
+    avg_fraud_ratio_pct is fraud_ratio_pct.avg()
+    min_fraud_ratio_pct is fraud_ratio_pct.min()
+    max_fraud_ratio_pct is fraud_ratio_pct.max()
+
+  // one row per merchant-month with both raw aggregates and matched tier labels
+  view: monthly_tiers is {
+    select:
+      merchant, `year`, month_num, month_start,
+      monthly_volume_eur, monthly_fraud_volume_eur, monthly_txn_count,
+      fraud_ratio_pct, volume_tier, fraud_tier
+    order_by: merchant asc, month_num asc
+  }
+
+  view: by_merchant is {
+    group_by: merchant
+    aggregate:
+      month_count, total_volume_eur, total_fraud_volume_eur,
+      avg_monthly_volume_eur, min_monthly_volume_eur, max_monthly_volume_eur,
+      avg_fraud_ratio_pct, min_fraud_ratio_pct, max_fraud_ratio_pct
+    order_by: merchant asc
+  }
+
+  view: volume_tier_distribution is {
+    group_by: volume_tier
+    aggregate: month_count
+    order_by: month_count desc
+  }
+
+  view: fraud_tier_distribution is {
+    group_by: fraud_tier
+    aggregate: month_count
+    order_by: month_count desc
+  }
+}

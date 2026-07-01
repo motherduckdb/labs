@@ -1,15 +1,17 @@
 source: acquirer_countries_base is duckdb.table('acquirer_countries') extend {
-  measure: acquirer_count is count(acquirer)
+  primary_key: acquirer
+
+  measure: acquirer_count is count()
   measure: country_count is count(country_code)
-  measure: row_count is count()
 
   view: by_country is {
     group_by: country_code
     aggregate: acquirer_count
+    order_by: acquirer_count desc
   }
 
-  view: by_acquirer is {
-    group_by: acquirer
-    aggregate: country_count
+  view: acquirer_lookup is {
+    select: acquirer, country_code
+    order_by: acquirer
   }
 }

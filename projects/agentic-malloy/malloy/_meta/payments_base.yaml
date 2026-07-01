@@ -1,54 +1,53 @@
 file: payments_base.malloy
-domain: Payment transactions (Adyen-style acquiring dataset). Grain = one authorized transaction (psp_reference). Feeds fee-optimization, fraud, and routing analysis for 5 merchants during 2023.
+domain: payment transaction processing (per-transaction payments made through 5 merchants in 2023)
 summary: >
-  Base semantic layer over the `payments` table. One row per transaction. Adds derived
-  dimensions (calendar date/month/quarter from day_of_year, domestic vs international routing
-  from issuing vs acquirer country, ACI descriptions) and the standard aggregation set for
-  transaction value (sum/avg/min/max/count), plus credit, routing, refusal, and fraud measures.
-  Fraud rate follows the manual definition (fraudulent volume / total volume). No joins here —
-  fee-rule matching, MCC/merchant attributes, and acquirer geography live in downstream sources.
+  Base semantic source over the `payments` table, one row per transaction
+  (psp_reference). Adds calendar dimensions derived from year + day_of_year
+  (transaction_date, transaction_month, month_of_year — 2023 is non-leap),
+  the domestic/intracountry flag (issuing_country = acquirer_country, plus a
+  0/1 numeric form matching the fees.intracountry encoding), and the full set
+  of volume, fraud, refusal, and credit measures. Fraud level follows the
+  documented definition: euro-volume-weighted ratio, not a count ratio.
+  No joins — join logic and fee-rule matching belong in downstream sources.
 exports:
   - name: payments_base
     kind: source
     summary: >
-      Transaction-grain source with value/fraud/routing measures and derived time & routing
-      dimensions. Base-grain measures (total_amount, transaction_count, fraud_amount) are safe
-      to aggregate directly here; re-aggregate them only BEFORE any downstream join_many fan-out.
+      Transaction-grain source with dimensions (transaction_date,
+      transaction_month, month_of_year, is_intracountry, intracountry_num, plus
+      all raw columns: merchant, card_scheme, aci, is_credit, issuing_country,
+      acquirer_country, eur_amount, day_of_year, hour_of_day, device_type,
+      shopper_interaction, has_fraudulent_dispute, is_refused_by_adyen) and
+      measures (transaction_count, total/avg/min/max_amount, fraud_count,
+      fraud_amount, fraud_volume_ratio, fraud_count_ratio, refused_count,
+      refusal_rate, credit_count, credit_share, intracountry_count,
+      intracountry_share, merchant_count).
     usage: >
-      `run: payments_base -> { where: merchant = 'Rafa_AI' and transaction_date ? @2023-12; aggregate: total_amount, fraud_rate }`.
-      Filter time with the apply operator on transaction_date/`month` using date literals (@2023-12),
-      never string/int equality. Compose rankings last-mile with order_by + limit.
+      run: payments_base -> { where: merchant = 'X' and transaction_date ? @2023-02;
+      group_by: <dim>; aggregate: <measures> } — use `transaction_date ? @2023-03`
+      for a natural month, `day_of_year = N` for an ordinal day, ranges via
+      `? @2023-05 to @2023-07`.
   - name: by_merchant
     kind: view
-    summary: Per-merchant transaction count, total/avg value, and fraud rate.
-    usage: "`run: payments_base -> by_merchant` — refine with `+ { where: transaction_date ? @2023 }`."
+    summary: Volume, average value, and fraud level per merchant.
+    usage: "run: payments_base -> by_merchant + { where: transaction_date ? @2023-06 }"
   - name: by_card_scheme
     kind: view
-    summary: Value and fraud metrics grouped by card scheme (network).
-    usage: "`run: payments_base -> by_card_scheme + { where: merchant = 'Crossfit_Hanna' }`."
+    summary: Volume, average value, and fraud level per card scheme.
+    usage: "run: payments_base -> by_card_scheme + { where: merchant = 'X' }; order_by/limit for cheapest/biggest scheme."
   - name: by_aci
     kind: view
-    summary: Metrics grouped by ACI code with human-readable description.
-    usage: "`run: payments_base -> by_aci + { where: shopper_interaction = 'Ecommerce' }`."
-  - name: by_month
-    kind: view
-    summary: Monthly (natural calendar month) transaction metrics.
-    usage: "`run: payments_base -> by_month + { where: merchant = 'Rafa_AI' }`."
-  - name: by_issuing_country
-    kind: view
-    summary: Transaction volume and average value by issuing country.
-    usage: "`run: payments_base -> by_issuing_country + { order_by: avg_amount desc }`."
-  - name: merchant_monthly_volume
+    summary: Transaction mix per Authorization Characteristics Indicator (A–G).
+    usage: "run: payments_base -> by_aci + { where: has_fraudulent_dispute }"
+  - name: monthly_by_merchant
     kind: view
     summary: >
-      Per-merchant per-natural-month total volume, count, fraud volume and fraud rate — the base
-      for mapping merchants into monthly_volume and monthly_fraud_level fee bands downstream.
-    usage: "`run: payments_base -> merchant_monthly_volume + { where: merchant = 'Golfclub_Baron_Friso' }`."
+      Natural-month grain per merchant: total euro volume, fraudulent volume,
+      and the volume-weighted fraud ratio — the exact inputs the fee-rule
+      monthly_volume and monthly_fraud_level tiers are matched against.
+    usage: "run: payments_base -> monthly_by_merchant + { where: merchant = 'X' and transaction_month ? @2023 }"
 provides_for:
-  - Total fees paid by a merchant (transaction value + volume base, before fee-rule matching)
-  - Transaction value / average transaction value by any dimension
-  - Fraud rate and monthly fraud-level band inputs
-  - Monthly volume band inputs (merchant_monthly_volume)
-  - Domestic vs international (intracountry) routing splits
-  - Card scheme, ACI, shopper interaction, issuing/acquirer country slicing
-  - Time-period filtering (year, natural month, day-of-year via transaction_date)
+  - fee-rule matching layers that join payments to the fees rule table (per-transaction fee = fixed_amount + rate * eur_amount / 10000)
+  - merchant enrichment sources joining on the merchant name (account type, MCC, capture delay)
+  - monthly volume / fraud tier derivation for wildcard rule matching (use monthly_by_merchant)
+  - what-if / steering analyses sweeping card_scheme or aci over actual transaction sets

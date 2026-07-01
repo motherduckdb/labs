@@ -1,79 +1,70 @@
-// Central fact×rule fee source (thin top layer): each transaction fans out to
-// EVERY fee rule it satisfies (multi-rule match). Rebuilt on the enriched
-// match-key grain + the keyed `fees_rules` wrapper (both already defined in the
-// intermediate sources). Wildcard encoding: list rule field empty (len=0) OR
-// scalar rule field NULL = "applies to all"; every match field has a wildcard
-// branch. Enumeration/detail views EXCLUDE phantom unmatched left-join rows
-// (rule.ID is null) so a fee/ID column is never a NULL wildcard artifact.
-source: dabstep is c2_payments_enriched -> match_keys extend {
+##! experimental.parameters
 
-  join_many: rule is fees_rules on
-        (rule.card_scheme is null or rule.card_scheme = card_scheme)
-    and (len!number(rule.account_type) = 0
-         or list_contains!boolean(rule.account_type, account_type))
-    and (rule.capture_delay is null or rule.capture_delay = capture_delay_band)
-    and (rule.monthly_fraud_level is null
-         or rule.monthly_fraud_level = monthly_fraud_level_band)
-    and (rule.monthly_volume is null or rule.monthly_volume = monthly_volume_band)
-    and (len!number(rule.merchant_category_code) = 0
-         or list_contains!boolean(rule.merchant_category_code, merchant_category_code))
-    and (rule.is_credit is null or rule.is_credit = is_credit)
-    and (len!number(rule.aci) = 0 or list_contains!boolean(rule.aci, aci))
-    and (rule.intracountry is null or rule.intracountry = intracountry_value)
+// candidate scheme universe derived from observed data, never hardcoded
+source: card_scheme_universe is payments_base -> { group_by: card_scheme } extend {
+  primary_key: card_scheme
+}
 
-  // per (txn,rule) two-part tariff: fee = fixed_amount + rate * value / 10000
-  dimension: fee is rule.fixed_amount + rule.rate * eur_amount / 10000
+// transaction × candidate-scheme grid: cross join materialized into a REAL
+// local column so the fact×rule join_many stays one join level deep
+source: scheme_scenario_grid is payments_enriched extend {
+  join_cross: scheme_sweep_src is card_scheme_universe
+} -> {
+  select: *, candidate_scheme is scheme_sweep_src.card_scheme
+} extend {
+  dimension: scheme_scenario_key is concat(psp_reference::string, '|', candidate_scheme)
+  primary_key: scheme_scenario_key
+}
 
-  measure:
-    txn_count is count(psp_reference)          // distinct txns — safe across fan-out
-    matched_rule_count is rule.count()          // (txn,rule) fan-out grain
-    applicable_fee_id_count is rule.ID.count()  // distinct matched fee IDs
+// scheme-steering counterfactual: rematch rules with scheme swept to each
+// candidate; every rule field keeps its wildcard branch (NULL / empty list)
+source: fee_scheme_steering is scheme_scenario_grid extend {
+  join_many: rules is fees_base(notional is null) on
+    rules.card_scheme = candidate_scheme
+    and (len!number(rules.account_type) = 0
+      or list_contains!boolean(rules.account_type, merchant_account_type))
+    and (rules.capture_delay is null or rules.capture_delay = capture_delay_bucket)
+    and (rules.monthly_fraud_level is null or rules.monthly_fraud_level = fraud_tier)
+    and (rules.monthly_volume is null or rules.monthly_volume = volume_tier)
+    and (len!number(rules.merchant_category_code) = 0
+      or list_contains!boolean(rules.merchant_category_code, merchant_mcc))
+    and (rules.is_credit is null or rules.is_credit = is_credit)
+    and (len!number(rules.aci) = 0 or list_contains!boolean(rules.aci, aci))
+    // rules.intracountry is DOUBLE {0,1,NULL}; intracountry_num is local 0/1
+    and (rules.intracountry is null or rules.intracountry = intracountry_num)
 
-    total_fees is rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
-    avg_fee_per_match is rule.avg(rule.fixed_amount + rule.rate * eur_amount / 10000)
-    min_fee_per_match is min(rule.fixed_amount + rule.rate * eur_amount / 10000)
-    max_fee_per_match is max(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  // distinct-key count: safe under both the cross-join and rule fan-outs
+  measure: txn_count is count(psp_reference)
+  measure: steering_fee_id_count is count(rules.ID)
+  // match-grain: computed at rules locality, fan-out intended
+  measure: steering_total_fees_eur is
+    rules.sum(rules.fixed_amount + rules.rate * eur_amount / 10000)
+  measure: steering_avg_fee_per_txn is steering_total_fees_eur / txn_count
 
-  // ---- enumerations (null rule.ID = unmatched phantom row → excluded) ----
-  view: applicable_fee_ids is {
-    where: rule.ID is not null
-    group_by: fee_id is rule.ID
-    order_by: fee_id
+  // one row per candidate scheme; scope traffic via where refinement
+  view: scheme_sweep is {
+    group_by: candidate_scheme
+    aggregate: txn_count, steering_total_fees_eur, steering_avg_fee_per_txn, steering_fee_id_count
+    order_by: steering_total_fees_eur asc, candidate_scheme asc
   }
 
-  view: affected_merchants is {
-    where: rule.ID is not null
-    group_by: merchant
-    order_by: merchant
+  view: scheme_sweep_by_merchant is {
+    group_by: merchant, candidate_scheme
+    aggregate: txn_count, steering_total_fees_eur, steering_avg_fee_per_txn
+    order_by: merchant asc, steering_total_fees_eur asc
   }
 
-  // ---- total-fee rollups (each txn's fee summed across its matching rules) ----
-  view: total_fees_by_merchant is {
-    group_by: merchant
-    aggregate: txn_count, matched_rule_count, total_fees
-    order_by: merchant
+  view: scheme_sweep_by_month is {
+    group_by: month_of_year, candidate_scheme
+    aggregate: txn_count, steering_total_fees_eur, steering_avg_fee_per_txn
+    order_by: month_of_year asc, steering_total_fees_eur asc
   }
 
-  view: total_fees_by_merchant_month is {
-    group_by: merchant, `month`
-    aggregate: txn_count, total_fees
-    order_by: merchant, `month`
-  }
-
-  view: total_fees_by_merchant_day is {
-    group_by: merchant, day_of_year
-    aggregate: txn_count, total_fees
-    order_by: merchant, day_of_year
-  }
-
-  // ---- per (txn,rule) detail row with its fee (matched rules only) ----
-  view: transaction_rule_fees is {
-    where: rule.ID is not null
-    select:
-      psp_reference, merchant, day_of_year, `month`,
-      card_scheme, aci, eur_amount,
-      fee_id is rule.ID,
-      fee
-    order_by: psp_reference
+  // candidate = actual collapses the sweep back to true transaction grain
+  view: actual_scheme_baseline is {
+    where: candidate_scheme = card_scheme
+    group_by: card_scheme
+    aggregate: txn_count, steering_total_fees_eur, steering_avg_fee_per_txn
+    order_by: steering_total_fees_eur asc, card_scheme asc
   }
 }

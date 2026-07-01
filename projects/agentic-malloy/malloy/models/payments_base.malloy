@@ -1,84 +1,61 @@
 source: payments_base is duckdb.table('payments') extend {
+  primary_key: psp_reference
 
-  // ---- derived dimensions (NEW names only; never redefine table columns) ----
-
-  // day_of_year -> calendar date; year base built via raw DuckDB make_date
+  // year is a reserved word -> backticks; make_date needs raw escape
   dimension: transaction_date is make_date!date(`year`, 1, 1) + (day_of_year - 1) day
-  dimension: `month` is transaction_date.month
-  dimension: `quarter` is transaction_date.quarter
+  dimension: transaction_month is (make_date!date(`year`, 1, 1) + (day_of_year - 1) day).month
+  dimension: month_of_year is month(make_date!date(`year`, 1, 1) + (day_of_year - 1) day)
 
-  // domestic (intracountry) = issuer country equals acquirer country
-  dimension: is_domestic is issuing_country = acquirer_country
-  dimension: routing_type is pick 'Domestic' when is_domestic else 'International'
+  // domestic = issuer country equals acquirer country
+  dimension: is_intracountry is issuing_country = acquirer_country
+  // fees.intracountry is DOUBLE {0,1,NULL}; expose numeric form for rule matching
+  dimension: intracountry_num is pick 1 when issuing_country = acquirer_country else 0
 
-  dimension: aci_description is pick 'Card present - Non-authenticated' when aci = 'A'
-    pick 'Card Present - Authenticated' when aci = 'B'
-    pick 'Tokenized card with mobile device' when aci = 'C'
-    pick 'Card Not Present - Card On File' when aci = 'D'
-    pick 'Card Not Present - Recurring Bill Payment' when aci = 'E'
-    pick 'Card Not Present - 3-D Secure' when aci = 'F'
-    pick 'Card Not Present - Non-3-D Secure' when aci = 'G'
-    else 'Unknown'
-
-  dimension: is_ip_country_mismatch is ip_country != issuing_country
-
-  // ---- volume / value measures ----
   measure: transaction_count is count()
   measure: total_amount is eur_amount.sum()
   measure: avg_amount is eur_amount.avg()
   measure: min_amount is eur_amount.min()
   measure: max_amount is eur_amount.max()
 
-  measure: merchant_count is count(merchant)
-  measure: card_count is count(card_number)
-
-  // ---- credit / routing splits ----
-  measure: credit_count is count() { where: is_credit }
-  measure: credit_amount is eur_amount.sum() { where: is_credit }
-  measure: domestic_count is count() { where: is_domestic }
-  measure: domestic_amount is eur_amount.sum() { where: is_domestic }
-
-  // ---- fraud measures ----
   measure: fraud_count is count() { where: has_fraudulent_dispute }
   measure: fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
-  // fraud = fraudulent volume / total volume (manual definition, volume-weighted)
-  measure: fraud_rate is eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
-  measure: fraud_rate_by_count is count() { where: has_fraudulent_dispute } / count()
+  // fraud level per docs = fraudulent VOLUME / total volume (euro-weighted, not count)
+  measure: fraud_volume_ratio is eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
+  measure: fraud_count_ratio is count() { where: has_fraudulent_dispute } / count()
 
-  // ---- refusal measures ----
   measure: refused_count is count() { where: is_refused_by_adyen }
-  measure: refused_rate is count() { where: is_refused_by_adyen } / count()
+  measure: refusal_rate is count() { where: is_refused_by_adyen } / count()
 
-  // ---- reusable views ----
+  measure: credit_count is count() { where: is_credit }
+  measure: credit_share is count() { where: is_credit } / count()
+
+  measure: intracountry_count is count() { where: issuing_country = acquirer_country }
+  measure: intracountry_share is count() { where: issuing_country = acquirer_country } / count()
+
+  measure: merchant_count is count(merchant)
+
   view: by_merchant is {
     group_by: merchant
-    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+    aggregate: transaction_count, total_amount, avg_amount, fraud_volume_ratio
+    order_by: total_amount desc
   }
 
   view: by_card_scheme is {
     group_by: card_scheme
-    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+    aggregate: transaction_count, total_amount, avg_amount, fraud_volume_ratio
+    order_by: total_amount desc
   }
 
   view: by_aci is {
-    group_by: aci, aci_description
-    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
+    group_by: aci
+    aggregate: transaction_count, total_amount, avg_amount, credit_share
+    order_by: transaction_count desc
   }
 
-  view: by_month is {
-    group_by: `month`
-    aggregate: transaction_count, total_amount, avg_amount, fraud_rate
-    order_by: `month`
-  }
-
-  view: by_issuing_country is {
-    group_by: issuing_country
-    aggregate: transaction_count, total_amount, avg_amount
-  }
-
-  view: merchant_monthly_volume is {
-    group_by: merchant, `month`
-    aggregate: total_amount, transaction_count, fraud_amount, fraud_rate
-    order_by: merchant, `month`
+  // natural-month grain per merchant: input to volume/fraud tier matching
+  view: monthly_by_merchant is {
+    group_by: merchant, transaction_month
+    aggregate: transaction_count, total_amount, fraud_amount, fraud_volume_ratio
+    order_by: merchant, transaction_month
   }
 }

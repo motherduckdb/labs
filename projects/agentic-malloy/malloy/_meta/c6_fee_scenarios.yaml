@@ -1,0 +1,65 @@
+file: c6_fee_scenarios.malloy
+domain: payment processing fees — counterfactual (what-if) fee scenarios
+summary: >
+  Counterfactual layer on the fee-rule matching pipeline. fee_scenario_grid crosses every
+  enriched payment with every observed ACI (candidate universe derived from the data) so
+  candidate_aci is a real local column. fee_scenarios then carries TWO wildcard-aware rule
+  joins: rules_actual (the transaction's true attributes = baseline) and rules_alt (ACI swept
+  to candidate_aci, with optional MCC override and account-type rule-scope override).
+  Parameters: target_fee_id (which rule a rate-change / affected-merchant scenario targets),
+  new_rate (counterfactual rate), mcc_override (what-if merchant MCC), rule_account_type_scope
+  (what-if the rules only applied to one account type). All non-sweep views filter
+  candidate_aci = aci to collapse back to true transaction grain, so baseline and scenario
+  totals are directly comparable and fee_delta_eur is exact. Time/merchant scoping is done by
+  the caller via where-refinement on local columns (merchant, `year`, month_of_year,
+  day_of_year, transaction_date, has_fraudulent_dispute).
+exports:
+  - name: fee_scenario_grid
+    kind: source
+    summary: Transaction × candidate-ACI grid (7 rows per payment) with all fee-rule match inputs as local columns; plumbing for fee_scenarios.
+    usage: "Rarely queried directly; use fee_scenarios. Grain key: scenario_key = psp_reference|candidate_aci."
+  - name: fee_scenarios
+    kind: source
+    summary: Parameterized counterfactual source with baseline (rules_actual) and scenario (rules_alt) rule matches, fee totals, deltas, and targeted-rule measures.
+    usage: "run: fee_scenarios(<params by name>) -> <view> + { where: merchant = 'X' and transaction_date ? @2023 }; params default null = no override."
+  - name: fraudulent_aci_sweep
+    kind: view
+    summary: For fraudulent traffic, total/avg scenario fee per candidate ACI (rules rematched under each candidate), ordered cheapest first.
+    usage: "Scope to one merchant + period via where refinement; first row = cheapest ACI to steer fraudulent transactions to (order_by desc for most expensive)."
+  - name: fraudulent_aci_sweep_by_scheme
+    kind: view
+    summary: Same sweep broken down by candidate ACI × card scheme.
+    usage: "Scope merchant/period; use when the steering answer needs a scheme:fee breakdown."
+  - name: aci_sweep
+    kind: view
+    summary: ACI sweep over ALL scoped traffic (not just fraudulent).
+    usage: "Refine with any transaction filter; rank candidate ACIs by scenario_total_fees_eur."
+  - name: scenario_vs_baseline
+    kind: view
+    summary: Baseline vs scenario total fees and fee_delta_eur at true transaction grain (candidate=actual).
+    usage: "Set mcc_override and/or rule_account_type_scope; scope merchant + period in where; fee_delta_eur is the what-if delta."
+  - name: scenario_vs_baseline_by_merchant
+    kind: view
+    summary: Baseline/scenario/delta per merchant.
+    usage: "Same as scenario_vs_baseline but grouped by merchant."
+  - name: rate_change_impact
+    kind: view
+    summary: Fee delta if target_fee_id's rate changed to new_rate — Σ (new_rate − rate)·amount/10000 over transactions matched to that rule — plus matched amount and baseline fees for that rule.
+    usage: "run: fee_scenarios(target_fee_id is <id>, new_rate is <r>) -> rate_change_impact + { where: merchant = 'X' and month_of_year = 12 }; read rate_change_delta_eur."
+  - name: rate_change_impact_by_merchant
+    kind: view
+    summary: Rate-change delta per merchant for the targeted rule.
+    usage: "Same params as rate_change_impact; grouped by merchant."
+  - name: target_rule_merchants_before_after
+    kind: view
+    summary: Per merchant, transactions matching target_fee_id under baseline vs under the scenario overrides — the input for 'which merchants are (still/newly) affected'.
+    usage: "Set target_fee_id (+ rule_account_type_scope or mcc_override); scope period; compare targeted_txn_count vs scenario_targeted_txn_count (>0 = affected)."
+  - name: scenario_applicable_fee_ids
+    kind: view
+    summary: Distinct fee IDs applicable under the scenario overrides, with matched transaction counts.
+    usage: "Scope merchant/period; returns the applicable-fee-ID set after the override."
+provides_for:
+  - "ACI steering for fraudulent traffic: sweep candidate ACIs and pick min/max total fee"
+  - "fee delta under rule change: rate override on a specific fee ID"
+  - "merchant attribute change what-if: MCC override fee delta"
+  - "rule scope change what-if: account-type restriction and resulting affected-merchant set"

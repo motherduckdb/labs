@@ -1,41 +1,45 @@
 file: fees_base.malloy
-domain: Payment processing fee ruleset (acquirer pricing rules)
+domain: payment processing fee rules
 summary: >
-  Base semantic layer over the `fees` rule table. Each row is a fee rule
-  identified by ID that defines a two-part tariff (fixed_amount in EUR plus a
-  variable rate applied as rate * transaction_value / 10000) which applies when
-  a transaction/merchant matches the rule's characteristic filters. Rule filters
-  use wildcard semantics: list fields (account_type, merchant_category_code,
-  aci) encode "applies to all" as an EMPTY list, and scalar fields
-  (capture_delay, monthly_fraud_level, monthly_volume, is_credit, intracountry)
-  encode it as NULL. This file carries NO joins; it exposes the rule fields,
-  wildcard-detection helpers, readable labels, and the full standard
-  aggregation set over fixed_amount and rate, plus a parameterized per-rule fee
-  evaluated at a hypothetical notional transaction value. Rule-to-transaction
-  and rule-to-merchant matching lives in downstream sources that join this one.
+  Base semantic source over the fee rule table (1,000 rules, grain = one fee rule per ID).
+  Each rule prices transactions as fee = fixed_amount + rate * transaction_value / 10000 and
+  applies only where its characteristic fields (card_scheme, account_type, capture_delay,
+  monthly_fraud_level, monthly_volume, merchant_category_code, is_credit, aci, intracountry)
+  match. Wildcard semantics: a NULL scalar field or an empty list field means the rule applies
+  to ALL values of that field. Contains no joins; exposes wildcard flags, decoded scope labels,
+  parsed numeric tier bounds, and full sum/avg/min/max aggregations of fixed_amount, rate, and
+  the fee at a caller-supplied notional transaction value.
 exports:
   - name: fees_base
-    kind: source
+    kind: source (parameterized)
     summary: >
-      Fee ruleset at rule (ID) grain. Parameter `notional::number` supplies a
-      hypothetical transaction value in EUR used by the fee_at_notional
-      dimension and its measures (fee = fixed_amount + rate * notional / 10000).
-      Dimensions include wildcard flags (applies_to_all_*), readable labels
-      (credit_label, intracountry_label), and constraint counts. Measures cover
-      sum/avg/min/max of fixed_amount and rate plus fee_at_notional, and rule
-      counts.
+      Fee rule source, grain = one rule (primary_key ID). Optional parameter
+      notional::number feeds the fee_at_notional dimension and its avg/min/max/sum measures,
+      supporting hypothetical "fee for a transaction value of X EUR" quotes. Wildcard-detection
+      dimensions (matches_all_account_types, matches_all_mccs, matches_all_acis,
+      matches_all_capture_delays, matches_all_fraud_levels, matches_all_volumes,
+      matches_all_credit, matches_all_locality) expose the NULL/empty-list "applies to all"
+      encoding. locality_scope ('domestic'/'international'/'any') and credit_scope
+      ('credit'/'debit'/'any') decode the DOUBLE intracountry and nullable is_credit flags.
+      volume_min_eur/volume_max_eur and fraud_min_pct/fraud_max_pct parse the tier strings
+      into numeric bounds for matching monthly aggregates.
     usage: >
-      Call unparameterized for structural questions:
-      `run: fees_base -> by_card_scheme`. To compare rule pricing at a fixed
-      transaction value pass the notional: `run: fees_base(notional is 100) -> {
-      where: card_scheme = 'NexPay'; aggregate: avg_fee_at_notional,
-      min_fee_at_notional, max_fee_at_notional }`. Filter to a rule with
-      `where: ID = <id>`. Use applies_to_all_* flags or the list/scalar wildcard
-      encoding when reasoning about which rules apply broadly.
+      Hypothetical fee quote: `run: fees_base(notional is 1234) -> { where: card_scheme = 'X'
+      and (matches_all_acis or list_contains!boolean(aci, 'C')) and ...; aggregate:
+      avg_fee_at_notional }` — apply the wildcard branch on EVERY constrained field; leave
+      unconstrained fields unfiltered. Without the parameter, call plain `fees_base -> {...}`
+      for rule inventory/analysis.
+  - name: by_card_scheme
+    kind: view
+    summary: Rule count plus average fixed amount, rate, and fee-at-notional per card scheme.
+    usage: >
+      `run: fees_base(notional is 500) -> by_card_scheme + { where: <rule constraints> }`;
+      order by avg_fee_at_notional asc/desc, limit 1 for cheapest/most-expensive scheme.
+  - name: rule_detail
+    kind: view
+    summary: Full projection of all rule columns ordered by ID, for inspecting a specific fee rule.
+    usage: "`run: fees_base -> rule_detail + { where: ID = 384 }` to read one rule's fields."
 provides_for:
-  - Fee rule entity lookup and per-rule pricing (fixed_amount, rate)
-  - Average / min / max / total fixed_amount and rate across a rule subset
-  - Per-rule and average fee at a parameterized notional transaction value
-  - Wildcard-aware rule inspection (empty-list / NULL = applies to all)
-  - Slicing rules by card_scheme, credit vs debit, domestic vs international
-  - Base layer for downstream rule-matching joins to payments and merchants
+  - "fees.malloy / matched-fee sources: join_many fee rules against merchant+transaction attributes using the wildcard branches (matches_all_* or list_contains!boolean(...)) on every field"
+  - "total-fees-paid pipelines: per-transaction fee = fixed_amount + rate * eur_amount / 10000 computed at the matched-rule grain"
+  - "what-if scenarios: rate/scope overrides and choice-dimension sweeps (scheme, ACI, MCC) built on top of this rule universe"
