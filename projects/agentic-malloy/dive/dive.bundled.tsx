@@ -286,8 +286,9 @@ function StoryTab() {
         <p>Used as the agent’s primary answering substrate, Malloy was slower, heavier, and less accurate than
           context + SQL. When the path was obvious it could match the baseline — at a token and latency premium.
           When it wasn’t, the executable view froze the wrong interpretation while prose just adapted.</p>
-        <p style={{ marginTop: 10 }}>Here’s the part I didn’t expect: <b>models write good Malloy</b>. This layer compiles, runs, and
-          generalizes. The failure isn’t the authoring — it’s using the layer as the thinking medium. <Link onClick={go("build")}>how the layer was built</Link></p>
+        <p style={{ marginTop: 10 }}>Here’s the part I didn’t expect: <b>models write passable Malloy</b> — it compiles, runs, and
+          generalizes. Models readily synthesize SQL but struggle to make Malloy <i>dance</i>; the dominant failure here isn’t
+          authoring, it’s using the layer as the thinking medium. <Link onClick={go("build")}>how the layer was built</Link></p>
         <div style={{ marginTop: 12, padding: "10px 14px", borderLeft: `3px solid ${INK.faint}`, background: INK.panel }}>
           <span style={{ fontFamily: SANS, fontSize: 12.5, color: INK.text }}>
             <b>Scope.</b> One benchmark, one harness, one layer build — this is about Malloy <i>as an LLM substrate</i>. It
@@ -594,7 +595,7 @@ function BuildTab() {
       <Head kicker="this is not a “bad Malloy” story" title="The layer was authored by a model, not a human">
         A procedure builds it: an expensive model reads the manual, the 26 train Q/A, and the schema, then writes the
         whole layer — compile-and-execute-gated, with a repair loop, then provenance-locked. I only tune the build
-        prompt; I never hand-edit the layer files. The result is accurate Malloy that generalizes — the problem is using it.
+        prompt; I never hand-edit the layer files. The result is functional Malloy that generalizes — the problem is using it.
       </Head>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center", marginBottom: 12 }}>
         {buildFlow.map((s2, i) => (
