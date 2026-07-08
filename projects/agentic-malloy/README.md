@@ -14,19 +14,15 @@ translation is checkable.
 Full plan (phases, metrics, decisions): see the approved plan doc shared separately.
 This is **Node / TypeScript** (Malloy's native runtime).
 
-## Status — Phase-0 gate cleared
+## Status — concluded
 
-The two riskiest unknowns are proven with running code:
-
-- **Malloy runs in-process.** `@malloydata/malloy` + `@malloydata/db-duckdb` compile
-  Malloy → SQL (`getSQL()`) and execute against a local DuckDB. No sidecar.
-- **The hard fee logic is expressible in Malloy.** The 9-dimension wildcard fee match
-  (list columns where empty-list/NULL = wildcard, *all* matching rules sum) compiles
-  and runs to **29.93 — the gold answer for task 1711**.
-
-Key Malloy finding: DuckDB list functions need the raw-escape with a return-type
-annotation, e.g. `len!number(fees.aci) = 0` and `list_contains!boolean(fees.aci, aci)`;
-the match is a `join_many` with a boolean `on:`.
+The experiment is finished; the Malloy-as-LLM-substrate hypothesis is **not supported** on
+DABstep (more tokens, no accuracy gain, the layer mostly bypassed — while the model-authored
+Malloy itself is accurate and generalizes). Best held-out: **382/419 = 91.2%** (sonnet+opus,
+official) vs the markdown+SQL baseline's **418/419 = 99.8%**, at ~2.5× the prompt tokens at a
+fixed model. Full numbers, findings, and scope: **`RESULTS.md`**. The story is also a live,
+data-backed MotherDuck Dive (built from `dive/`, org-shared):
+https://app.motherduck.com/dives/malloy-vs-context-e1093927-da06-4bf1-85df-73dd476ea8b1
 
 ## Layout
 
@@ -158,12 +154,11 @@ credentials): Malloy runtime, MotherDuck MCP client, two-model author→fixer lo
 Python scoring sidecar (vendors `score.py`), Malloy file store + linter, controllog
 emitter, and the CLI (`load` / `malloy-preflight` / `evaluate` / `summary`).
 
-## What's next
+## Results & the story Dive
 
-`layer-build` is wired (`asm-malloy layer-build --model opus`): an expensive-tier
-model reads the manual + 26 train Q/A + schema and writes the real `malloy/` layer,
-then it's compile-validated with a repair loop. Needs a key to run.
-
-- Run `layer-build` to author the real layer (current `payments_base.malloy` is
-  throwaway/smoke), then first live `evaluate` → iterate to 26/26 on the train split.
-- Phase 2 (optimization) + Phase 3 (held-out) per the plan.
+The layer was built (`layer-build`, opus-authored, provenance `d7a2545e`), driven through the
+train + 419 held-out splits, optimized (PRs #71/#73/#74/#76), and concluded. See **`RESULTS.md`**
+for the verdict and the full matrix, and **`dive/`** for the data-backed story Dive:
+`dive/story-load.ts` curates the `agentic_malloy_story` MotherDuck database (every number in
+RESULTS.md is reproducible from it); `dive/bundle.mjs` builds the single-file dive; it's
+org-shared at the link above.

@@ -11,7 +11,7 @@ solutions to a non-dominant problem.
 
 - **The substrate is barely used; SQL carries the load.** Share-of-logic (authored Malloy
   chars / authored Malloy+SQL) is **config-dependent and often low** — 15% / 87% / 53%
-  across three held-out runs — and only **~12–17 of 84 layer views are ever referenced**.
+  across three held-out runs — and only **~12–17 of 83 layer views are ever referenced**.
 - **Efficiency is tapped without trading accuracy.** Every lever routes through *fewer
   turns* or *smaller prefix*; both are low-yield (the prefix is cross-task cached) or
   accuracy-costly (the author-first A/B: −24% tokens but −5.6 pts).
@@ -26,7 +26,7 @@ solutions to a non-dominant problem.
 | metric | finding | source |
 |---|---|---|
 | share-of-logic | 15% (2334Z) · 87% (1819Z) · 53% (0155Z) — **config-dependent**, often SQL-dominated | usage-report |
-| view utilization | **12–17 of 84** views ever referenced (86% dead weight) | usage-report |
+| view utilization | **12–17 of 83** views ever referenced (86% dead weight) | usage-report |
 | answer mix | sql 57% / authored 32% / view-selection 11% (2334Z) | usage-report |
 | view-selection cost | the **most expensive** answer path (99k tok vs authored 84k), **not** more accurate (91% vs 96%) | answer-path economics |
 | prompt-token composition | **static prefix 68%** (skill 4.3k + primer 2.1k + glossary 2.2k + tools ~1k), get_file 15%, list_views 10%; run_malloy/query echoes ~1–3% | per-tool token attribution |
