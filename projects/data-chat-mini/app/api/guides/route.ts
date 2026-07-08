@@ -178,6 +178,16 @@ export async function PATCH(request: NextRequest) {
   // Both the current path and any rename target must stay in the personal namespace.
   const denied = rejectNonPersonal(path, body.newPath);
   if (denied) return denied;
+  // Publishing to org-wide visibility from this unauthenticated route would let
+  // any visitor inject content into the org context layer. Block org promotion
+  // outright; visibility changes need an authenticated admin/OAuth path. Demote
+  // to 'user' (de-escalation) is still permitted.
+  if (body.access === 'organization') {
+    return Response.json(
+      { error: 'Promoting a guide to org-wide visibility requires an authenticated admin/OAuth path — this app cannot publish to the org context layer.' },
+      { status: 403 },
+    );
+  }
 
   const steps: Array<{ step: string; ok: boolean; error?: string }> = [];
 

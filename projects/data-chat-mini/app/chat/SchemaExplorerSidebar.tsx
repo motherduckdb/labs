@@ -497,28 +497,6 @@ function GuidePopover({
     }
   };
 
-  const setAccess = async (access: 'user' | 'organization') => {
-    if (!guide) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/guides', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'x-session-id': getSessionId() },
-        body: JSON.stringify({ path: guide.path, access }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) { setError(data.error || `HTTP ${res.status}`); return; }
-      const next = { ...guide, access };
-      setGuide(next);
-      onListChanged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Access change failed');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const remove = async () => {
     if (!guide) return;
     if (!window.confirm(`Delete guide "${guide.title || guide.path}"? It can be recovered from version history by an admin.`)) return;
@@ -686,8 +664,12 @@ function GuidePopover({
           {mode === 'view' && guide && (
             <>
               <button className="solid-button compact" onClick={beginEdit} disabled={busy || loading} title={loading ? 'Loading content…' : 'Edit this guide'}>Edit</button>
-              <button className="ghost-button" onClick={() => setAccess(guide.access === 'organization' ? 'user' : 'organization')} disabled={busy}>
-                {guide.access === 'organization' ? 'Make personal' : 'Promote to org-wide'}
+              <button
+                className="ghost-button"
+                disabled
+                title="Changing org-wide visibility needs an authenticated admin/OAuth path — disabled in this app."
+              >
+                {guide.access === 'organization' ? 'Org-wide (admin-managed)' : 'Promote to org-wide'}
               </button>
               {version !== null && version > 1 && (
                 <button className="ghost-button" onClick={openHistory} disabled={busy}>History</button>
