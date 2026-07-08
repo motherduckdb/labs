@@ -151,7 +151,7 @@ describe('demo validation harness', () => {
       (issue) => issue.status === 'unresolved' && (issue.severity === 'P1' || issue.severity === 'P2'),
     );
     expect(unresolvedP1P2).toEqual([]);
-  }, 60_000);
+  }, process.env.DEMO_VALIDATE_MODE === 'live' ? 480_000 : 60_000);
 });
 
 async function runDemoValidation(): Promise<DemoArtifact> {
@@ -233,18 +233,16 @@ async function runDemoValidation(): Promise<DemoArtifact> {
   record(
     'system prompt includes demo-critical behavior',
     systemPrompt.includes(CANONICAL_DB) &&
-      systemPrompt.includes('query_context_layer') &&
-      systemPrompt.includes('Step 0') &&
-      systemPrompt.includes('mandatory schema extension') &&
+      systemPrompt.includes('READ-ONLY DATA') &&
       systemPrompt.includes('Always respond after tool calls') &&
       systemPrompt.includes('NO HTML') &&
       systemPrompt.includes('Establish result grain before aggregating') &&
-      systemPrompt.includes('Keep domain rules in context') &&
+      systemPrompt.includes('Keep domain rules in guides') &&
       !systemPrompt.includes('box_scores.period') &&
       !systemPrompt.includes('FullGame') &&
       !systemPrompt.includes('NBA box-score'),
     'P2',
-    'prompt must name the selected DB, context tools, response-after-tools rule, generic grain/context guardrails, and mviz/no-HTML boundary without dataset-specific rules',
+    'prompt must name the selected DB, the read-only boundary, response-after-tools rule, generic grain/guide guardrails, and mviz/no-HTML boundary without dataset-specific rules',
   );
 
   record(
