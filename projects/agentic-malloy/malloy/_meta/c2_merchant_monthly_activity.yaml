@@ -1,0 +1,37 @@
+file: c2_merchant_monthly_activity.malloy
+domain: payments fee optimization — merchant monthly activity rollup for fee-rule matching
+summary: >
+  One row per merchant per natural calendar month, computed from payments before any
+  rule fan-out. Carries the month's total euro volume, fraudulent euro volume, and the
+  volume-weighted fraud ratio, plus the two derived bucket dimensions whose labels
+  exactly reproduce the fee rulebook's categorical domains: monthly_volume_bucket in
+  {'<100k','100k-1m','1m-5m','>5m'} and monthly_fraud_bucket in
+  {'<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'}. The primary key merchant_month_key
+  (merchant|month-date) lets an enriched payment row join_one back to its month's stats
+  so fee-rule matching on monthly_fraud_level / monthly_volume compares plain string
+  equality (with the rule's NULL wildcard branch) instead of re-parsing range strings.
+exports:
+  - name: merchant_monthly_activity
+    kind: source
+    summary: Merchant × natural-month grain (from payments year+day_of_year via txn_month); monthly volume, fraud volume, volume-weighted fraud ratio, and rule-domain bucket labels. All measures here are month-grain (safe to aggregate freely at this grain).
+    usage: "Join from an enriched payment via join_one on concat(merchant,'|',txn_month::string) = merchant_month_key; or query directly: where: merchant = 'X' and txn_month ? @2023-12, then select bucket dimensions."
+  - name: monthly_activity_detail
+    kind: view
+    summary: Flat projection of every merchant-month with volume, fraud ratio, and both rule-matching bucket labels.
+    usage: "run: merchant_monthly_activity -> monthly_activity_detail + { where: merchant = 'X' and txn_month ? @2023 }"
+  - name: by_volume_bucket
+    kind: view
+    summary: Distribution of merchant-months across the four monthly-volume rule buckets.
+    usage: "run: merchant_monthly_activity -> by_volume_bucket (optionally + { where: txn_month ? @2023 })"
+  - name: by_fraud_bucket
+    kind: view
+    summary: Distribution of merchant-months across the four monthly-fraud-level rule buckets.
+    usage: "run: merchant_monthly_activity -> by_fraud_bucket (optionally scoped by merchant or month)"
+  - name: merchant_month_matrix
+    kind: view
+    summary: Per merchant, a nested month-by-month timeline of volume and fraud buckets.
+    usage: "run: merchant_monthly_activity -> merchant_month_matrix + { where: merchant = 'X' }"
+provides_for:
+  - "fee-rule applicability matching: supplies the monthly_volume and monthly_fraud_level bucket strings a transaction's month must present to satisfy a rule's non-NULL range fields (rule NULL = wildcard branch handled at the match site)"
+  - "enriched-payment sources: join_one back via merchant_month_key to attach month-grain buckets as real columns before any join_many fan-out to the fee rulebook"
+  - "monthly volume / fraud-level reporting per merchant (natural-month boundaries reconstructed from year + day_of_year)"

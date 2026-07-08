@@ -1,61 +1,66 @@
 source: payments_base is duckdb.table('payments') extend {
   primary_key: psp_reference
 
-  // year is a reserved word -> backticks; make_date needs raw escape
-  dimension: transaction_date is make_date!date(`year`, 1, 1) + (day_of_year - 1) day
-  dimension: transaction_month is (make_date!date(`year`, 1, 1) + (day_of_year - 1) day).month
-  dimension: month_of_year is month(make_date!date(`year`, 1, 1) + (day_of_year - 1) day)
+  // year + day_of_year -> real calendar date (%j = day-of-year, needs zero-pad)
+  dimension: txn_date is
+    strptime!timestamp(concat(`year`::string, '-', lpad!string(day_of_year::string, 3, '0')), '%Y-%j')::date
+  dimension: txn_month is txn_date.month        // natural-month truncation
+  dimension: txn_month_num is month(txn_date)
 
   // domestic = issuer country equals acquirer country
   dimension: is_intracountry is issuing_country = acquirer_country
-  // fees.intracountry is DOUBLE {0,1,NULL}; expose numeric form for rule matching
-  dimension: intracountry_num is pick 1 when issuing_country = acquirer_country else 0
+  dimension: intracountry_flag is pick 1 when issuing_country = acquirer_country else 0
+  dimension: ip_country_mismatch is ip_country != issuing_country
 
   measure: transaction_count is count()
+  measure: merchant_count is count(merchant)
+  measure: card_count is count(card_number)
+  measure: shopper_count is count(email_address)
+
   measure: total_amount is eur_amount.sum()
   measure: avg_amount is eur_amount.avg()
   measure: min_amount is eur_amount.min()
   measure: max_amount is eur_amount.max()
 
+  // fraud: numerator of monthly_fraud_level is euro VOLUME, not row count
   measure: fraud_count is count() { where: has_fraudulent_dispute }
   measure: fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
-  // fraud level per docs = fraudulent VOLUME / total volume (euro-weighted, not count)
-  measure: fraud_volume_ratio is eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
-  measure: fraud_count_ratio is count() { where: has_fraudulent_dispute } / count()
+  measure: fraud_rate_by_volume is
+    eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
+  measure: fraud_rate_by_count is
+    count() { where: has_fraudulent_dispute } / count()
 
   measure: refused_count is count() { where: is_refused_by_adyen }
   measure: refusal_rate is count() { where: is_refused_by_adyen } / count()
 
   measure: credit_count is count() { where: is_credit }
   measure: credit_share is count() { where: is_credit } / count()
-
   measure: intracountry_count is count() { where: issuing_country = acquirer_country }
-  measure: intracountry_share is count() { where: issuing_country = acquirer_country } / count()
+  measure: intracountry_share is
+    count() { where: issuing_country = acquirer_country } / count()
 
-  measure: merchant_count is count(merchant)
-
-  view: by_merchant is {
-    group_by: merchant
-    aggregate: transaction_count, total_amount, avg_amount, fraud_volume_ratio
-    order_by: total_amount desc
+  // merchant x natural-month grain; inputs for monthly_volume / monthly_fraud_level bucketing
+  view: merchant_monthly_stats is {
+    group_by: merchant, txn_month
+    aggregate:
+      transaction_count
+      total_amount
+      fraud_amount
+      fraud_rate_by_volume
   }
 
   view: by_card_scheme is {
     group_by: card_scheme
-    aggregate: transaction_count, total_amount, avg_amount, fraud_volume_ratio
-    order_by: total_amount desc
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate_by_volume
   }
 
   view: by_aci is {
     group_by: aci
-    aggregate: transaction_count, total_amount, avg_amount, credit_share
-    order_by: transaction_count desc
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate_by_volume
   }
 
-  // natural-month grain per merchant: input to volume/fraud tier matching
-  view: monthly_by_merchant is {
-    group_by: merchant, transaction_month
-    aggregate: transaction_count, total_amount, fraud_amount, fraud_volume_ratio
-    order_by: merchant, transaction_month
+  view: by_merchant is {
+    group_by: merchant
+    aggregate: transaction_count, total_amount, avg_amount, fraud_rate_by_volume, refusal_rate
   }
 }

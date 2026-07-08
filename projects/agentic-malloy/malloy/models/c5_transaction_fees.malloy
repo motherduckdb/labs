@@ -1,0 +1,130 @@
+##! experimental.parameters
+
+// payments_enriched (local columns only) × fee rulebook, one join level deep.
+// new_rate / new_fixed_amount: optional counterfactual overrides for a rule's price terms.
+source: transaction_fees(
+  new_rate::number is null,
+  new_fixed_amount::number is null
+) is payments_enriched extend {
+
+  // every rule field carries its wildcard branch: empty list / NULL scalar = applies to all
+  join_many: rules is fees_base(notional is null)
+    on rules.card_scheme = card_scheme
+    and (len!number(rules.account_type) = 0
+         or list_contains!boolean(rules.account_type, account_type))
+    and (len!number(rules.merchant_category_code) = 0
+         or list_contains!boolean(rules.merchant_category_code, merchant_category_code))
+    and (len!number(rules.aci) = 0
+         or list_contains!boolean(rules.aci, aci))
+    and (rules.capture_delay is null or rules.capture_delay = capture_delay_bucket)
+    and (rules.monthly_volume is null or rules.monthly_volume = monthly_volume_bucket)
+    and (rules.monthly_fraud_level is null or rules.monthly_fraud_level = monthly_fraud_bucket)
+    and (rules.is_credit is null or rules.is_credit = is_credit)
+    // intracountry stored as 0/1 double, NULL = both
+    and (rules.intracountry is null or rules.intracountry = intracountry_flag)
+
+  // match-grain (per txn×rule pair): fee = fixed_amount + rate * eur_amount / 10000
+  // full aggregation set — sum is the "total fees paid" money number
+  measure: total_fee_amount is rules.sum(rules.fixed_amount + rules.rate * eur_amount / 10000)
+  measure: avg_fee_amount is rules.avg(rules.fixed_amount + rules.rate * eur_amount / 10000)
+  measure: min_fee_amount is min(rules.fixed_amount + rules.rate * eur_amount / 10000)
+  measure: max_fee_amount is max(rules.fixed_amount + rules.rate * eur_amount / 10000)
+
+  measure: matched_pair_count is rules.count()
+  measure: distinct_fee_id_count is count(rules.ID)
+  // base-grain counts survive fan-out via distinct keys
+  measure: matched_txn_count is count(psp_reference) { where: rules.ID is not null }
+  measure: unmatched_txn_count is count(psp_reference) { where: rules.ID is null }
+  measure: affected_merchant_count is count(merchant) { where: rules.ID is not null }
+
+  // counterfactual price override on the SAME matches (filter to one rules.ID last-mile);
+  // delta vs baseline computed in one pass, never two independent aggregates
+  measure: fee_delta_at_new_rate is rules.sum((new_rate - rules.rate) * eur_amount / 10000)
+  measure: fee_delta_at_new_fixed_amount is rules.sum(new_fixed_amount - rules.fixed_amount)
+
+  // CAUTION: inherited base-grain measures (total_amount, transaction_count, ...) are
+  // inflated by the rule fan-out on this source; use matched_txn_count / distinct counts here.
+
+  view: total_fees_summary is {
+    aggregate:
+      matched_txn_count
+      unmatched_txn_count
+      matched_pair_count
+      distinct_fee_id_count
+      total_fee_amount
+      avg_fee_amount
+      min_fee_amount
+      max_fee_amount
+  }
+
+  view: applicable_fee_ids is {
+    where: rules.ID is not null
+    group_by: fee_id is rules.ID
+    order_by: fee_id asc
+    limit: 1000
+  }
+
+  view: affected_merchants is {
+    where: rules.ID is not null
+    group_by: merchant
+    order_by: merchant asc
+    limit: 100
+  }
+
+  view: fee_ids_by_merchant is {
+    where: rules.ID is not null
+    group_by: merchant
+    aggregate: distinct_fee_id_count, matched_txn_count
+    nest: fee_ids is {
+      group_by: fee_id is rules.ID
+      order_by: fee_id asc
+      limit: 1000
+    }
+    order_by: merchant asc
+  }
+
+  view: fees_by_merchant is {
+    group_by: merchant
+    aggregate:
+      matched_txn_count
+      total_fee_amount
+      avg_fee_amount
+      min_fee_amount
+      max_fee_amount
+    order_by: merchant asc
+  }
+
+  view: fees_by_merchant_month is {
+    group_by: merchant, txn_month
+    aggregate: matched_txn_count, total_fee_amount, avg_fee_amount
+    order_by: merchant asc, txn_month asc
+  }
+
+  // fees on ACTUAL traffic split by scheme (not a rerouting counterfactual)
+  view: fees_by_scheme is {
+    group_by: card_scheme
+    aggregate: matched_txn_count, total_fee_amount, avg_fee_amount
+    order_by: total_fee_amount asc
+  }
+
+  view: fees_by_aci is {
+    group_by: aci
+    aggregate: matched_txn_count, total_fee_amount, avg_fee_amount
+    order_by: total_fee_amount asc
+  }
+
+  // one row per transaction: collapse back to base grain with the fee attached
+  view: per_transaction_fees is {
+    group_by:
+      psp_reference
+      merchant
+      txn_date
+      card_scheme
+      aci
+      is_credit
+      eur_amount
+    aggregate: matched_pair_count, total_fee_amount
+    order_by: psp_reference asc
+    limit: 10000
+  }
+}

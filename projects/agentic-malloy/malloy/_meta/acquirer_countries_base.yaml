@@ -1,26 +1,26 @@
 file: acquirer_countries_base.malloy
-domain: payment processing — acquiring banks and their countries
+domain: payments fee optimization — acquirer reference data
 summary: >
-  Base source over the acquirer_countries lookup table (8 rows, one per
-  acquirer). Maps each acquiring bank to its country_code (FR, GB, IT, NL, US),
-  which determines the acquirer country used in the domestic/intracountry vs
-  international distinction. Keyed on acquirer for join_one from merchant
-  acquirer lists. No join logic here; join elsewhere via
-  `join_one: acquirer_countries_base with <acquirer_col>` or an explicit `on`.
+  Lookup table mapping each acquiring bank (acquirer) to the country it is
+  located in (ISO-2 country_code). Grain: one row per acquirer (8 acquirers
+  across 5 countries: FR, GB, IT, NL, US). Used to resolve a merchant's
+  list-valued acquirer names to countries, e.g. to determine whether a
+  transaction is domestic (intracountry: issuing country = acquiring country).
+  No join logic here; join from a merchant/payment layer on acquirer name.
 exports:
   - name: acquirer_countries_base
     kind: source
-    summary: One row per acquirer with its country_code; primary_key acquirer. Measures count acquirers and distinct countries.
-    usage: "Filter `where: acquirer = '<name>'` and select country_code, or group_by country_code with aggregate: acquirer_count."
-  - name: by_country
+    summary: One row per acquirer with its country_code; primary_key acquirer, so other sources can `join_one: acquirer_countries_base with <acquirer_name_col>`.
+    usage: "Filter with `where: acquirer = 'gringotts'` or `country_code = 'US'`; aggregate with acquirer_count / country_count."
+  - name: acquirers_by_country
     kind: view
-    summary: Acquirer count per country_code, descending.
-    usage: "run: acquirer_countries_base -> by_country (optionally + { where: country_code = 'US' })."
-  - name: acquirer_lookup
+    summary: Count of acquirers per country, descending.
+    usage: "run: acquirer_countries_base -> acquirers_by_country (optionally + { where: country_code ? 'FR' | 'NL' })."
+  - name: acquirer_country_lookup
     kind: view
-    summary: Full acquirer → country_code mapping, alphabetical by acquirer.
-    usage: "run: acquirer_countries_base -> acquirer_lookup to list all mappings; add where: to resolve one acquirer."
+    summary: Plain acquirer → country_code listing, alphabetical by acquirer.
+    usage: "run: acquirer_countries_base -> acquirer_country_lookup + { where: acquirer ~ 'dagoberts%' } to resolve specific acquirers."
 provides_for:
-  - "join_one target (with acquirer) for merchant sources that unnest their list-valued acquirer column"
-  - "resolving an acquirer name to a country_code for intracountry (issuing_country = acquirer_country) derivations"
-  - "country-level grouping of acquirers"
+  - "merchants layer: resolve each element of merchants.acquirer (list) to a country via join_one on acquirer name"
+  - "intracountry/domestic determination: compare resolved acquirer country to a card's issuing country"
+  - "fee-rule matching: supplies acquirer-side country when evaluating the intracountry rule field"

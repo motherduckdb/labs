@@ -1,0 +1,135 @@
+##! experimental.parameters
+
+// ACI universe derived from observed payment data (fee-rule aci elements are a subset)
+source: payment_aci_universe is payments_base -> {
+  group_by: candidate_aci is aci
+} extend {
+  primary_key: candidate_aci
+}
+
+source: fee_rules(
+  notional::number is null,
+  match_card_scheme::string is null,
+  match_account_type::string is null,
+  match_mcc::number is null,
+  match_capture_delay::string is null,
+  match_volume_bucket::string is null,
+  match_fraud_bucket::string is null,
+  match_is_credit::boolean is null,
+  match_aci::string is null,
+  match_intracountry::boolean is null
+) is fees_base(notional is notional) extend {
+
+  // explode list fields against data-derived universes; wildcard [] rows do NOT fan out,
+  // so rankings cover only values that participate in a specific (non-wildcard) rule
+  join_many: aci_candidates is payment_aci_universe
+    on list_contains!boolean(aci, aci_candidates.candidate_aci)
+  join_many: mcc_candidates is merchant_category_codes_base
+    on list_contains!boolean(merchant_category_code, mcc_candidates.mcc_code)
+
+  // every match field carries its wildcard branch: NULL scalar / empty list = applies to all
+  dimension: matches_scenario is
+    (match_card_scheme is null or card_scheme = match_card_scheme)
+    and (match_account_type is null or len!number(account_type) = 0
+         or list_contains!boolean(account_type, match_account_type))
+    and (match_mcc is null or len!number(merchant_category_code) = 0
+         or list_contains!boolean(merchant_category_code, match_mcc))
+    and (match_capture_delay is null or capture_delay is null
+         or capture_delay = match_capture_delay)
+    and (match_volume_bucket is null or monthly_volume is null
+         or monthly_volume = match_volume_bucket)
+    and (match_fraud_bucket is null or monthly_fraud_level is null
+         or monthly_fraud_level = match_fraud_bucket)
+    and (match_is_credit is null or is_credit is null or is_credit = match_is_credit)
+    and (match_aci is null or len!number(aci) = 0
+         or list_contains!boolean(aci, match_aci))
+    // intracountry stored as 0/1 double, NULL = both
+    and (match_intracountry is null or intracountry is null
+         or (match_intracountry and intracountry = 1)
+         or (not match_intracountry and intracountry = 0))
+
+  measure: matching_rule_count is count() { where: matches_scenario }
+
+  view: applicable_rule_ids is {
+    where: matches_scenario
+    group_by: ID
+    order_by: ID asc
+    limit: 1000
+  }
+
+  view: applicable_rule_detail is {
+    where: matches_scenario
+    select:
+      ID, card_scheme, account_type, capture_delay, monthly_fraud_level,
+      monthly_volume, merchant_category_code, is_credit, aci,
+      fixed_amount, rate, intracountry, fee_at_notional
+    order_by: ID asc
+    limit: 1000
+  }
+
+  view: scenario_fee_summary is {
+    where: matches_scenario
+    aggregate:
+      rule_count, avg_fixed_amount, avg_rate,
+      avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+  }
+
+  // ties share cheapest_rank = 1; caller may add an alphabetical tiebreak last-mile
+  view: scheme_fee_ranking is {
+    where: matches_scenario
+    group_by: card_scheme
+    aggregate: rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    calculate: cheapest_rank is rank()
+    order_by: avg_fee_at_notional asc
+  }
+
+  view: scheme_fee_ranking_desc is {
+    where: matches_scenario
+    group_by: card_scheme
+    aggregate: rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    calculate: most_expensive_rank is rank()
+    order_by: avg_fee_at_notional desc
+  }
+
+  // len>0 excludes wildcard rules (no distinguishing signal); base-grain measures stay
+  // correct under the fan-out via the ID primary key (symmetric aggregates)
+  view: aci_fee_ranking is {
+    where: matches_scenario and len!number(aci) > 0
+      and aci_candidates.candidate_aci is not null
+    group_by: aci_candidates.candidate_aci
+    aggregate: rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    calculate: cheapest_rank is rank()
+    order_by: avg_fee_at_notional asc
+  }
+
+  view: aci_fee_ranking_desc is {
+    where: matches_scenario and len!number(aci) > 0
+      and aci_candidates.candidate_aci is not null
+    group_by: aci_candidates.candidate_aci
+    aggregate: rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    calculate: most_expensive_rank is rank()
+    order_by: avg_fee_at_notional desc
+  }
+
+  view: mcc_fee_ranking is {
+    where: matches_scenario and len!number(merchant_category_code) > 0
+      and mcc_candidates.mcc is not null
+    group_by:
+      mcc_code is mcc_candidates.mcc_code
+      mcc_description is mcc_candidates.description
+    aggregate: rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    calculate: cheapest_rank is rank()
+    order_by: avg_fee_at_notional asc
+  }
+
+  view: mcc_fee_ranking_desc is {
+    where: matches_scenario and len!number(merchant_category_code) > 0
+      and mcc_candidates.mcc is not null
+    group_by:
+      mcc_code is mcc_candidates.mcc_code
+      mcc_description is mcc_candidates.description
+    aggregate: rule_count, avg_fee_at_notional, min_fee_at_notional, max_fee_at_notional
+    calculate: most_expensive_rank is rank()
+    order_by: avg_fee_at_notional desc
+  }
+}

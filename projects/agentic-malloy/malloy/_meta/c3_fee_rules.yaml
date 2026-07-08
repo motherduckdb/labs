@@ -1,0 +1,66 @@
+file: c3_fee_rules.malloy
+domain: payment-processing fee rulebook analytics (rule-side only; no payment joins)
+summary: >
+  Parameterized view of the 1000-row fee rulebook for "average scenario" / notional-fee
+  analysis. fee_rules(notional, match_*) filters rules with FULL wildcard semantics
+  (NULL scalar or empty [] list = applies to all): pass any subset of match_card_scheme,
+  match_account_type, match_mcc (numeric code), match_capture_delay (rule bucket string),
+  match_volume_bucket ('<100k'|'100k-1m'|'1m-5m'|'>5m'), match_fraud_bucket
+  ('<7.2%'|'7.2%-7.7%'|'7.7%-8.3%'|'>8.3%'), match_is_credit, match_aci,
+  match_intracountry, and every view/measure restricts to rules matching that scenario
+  (wildcard rules included). notional feeds fee_at_notional = fixed_amount + rate*notional/10000.
+  ACI and MCC rankings explode the list-valued rule fields against data-derived universes
+  (payments' observed ACIs; the MCC catalog), so only values named by a specific
+  (non-wildcard) rule participate; base-grain measures stay correct under the fan-out
+  via the ID primary key. Rankings expose rank() so ties are visible (rank = 1 lists all
+  tied winners); apply any alphabetical tiebreak last-mile.
+exports:
+  - name: payment_aci_universe
+    kind: source
+    summary: Distinct ACI values observed in payments (universe scaffold for ACI ranking; primary_key candidate_aci).
+    usage: "run: payment_aci_universe -> { group_by: candidate_aci }"
+  - name: fee_rules
+    kind: source
+    summary: Rulebook (grain = one fee rule) with matches_scenario wildcard predicate, matching_rule_count, and exploding joins to ACI/MCC candidate universes. Inherits fees_base measures (avg/min/max fee_at_notional, avg_rate, ...).
+    usage: "run: fee_rules(notional is 100, match_card_scheme is 'GlobalCard', match_is_credit is true) -> <view>; leave a match_* null to not constrain that field."
+  - name: applicable_rule_ids
+    kind: view
+    summary: Ordered list of fee IDs matching the scenario parameters (wildcard rules included).
+    usage: "fee_rules(match_account_type is 'D', match_aci is 'F') -> applicable_rule_ids"
+  - name: applicable_rule_detail
+    kind: view
+    summary: Full rule rows (all match fields + fixed_amount, rate, fee_at_notional) for the scenario.
+    usage: "fee_rules(notional is 50, match_mcc is 5812) -> applicable_rule_detail"
+  - name: scenario_fee_summary
+    kind: view
+    summary: One-row rule_count + avg/min/max fee at the notional over matching rules — the 'average fee a scheme would charge for X EUR' number.
+    usage: "fee_rules(notional is 1000, match_card_scheme is 'NexPay', match_is_credit is true) -> scenario_fee_summary; read avg_fee_at_notional"
+  - name: scheme_fee_ranking
+    kind: view
+    summary: Card schemes ranked cheapest-first by average fee at the notional (cheapest_rank; ties share rank 1).
+    usage: "fee_rules(notional is 50) -> scheme_fee_ranking + { limit: 1 } for the cheapest scheme"
+  - name: scheme_fee_ranking_desc
+    kind: view
+    summary: Card schemes ranked most-expensive-first (most_expensive_rank).
+    usage: "fee_rules(notional is 4321) -> scheme_fee_ranking_desc + { limit: 1 }"
+  - name: aci_fee_ranking
+    kind: view
+    summary: ACIs ranked cheapest-first by average fee at the notional over rules that name the ACI specifically (wildcard-aci rules excluded from the ranking universe).
+    usage: "fee_rules(notional is 100, match_card_scheme is 'GlobalCard', match_is_credit is true) -> aci_fee_ranking; leave match_aci null"
+  - name: aci_fee_ranking_desc
+    kind: view
+    summary: Same universe, most-expensive-first; filter most_expensive_rank = 1 to list ties, break alphabetically last-mile.
+    usage: "fee_rules(notional is 100, match_card_scheme is 'GlobalCard', match_is_credit is true) -> aci_fee_ranking_desc + { order_by: avg_fee_at_notional desc, candidate_aci asc }"
+  - name: mcc_fee_ranking
+    kind: view
+    summary: MCC codes (with catalog description) ranked cheapest-first over rules that list the MCC specifically.
+    usage: "fee_rules(notional is 50000) -> mcc_fee_ranking"
+  - name: mcc_fee_ranking_desc
+    kind: view
+    summary: MCC codes most-expensive-first; all rows with most_expensive_rank = 1 are the tied most-expensive MCCs.
+    usage: "fee_rules(notional is 50000) -> mcc_fee_ranking_desc; keep rows where most_expensive_rank = 1"
+provides_for:
+  - "average-scenario fee comparison at any notional amount, by scheme / ACI / MCC, with tie handling"
+  - "rulebook-side applicability lookups (which fee IDs match a set of merchant/transaction attributes) with correct wildcard semantics"
+  - "downstream transaction-level fee matching layers, which reuse the same wildcard predicate shape against enriched payment rows"
+  - "counterfactual restriction analysis: override one attribute via a match_* parameter and diff applicable_rule_ids"

@@ -1,33 +1,40 @@
 file: merchant_category_codes_base.malloy
-domain: payment processing — merchant category code (MCC) reference list
+domain: Payment processing — Merchant Category Code (MCC) reference lookup
 summary: >
-  Base source over the MCC reference table (769 rows, one per four-digit merchant
-  category code). Each row maps an MCC to a text description of the business type.
-  mcc is stored as VARCHAR here but as BIGINT in merchants and inside fee-rule MCC
-  lists, so the source exposes mcc_code (numeric cast) as the join/match key.
-  No join logic; measures and dimensions only.
+  Base source over the merchant_category_codes lookup table (769 rows, one row
+  per four-digit MCC). Maps each MCC to its textual business-type description.
+  mcc is stored as VARCHAR here but as BIGINT/INT elsewhere in the domain, so
+  the source exposes mcc_code (numeric cast) as the join-ready key. No joins;
+  intended as the description→code resolution surface for fee-rule and merchant
+  analyses.
 exports:
   - name: merchant_category_codes_base
     kind: source
     summary: >
-      One row per MCC. Dimensions: mcc (VARCHAR, primary key), mcc_code (numeric
-      cast for matching merchants.merchant_category_code / fees.merchant_category_code
-      lists), mcc_category_prefix (first two digits = broad industry category),
-      description, description_lower (for case-insensitive lookup). Measures:
-      mcc_count, min_mcc_code, max_mcc_code.
+      One row per MCC. Dimensions: mcc (VARCHAR code, primary key), mcc_code
+      (numeric cast for joining to BIGINT mcc columns), mcc_category_prefix
+      (first two digits = broad industry category), description,
+      description_upper (case-insensitive matching). Measures: code_count,
+      distinct counts of mcc/description/prefix, and the full sum/avg/min/max
+      set over mcc_code.
     usage: >
-      Description-to-code lookup: `run: merchant_category_codes_base -> { where:
-      description_lower ~ '%eating places%'; select: mcc_code, description }`;
-      use the returned mcc_code for list_contains matching against fee rules.
+      Resolve a business description to its numeric code with
+      `where: description ~ '%<term>%'` (or description_upper for
+      case-insensitive) then select mcc_code; use mcc_code when comparing
+      against fee-rule or merchant MCC lists (which are numeric).
   - name: all_codes
     kind: view
-    summary: Full ordered listing of mcc_code + description (the complete MCC domain).
-    usage: "`run: merchant_category_codes_base -> all_codes` (optionally refine with `+ { where: description ~ '%HOTEL%' }`)."
+    summary: Full catalog projection — mcc, mcc_code, description — ordered by code.
+    usage: "run: merchant_category_codes_base -> all_codes (optionally + { where: mcc_category_prefix = '58' })."
   - name: by_category_prefix
     kind: view
-    summary: Count of MCCs per two-digit category prefix (broad industry grouping).
-    usage: "`run: merchant_category_codes_base -> by_category_prefix`."
+    summary: Count of codes and code range per two-digit category prefix.
+    usage: "run: merchant_category_codes_base -> by_category_prefix; filter with `where:` on prefix if needed."
+  - name: description_lookup
+    kind: view
+    summary: Description-first listing for resolving a textual business category to its MCC.
+    usage: "run: merchant_category_codes_base -> description_lookup + { where: description_upper ~ '%HOTEL%' } to get the code(s) for a described business type."
 provides_for:
-  - "merchants source: enrich merchants.merchant_category_code (BIGINT) with descriptions via join_one on mcc_code"
-  - "fee-rule matching: resolve a user-stated business category description to its numeric MCC before list_contains matching against fees.merchant_category_code"
-  - "MCC what-if scenarios: enumerate candidate MCCs (value universe) for merchant-attribute-change counterfactuals"
+  - Resolving MCC descriptions referenced by name in fee questions to numeric codes (cast VARCHAR→number via mcc_code)
+  - Joining as a dimension (join_one with primary_key mcc, or on mcc_code) from merchants/fees models to label MCCs
+  - Membership checks against fee-rule merchant_category_code lists using the numeric mcc_code

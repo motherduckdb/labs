@@ -1,50 +1,59 @@
 file: c4_payments_enriched.malloy
-domain: payments fee optimization
+domain: payments fee optimization — transaction fact enriched with every fee-rule matching attribute
 summary: >
-  Transaction-grain source (one row per payment, 2023) with every fee-rule
-  match input materialized as a REAL local column: card_scheme, aci,
-  is_credit, intracountry flag (boolean + 0/1 numeric matching
-  fees.intracountry encoding), merchant account_type, merchant MCC,
-  capture-delay bucket (merchant setting mapped to the fee-rule bucket
-  domain '<3'/'3-5'/'>5'/'immediate'/'manual'), and the merchant's
-  natural-month volume/fraud tier strings (exact fees.monthly_volume /
-  fees.monthly_fraud_level domains) plus raw monthly EUR volume and fraud
-  ratio. Built via join_one to merchants_base and merchant_monthly_metrics
-  then projected, so downstream fact×rule join_many predicates reference
-  only local columns (one join level deep). Also carries period dimensions
-  (transaction_date, month_of_year, day_of_year) and transaction reporting
-  measures/views.
+  Transaction-grain source (one row per payment, 138,236 rows, primary key psp_reference)
+  built as a PROJECTION of payments_base joined to merchant_dimensions (account type, MCC +
+  description, capture-delay bucket) and merchant_monthly_activity (natural-month volume and
+  fraud buckets in the exact fee-rule range-string domains). Because the projection
+  materializes these joined attributes as REAL local columns, a downstream fee-rule source can
+  join_many against fees referencing ONLY local columns (keeping the fan-out one join level
+  deep). Also carries calendar dimensions (txn_date/txn_month from year+day_of_year), the
+  domestic/intracountry flag, and the standard base-grain measure set (counts, sum/avg/min/max
+  of eur_amount, fraud rate by volume and by count, credit/intracountry/refusal shares).
 exports:
   - name: payments_enriched
     kind: source
-    summary: Payment grain enriched with merchant + monthly-tier rule-match inputs; primary_key psp_reference; base-grain measures (transaction_count, total/avg/min/max amount, fraud count/amount/volume ratio, credit and intracountry shares).
-    usage: "run: payments_enriched -> { where: merchant = 'X' and transaction_date ? @2023-12; aggregate: total_amount }; filter periods with transaction_date ? @2023-… or day_of_year = N."
-  - name: rule_match_inputs
+    summary: >
+      Transaction grain with local rule-matching columns: card_scheme, aci, is_credit,
+      intracountry_flag (0/1) / is_intracountry (bool), account_type, merchant_category_code,
+      mcc_description, capture_delay + capture_delay_bucket ('<3','3-5','>5','immediate','manual'),
+      monthly_volume_bucket ('<100k','100k-1m','1m-5m','>5m'), monthly_fraud_bucket
+      ('<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'), plus txn_date/txn_month time scoping and
+      base-grain measures. All measures are base-grain (no fan-out inside this source).
+    usage: "run: payments_enriched -> { where: merchant = 'X' and txn_month ? @2023-12; aggregate: total_amount, transaction_count }"
+  - name: rule_matching_inputs
     kind: view
-    summary: One row per payment with all fee-rule matching attributes (scheme, aci, credit, intracountry_num, account type, MCC, capture-delay bucket, volume/fraud tier) plus amount and period fields.
-    usage: "run: payments_enriched -> rule_match_inputs + { where: merchant = 'X' and month_of_year = 10; limit: 100 }"
-  - name: amount_by_card_scheme
+    summary: One row per transaction with the full attribute vector the fee-rule wildcard predicate consumes (scheme, ACI, credit, intracountry flag, account type, MCC, capture/volume/fraud buckets, eur_amount, date).
+    usage: "run: payments_enriched -> rule_matching_inputs + { where: merchant = 'X' and txn_date ? @2023-10 }"
+  - name: avg_value_by_issuing_country
     kind: view
-    summary: Transaction count, total/avg amount, fraud volume ratio per card scheme.
-    usage: "run: payments_enriched -> amount_by_card_scheme + { where: merchant = 'X' and transaction_date ? @2023-05 to @2023-07 }"
-  - name: amount_by_aci
+    summary: Average/total transaction value and counts grouped by issuing country, ascending by average amount.
+    usage: "run: payments_enriched -> avg_value_by_issuing_country + { where: merchant = 'X' and card_scheme = 'NexPay' and txn_date ? @2023-05 to @2023-07 }"
+  - name: avg_value_by_scheme
     kind: view
-    summary: Transaction count, total/avg amount, credit share per ACI.
-    usage: "scope with where: (merchant, period, has_fraudulent_dispute) then read counts/amounts per aci"
-  - name: amount_by_issuing_country
+    summary: Transaction count, volume, average value and volume-weighted fraud rate per card scheme.
+    usage: "filter to a merchant/period with where:, read avg_amount / total_amount per scheme"
+  - name: avg_value_by_aci
     kind: view
-    summary: Count, total and average transaction value per issuing country, sorted ascending by avg.
-    usage: "run: payments_enriched -> amount_by_issuing_country + { where: merchant = 'X' and card_scheme = 'NexPay' and transaction_date ? @2023-05 to @2023-07 }"
-  - name: amount_by_merchant
+    summary: Transaction count, volume, average value and fraud rate per ACI.
+    usage: "run: payments_enriched -> avg_value_by_aci + { where: merchant = 'X' }"
+  - name: avg_value_by_merchant
     kind: view
-    summary: Volume/count/avg/fraud ratio per merchant.
-    usage: "optionally scope to a period, then rank by total_amount"
-  - name: amount_by_merchant_month
+    summary: Per-merchant traffic profile — count, volume, avg value, fraud rate, refusal rate.
+    usage: "run: payments_enriched -> avg_value_by_merchant + { where: txn_date ? @2023 }"
+  - name: merchant_scheme_mix
     kind: view
-    summary: Merchant × natural-month rollup carrying the matched volume/fraud tier labels.
-    usage: "run: payments_enriched -> amount_by_merchant_month + { where: merchant = 'X' }"
+    summary: Merchant × scheme traffic split with credit and domestic shares (baseline for scheme-steering comparisons).
+    usage: "scope to one merchant + period, compare schemes"
+  - name: fraudulent_transaction_profile
+    kind: view
+    summary: Fraud-flagged transactions grouped at the attribute grain (merchant, scheme, ACI, credit, domestic) with count/volume — the population re-matched in ACI-steering counterfactuals.
+    usage: "run: payments_enriched -> fraudulent_transaction_profile + { where: merchant = 'X' and txn_month ? @2023-02 }"
+  - name: monthly_traffic
+    kind: view
+    summary: Merchant × natural-month rollup carrying the volume/fraud bucket labels alongside count, volume and fraud volume.
+    usage: "filter merchant/period; read bucket labels used by fee-rule matching for that month"
 provides_for:
-  - "fact×rule fee matching: join_many fees onto this source's LOCAL columns (merchant_account_type, merchant_mcc, capture_delay_bucket, volume_tier, fraud_tier, aci, card_scheme, is_credit, intracountry_num) with wildcard branches"
-  - "per-merchant / per-period fee totals and applicable-fee-ID sets (downstream matched source)"
-  - "counterfactual sweeps (ACI override, scheme steering, MCC change) re-using the same materialized match inputs"
-  - "reporting: average/total transaction value by scheme, ACI, issuing country, merchant, month"
+  - "c5 fee-matching source: join_many fees onto payments_enriched using ONLY its local columns (card_scheme, aci, is_credit, intracountry_flag, account_type, merchant_category_code, capture_delay_bucket, monthly_volume_bucket, monthly_fraud_bucket) with a wildcard branch per field"
+  - "total-fees-paid, fee-delta (rate override / attribute change), applicable-fee-ID, affected-merchant and scheme/ACI steering surfaces, all scoped by merchant + txn_date/txn_month filters on this source"
+  - "average-transaction-value slicing by issuing country / scheme / ACI / merchant with period filters"

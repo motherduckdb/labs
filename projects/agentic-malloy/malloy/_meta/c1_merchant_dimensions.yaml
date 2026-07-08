@@ -1,0 +1,42 @@
+file: c1_merchant_dimensions.malloy
+domain: payments fee optimization — merchant dimension enrichment
+summary: >
+  Merchant profile source (grain: one row per merchant, fanned to merchant x acquirer
+  through the acquirer list). Extends merchants_base with (1) the MCC description via a
+  VARCHAR-cast join to merchant_category_codes_base and (2) acquirer geography via a
+  list_contains join_many to acquirer_countries_base. Surfaces every merchant-side
+  attribute the fee rule-matching predicate consumes: account_type, merchant_category_code
+  (+ description), and the rule-grain capture_delay_bucket ('<3'/'3-5'/'>5'/'immediate'/'manual'
+  derived from the merchant's concrete setting).
+exports:
+  - name: merchant_dimensions
+    kind: source
+    summary: >
+      merchants_base + mcc_lookup (join_one, mcc description) + acquirer_geo (join_many,
+      acquirer -> country). distinct_merchant_count is count(distinct) and safe across the
+      acquirer fan-out; merchant_acquirer_pair_count counts fanned rows.
+    usage: "run: merchant_dimensions -> { where: merchant = 'X'; select: ... } or use a named view; qualify acquirer fields as acquirer_geo.*"
+  - name: rule_matching_attributes
+    kind: view
+    summary: One row per merchant with account_type, MCC (code + description), capture_delay setting, and the rule-grain capture_delay_bucket — the exact inputs to fee-rule applicability.
+    usage: "run: merchant_dimensions -> rule_matching_attributes + { where: merchant = 'Rafa_AI' }"
+  - name: by_mcc_with_description
+    kind: view
+    summary: Distinct merchant counts per MCC with its textual description.
+    usage: "run: merchant_dimensions -> by_mcc_with_description"
+  - name: by_account_type_described
+    kind: view
+    summary: Distinct merchant counts per account type with its long-form description.
+    usage: "run: merchant_dimensions -> by_account_type_described"
+  - name: acquirer_geography
+    kind: view
+    summary: Per merchant, the nested list of its acquirers and each acquirer's country.
+    usage: "run: merchant_dimensions -> acquirer_geography + { where: merchant = 'X' }"
+  - name: merchants_by_acquirer_country
+    kind: view
+    summary: How many merchants (distinct) use an acquirer in each country, plus raw merchant-acquirer pair counts.
+    usage: "run: merchant_dimensions -> merchants_by_acquirer_country"
+provides_for:
+  - Enriched-payments source (materialize account_type, merchant_category_code, capture_delay_bucket as real local columns before the fee-rule join_many)
+  - MCC-description-driven fee lookups (resolve description -> code via mcc_lookup)
+  - Local-acquiring / domestic-vs-international analysis (merchant acquirer countries vs payments.acquirer_country)

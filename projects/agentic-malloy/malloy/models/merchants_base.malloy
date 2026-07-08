@@ -1,32 +1,35 @@
 source: merchants_base is duckdb.table('merchants') extend {
   primary_key: merchant
 
-  // fee rules bucket capture delay as '<3'/'3-5'/'>5'/'immediate'/'manual';
-  // merchants store concrete values ('1','2','7','immediate','manual') — map before matching
+  // rule-grain bucket for fee matching: numeric days -> range strings
+  // :::number safe-cast returns NULL for 'immediate'/'manual' (guarded earlier)
   dimension: capture_delay_bucket is
     pick 'immediate' when capture_delay = 'immediate'
     pick 'manual' when capture_delay = 'manual'
-    pick '<3' when capture_delay::number < 3
-    pick '3-5' when capture_delay::number <= 5
+    pick '<3' when capture_delay:::number < 3
+    pick '3-5' when capture_delay:::number <= 5
     else '>5'
 
-  dimension: account_type_description is account_type ?
-    pick 'Enterprise - Retail' when 'R'
-    pick 'Enterprise - Digital' when 'D'
-    pick 'Enterprise - Hospitality' when 'H'
-    pick 'Platform - Franchise' when 'F'
-    pick 'Platform - SaaS' when 'S'
-    pick 'Other' when 'O'
-    else 'Unknown'
+  dimension: account_type_description is
+    pick 'Enterprise - Retail' when account_type = 'R'
+    pick 'Enterprise - Digital' when account_type = 'D'
+    pick 'Enterprise - Hospitality' when account_type = 'H'
+    pick 'Platform - Franchise' when account_type = 'F'
+    pick 'Platform - SaaS' when account_type = 'S'
+    else 'Other'
 
-  // acquirer is a LIST column; len!number for size, list_contains!boolean for membership
+  // acquirer is a list column; len!number is the raw escape for list length
   dimension: acquirer_count is len!number(acquirer)
   dimension: has_multiple_acquirers is len!number(acquirer) > 1
-  // stable string form for grouping/display of the acquirer list
-  dimension: acquirer_list is array_to_string!string(acquirer, ', ')
+  dimension: mcc_string is merchant_category_code::string
 
   measure: merchant_count is count()
-  measure: avg_acquirers_per_merchant is avg(len!number(acquirer))
+  measure: account_type_count is count(account_type)
+  measure: mcc_count is count(merchant_category_code)
+  measure: capture_delay_setting_count is count(capture_delay)
+  measure: avg_acquirer_count is avg(len!number(acquirer))
+  measure: min_acquirer_count is min(len!number(acquirer))
+  measure: max_acquirer_count is max(len!number(acquirer))
 
   view: by_account_type is {
     group_by: account_type, account_type_description
@@ -46,8 +49,16 @@ source: merchants_base is duckdb.table('merchants') extend {
     order_by: merchant_count desc
   }
 
-  view: merchant_detail is {
-    select: merchant, account_type, merchant_category_code,
-      capture_delay, capture_delay_bucket, acquirer_list
+  view: merchant_profile is {
+    select:
+      merchant
+      account_type
+      account_type_description
+      merchant_category_code
+      capture_delay
+      capture_delay_bucket
+      acquirer
+      acquirer_count
+    order_by: merchant
   }
 }

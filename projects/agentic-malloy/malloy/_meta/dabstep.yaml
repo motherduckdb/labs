@@ -1,45 +1,59 @@
 file: dabstep.malloy
-domain: payment processing fees — merchant transactions matched against wildcard fee rules
+domain: payments fee optimization — merchants, transactions, and a wildcard-encoded fee rulebook
 summary: >
-  Thin top layer completing the semantic stack. Adds the card-scheme steering
-  counterfactual (the one sweep the intermediates did not cover): a
-  transaction × candidate-scheme grid rematched against the fee-rule table so
-  "which scheme minimizes/maximizes a merchant's fees in a period" is a single
-  filtered view. All other question shapes are already served by the
-  intermediates: fee_rule_quotes (hypothetical/average-scenario fees at a
-  notional value, sweeps over scheme/ACI/MCC/account type/credit),
-  fee_matching (actual per-transaction rule matching: total fees paid,
-  applicable fee IDs, merchants affected, rate-change deltas, MCC/account-type
-  overrides), fee_scenarios (ACI-steering sweeps for fraudulent traffic,
-  targeted-rule before/after merchant sets), merchant_profile,
-  merchant_monthly_metrics, and payments_enriched (plain transaction analytics).
+  Thin top-level surface over the intermediate layer. fee_rulebook is the hypothetical/
+  notional-fee surface (fee = fixed_amount + rate * notional / 10000 per rule) with a
+  non-null default notional of 100 EUR so its rankings always compute; every match_*
+  parameter narrows the matching rule set with full wildcard semantics (NULL scalar /
+  empty list = applies to all). merchant_fees is the actual-traffic surface: each
+  transaction of payments_enriched fanned against every matching fee rule
+  (transaction_fees), with totals, applicable fee IDs, affected merchants, and rate/
+  fixed-amount override deltas. Counterfactual re-matching (scheme steering, ACI
+  steering, MCC/account-type changes) lives on fee_scheme_steering, fee_aci_steering,
+  and fee_scenarios, which are used directly.
 exports:
-  - name: card_scheme_universe
-    kind: source
-    summary: Distinct card schemes observed in payments; candidate universe for the scheme sweep.
-    usage: "run: card_scheme_universe -> { select: card_scheme }"
-  - name: scheme_scenario_grid
-    kind: source
-    summary: Transaction × candidate-scheme grid (payments_enriched cross-joined with the scheme universe, candidate materialized as a local column). Grain = payment × scheme.
-    usage: "Building block for fee_scheme_steering; rarely queried directly."
-  - name: fee_scheme_steering
-    kind: source
+  - name: fee_rulebook
+    kind: source (parameterized)
     summary: >
-      Scheme-steering counterfactual: every transaction rematched against fee
-      rules as if processed on each candidate scheme (all wildcard branches
-      preserved; monthly volume/fraud tiers held at actuals). Match-grain
-      measures: steering_total_fees_eur, steering_avg_fee_per_txn,
-      steering_fee_id_count; base-grain txn_count uses distinct psp_reference.
-      Views: scheme_sweep (one row per candidate scheme), scheme_sweep_by_merchant,
-      scheme_sweep_by_month, actual_scheme_baseline (candidate = actual).
+      Fee rulebook filtered by scenario parameters, pricing each rule at a caller-set
+      notional (default 100 EUR). Inherits fee_rules views: applicable_rule_ids,
+      applicable_rule_detail, scenario_fee_summary, scheme_fee_ranking(_desc),
+      aci_fee_ranking(_desc), mcc_fee_ranking(_desc). Rankings by ACI/MCC use only
+      rules that name the value specifically (wildcard rules carry no signal).
     usage: >
-      Scope to merchant + period, then rank: run: fee_scheme_steering ->
-      scheme_sweep + { where: merchant = 'X' and `year` = 2023 and
-      month_of_year = 6 } — min fees = first row (order is total asc); max fees
-      = order_by steering_total_fees_eur desc, limit 1. Report as
-      scheme:total rounded to 2 decimals.
+      run: fee_rulebook(notional is 50) -> scheme_fee_ranking  (cheapest scheme in the
+      average scenario; add match_is_credit / match_account_type / match_mcc etc. to
+      restrict; scenario_fee_summary gives the avg fee number; mcc_fee_ranking_desc +
+      cheapest/most_expensive rank=1 lists ties).
+  - name: rules_by_fee_at_notional
+    kind: view (on fee_rulebook)
+    summary: Per-rule price list at the notional, most expensive first; constrained_field_count=0 flags pure-wildcard rules.
+    usage: "run: fee_rulebook(notional is 50000, match_card_scheme is 'NexPay') -> rules_by_fee_at_notional"
+  - name: merchant_fees
+    kind: source (parameterized)
+    summary: >
+      Actual transactions × matching fee rules (one join level, wildcard branches on
+      every field). Inherits transaction_fees views: total_fees_summary,
+      applicable_fee_ids, affected_merchants, fee_ids_by_merchant, fees_by_merchant,
+      fees_by_merchant_month, fees_by_scheme, fees_by_aci, per_transaction_fees; and
+      measures total_fee_amount (money number), fee_delta_at_new_rate /
+      fee_delta_at_new_fixed_amount (scope with where: rules.ID = <id>). Base-grain
+      inherited measures are fan-out inflated — use matched_txn_count / distinct counts.
+    usage: >
+      Scope merchant + period last-mile: run: merchant_fees -> total_fees_summary +
+      { where: merchant = 'X' and txn_month ? @2023-12 }; applicable fee IDs: ->
+      applicable_fee_ids + { where: merchant = 'X' and `year` = 2023 }; rate-change
+      delta: run: merchant_fees(new_rate is 1) -> { where: rules.ID = 141 and merchant
+      = 'X' and txn_month ? @2023-12; aggregate: fee_delta_at_new_rate }.
+  - name: fees_by_merchant_day
+    kind: view (on merchant_fees)
+    summary: Total/avg fees per merchant per calendar day (txn_date reconstructed from year + day_of_year).
+    usage: "run: merchant_fees -> fees_by_merchant_day + { where: merchant = 'X' and day_of_year = 10 and `year` = 2023 }"
 provides_for:
-  - "steer-traffic-to-scheme optimization: min/max total fees per candidate scheme for a merchant and period (year, month, day range)"
-  - "per-scheme counterfactual fee totals and per-transaction averages over any transaction subset (e.g. fraudulent only, one ACI, one country)"
-  - "baseline actual per-scheme fee totals via actual_scheme_baseline (cross-check against fee_matching.fees_by_card_scheme)"
-  - "complements the intermediates: use fee_rule_quotes for notional-value quotes, fee_matching for actual totals/applicable fee IDs/rate deltas, fee_scenarios for ACI steering and rule-scope what-ifs"
+  - "cheapest / most expensive card scheme, ACI, or MCC at any notional amount (fee_rulebook rankings, ties share rank 1)"
+  - "average scenario fee for a scheme under account-type / MCC / credit filters (fee_rulebook scenario_fee_summary)"
+  - "applicable fee IDs and total fees paid for a merchant in a day / month / year (merchant_fees)"
+  - "merchants affected by a given fee rule (merchant_fees affected_merchants scoped to rules.ID)"
+  - "fee delta under a rule rate / fixed-amount override (merchant_fees delta measures)"
+  - "scheme steering and fraud-ACI steering rankings (fee_scheme_steering / fee_aci_steering, used directly)"
+  - "fee delta under a merchant MCC / account-type change and rule-restriction membership changes (fee_scenarios, used directly)"
