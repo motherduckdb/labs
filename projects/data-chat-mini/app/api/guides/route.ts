@@ -17,7 +17,7 @@
  * Read scaling: the per-session id arrives in the `x-session-id` header and is
  * threaded into the MCP connection as a session hint.
  */
-import { createMCPClient, executeToolWithStatus } from '@/lib/mcp-client';
+import { createMCPClient, executeToolWithStatus, isPersonalGuidePath } from '@/lib/mcp-client';
 import { isAuthError, authExpiredResponse, getSessionHint } from '@/lib/api-helpers';
 import { NextRequest } from 'next/server';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -43,6 +43,27 @@ function parseJson(raw: string): Record<string, unknown> {
 function parseVersion(content: string): number | null {
   const m = content.match(/·\s*v(\d+)\s*·/);
   return m ? Number(m[1]) : null;
+}
+
+/**
+ * Route-level authorization for mutating verbs. This route runs every browser
+ * request with the server MotherDuck token via the internal MCP bypass, and the
+ * app has no per-user auth in front of it, so confine all guide mutations to the
+ * personal namespace (`users/…`). Org-wide guides are read-only from the app;
+ * managing them needs an admin/OAuth path out of band. Returns a 403 Response on
+ * violation, or null when the path(s) are allowed.
+ */
+function rejectNonPersonal(...paths: unknown[]): Response | null {
+  for (const p of paths) {
+    if (p === undefined) continue;
+    if (!isPersonalGuidePath(p)) {
+      return Response.json(
+        { error: `Guide mutations are limited to personal guides under "users/<username>/…" (got "${typeof p === 'string' ? p : '(none)'}"). Org-wide guides are read-only from this app.` },
+        { status: 403 },
+      );
+    }
+  }
+  return null;
 }
 
 /** First `users/<name>/…` path in the guide list — the caller's personal namespace. */
@@ -116,6 +137,8 @@ export async function POST(request: NextRequest) {
   if (typeof path !== 'string' || typeof title !== 'string' || typeof content !== 'string') {
     return Response.json({ error: 'path, title, and content are required' }, { status: 400 });
   }
+  const denied = rejectNonPersonal(path);
+  if (denied) return denied;
 
   try {
     const client = await createMCPClient(getSessionHint(request));
@@ -152,6 +175,9 @@ export async function PATCH(request: NextRequest) {
   try { body = await request.json(); } catch { return Response.json({ error: 'Invalid JSON body' }, { status: 400 }); }
   const path = body.path;
   if (typeof path !== 'string') return Response.json({ error: 'path is required' }, { status: 400 });
+  // Both the current path and any rename target must stay in the personal namespace.
+  const denied = rejectNonPersonal(path, body.newPath);
+  if (denied) return denied;
 
   const steps: Array<{ step: string; ok: boolean; error?: string }> = [];
 
@@ -212,6 +238,8 @@ export async function PATCH(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const path = request.nextUrl.searchParams.get('path');
   if (!path) return Response.json({ error: 'path query param is required' }, { status: 400 });
+  const denied = rejectNonPersonal(path);
+  if (denied) return denied;
 
   try {
     const client = await createMCPClient(getSessionHint(request));

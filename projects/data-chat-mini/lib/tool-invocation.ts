@@ -20,6 +20,12 @@ const SUCCESS_FIELD_TOOLS = new Set([
   'update_context_layer',
   'share_dive_data',
   'query_rw',
+  // Guide writes return HTTP 200 + { success: false, error } on failure (e.g.
+  // "no authenticated username"). Without these, a failed create/update would
+  // read as a successful tool_end and the model would claim context was saved.
+  'create_guide',
+  'update_guide',
+  'edit_guide_content',
 ]);
 
 export function applyToolArgDefaults(

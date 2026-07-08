@@ -44,10 +44,18 @@ export const GUIDE_WRITE_TOOLS = new Set([
   'edit_guide_content',
 ])
 
+/** Personal-guide namespace: the only paths guide writes may target. */
+export function isPersonalGuidePath(path: unknown): path is string {
+  return typeof path === 'string' && /^users\//i.test(path.trim());
+}
+
 /**
- * Reject guide writes that would escape the personal-guide sandbox. Throws with
- * a message the agentic loop surfaces to the model as a tool error, so it can
- * correct the path rather than silently failing.
+ * Reject guide writes that would escape the personal-guide sandbox. Applies to
+ * EVERY guide-write tool (create/update/edit), not just create — an
+ * `update_guide`/`edit_guide_content` targeting an org path (e.g.
+ * `revenue-billing/foo.md`) or an opaque `id` must not slip through, since these
+ * tools are model-visible and the app token can edit existing guides. Throws
+ * with a message the agentic loop surfaces to the model as a tool error.
  */
 export function assertGuideWriteAllowed(name: string, args: Record<string, unknown>): void {
   if (!GUIDE_WRITE_TOOLS.has(name)) return;
@@ -57,13 +65,16 @@ export function assertGuideWriteAllowed(name: string, args: Record<string, unkno
       `${name}: this app may only write personal guides — set access:"user" (org-wide guides are admin-only).`,
     );
   }
-  if (name === 'create_guide') {
-    const path = typeof args.path === 'string' ? args.path : '';
-    if (!/^users\//i.test(path.trim())) {
-      throw new Error(
-        `create_guide: path must be a personal guide under "users/<username>/…" (got "${path || '(empty)'}").`,
-      );
-    }
+  // id-based targeting can't be namespace-checked before dispatch — require a path.
+  if ('id' in args && args.id) {
+    throw new Error(
+      `${name}: target the guide by its "users/<username>/…" path, not id — guide writes are limited to personal guides.`,
+    );
+  }
+  if (!isPersonalGuidePath(args.path)) {
+    throw new Error(
+      `${name}: writes are limited to personal guides under "users/<username>/…" (got "${typeof args.path === 'string' ? args.path : '(no path)'}"). Org-wide guides are read-only here.`,
+    );
   }
 }
 
