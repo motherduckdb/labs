@@ -10,7 +10,7 @@
  * exchange + tool call with role + model.
  */
 import { streamChatCompletion, parseCacheTokens, type ChatMessage, type ContentBlock, type ToolSchema } from './llm-client.js';
-import { dispatchTool, type ToolDeps } from './tools.js';
+import { dispatchTool, latchAnswer, type ToolDeps } from './tools.js';
 import * as cl from './controllog.js';
 
 export interface RunTaskOpts {
@@ -271,6 +271,14 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
   let prevMalloyErrSig: string | null = null; // last turn's run_malloy/submit error signature
   let steersUsed = 0; // stuck-author steers issued (--steer-instead-of-escalate)
   const STEER_BUDGET = 2; // after this many in-place steers, fall back to escalate()
+  // Budget-guard: a non-submission scores ZERO, and at HIGH effort some tasks burn
+  // the whole turn budget authoring Malloy and never submit. Once the author has used
+  // this fraction of its turns with no submission but a working run_malloy result on
+  // hand, force a best-effort submission of that last-good result (a plausible-but-
+  // uncertain answer can earn partial credit; None cannot). Fires at most once.
+  const BUDGET_GUARD_TURN_FRACTION = 0.9;
+  const budgetGuardTurnThreshold = Math.ceil(BUDGET_GUARD_TURN_FRACTION * opts.maxAuthorTurns);
+  let budgetGuardFired = false;
   const usage: TaskUsage = { promptTokens: 0, completionTokens: 0, cost: 0, cachedTokens: 0, cacheWriteTokens: 0 };
   // Hard ceiling only; each role is bounded separately below so the expensive
   // fixer can never run past --max-fixer-turns regardless of when it escalated.
@@ -291,6 +299,26 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
     // track that `escalate` reassigns `role` inside its closure, so it over-narrows
     // `role` to 'author' here — at runtime it can be 'fixer' from a prior iteration.)
     const activeRole = role as 'author' | 'fixer';
+    // Budget-guard: at 90% of the author's turn budget with no submission but a
+    // working run_malloy result in hand, force a best-effort submission of that
+    // last-good result and end the loop cleanly, so scoring runs on it instead of a
+    // zero-scoring non-submission. Fires at most once; a real submission short-circuits
+    // it. If there's no last-good result there's nothing to submit — stay a non-submission.
+    if (
+      !budgetGuardFired &&
+      activeRole === 'author' &&
+      !deps.state.submitted &&
+      authorTurns >= budgetGuardTurnThreshold &&
+      deps.state.lastGoodRun
+    ) {
+      budgetGuardFired = true;
+      const lg = deps.state.lastGoodRun;
+      opts.onEvent?.({ kind: 'budget_guard', detail: `auto-submit last good run_malloy at turn ${authorTurns}/${opts.maxAuthorTurns}` });
+      console.log('budget-guard: 90% of turns used with no submission — auto-submitting last good run_malloy result');
+      await latchAnswer(deps, { malloy: lg.malloy, compiledSql: lg.compiledSql, rows: lg.rows });
+      trace.push({ step: 'message', role: 'author', content: 'budget-guard: auto-submitted last good run_malloy result (90% of turn budget used with no submission)' });
+      break;
+    }
     if (activeRole === 'fixer' && fixerTurns >= opts.maxFixerTurns) break;
     if (activeRole === 'author' && authorTurns >= opts.maxAuthorTurns) {
       if (deps.state.submitted) break;

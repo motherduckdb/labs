@@ -38,6 +38,10 @@ export interface RunState {
    *  warn): a first submit with a shape warning is NOT latched (the agent may
    *  reconsider/resubmit); any subsequent submit latches unconditionally. */
   shapeWarned?: boolean;
+  /** The most recent SUCCESSFUL run_malloy result (compiled + ran + returned rows),
+   *  captured so the budget-guard can auto-submit a best-effort answer when the agent
+   *  never submits on its own. (Undefined until the first successful run_malloy.) */
+  lastGoodRun?: { malloy: string; compiledSql: string; rows: unknown[][] };
   filesRead: string[];
   lintFixesTotal: number;
 }
@@ -221,8 +225,37 @@ function rowsetsMatch(local: Record<string, unknown>[], md: unknown[][]): boolea
   return a.every((x, i) => x === b[i]);
 }
 
+/**
+ * Latch a Malloy answer into the run state — the SINGLE place that populates the
+ * scored fields (submitted/finalMalloy/finalCompiledSql/finalRows/answerKind) and
+ * runs the warning-only local translation check. Called by both submit_answer (after
+ * its one-shot shape-warn gate) and the budget-guard's forced best-effort submit, so
+ * answer-shape/translation handling stays consistent across the two entry points.
+ */
+export async function latchAnswer(
+  deps: ToolDeps,
+  answer: { malloy: string; compiledSql: string; rows: unknown[][] },
+): Promise<void> {
+  const { state, localRuntime } = deps;
+  state.submitted = true;
+  state.finalMalloy = answer.malloy;
+  state.finalCompiledSql = answer.compiledSql;
+  state.finalRows = answer.rows;
+  state.answerKind = referencesView(answer.malloy, deps.viewNames) ? 'view-selection' : 'authored-malloy';
+  if (localRuntime) {
+    try {
+      const local = await localRuntime.run(answer.malloy, ANSWER_ROW_LIMIT);
+      state.translationMatch = local.ok ? rowsetsMatch(local.rows ?? [], state.finalRows) : null;
+    } catch {
+      state.translationMatch = null;
+    }
+  } else {
+    state.translationMatch = null;
+  }
+}
+
 export async function dispatchTool(deps: ToolDeps, name: string, args: Record<string, unknown>): Promise<DispatchResult> {
-  const { client, runtime, localRuntime, store, symbols, state, database } = deps;
+  const { client, runtime, store, symbols, state, database } = deps;
 
   // MCP exploration tools. Inject the database + new_fragments defaults so the
   // model can't omit the production query tool's required fields.
@@ -278,6 +311,10 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     if (!r.ok) return { content: fmtDiagnostics(r.diagnostics), isError: true };
     const cols = r.rows!.length ? Object.keys(r.rows![0]) : [];
     const arrays = r.rows!.map((o) => cols.map((cn) => o[cn]));
+    // Capture this as the last-good run_malloy result: if the agent never submits,
+    // the budget-guard auto-submits THIS (positional, BigInt-safe) as a best-effort
+    // answer (a plausible-but-uncertain answer can earn partial credit; None cannot).
+    state.lastGoodRun = { malloy: fixedSrc, compiledSql: r.sql!, rows: arrays.map((row) => row.map(jsonSafeCell)) };
     const note = fixes.length ? `[lint applied: ${fixes.join('; ')}]\n` : '';
     return { content: `${note}${rowsToText(arrays, cols)}`, isError: false };
   }
@@ -303,21 +340,7 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
       state.shapeWarned = true;
       return { content: shapeWarnMessage(warnings), isError: false };
     }
-    state.submitted = true;
-    state.finalMalloy = fixedSrc;
-    state.finalCompiledSql = r.sql;
-    state.finalRows = positional;
-    state.answerKind = referencesView(fixedSrc, deps.viewNames) ? 'view-selection' : 'authored-malloy';
-    if (localRuntime) {
-      try {
-        const local = await localRuntime.run(fixedSrc, ANSWER_ROW_LIMIT);
-        state.translationMatch = local.ok ? rowsetsMatch(local.rows ?? [], state.finalRows) : null;
-      } catch {
-        state.translationMatch = null;
-      }
-    } else {
-      state.translationMatch = null;
-    }
+    await latchAnswer(deps, { malloy: fixedSrc, compiledSql: r.sql!, rows: positional });
     return { content: `Submitted. ${r.rows!.length} row(s).${shapeWarnNote(warnings)}`, isError: false };
   }
 

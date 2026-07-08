@@ -5,12 +5,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // (no tool calls) or a single tool call. dispatchTool is driven by a script too.
 const streamMock = vi.fn();
 const dispatchMock = vi.fn();
+const latchMock = vi.fn();
 
 vi.mock('./llm-client.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./llm-client.js')>();
   return { ...actual, streamChatCompletion: (...a: unknown[]) => streamMock(...a) };
 });
-vi.mock('./tools.js', () => ({ dispatchTool: (...a: unknown[]) => dispatchMock(...a) }));
+// The loop calls latchAnswer for the budget-guard's forced best-effort submit; the
+// fake mirrors the real helper's effect (latch the final fields + mark submitted).
+vi.mock('./tools.js', () => ({
+  dispatchTool: (...a: unknown[]) => dispatchMock(...a),
+  latchAnswer: (...a: unknown[]) => latchMock(...a),
+}));
 
 // Silence controllog (no session bound in this test).
 vi.mock('./controllog.js', () => ({
@@ -56,6 +62,7 @@ function baseOpts(state: { submitted: boolean }): RunTaskOpts {
 beforeEach(() => {
   streamMock.mockReset();
   dispatchMock.mockReset();
+  latchMock.mockReset();
 });
 
 describe('runTask no-submit recovery', () => {
@@ -145,5 +152,62 @@ describe('runTask no-submit recovery', () => {
     expect(r.streamFailureReason).toMatch(/stream setup exploded/);
     expect(r.submitted).toBe(false);
     expect(r.hitLimit).toBe(true);
+  });
+});
+
+describe('runTask budget-guard (auto-submit last good run_malloy at 90% of turns)', () => {
+  it('auto-submits the last good run_malloy result at 90% of the author turn budget when nothing was submitted', async () => {
+    // maxAuthorTurns=3 -> threshold = ceil(0.9*3) = 3: after 3 author run_malloy
+    // turns (no submit), the guard fires on entry to the would-be 4th turn.
+    const state: {
+      submitted: boolean;
+      lastGoodRun?: { malloy: string; compiledSql: string; rows: unknown[][] };
+      finalMalloy?: string; finalCompiledSql?: string; finalRows?: unknown[][]; answerKind?: string;
+    } = { submitted: false };
+    const events: { kind: string }[] = [];
+
+    // Every author turn runs run_malloy successfully (never submits). A fresh
+    // stream per call — a ReadableStream can only be consumed once.
+    streamMock.mockImplementation(async () => sseTurn({ tool: { name: 'run_malloy', input: { source: 'good' } } }));
+    // The mocked run_malloy records a last-good result (as the real handler does).
+    dispatchMock.mockImplementation(async (_deps: unknown, name: string) => {
+      if (name === 'run_malloy') {
+        state.lastGoodRun = { malloy: 'good', compiledSql: 'SELECT 1', rows: [[42]] };
+        return { content: '42', isError: false };
+      }
+      return { content: 'ok', isError: false };
+    });
+    // The guard routes through latchAnswer — mirror its real effect on the state.
+    latchMock.mockImplementation(async (_deps: unknown, answer: { malloy: string; compiledSql: string; rows: unknown[][] }) => {
+      state.submitted = true;
+      state.finalMalloy = answer.malloy;
+      state.finalCompiledSql = answer.compiledSql;
+      state.finalRows = answer.rows;
+      state.answerKind = 'authored-malloy';
+    });
+
+    const r = await runTask({ ...baseOpts(state), maxAuthorTurns: 3, onEvent: (e) => events.push(e) });
+
+    expect(latchMock).toHaveBeenCalledTimes(1); // fired exactly once
+    expect(latchMock.mock.calls[0][1]).toEqual({ malloy: 'good', compiledSql: 'SELECT 1', rows: [[42]] });
+    expect(r.submitted).toBe(true);
+    expect(r.escalated).toBe(false); // guard ends the loop; never escalates
+    expect(state.finalRows).toEqual([[42]]);
+    expect(events.some((e) => e.kind === 'budget_guard')).toBe(true);
+    expect(r.authorTurns).toBe(3); // spent 3 turns, then the guard fired on the 4th entry
+  });
+
+  it('does NOT auto-submit when there is no successful run_malloy result (stays a non-submission)', async () => {
+    // Every author turn errors on run_malloy -> no last-good result is ever set.
+    const state: { submitted: boolean; lastGoodRun?: unknown } = { submitted: false };
+    streamMock.mockImplementation(async () => sseTurn({ tool: { name: 'run_malloy', input: { source: 'bad' } } }));
+    dispatchMock.mockResolvedValue({ content: 'Malloy compile error', isError: true });
+
+    const r = await runTask({ ...baseOpts(state), maxAuthorTurns: 3, steerInsteadOfEscalate: true });
+
+    expect(latchMock).not.toHaveBeenCalled(); // nothing to submit
+    expect(r.submitted).toBe(false); // unchanged: still a non-submission
+    expect(r.hitLimit).toBe(true);
+    expect(state.lastGoodRun).toBeUndefined();
   });
 });
