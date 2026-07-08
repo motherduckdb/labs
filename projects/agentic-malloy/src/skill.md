@@ -177,6 +177,32 @@ it is never the answer.
   set for a real metric → the empty string, not `Not Applicable` (and a NULL inside a
   list is a bug to filter out, not a value to emit).
 
+## Answering discipline (generic — catches the most common "ran fine, wrong answer" mistakes)
+
+- **Project the ASKED value, not the scaffolding.** "Which X has the most/least Y?" →
+  return X (the key/name/label), NOT Y. The ranked/grouped query's FINAL stage selects only
+  the asked identifier; the count/measure you sorted by is scaffolding, not the answer.
+- **Read the metric wording precisely and pick the matching measure** — rate vs count,
+  proportion/percentage vs number, an average-PER-ENTITY vs a pooled ratio. "Top by <thing>"
+  is ambiguous: decide from the wording whether it means by RATE or by raw COUNT, and rank by
+  that exact measure.
+- **Counterfactual discipline.** (a) "change / move / switch to a DIFFERENT X" EXCLUDES the
+  current value — the no-op (staying put) is always trivially optimal and always wrong; drop
+  it at the right grain before ranking. (b) A delta = scenario − baseline computed in ONE
+  query over the SAME population — never subtract two separately-built totals. (c) "Which
+  entities are AFFECTED by a change" = those whose membership CHANGES (matched before XOR
+  after), NOT those matching the changed value.
+- **Documentation-knowledge ≠ empirical.** When a question asks what the docs/manual STATE
+  (a defined relationship or domain fact), answer from the documentation (usually a SINGLE
+  token) — not an empirical computation. A concept the data/manual does not define →
+  `Not Applicable`; do NOT infer it's defined just because the layer exposes a related
+  computed field or bucket.
+- **Always SUBMIT before your turn budget runs out.** An uncertain or approximate answer can
+  earn partial credit; a non-submission scores ZERO. If authoring is fighting you as the
+  budget nears its end, fall back to the SIMPLEST query that returns a plausible value and
+  submit it deliberately. (The harness also force-submits your last good result near the
+  budget cap as a safety net — but submit on purpose; don't rely on it.)
+
 ## DABstep answer conventions (apply verbatim — the gold scores these)
 
 - **Percentage → 0–100, never 0–1.** Any value the question/guideline calls a
