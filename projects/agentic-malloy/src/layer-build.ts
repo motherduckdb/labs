@@ -28,6 +28,7 @@ import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { viewQualitySmells, smellSummary } from './view-quality.js';
 import { layerSourceGate } from './malloy-source.js';
+import { semanticSelfVerify, parseSources, semanticFindingSummary } from './semantic-verify.js';
 import { detectRawSqlInMalloy } from './linter.js';
 import { extractGlossary, groundGlossary, renderGlossary, type GlossaryEntry } from './glossary.js';
 import * as cl from './controllog.js';
@@ -377,6 +378,32 @@ export async function hashLayerOnDisk(modelsDir: string = MODELS_DIR, metaDir: s
 // Per-file authoring with a localized repair loop
 // ---------------------------------------------------------------------------
 
+/**
+ * Run the generic SEMANTIC self-verification (fan-out grain-invariance +
+ * additivity) over the sources a just-authored file introduces, against the
+ * local compile DB, and return a nudge-ready diagnostic (or '' when clean). It
+ * reads every model file on disk so the base-key chain can resolve across
+ * already-authored files, then probes only `justAuthored`'s own sources. Never
+ * throws — a probe failure yields no finding (conservative). Kept small + local
+ * so the gate block stays readable.
+ */
+async function semanticVerifyFile(justAuthored: string, modelsDir: string, dbPath: string): Promise<string> {
+  try {
+    const files = (await readdir(modelsDir)).filter((f) => f.endsWith('.malloy'));
+    const allSources = [] as ReturnType<typeof parseSources>;
+    for (const f of files) allSources.push(...parseSources(await readFile(path.join(modelsDir, f), 'utf8')));
+    const rt = new MalloyRuntime({ ...(dbPath ? { databasePath: dbPath } : {}), modelsDir });
+    try {
+      const findings = await semanticSelfVerify({ rt, fileText: justAuthored, allSources, verify: { timeoutMs: VIEW_VALIDATION_TIMEOUT_MS } });
+      return semanticFindingSummary(findings);
+    } finally {
+      await rt.close();
+    }
+  } catch {
+    return ''; // verification is best-effort; never block a build on its own failure
+  }
+}
+
 interface StageResult {
   ok: boolean;
   diag?: string;
@@ -530,7 +557,14 @@ async function authorStage(opts: {
       const smellHint = v.smellDiag
         ? `${v.smellDiag}\n\nThis is usually a WRONG-GRAIN bug: an aggregate that folds in "applies-to-all"/wildcard rows (which are common to every group and don't discriminate) collapses the ranking. FIX generically: rank/compare by the ENTITY-SPECIFIC rows, or expose BOTH a specific-only and an effective (incl. wildcard) measure so the answer can pick. Re-author this file to fix the degenerate view(s).`
         : '';
-      const qualityDiag = [smellHint, gateDiag].filter(Boolean).join('\n\n');
+      // SEMANTIC self-verification: probe the just-authored file's sources against
+      // the compile DB for numeric wrongness the compile/execute gate can't see —
+      // fan-out double-counting + additivity/grain non-invariance. Conservative
+      // (only clear, numerically-confirmed violations), so it routes through this
+      // SAME nudge/accept path. Cross-file source list lets the base-key chain
+      // resolve across the already-authored files.
+      const semanticDiag = await semanticVerifyFile(malloy, opts.modelsDir, opts.dbPath);
+      const qualityDiag = [smellHint, gateDiag, semanticDiag].filter(Boolean).join('\n\n');
       if (qualityDiag && !smellNudged && round < opts.maxRounds) {
         smellNudged = true;
         forceFull = true;
