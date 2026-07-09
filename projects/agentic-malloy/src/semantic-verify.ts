@@ -162,6 +162,10 @@ const MATCH_GRAIN_NAME = /(^|_)(match|matched|matching|pair|pairs|per[_]?match|p
 // Non-additive measure names — a ratio/avg/rate/share is not meaningfully summed,
 // so it is never a fan-out inflation candidate (mirrors malloy-source.ts).
 const NON_ADDITIVE_NAME = /(^|_)(ratio|rate|avg|average|mean|pct|percent|share|fraction|proportion|per[_]?txn|per[_]?transaction)(_|$)/i;
+// A COUNTERFACTUAL/OVERRIDE parameter or column prefix — the param re-prices under a
+// changed field rather than scoping the population. Such params are handled by the
+// identity counterfactual check (#3b), NOT the filter-scoping inertness check (#3).
+const OVERRIDE_PARAM_NAME = /^(alt|override|new|scenario|proposed|cf)_/i;
 
 /**
  * Additive (sum-type) measures declared in a body whose sum is anchored at a
@@ -404,6 +408,12 @@ export async function verifySource(
     const filterParams = parseFilterParams(src.body);
     const measures = declaredMeasureNames(src.body);
     for (const p of filterParams) {
+      // An OVERRIDE / counterfactual param (`alt_`/`override_`/`new_`/`scenario_`/
+      // `proposed_`/`cf_`) is NOT a scoping filter: it re-prices under a changed
+      // field, so baseline and neutral measures are SUPPOSED to be invariant to it.
+      // Demanding movement here would wrongly push the author to wire the override
+      // into baseline measures. Those params are owned by the identity check (#3b).
+      if (OVERRIDE_PARAM_NAME.test(p.name)) continue;
       const col = p.compareColumn!;
       // two distinct non-null values of the compared column, drawn from the data
       const vr = await rt.run(`run: ${runName} -> { group_by: ${col}; order_by: ${col}; limit: 3 }`, 3, timeoutMs);
@@ -455,11 +465,11 @@ export async function verifySource(
     const deltaMeas = declaredMeasureNames(src.body).find((n) => /(delta|change|impact|diff|savings)/i.test(n));
     if (deltaMeas) {
       const seen = new Set<string>();
-      for (const m of src.body.matchAll(/\b((?:alt|override|new|scenario|proposed)_[A-Za-z_]\w*)\b/g)) {
+      for (const m of src.body.matchAll(/\b((?:alt|override|new|scenario|proposed|cf)_[A-Za-z_]\w*)\b/g)) {
         const param = m[1];
         if (!sigNames.has(param) || seen.has(param)) continue;
         seen.add(param);
-        const col = param.replace(/^(?:alt|override|new|scenario|proposed)_/, '');
+        const col = param.replace(OVERRIDE_PARAM_NAME, '');
         const vr = await rt.run(`run: ${runName} -> { group_by: ${col}; limit: 1 }`, 1, timeoutMs);
         const v = vr.ok && vr.rows?.[0] ? (vr.rows[0] as Record<string, unknown>)[col] : null;
         if (v === null || v === undefined) continue;

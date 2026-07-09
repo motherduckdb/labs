@@ -265,6 +265,21 @@ source: scoped(scheme_p::string is null) is txns_base extend {
     expect(inert[0].message).toMatch(/scheme_p/);
     expect(inert[0].message).toMatch(/not wired|UNFILTERED/i);
   });
+
+  it('does NOT fire parameter_inert on an OVERRIDE-prefixed param (baseline/neutral measures are meant to be invariant)', async () => {
+    // `scenario_scheme` is a counterfactual override, not a scoping filter — even though
+    // it appears in an equality (`scheme = scenario_scheme`), the baseline measures below
+    // are SUPPOSED to ignore it. #3 must skip it (the identity check #3b owns overrides).
+    const overrideModel = `##! experimental.parameters
+source: txns_base is duckdb.table('txns') extend { measure: base_avg is amount.avg() }
+source: cfr(scenario_scheme::string is null) is txns_base extend {
+  dimension: eff_scheme is scenario_scheme is null or scheme = scenario_scheme
+  measure: baseline_avg is amount.avg()
+  measure: transaction_count is count()
+}`;
+    const findings = await semanticSelfVerify({ rt, fileText: overrideModel });
+    expect(findings.some((f) => f.code === 'parameter_inert')).toBe(false);
+  });
 });
 
 describe('semanticSelfVerify (runtime, identity counterfactual)', () => {
