@@ -23,6 +23,8 @@ import {
   primaryKeyOf,
   resolveBaseKey,
   fanoutSumCandidates,
+  parseFilterParams,
+  declaredMeasureNames,
   semanticSelfVerify,
   semanticFindingSummary,
   type ParsedSource,
@@ -104,6 +106,27 @@ describe('fanoutSumCandidates (pure, conservative exclusions)', () => {
     expect(fanoutSumCandidates(body('measure: matched_value is items.sum(order_value)'))).toEqual([]);
     expect(fanoutSumCandidates(body('measure: per_pair_value is items.sum(order_value)'))).toEqual([]);
     expect(fanoutSumCandidates(body('measure: avg_value is items.sum(order_value)'))).toEqual([]);
+  });
+});
+
+describe('parseFilterParams / declaredMeasureNames (pure)', () => {
+  it('detects a filter param via `col = p` and strips the compared column to its final segment', () => {
+    const body = `(scheme_p::string is null) is base extend { dimension: d is scheme_p is null or fees.scheme = scheme_p }`;
+    expect(parseFilterParams(body)).toEqual([{ name: 'scheme_p', compareColumn: 'scheme' }]);
+  });
+  it('detects a filter param via list_contains(col, p) (incl. the raw-escape form)', () => {
+    const body = `(sch::string is null) is base extend { dimension: d is list_contains!boolean(schemes, sch) }`;
+    expect(parseFilterParams(body)).toEqual([{ name: 'sch', compareColumn: 'schemes' }]);
+  });
+  it('EXCLUDES an arithmetic-only param (a scaler, not a scoping filter)', () => {
+    const body = `(notional::number is 0, scheme_p::string is null) is base extend { measure: m is (amount * notional).sum() { where: scheme = scheme_p } }`;
+    expect(parseFilterParams(body)).toEqual([{ name: 'scheme_p', compareColumn: 'scheme' }]);
+  });
+  it('returns [] when there is no signature (a `()` inside the body is not a signature)', () => {
+    expect(parseFilterParams(`is base extend { measure: m is count() }`)).toEqual([]);
+  });
+  it('lists own measure names', () => {
+    expect(declaredMeasureNames(`extend { measure: a is x.sum() measure: b is count() }`)).toEqual(['a', 'b']);
   });
 });
 
@@ -192,5 +215,112 @@ source: order_lines is orders_base extend {
     const baseOnly = `source: orders_base is duckdb.table('orders') extend { primary_key: id measure: base_total is order_value.sum() }`;
     const findings = await semanticSelfVerify({ rt, fileText: baseOnly, allSources });
     expect(findings).toEqual([]);
+  });
+});
+
+// --- Check #3: parameter fidelity + identity counterfactual ------------------
+
+describe('semanticSelfVerify (runtime, parameter fidelity)', () => {
+  let dir: string;
+  let dbPath: string;
+  let modelsDir: string;
+  let rt: MalloyRuntime;
+
+  // txns: scheme A has amounts [100,100] (avg 100), scheme B has [10] (avg 10);
+  // global avg = 70. A filter param `scheme_p` compared `scheme = scheme_p`:
+  //   - `global_avg` ignores it (avg over the whole source) → INERT, must FIRE.
+  //   - `scoped_avg` applies it in a { where: } filter → correctly wired, must be SILENT.
+  const model = `##! experimental.parameters
+source: txns_base is duckdb.table('txns') extend { measure: base_avg is amount.avg() }
+source: scoped(scheme_p::string is null) is txns_base extend {
+  dimension: in_scope is scheme_p is null or scheme = scheme_p
+  measure: global_avg is amount.avg()
+  measure: scoped_avg is amount.avg() { where: scheme_p is null or scheme = scheme_p }
+}`;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'asm-paramfid-'));
+    dbPath = path.join(dir, 'pf.duckdb');
+    modelsDir = path.join(dir, 'models');
+    mkdirSync(modelsDir, { recursive: true });
+    const inst = await DuckDBInstance.create(dbPath);
+    const conn = await inst.connect();
+    await conn.run(`CREATE TABLE txns (id BIGINT, scheme VARCHAR, amount DOUBLE)`);
+    await conn.run(`INSERT INTO txns VALUES (1,'A',100),(2,'A',100),(3,'B',10)`);
+    conn.closeSync();
+    writeFileSync(path.join(modelsDir, 'm.malloy'), model);
+    rt = new MalloyRuntime({ databasePath: dbPath, modelsDir });
+  }, 60_000);
+
+  afterAll(async () => {
+    await rt?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('FIRES parameter_inert on a filter param the measure ignores, SILENT on the wired one', async () => {
+    const findings = await semanticSelfVerify({ rt, fileText: model });
+    const inert = findings.filter((f) => f.code === 'parameter_inert');
+    expect(inert.map((f) => f.measure)).toContain('global_avg'); // ignores scheme_p → global avg for both bindings
+    expect(inert.map((f) => f.measure)).not.toContain('scoped_avg'); // { where: scheme_p } → moves → silent
+    expect(inert[0].message).toMatch(/scheme_p/);
+    expect(inert[0].message).toMatch(/not wired|UNFILTERED/i);
+  });
+});
+
+describe('semanticSelfVerify (runtime, identity counterfactual)', () => {
+  let dir: string;
+  let dbPath: string;
+  let modelsDir: string;
+  let rt: MalloyRuntime;
+
+  // A scenario source with an `override_amount` param + a `cost_delta` measure.
+  //   - repriced_bad: scenario applies an unconditional 1.1× — even a NO-OP override
+  //     (set to a fact's own value) leaves a non-zero delta → must FIRE.
+  //   - repriced_ok: scenario uses `pick override_amount when … else amount` — a no-op
+  //     override collapses to baseline → zero delta → must be SILENT.
+  const model = `##! experimental.parameters
+source: txns2_base is duckdb.table('txns2') extend { measure: n is count() }
+source: repriced_bad(override_amount::number is null) is txns2_base extend {
+  measure: baseline_cost is amount.sum()
+  measure: scenario_cost is sum(amount * 1.1)
+  measure: cost_delta is scenario_cost - baseline_cost
+}
+source: repriced_ok(override_amount::number is null) is txns2_base extend {
+  dimension: eff_amount is pick override_amount when override_amount is not null else amount
+  measure: baseline_cost is amount.sum()
+  measure: scenario_cost is eff_amount.sum()
+  measure: cost_delta is scenario_cost - baseline_cost
+}`;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'asm-identity-'));
+    dbPath = path.join(dir, 'id.duckdb');
+    modelsDir = path.join(dir, 'models');
+    mkdirSync(modelsDir, { recursive: true });
+    const inst = await DuckDBInstance.create(dbPath);
+    const conn = await inst.connect();
+    await conn.run(`CREATE TABLE txns2 (id BIGINT, amount DOUBLE)`);
+    await conn.run(`INSERT INTO txns2 VALUES (1,100),(2,100),(3,50)`);
+    conn.closeSync();
+    writeFileSync(path.join(modelsDir, 'm.malloy'), model);
+    rt = new MalloyRuntime({ databasePath: dbPath, modelsDir });
+  }, 60_000);
+
+  afterAll(async () => {
+    await rt?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('FIRES identity_delta_nonzero when a no-op override still moves the delta', async () => {
+    const findings = await semanticSelfVerify({ rt, fileText: model });
+    const bad = findings.filter((f) => f.code === 'identity_delta_nonzero' && f.source === 'repriced_bad');
+    expect(bad.length).toBe(1);
+    expect(bad[0].measure).toBe('cost_delta');
+    expect(bad[0].message).toMatch(/NO-OP|identity/i);
+  });
+
+  it('stays SILENT on a scenario that collapses to baseline at identity', async () => {
+    const findings = await semanticSelfVerify({ rt, fileText: model });
+    expect(findings.some((f) => f.code === 'identity_delta_nonzero' && f.source === 'repriced_ok')).toBe(false);
   });
 });

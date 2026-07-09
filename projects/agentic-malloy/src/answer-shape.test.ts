@@ -104,3 +104,67 @@ describe('answer-shape: NULL in a list answer', () => {
     expect(codes(answerShapeWarnings({ question: 'What is the max fee?', rows: [[null]] }))).not.toContain('null_in_list');
   });
 });
+
+describe('answer-shape: boolean expected, number returned', () => {
+  it('warns when the guideline asks yes/no but a number is returned', () => {
+    const w = answerShapeWarnings({ question: 'Is the fraud rate above the platform average?', guidelines: 'Answer yes or no.', rows: [[0.1483]] });
+    expect(codes(w)).toContain('boolean_expected_numeric');
+  });
+  it('warns on the "yes/no" slash form', () => {
+    const w = answerShapeWarnings({ question: 'Are these two fields correlated?', guidelines: 'Answer with yes/no.', rows: [[0.62]] });
+    expect(codes(w)).toContain('boolean_expected_numeric');
+  });
+  it('does NOT warn when the answer is already a yes/no string', () => {
+    expect(codes(answerShapeWarnings({ question: 'Is it above average?', guidelines: 'Answer yes or no.', rows: [['yes']] }))).not.toContain('boolean_expected_numeric');
+  });
+  it('does NOT warn when there is no boolean wording', () => {
+    expect(codes(answerShapeWarnings({ question: 'What is the fraud rate?', rows: [[0.1483]] }))).not.toContain('boolean_expected_numeric');
+  });
+});
+
+describe('answer-shape: letter/code expected, number returned', () => {
+  it('warns when the guideline asks for a single letter but a number is returned', () => {
+    const w = answerShapeWarnings({ question: 'Which ACI has the lowest fee?', guidelines: 'Answer with just the letter of the ACI.', rows: [[0.42]] });
+    expect(codes(w)).toContain('letter_expected_numeric');
+  });
+  it('does NOT warn when the answer is a letter', () => {
+    expect(codes(answerShapeWarnings({ question: 'Which ACI?', guidelines: 'Answer with just a letter.', rows: [['C']] }))).not.toContain('letter_expected_numeric');
+  });
+  it('does NOT warn without letter wording', () => {
+    expect(codes(answerShapeWarnings({ question: 'What is the lowest fee?', rows: [[0.42]] }))).not.toContain('letter_expected_numeric');
+  });
+});
+
+describe('answer-shape: hard-copied decimal threshold on a ties question', () => {
+  it('warns when the source filters on a pasted decimal for a "list all / ties" answer', () => {
+    const w = answerShapeWarnings({
+      question: 'List all merchants whose total fee equals the maximum.',
+      guidelines: 'Comma separated; if there are ties, list all.',
+      source: 'run: x -> { group_by: merchant; aggregate: fee } -> { where: fee = 43520.83 }',
+      rows: [['m1'], ['m2']],
+    });
+    expect(codes(w)).toContain('hardcoded_threshold_literal');
+  });
+  it('does NOT warn on an integer id comparison (no decimal point)', () => {
+    const w = answerShapeWarnings({
+      question: 'List all merchants at the maximum; list all ties.',
+      source: 'run: x -> { where: fee_id = 384 }',
+      rows: [['m1']],
+    });
+    expect(codes(w)).not.toContain('hardcoded_threshold_literal');
+  });
+  it('does NOT warn without list/ties wording', () => {
+    const w = answerShapeWarnings({ question: 'Which merchant?', source: 'run: x -> { where: fee = 43520.83 }', rows: [['m1']] });
+    expect(codes(w)).not.toContain('hardcoded_threshold_literal');
+  });
+});
+
+describe('answer-shape: duplicated values in a list answer', () => {
+  it('warns when the key column repeats (un-deduped projection)', () => {
+    const w = answerShapeWarnings({ question: 'List all fee IDs that apply.', guidelines: 'Comma separated list.', rows: [['12'], ['34'], ['12']] });
+    expect(codes(w)).toContain('undeduped_list');
+  });
+  it('does NOT warn when every value is distinct', () => {
+    expect(codes(answerShapeWarnings({ question: 'List all fee IDs.', rows: [['12'], ['34'], ['56']] }))).not.toContain('undeduped_list');
+  });
+});

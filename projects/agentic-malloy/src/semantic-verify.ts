@@ -38,7 +38,7 @@ export interface SemanticFinding {
   // never fire cleanly — it would add cost with no signal and risk false
   // positives on filters that reach through a join. See the module header + the
   // task report for the rationale.
-  code: 'fanout_grain_noninvariance' | 'additivity_mismatch';
+  code: 'fanout_grain_noninvariance' | 'additivity_mismatch' | 'parameter_inert' | 'identity_delta_nonzero';
   source: string;
   measure?: string;
   message: string;
@@ -224,6 +224,48 @@ export function declaredDimensions(body: string): string[] {
   return [...new Set(out)];
 }
 
+/** Every `measure: <name> is ...` declared in a body (own measures). Pure. */
+export function declaredMeasureNames(body: string): string[] {
+  return [...new Set([...body.matchAll(/\bmeasure:\s*([A-Za-z_]\w*)\s+is\b/g)].map((m) => m[1]))];
+}
+
+export interface ParsedParam {
+  name: string;
+  /** the column this param is compared against for equality/membership (a FILTER
+   *  param), stripped to its final segment (`fees.scheme` → `scheme`); null if the
+   *  param is not used in any narrowing predicate (→ not a filter, skip). */
+  compareColumn: string | null;
+}
+
+/**
+ * Parse a parameterized source's SIGNATURE params and classify which are FILTER
+ * params — those referenced in an equality (`col = p` / `p = col`) or membership
+ * (`list_contains(col, p)`) predicate in the body. Only filter params (with a
+ * determinable compared column) are returned; an arithmetic-only param (e.g. a
+ * notional scaler) is deliberately excluded — it changes the result legitimately
+ * and is not a "should-scope-but-doesn't" candidate. Pure.
+ */
+export function parseFilterParams(body: string): ParsedParam[] {
+  const open = body.indexOf('(');
+  const sigEnd = skipParens(body, 0);
+  if (open < 0 || sigEnd <= open + 1) return []; // no signature
+  const sig = body.slice(open + 1, sigEnd - 1);
+  const rest = body.slice(sigEnd);
+  const out: ParsedParam[] = [];
+  for (const decl of sig.split(',')) {
+    const nm = decl.trim().match(/^([A-Za-z_]\w*)\s*::/);
+    if (!nm) continue;
+    const name = nm[1];
+    // `col = p` or `p = col` (a plain equality, not `==`/`<=`/`>=`)
+    const eq = rest.match(new RegExp(`([A-Za-z_][\\w.]*)\\s*(?<![<>=!])=(?![=])\\s*${name}\\b|\\b${name}\\s*(?<![<>=!])=(?![=])\\s*([A-Za-z_][\\w.]*)`));
+    // `list_contains(col, p)` (incl. the raw-escape `list_contains!boolean(...)`)
+    const lc = rest.match(new RegExp(`list_contains!?\\w*\\(\\s*([A-Za-z_][\\w.]*)\\s*,\\s*${name}\\b`));
+    const raw = eq?.[1] || eq?.[2] || lc?.[1] || null;
+    out.push({ name, compareColumn: raw ? raw.split('.').pop()! : null });
+  }
+  return out.filter((p) => p.compareColumn != null);
+}
+
 // ---------------------------------------------------------------------------
 // Runtime probes — run against the local compile DB via the MalloyRuntime.
 // ---------------------------------------------------------------------------
@@ -349,7 +391,110 @@ export async function verifySource(
     }
   }
 
+  // ---- Check #3: parameter fidelity (a declared filter param MUST move the result) -
+  // For a parameterized source, a param wired into a narrowing predicate (`col = p`,
+  // `list_contains(col, p)`) must actually change the measures it is supposed to
+  // scope. We bind the param to two DISTINCT data-drawn values of its compared column
+  // and compare each own measure; if the measure is invariant to a param that the
+  // COLUMN itself discriminates, the param is declared-but-not-wired into that measure
+  // (a caller who scopes by it silently gets the unfiltered aggregate). The
+  // "column discriminates the measure" guard makes coincidental equality impossible to
+  // flag — the safest possible trigger.
+  if (src.parameterized) {
+    const filterParams = parseFilterParams(src.body);
+    const measures = declaredMeasureNames(src.body);
+    for (const p of filterParams) {
+      const col = p.compareColumn!;
+      // two distinct non-null values of the compared column, drawn from the data
+      const vr = await rt.run(`run: ${runName} -> { group_by: ${col}; order_by: ${col}; limit: 3 }`, 3, timeoutMs);
+      const vals = (vr.ok && vr.rows ? (vr.rows as Array<Record<string, unknown>>) : [])
+        .map((r) => r[col])
+        .filter((v) => v !== null && v !== undefined);
+      const distinct = [...new Map(vals.map((v) => [String(v), v])).values()].slice(0, 2);
+      if (distinct.length < 2) continue; // cannot compare
+      for (const meas of measures) {
+        // does the column even DISCRIMINATE this measure? (else equality isn't a defect)
+        const g = await rt.run(`run: ${runName} -> { group_by: ${col}; aggregate: v is ${meas} }`, 500, timeoutMs);
+        if (!g.ok || !g.rows) continue;
+        const gv = (g.rows as Array<Record<string, unknown>>).map((r) => num(r.v)).filter(Number.isFinite);
+        if (gv.length < 2) continue;
+        const hi = Math.max(...gv);
+        const lo = Math.min(...gv);
+        const spread = (hi - lo) / (Math.max(Math.abs(hi), Math.abs(lo)) || 1);
+        if (spread <= Math.max(tol, 0.02)) continue; // measure is genuinely column-independent → not a defect
+        const a = await scalar(rt, `run: ${src.name}(${p.name} is ${lit(distinct[0])}) -> { aggregate: v is ${meas} }`, 'v', timeoutMs);
+        const b = await scalar(rt, `run: ${src.name}(${p.name} is ${lit(distinct[1])}) -> { aggregate: v is ${meas} }`, 'v', timeoutMs);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        if (Math.abs(a - b) / (Math.abs(a) || 1e-9) <= tol) {
+          findings.push({
+            code: 'parameter_inert',
+            source: src.name,
+            measure: meas,
+            message:
+              `parameter \`${p.name}\` does NOT change measure \`${meas}\` on \`${src.name}\`: ` +
+              `binding it to two distinct \`${col}\` values (${lit(distinct[0])} vs ${lit(distinct[1])}) both give ${a.toPrecision(8)}, ` +
+              `yet \`${meas}\` VARIES by \`${col}\` in the data. The parameter is declared in the signature but not wired into this ` +
+              `measure's aggregation — a caller scoping by \`${p.name}\` silently gets the UNFILTERED aggregate. ` +
+              `FIX: apply \`${p.name}\` in a where:/on:/pick the measure is computed AFTER (not only in the signature).`,
+          });
+        }
+      }
+    }
+  }
+
+  // ---- Check #3b: identity counterfactual (a NO-OP override ⇒ zero delta) -----------
+  // A scenario/override param named `alt_<col>` / `override_<col>` / `new_<col>` /
+  // `scenario_<col>` re-prices facts under a changed field. Setting it to a value that
+  // some facts ALREADY have, then scoping to exactly those facts, must yield a ~0 delta
+  // (nothing changed for them). A non-zero identity delta means the re-match selects a
+  // different rule population than baseline — the counterfactual drifts.
+  if (src.parameterized) {
+    const sigEnd = skipParens(src.body, 0);
+    const sig = src.body.indexOf('(') >= 0 ? src.body.slice(src.body.indexOf('(') + 1, sigEnd - 1) : '';
+    const sigNames = new Set([...sig.matchAll(/([A-Za-z_]\w*)\s*::/g)].map((m) => m[1]));
+    const deltaMeas = declaredMeasureNames(src.body).find((n) => /(delta|change|impact|diff|savings)/i.test(n));
+    if (deltaMeas) {
+      const seen = new Set<string>();
+      for (const m of src.body.matchAll(/\b((?:alt|override|new|scenario|proposed)_[A-Za-z_]\w*)\b/g)) {
+        const param = m[1];
+        if (!sigNames.has(param) || seen.has(param)) continue;
+        seen.add(param);
+        const col = param.replace(/^(?:alt|override|new|scenario|proposed)_/, '');
+        const vr = await rt.run(`run: ${runName} -> { group_by: ${col}; limit: 1 }`, 1, timeoutMs);
+        const v = vr.ok && vr.rows?.[0] ? (vr.rows[0] as Record<string, unknown>)[col] : null;
+        if (v === null || v === undefined) continue;
+        const d = await scalar(
+          rt,
+          `run: ${src.name}(${param} is ${lit(v)}) -> { where: ${col} = ${lit(v)}; aggregate: x is ${deltaMeas} }`,
+          'x',
+          timeoutMs,
+        );
+        if (Number.isFinite(d) && Math.abs(d) > Math.max(tol, 0.01)) {
+          findings.push({
+            code: 'identity_delta_nonzero',
+            source: src.name,
+            measure: deltaMeas,
+            message:
+              `measure \`${deltaMeas}\` on \`${src.name}\` is non-zero (${d.toPrecision(6)}) for a NO-OP override: ` +
+              `setting \`${param}\` to a value equal to a fact's own \`${col}\` should change NOTHING for those facts. ` +
+              `A non-zero identity delta means the scenario re-match selects a DIFFERENT rule population than baseline. ` +
+              `FIX: the counterfactual must change only the overridden field's matching; every other criterion ` +
+              `(including wildcard/default rows) must resolve identically on the baseline and scenario legs.`,
+          });
+        }
+      }
+    }
+  }
+
   return findings;
+}
+
+/** Quote a data value for a Malloy param binding: numbers bare, everything else a
+ *  single-quoted string with quotes doubled. Pure. */
+function lit(v: unknown): string {
+  if (typeof v === 'number' || typeof v === 'bigint') return String(v);
+  if (typeof v === 'boolean') return String(v);
+  return `'${String(v).replace(/'/g, "''")}'`;
 }
 
 /**

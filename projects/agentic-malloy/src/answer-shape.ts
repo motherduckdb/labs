@@ -14,7 +14,16 @@
  */
 
 export interface ShapeWarning {
-  code: 'extra_columns' | 'list_extra_columns' | 'percentage_ratio' | 'limit_drops_ties' | 'null_in_list';
+  code:
+    | 'extra_columns'
+    | 'list_extra_columns'
+    | 'percentage_ratio'
+    | 'limit_drops_ties'
+    | 'null_in_list'
+    | 'boolean_expected_numeric'
+    | 'letter_expected_numeric'
+    | 'hardcoded_threshold_literal'
+    | 'undeduped_list';
   message: string;
 }
 
@@ -34,6 +43,15 @@ const LIST_ALL_RE = /\blist all\b|\bif there are ties\b|\ball\b[\s\S]{0,40}?\b(t
 // `limit: 1` (Malloy, with colon), `limit 1`/`LIMIT 1` (SQL), `rank()=1`, `top 1`.
 // The `1\b` boundary avoids false-matching `limit 10` / `limit: 100`.
 const LIMIT1_RE = /\blimit\s*:?\s*1\b|\brank\s*\(\s*\)\s*=\s*1\b|\brow_number\s*\(\s*\)\s*=\s*1\b|\btop\s+1\b/i;
+// A yes/no (or true/false) boolean-answer guideline — "answer yes or no", "yes/no".
+const BOOLEAN_RE = /\b(yes\s*(\/|or)\s*no|no\s*(\/|or)\s*yes|true\s*(\/|or)\s*false)\b/i;
+// A single-letter / single-code answer guideline ("just a letter", "the letter",
+// "one letter"). The determiner set (just/single/only/exactly/a/the/one) keeps it to
+// answer-format phrasing rather than any incidental mention of the word "letter".
+const LETTER_RE = /\b(just|single|only|exactly|a|the|one)\s+(?:the\s+|one\s+|a\s+|capital\s+|single\s+)?letter\b/i;
+// A hard-copied DECIMAL literal in a where:/having: comparison — a pasted extremum
+// threshold. Requires a decimal point so it never fires on `= 1` ids/flags.
+const HARDCODED_THRESHOLD_RE = /\b(where|having)\b[^\n]*?[=<>]=?\s*-?\d+\.\d+/i;
 
 /** Is `v` a real number strictly inside (0,1) (a likely 0–1 ratio for a percentage)? */
 function isNumericIn01(v: unknown): boolean {
@@ -41,6 +59,14 @@ function isNumericIn01(v: unknown): boolean {
   if (String(v).trim() === '') return false;
   const n = typeof v === 'bigint' ? Number(v) : Number(v);
   return Number.isFinite(n) && Math.abs(n) > 0 && Math.abs(n) < 1;
+}
+
+/** Is `v` a plain numeric scalar (not a boolean, not empty)? Used to catch a number
+ *  returned where the guideline asks for a boolean / a letter. */
+function isNumericCell(v: unknown): boolean {
+  if (v === null || v === undefined || typeof v === 'boolean') return false;
+  const s = String(v).trim();
+  return s !== '' && Number.isFinite(Number(s));
 }
 
 export function answerShapeWarnings(opts: {
@@ -93,6 +119,38 @@ export function answerShapeWarnings(opts: {
   const listy = rows.length > 1 || LIST_ALL_RE.test(text);
   if (listy && rows.some((r) => r.some((c) => c === null || c === undefined))) {
     out.push({ code: 'null_in_list', message: `The list answer contains a NULL/empty cell — usually a phantom unmatched-join row; filter it out (\`… is not null\`) so it doesn't appear as a stray list value.` });
+  }
+
+  // A single scalar cell, if that is the answer shape (used by checks 5 & 6).
+  const scalarCell = rows.length === 1 && (rows[0]?.length ?? 0) === 1 ? rows[0][0] : undefined;
+
+  // 5. the guideline asks for yes/no (a boolean) but a NUMBER was returned — the agent
+  //    computed the statistic and forgot to compare it to the threshold + emit the verdict.
+  if (BOOLEAN_RE.test(text) && isNumericCell(scalarCell)) {
+    out.push({ code: 'boolean_expected_numeric', message: `The guideline asks for a yes/no answer but the result is the number ${String(scalarCell)} — compare your computed value to the threshold stated in the question and emit the boolean (e.g. \`pick 'yes' when <value> > <threshold> else 'no'\`).` });
+  }
+
+  // 6. the guideline asks for a single letter/code but a NUMBER was returned — you likely
+  //    projected the measure you ranked by instead of its key.
+  if (LETTER_RE.test(text) && isNumericCell(scalarCell)) {
+    out.push({ code: 'letter_expected_numeric', message: `The guideline asks for a letter/code but the result is the number ${String(scalarCell)} — you likely projected the measure you ranked by; select its KEY (the letter/code), not the value.` });
+  }
+
+  // 7. a "list all / ties" question whose source hard-copies a decimal threshold into a
+  //    where:/having: comparison — a pasted literal is fragile to rounding/float drift and
+  //    silently drops rows exactly at the extremum.
+  if (LIST_ALL_RE.test(text) && HARDCODED_THRESHOLD_RE.test(source)) {
+    out.push({ code: 'hardcoded_threshold_literal', message: `The query filters on a hard-copied decimal threshold (\`where/having … = <literal>\`) for a "list all / ties" answer — a pasted number is fragile to rounding/float drift and silently drops rows exactly at the extremum. Compute the extremum in one stage and keep every row equal to it in the next (\`-> { aggregate: m } -> { having: m = max(m) }\`), never compare to a copied number.` });
+  }
+
+  // 8. a list answer that REPEATS a value in its key column — a projection over
+  //    unaggregated rows duplicates the asked value; needs a group_by / DISTINCT on the key.
+  if (listy && rows.length > 1) {
+    const keys = rows.map((r) => (r?.length ? String(r[0]) : '')).filter((s) => s !== '');
+    const dupes = keys.length - new Set(keys).size;
+    if (dupes > 0) {
+      out.push({ code: 'undeduped_list', message: `The list answer repeats ${dupes} value(s) — a projection over unaggregated rows duplicates; add \`group_by\`/DISTINCT on the single asked key so each value appears once.` });
+    }
   }
 
   return out;
