@@ -38,7 +38,12 @@ export interface SemanticFinding {
   // never fire cleanly — it would add cost with no signal and risk false
   // positives on filters that reach through a join. See the module header + the
   // task report for the rationale.
-  code: 'fanout_grain_noninvariance' | 'additivity_mismatch' | 'parameter_inert' | 'identity_delta_nonzero';
+  code:
+    | 'fanout_grain_noninvariance'
+    | 'additivity_mismatch'
+    | 'parameter_inert'
+    | 'identity_delta_nonzero'
+    | 'crossjoin_coaggregation';
   source: string;
   measure?: string;
   message: string;
@@ -231,6 +236,43 @@ export function declaredDimensions(body: string): string[] {
 /** Every `measure: <name> is ...` declared in a body (own measures). Pure. */
 export function declaredMeasureNames(body: string): string[] {
   return [...new Set([...body.matchAll(/\bmeasure:\s*([A-Za-z_]\w*)\s+is\b/g)].map((m) => m[1]))];
+}
+
+/**
+ * Measures anchored on a JOINED relationship via an aggregate method —
+ * `measure: <name> is <joinPath>.<sum|avg|count|min|max>(...)`. Returns a map from
+ * the measure name to the join path it aggregates over. These are the measures
+ * whose value can be corrupted when TWO of them (on DIFFERENT join paths) are
+ * co-aggregated in one query stage. Pure.
+ */
+export function joinAnchoredAggMeasures(body: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of body.matchAll(/\bmeasure:\s*([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)\.\s*(?:sum|avg|count|min|max)\s*\(/g)) {
+    if (!out.has(m[1])) out.set(m[1], m[2]);
+  }
+  return out;
+}
+
+/**
+ * Measures whose DEFINITION combines two or more other measures by NAME (an
+ * arithmetic composition like `x is a - b` / `a + b` / `a / b`). Returns each such
+ * measure with the subset of `anchored` measure names it references. A combining
+ * measure that references measures anchored on DIFFERENT join paths forces those
+ * join_many aggregates to be computed in ONE stage — the co-aggregation hazard.
+ * Pure.
+ */
+export function combiningMeasures(body: string, anchored: Set<string>): Array<{ name: string; refs: string[] }> {
+  const out: Array<{ name: string; refs: string[] }> = [];
+  // one measure per line: `measure: <name> is <expr up to newline>`
+  for (const m of body.matchAll(/\bmeasure:\s*([A-Za-z_]\w*)\s+is\s+([^\n]*)/g)) {
+    const name = m[1];
+    const expr = m[2];
+    const refs = [...new Set([...expr.matchAll(/[A-Za-z_]\w*/g)].map((t) => t[0]))].filter(
+      (t) => t !== name && anchored.has(t),
+    );
+    if (refs.length >= 2) out.push({ name, refs });
+  }
+  return out;
 }
 
 export interface ParsedParam {
@@ -491,6 +533,63 @@ export async function verifySource(
               `FIX: the counterfactual must change only the overridden field's matching; every other criterion ` +
               `(including wildcard/default rows) must resolve identically on the baseline and scenario legs.`,
           });
+        }
+      }
+    }
+  }
+
+  // ---- Check #4: cross-join co-aggregation stability -------------------------
+  // A measure that COMBINES two aggregates anchored on DIFFERENT `join_many`
+  // relations (a difference/ratio like `delta is scenario_total - baseline_total`)
+  // forces both symmetric aggregates into ONE query stage. Malloy's per-join
+  // symmetric aggregates do NOT compose across two live fan-outs: the SQL fans out
+  // over relationA × relationB and BOTH sums deflate. Each component is correct
+  // ALONE but wrong when co-aggregated — a silently-wrong number. We detect it by
+  // comparing a component computed ALONE vs. in the SAME stage as the other
+  // component; a material drift proves the composition is corrupt. (This fires even
+  // at null params, where the delta itself may be 0 — the COMPONENTS still drift.)
+  {
+    const anchored = joinAnchoredAggMeasures(src.body);
+    if (anchored.size >= 2) {
+      const combos = combiningMeasures(src.body, new Set(anchored.keys()));
+      let flagged = false;
+      for (const combo of combos) {
+        if (flagged) break;
+        // two referenced components on DIFFERENT join paths
+        const seenPath = new Map<string, string>(); // path -> measure name
+        for (const r of combo.refs) {
+          const p = anchored.get(r)!;
+          if (!seenPath.has(p)) seenPath.set(p, r);
+        }
+        if (seenPath.size < 2) continue;
+        const [a, b] = [...seenPath.values()].slice(0, 2);
+        const aAlone = await scalar(rt, `run: ${runName} -> { aggregate: ${a} }`, a, timeoutMs);
+        const bAlone = await scalar(rt, `run: ${runName} -> { aggregate: ${b} }`, b, timeoutMs);
+        if (!Number.isFinite(aAlone) || !Number.isFinite(bAlone)) continue;
+        const tog = await rt.run(`run: ${runName} -> { aggregate: ${a}, ${b} }`, 5, timeoutMs);
+        if (!tog.ok || !tog.rows?.length) continue;
+        const row = tog.rows[0] as Record<string, unknown>;
+        const aTog = num(row[a]);
+        const bTog = num(row[b]);
+        const driftA = aAlone !== 0 && Number.isFinite(aTog) ? Math.abs(aAlone - aTog) / Math.abs(aAlone) : 0;
+        const driftB = bAlone !== 0 && Number.isFinite(bTog) ? Math.abs(bAlone - bTog) / Math.abs(bAlone) : 0;
+        if (driftA > Math.max(tol, 0.02) || driftB > Math.max(tol, 0.02)) {
+          const pa = anchored.get(a)!;
+          const pb = anchored.get(b)!;
+          findings.push({
+            code: 'crossjoin_coaggregation',
+            source: src.name,
+            measure: combo.name,
+            message:
+              `measure \`${combo.name}\` on \`${src.name}\` combines \`${a}\` (aggregated over join \`${pa}\`) and ` +
+              `\`${b}\` (over join \`${pb}\`) — two DIFFERENT \`join_many\` relations. Co-aggregating them in one stage ` +
+              `CORRUPTS both: \`${a}\` = ${aAlone.toPrecision(8)} alone but ${aTog.toPrecision(8)} when computed together with \`${b}\` ` +
+              `(${(Math.max(driftA, driftB) * 100).toFixed(1)}% drift). Malloy's per-join symmetric aggregates do not compose across ` +
+              `two live fan-outs (the query fans out over \`${pa}\`×\`${pb}\`). FIX: pre-collapse each leg to base grain in its OWN ` +
+              `single-\`join_many\` source (\`-> { group_by: <key>; aggregate: ... }\`), then bring each back via \`join_one\` before combining, ` +
+              `so no two \`join_many\` are live in the same aggregate.`,
+          });
+          flagged = true;
         }
       }
     }

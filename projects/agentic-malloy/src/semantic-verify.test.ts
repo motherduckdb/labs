@@ -25,6 +25,8 @@ import {
   fanoutSumCandidates,
   parseFilterParams,
   declaredMeasureNames,
+  joinAnchoredAggMeasures,
+  combiningMeasures,
   semanticSelfVerify,
   semanticFindingSummary,
   type ParsedSource,
@@ -127,6 +129,31 @@ describe('parseFilterParams / declaredMeasureNames (pure)', () => {
   });
   it('lists own measure names', () => {
     expect(declaredMeasureNames(`extend { measure: a is x.sum() measure: b is count() }`)).toEqual(['a', 'b']);
+  });
+});
+
+describe('joinAnchoredAggMeasures / combiningMeasures (pure)', () => {
+  const body = `extend {
+    join_many: rules is fees_base on 1=1
+    join_many: cf_rules is fees_base on 1=1
+    measure: baseline_total is rules.sum(rules.fee)
+    measure: scenario_total is cf_rules.sum(cf_rules.fee)
+    measure: fee_delta is scenario_total - baseline_total
+    measure: transaction_count is count(psp_reference)
+  }`;
+  it('maps join-anchored aggregate measures to their join path (and skips non-anchored)', () => {
+    const m = joinAnchoredAggMeasures(body);
+    expect(m.get('baseline_total')).toBe('rules');
+    expect(m.get('scenario_total')).toBe('cf_rules');
+    expect(m.has('fee_delta')).toBe(false); // references measures, not a join aggregate
+    expect(m.has('transaction_count')).toBe(false); // count(psp_reference) is not <path>.count()
+  });
+  it('finds a combining measure referencing anchored measures on DIFFERENT join paths', () => {
+    const anchored = new Set(joinAnchoredAggMeasures(body).keys());
+    const combos = combiningMeasures(body, anchored);
+    const fd = combos.find((c) => c.name === 'fee_delta');
+    expect(fd).toBeTruthy();
+    expect(fd!.refs.sort()).toEqual(['baseline_total', 'scenario_total']);
   });
 });
 
@@ -337,5 +364,54 @@ source: repriced_ok(override_amount::number is null) is txns2_base extend {
   it('stays SILENT on a scenario that collapses to baseline at identity', async () => {
     const findings = await semanticSelfVerify({ rt, fileText: model });
     expect(findings.some((f) => f.code === 'identity_delta_nonzero' && f.source === 'repriced_ok')).toBe(false);
+  });
+});
+
+// Check #4 firing requires the specific Malloy symmetric-aggregate breakdown seen on
+// the real fee layer (co-aggregating two large join_many over complex predicates),
+// which a tiny fixture does not reproduce — that path is validated end-to-end by the
+// build itself. Here we guard the FALSE-POSITIVE direction: a clean two-join_many
+// combining measure that DOES compose correctly must stay silent.
+describe('semanticSelfVerify (runtime, cross-join co-aggregation — no false positive)', () => {
+  let dir: string;
+  let dbPath: string;
+  let modelsDir: string;
+  let rt: MalloyRuntime;
+
+  const model = `
+source: things_base is duckdb.table('things') extend { primary_key: tid }
+source: two_join is duckdb.table('orders') extend {
+  primary_key: id
+  join_many: ja is things_base on ja.k = k and ja.grp = 'a'
+  join_many: jb is things_base on jb.k = k and jb.grp = 'b'
+  measure: a_total is ja.sum(ja.rate * amt)
+  measure: b_total is jb.sum(jb.rate * amt)
+  measure: ab_gap is a_total - b_total
+}`;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'asm-coagg-'));
+    dbPath = path.join(dir, 'ca.duckdb');
+    modelsDir = path.join(dir, 'models');
+    mkdirSync(modelsDir, { recursive: true });
+    const inst = await DuckDBInstance.create(dbPath);
+    const conn = await inst.connect();
+    await conn.run(`CREATE TABLE orders (id BIGINT, k BIGINT, amt DOUBLE)`);
+    await conn.run(`CREATE TABLE things (k BIGINT, tid BIGINT, rate DOUBLE, grp VARCHAR)`);
+    await conn.run(`INSERT INTO orders VALUES (1,100,1000),(2,200,500)`);
+    await conn.run(`INSERT INTO things VALUES (100,1,0.1,'a'),(100,2,0.2,'a'),(100,3,0.01,'b'),(100,4,0.02,'b'),(100,5,0.03,'b'),(200,6,0.5,'a'),(200,7,0.7,'b')`);
+    conn.closeSync();
+    writeFileSync(path.join(modelsDir, 'm.malloy'), model);
+    rt = new MalloyRuntime({ databasePath: dbPath, modelsDir });
+  }, 60_000);
+
+  afterAll(async () => {
+    await rt?.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('does NOT flag a combining measure whose components compose correctly', async () => {
+    const findings = await semanticSelfVerify({ rt, fileText: model });
+    expect(findings.some((f) => f.code === 'crossjoin_coaggregation')).toBe(false);
   });
 });
