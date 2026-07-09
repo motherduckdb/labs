@@ -1,39 +1,44 @@
 file: merchants_base.malloy
-domain: payments fee optimization — merchant dimension
+domain: payments / merchant profiles
 summary: >
-  Base source over the 30-row merchants table (one row per merchant). Exposes the
-  merchant attributes needed for fee-rule matching: account_type (single letter,
-  with a readable description), merchant_category_code (BIGINT MCC), the merchant's
-  concrete capture_delay setting ('1','2','7','immediate','manual') plus its derived
-  rule-grain bucket ('<3','3-5','>5','immediate','manual'), and the list-valued
-  acquirer column. No joins; join logic lives in higher-level model files.
+  Base semantic source over the merchants table (one row per merchant, 30 rows).
+  Exposes the static merchant profile — account type, merchant category code (MCC),
+  capture-delay setting, and acquirer list — plus the derived capture_delay_bucket
+  that maps the merchant's concrete setting ('1','2','7','immediate','manual') into
+  the fee-rule bucket domain ('<3','3-5','>5','immediate','manual') needed for
+  fee-rule matching. No joins; join logic lives in downstream fact/rule models.
 exports:
   - name: merchants_base
     kind: source
     summary: >
-      Grain = one merchant. Key derived field is capture_delay_bucket, which maps the
-      merchant's numeric-day setting into the exact range strings the fee rulebook
-      uses (needed for capture_delay matching). acquirer is a VARCHAR[] list —
-      never NULL/empty in this data; use list_contains!boolean for membership.
-      All measures are merchant-grain (safe here; recompute before any fan-out join).
-    usage: "run: merchants_base -> { where: merchant = 'Crossfit_Hanna'; select: * } or group_by any dimension + aggregate: merchant_count"
+      One row per merchant. Dimensions: capture_delay_days (numeric days, null for
+      immediate/manual), capture_delay_bucket (fee-rule bucket encoding),
+      account_type_description (human-readable account type), acquirer_count and
+      has_multiple_acquirers (from the list-valued acquirer column). Measures:
+      merchant_count plus distinct counts of account types / MCCs / capture-delay
+      settings and sum/avg/min/max of acquirer_count. All measures are merchant-grain.
+    usage: "Filter with `where: merchant = 'X'` or an attribute predicate, then group_by any profile dimension + aggregate merchant_count; use capture_delay_bucket (not raw capture_delay) when comparing to fee-rule capture_delay values."
   - name: by_account_type
     kind: view
-    summary: Merchant counts per account type with readable description.
-    usage: "run: merchants_base -> by_account_type; refine with + { where: ... } to scope"
+    summary: Merchant counts per account type with description.
+    usage: "run: merchants_base -> by_account_type (optionally + { where: ... })"
   - name: by_mcc
     kind: view
     summary: Merchant counts per merchant category code (7 distinct MCCs in data).
     usage: "run: merchants_base -> by_mcc"
   - name: by_capture_delay
     kind: view
-    summary: Merchant counts per raw capture_delay setting and its rule-grain bucket.
+    summary: Merchant counts per raw capture-delay setting alongside its fee-rule bucket.
     usage: "run: merchants_base -> by_capture_delay"
-  - name: merchant_profile
+  - name: by_capture_delay_bucket
     kind: view
-    summary: One-row-per-merchant projection of all attributes incl. derived capture_delay_bucket and acquirer_count — the canonical lookup for a single merchant's fee-matching attributes.
-    usage: "run: merchants_base -> merchant_profile + { where: merchant = 'Rafa_AI' }"
+    summary: Merchant counts per fee-rule capture-delay bucket ('<3','3-5','>5','immediate','manual').
+    usage: "run: merchants_base -> by_capture_delay_bucket"
+  - name: profile
+    kind: view
+    summary: Full merchant profile projection (raw + derived columns), one row per merchant.
+    usage: "run: merchants_base -> profile + { where: merchant = 'X' } to look up a single merchant's fee-relevant attributes."
 provides_for:
-  - "join_one target (with merchant) from the payments fact source to supply rule-matching attributes (account_type, MCC, capture_delay_bucket)"
-  - "capture_delay_bucket is the value to compare against fees.capture_delay (NULL rule field = wildcard)"
-  - "acquirer list can be unnested/joined to the acquirer→country lookup in a higher-level model for local-acquiring analysis"
+  - "payments fact model: join_one merchants_base with merchant to enrich each transaction with account_type, merchant_category_code, capture_delay_bucket for fee-rule matching"
+  - "fee-rule matching: capture_delay_bucket is the pre-mapped value to compare against fees.capture_delay (with null-wildcard branch)"
+  - "acquirer country resolution: unnest the acquirer list against an acquirer_countries lookup in a downstream model"

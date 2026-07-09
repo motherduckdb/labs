@@ -1,40 +1,32 @@
 file: merchant_category_codes_base.malloy
-domain: Payment processing — Merchant Category Code (MCC) reference lookup
+domain: payments fee optimization — merchant category code (MCC) reference
 summary: >
-  Base source over the merchant_category_codes lookup table (769 rows, one row
-  per four-digit MCC). Maps each MCC to its textual business-type description.
-  mcc is stored as VARCHAR here but as BIGINT/INT elsewhere in the domain, so
-  the source exposes mcc_code (numeric cast) as the join-ready key. No joins;
-  intended as the description→code resolution surface for fee-rule and merchant
-  analyses.
+  Base semantic source over the merchant_category_codes lookup table (769 rows,
+  one row per MCC). Grain: one MCC code with its textual business-type
+  description. mcc is stored as VARCHAR; the mcc_code dimension exposes the
+  numeric cast needed to join against merchants.merchant_category_code and
+  fees.merchant_category_code lists (both numeric). No joins in this file.
 exports:
   - name: merchant_category_codes_base
     kind: source
     summary: >
-      One row per MCC. Dimensions: mcc (VARCHAR code, primary key), mcc_code
-      (numeric cast for joining to BIGINT mcc columns), mcc_category_prefix
-      (first two digits = broad industry category), description,
-      description_upper (case-insensitive matching). Measures: code_count,
-      distinct counts of mcc/description/prefix, and the full sum/avg/min/max
-      set over mcc_code.
+      One row per MCC. Dimensions: mcc (string, PK), description, mcc_code
+      (numeric cast for joining), mcc_category_prefix (first two digits =
+      industry category), description_lower (case-insensitive matching).
+      Measures: mcc_count, distinct_description_count.
     usage: >
-      Resolve a business description to its numeric code with
-      `where: description ~ '%<term>%'` (or description_upper for
-      case-insensitive) then select mcc_code; use mcc_code when comparing
-      against fee-rule or merchant MCC lists (which are numeric).
+      Resolve a description to its code with
+      `run: merchant_category_codes_base -> { where: description_lower ~ '%eating%'; select: mcc_code, description }`;
+      join into merchant/fee models via mcc_code = merchants.merchant_category_code.
   - name: all_codes
     kind: view
-    summary: Full catalog projection — mcc, mcc_code, description — ordered by code.
-    usage: "run: merchant_category_codes_base -> all_codes (optionally + { where: mcc_category_prefix = '58' })."
+    summary: Full MCC catalog projection (mcc, description) ordered by code.
+    usage: "`run: merchant_category_codes_base -> all_codes + { where: mcc_code ? 5000 to 6000 }` to browse a code range."
   - name: by_category_prefix
     kind: view
-    summary: Count of codes and code range per two-digit category prefix.
-    usage: "run: merchant_category_codes_base -> by_category_prefix; filter with `where:` on prefix if needed."
-  - name: description_lookup
-    kind: view
-    summary: Description-first listing for resolving a textual business category to its MCC.
-    usage: "run: merchant_category_codes_base -> description_lookup + { where: description_upper ~ '%HOTEL%' } to get the code(s) for a described business type."
+    summary: Count of MCC codes per two-digit industry category prefix.
+    usage: "`run: merchant_category_codes_base -> by_category_prefix` for the category distribution of the catalog."
 provides_for:
-  - Resolving MCC descriptions referenced by name in fee questions to numeric codes (cast VARCHAR→number via mcc_code)
-  - Joining as a dimension (join_one with primary_key mcc, or on mcc_code) from merchants/fees models to label MCCs
-  - Membership checks against fee-rule merchant_category_code lists using the numeric mcc_code
+  - merchants_base.malloy (resolve merchant_category_code to a description via mcc_code)
+  - fees_base.malloy (label MCC codes appearing in fee-rule merchant_category_code lists)
+  - description-to-code resolution when a question names an MCC by its business-type text

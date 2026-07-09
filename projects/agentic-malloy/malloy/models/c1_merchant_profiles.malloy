@@ -1,0 +1,71 @@
+// c1_merchant_profiles.malloy — merchant profile enriched with MCC description + acquirer country
+
+source: merchant_profiles is merchants_base extend {
+  // mcc lookup stores codes as VARCHAR; match on its numeric cast (mcc_code)
+  join_one: mcc_info is merchant_category_codes_base
+    on merchant_category_code = mcc_info.mcc_code
+
+  // first listed acquirer treated as primary; list_extract is 1-based
+  join_one: primary_acquirer_info is acquirer_countries_base
+    on list_extract!string(acquirer, 1) = primary_acquirer_info.acquirer
+
+  // FAN-OUT: one row per (merchant, acquirer) — use distinct_merchant_count, not count()
+  join_many: acquirer_info is acquirer_countries_base
+    on list_contains!boolean(acquirer, acquirer_info.acquirer)
+
+  dimension: mcc_description is mcc_info.description
+  dimension: primary_acquirer is list_extract!string(acquirer, 1)
+  dimension: primary_acquirer_country is primary_acquirer_info.country_code
+
+  // fan-out-safe (count(x) is distinct in Malloy)
+  measure: distinct_merchant_count is count(merchant)
+  measure: acquirer_link_count is acquirer_info.count()
+
+  view: profile_enriched is {
+    select:
+      merchant,
+      account_type,
+      account_type_description,
+      merchant_category_code,
+      mcc_description,
+      capture_delay,
+      capture_delay_bucket,
+      acquirer,
+      acquirer_count,
+      primary_acquirer,
+      primary_acquirer_country
+    order_by: merchant asc
+  }
+
+  view: by_mcc_described is {
+    group_by: merchant_category_code, mcc_description
+    aggregate: distinct_merchant_count
+    order_by: distinct_merchant_count desc
+  }
+
+  view: merchant_acquirer_countries is {
+    group_by:
+      merchant,
+      acquirer_name is acquirer_info.acquirer,
+      acquirer_country is acquirer_info.country_code
+    order_by: merchant asc, acquirer_name asc
+  }
+
+  view: by_acquirer_country is {
+    group_by: acquirer_country is acquirer_info.country_code
+    aggregate: distinct_merchant_count, acquirer_link_count
+    order_by: distinct_merchant_count desc
+  }
+
+  view: by_account_type_described is {
+    group_by: account_type, account_type_description
+    aggregate: distinct_merchant_count
+    order_by: distinct_merchant_count desc
+  }
+
+  view: by_capture_delay_described is {
+    group_by: capture_delay, capture_delay_bucket
+    aggregate: distinct_merchant_count
+    order_by: distinct_merchant_count desc
+  }
+}

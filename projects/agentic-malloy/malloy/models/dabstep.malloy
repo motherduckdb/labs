@@ -1,54 +1,75 @@
 ##! experimental.parameters
 
-// Rulebook surface: fee_rules with a NON-NULL default notional (100 EUR) so every
-// fee_at_notional ranking/summary computes out of the box; callers override
-// notional (and any match_* filter) per call. All fee_rules views are inherited.
-source: fee_rulebook(
-  notional::number is 100,
-  match_card_scheme::string is null,
-  match_account_type::string is null,
-  match_mcc::number is null,
-  match_capture_delay::string is null,
-  match_volume_bucket::string is null,
-  match_fraud_bucket::string is null,
-  match_is_credit::boolean is null,
-  match_aci::string is null,
-  match_intracountry::boolean is null
-) is fee_rules(
-  notional is notional,
-  match_card_scheme is match_card_scheme,
-  match_account_type is match_account_type,
-  match_mcc is match_mcc,
-  match_capture_delay is match_capture_delay,
-  match_volume_bucket is match_volume_bucket,
-  match_fraud_bucket is match_fraud_bucket,
-  match_is_credit is match_is_credit,
-  match_aci is match_aci,
-  match_intracountry is match_intracountry
-) extend {
-  // per-rule price list at the notional; constrained_field_count separates
-  // specific rules (>0) from pure wildcard rules (0) for entity rankings
-  view: rules_by_fee_at_notional is {
-    where: matches_scenario
-    select:
-      ID, card_scheme, fixed_amount, rate, fee_at_notional, constrained_field_count
-    order_by: fee_at_notional desc
-    limit: 1000
-  }
+// dabstep.malloy — thin top-level surface; all logic lives in the base/intermediate sources
+
+// ---- directories & value universes (data-derived, never hardcoded) ----
+query: merchant_directory is merchant_profiles -> profile_enriched
+query: mcc_directory is merchant_category_codes_base -> all_codes
+query: acquirer_country_directory is acquirer_countries_base -> acquirer_directory
+query: card_scheme_universe is fees_base -> { group_by: card_scheme; aggregate: rule_count }
+query: observed_aci_universe is payments_base -> { group_by: aci; aggregate: transaction_count }
+
+// full rule catalog (wildcards visible: empty list / NULL scalar = applies to all)
+query: fee_rule_catalog is fees_base -> {
+  select:
+    ID, card_scheme, account_type, capture_delay, monthly_fraud_level,
+    monthly_volume, merchant_category_code, is_credit, aci, intracountry,
+    fixed_amount, rate
+  order_by: ID asc
+  limit: 1000
 }
 
-// Actual-traffic fee surface: transaction_fees pass-through (rule match + fee
-// formula live there); adds a calendar-day grain for day-of-year questions.
-source: merchant_fees(
-  new_rate::number is null,
-  new_fixed_amount::number is null
-) is transaction_fees(
-  new_rate is new_rate,
-  new_fixed_amount is new_fixed_amount
-) extend {
-  view: fees_by_merchant_day is {
-    group_by: merchant, txn_date
-    aggregate: matched_txn_count, total_fee_amount, avg_fee_amount
-    order_by: merchant asc, txn_date asc
-  }
+// ---- rule-space (notional) rankings — re-instantiate with other params/notional as needed ----
+query: scheme_fee_ranking_default is fee_rules(notional is 100) -> scheme_fee_ranking
+query: aci_fee_ranking_default is fee_rules_by_aci(notional is 100) -> aci_fee_ranking
+query: mcc_fee_ranking_default is fee_rules_by_mcc(notional is 100) -> mcc_fee_ranking
+query: account_type_fee_ranking_default is fee_rules_by_account_type(notional is 100) -> account_type_fee_ranking
+query: matching_fee_ids_default is fee_rules(notional is 100) -> matching_fee_ids
+
+// ---- transaction-space fee attribution (actual traffic × matched rules) ----
+query: fee_match_conservation is fee_matched_payments -> match_coverage
+query: merchant_total_fees is fee_matched_payments -> total_fees_by_merchant
+query: merchant_month_fees is fee_matched_payments -> total_fees_by_merchant_month
+query: merchant_daily_fees is fee_matched_payments -> {
+  group_by: merchant, day_of_year, txn_date
+  aggregate: transaction_count, total_fee_eur, fee_per_transaction
+  order_by: merchant asc, day_of_year asc
 }
+query: applicable_fee_ids_by_merchant is fee_matched_payments -> {
+  where: is_matched
+  group_by: merchant, rule_id is rules.ID
+  aggregate: transaction_count
+  order_by: merchant asc, rule_id asc
+  limit: 100000
+}
+query: merchants_matching_rule is fee_matched_payments -> affected_merchants
+query: rule_incidence is fee_matched_payments -> fee_rule_incidence
+
+// ---- counterfactual surfaces (defaults = zero-delta baseline; instantiate params to activate) ----
+query: scenario_fee_delta_by_merchant is fee_scenarios() -> scenario_fees_by_merchant
+query: rate_override_delta is fee_scenarios() -> rate_override_totals
+query: scheme_steering_by_merchant is fee_scenarios() -> {
+  where: scheme_steer_rules.ID is not null
+  group_by: merchant, candidate_scheme is scheme_steer_rules.card_scheme
+  aggregate:
+    steered_txn_count is count(psp_reference),
+    scheme_steered_total_fee_eur,
+    scheme_steered_avg_fee_eur
+  order_by: merchant asc, scheme_steered_total_fee_eur asc
+}
+query: fraud_aci_steering_by_merchant is fee_scenarios() -> {
+  where: has_fraudulent_dispute
+    and aci_steer_rules.ID is not null
+    and aci_steer_rules.candidate_aci != aci   // no-op guard: exclude current ACI
+  group_by: merchant, candidate_aci is aci_steer_rules.candidate_aci
+  aggregate:
+    steered_txn_count is count(psp_reference),
+    aci_steered_total_fee_eur,
+    aci_steered_avg_fee_eur
+  order_by: merchant asc, aci_steered_total_fee_eur asc
+}
+query: rule_affected_merchants is fee_scenarios() -> affected_merchants_by_rule
+
+// ---- plain transaction analytics ----
+query: avg_txn_value_by_issuing_country is payments_enriched -> avg_value_by_issuing_country
+query: merchant_month_tier_inputs is payments_enriched -> merchant_month_tier_inputs

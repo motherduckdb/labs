@@ -1,0 +1,148 @@
+// c4_fee_matching.malloy — fact × rule fan-out engine (payments_enriched ⋈ fees_base)
+
+// re-project to strip inherited base-grain measures (count()/sums would inflate under the fan-out)
+source: fee_matched_payments is payments_enriched -> { select: * } extend {
+  primary_key: psp_reference
+
+  // FAN-OUT: one row per (transaction, matching fee rule); left-outer, so a
+  // zero-match transaction keeps ONE row with NULL rules.* (fees contribute 0)
+  // wildcard branch on EVERY match field: empty list / NULL scalar = applies to all
+  join_many: rules is fees_base on
+    card_scheme = rules.card_scheme
+    and (len!number(rules.account_type) = 0
+         or list_contains!boolean(rules.account_type, merchant_account_type))
+    and (len!number(rules.merchant_category_code) = 0
+         or list_contains!boolean(rules.merchant_category_code, merchant_mcc))
+    and (len!number(rules.aci) = 0
+         or list_contains!boolean(rules.aci, aci))
+    and (rules.capture_delay is null or rules.capture_delay = merchant_capture_delay_bucket)
+    and (rules.is_credit is null or rules.is_credit = is_credit)
+    and (rules.intracountry is null or rules.intracountry = intracountry_num)
+    and (rules.monthly_volume is null
+         or (rules.monthly_volume = '<100k' and monthly_volume_eur < 100000)
+         or (rules.monthly_volume = '100k-1m' and monthly_volume_eur >= 100000 and monthly_volume_eur < 1000000)
+         or (rules.monthly_volume = '1m-5m' and monthly_volume_eur >= 1000000 and monthly_volume_eur < 5000000)
+         or (rules.monthly_volume = '>5m' and monthly_volume_eur >= 5000000))
+    and (rules.monthly_fraud_level is null
+         or (rules.monthly_fraud_level = '<7.2%' and monthly_fraud_pct < 7.2)
+         or (rules.monthly_fraud_level = '7.2%-7.7%' and monthly_fraud_pct >= 7.2 and monthly_fraud_pct < 7.7)
+         or (rules.monthly_fraud_level = '7.7%-8.3%' and monthly_fraud_pct >= 7.7 and monthly_fraud_pct < 8.3)
+         or (rules.monthly_fraud_level = '>8.3%' and monthly_fraud_pct >= 8.3))
+
+  // match-grain fee: fee = fixed + rate(bps) * txn value / 10000 (NULL on unmatched outer rows)
+  dimension: match_fee_eur is rules.fixed_amount + rules.rate * eur_amount / 10000.0
+  dimension: is_matched is rules.ID is not null
+
+  // -- base-grain, fan-out-safe (distinct key / source-locality)
+  measure: transaction_count is count(psp_reference)
+  measure: base_total_amount is source.sum(eur_amount)
+  measure: base_avg_amount is source.avg(eur_amount)
+  measure: matched_transaction_count is count(psp_reference) { where: is_matched }
+  measure: unmatched_transaction_count is transaction_count - matched_transaction_count
+  measure: match_coverage_rate is matched_transaction_count / transaction_count
+
+  // -- match-grain (per transaction×rule pair); full sum/avg/min/max/count set
+  measure: matched_pair_count is rules.count()
+  measure: applicable_rule_count is count(rules.ID)   // distinct rule IDs
+  measure: total_fee_eur is rules.sum(rules.fixed_amount + rules.rate * eur_amount / 10000.0)
+  measure: avg_match_fee_eur is rules.avg(rules.fixed_amount + rules.rate * eur_amount / 10000.0)
+  measure: min_match_fee_eur is min(match_fee_eur)    // symmetric, safe; ignores unmatched NULLs
+  measure: max_match_fee_eur is max(match_fee_eur)
+  measure: fee_per_transaction is total_fee_eur / transaction_count
+  // matched volume: eur_amount counted once per matched pair — input to rate-override deltas
+  measure: matched_amount_eur is rules.sum(eur_amount)
+
+  // conservation check: how many transactions match >=1 rule vs none
+  view: match_coverage is {
+    aggregate:
+      transaction_count,
+      matched_transaction_count,
+      unmatched_transaction_count,
+      match_coverage_rate,
+      matched_pair_count,
+      total_fee_eur
+  }
+
+  // match grain: matched pairs only (unmatched outer rows excluded by design)
+  view: transaction_fee_detail is {
+    where: is_matched
+    group_by:
+      psp_reference, merchant, txn_date, card_scheme, aci, is_credit, eur_amount,
+      rule_id is rules.ID,
+      rule_fixed_amount is rules.fixed_amount,
+      rule_rate is rules.rate,
+      match_fee_eur
+    order_by: psp_reference asc, rule_id asc
+    limit: 10000
+  }
+
+  // one row per MATCHED transaction; unmatched txns pay 0 and are excluded here
+  view: transaction_fee_summary is {
+    where: is_matched
+    group_by: psp_reference, merchant, txn_date, card_scheme, aci, is_credit, eur_amount
+    aggregate:
+      matched_pair_count,
+      total_fee_eur,
+      avg_match_fee_eur,
+      min_match_fee_eur,
+      max_match_fee_eur
+    order_by: psp_reference asc
+    limit: 10000
+  }
+
+  // distinct rule IDs matching the scoped transactions (filter merchant/period outside)
+  view: applicable_fee_ids is {
+    where: is_matched
+    group_by: rule_id is rules.ID
+    aggregate: transaction_count, matched_amount_eur
+    order_by: rule_id asc
+    limit: 10000
+  }
+
+  // per-rule incidence: matched txns, matched volume, fee revenue
+  // rate-override delta = (new_rate - rule_rate) * matched_amount_eur / 10000
+  view: fee_rule_incidence is {
+    where: is_matched
+    group_by: rule_id is rules.ID, rule_fixed_amount is rules.fixed_amount, rule_rate is rules.rate
+    aggregate: transaction_count, matched_amount_eur, total_fee_eur
+    order_by: rule_id asc
+    limit: 10000
+  }
+
+  // merchants with >=1 matched txn; refine with `where: rules.ID = <id>` (+ period)
+  view: affected_merchants is {
+    where: is_matched
+    group_by: merchant
+    aggregate: transaction_count, matched_amount_eur, total_fee_eur
+    order_by: merchant asc
+  }
+
+  view: total_fees_by_merchant is {
+    group_by: merchant
+    aggregate:
+      transaction_count, matched_transaction_count, matched_pair_count,
+      total_fee_eur, fee_per_transaction, avg_match_fee_eur, min_match_fee_eur, max_match_fee_eur
+    order_by: merchant asc
+  }
+
+  view: total_fees_by_month is {
+    group_by: txn_month
+    aggregate: transaction_count, matched_pair_count, total_fee_eur, fee_per_transaction
+    order_by: txn_month asc
+  }
+
+  view: total_fees_by_merchant_month is {
+    group_by: merchant, txn_month
+    aggregate: transaction_count, matched_pair_count, total_fee_eur, fee_per_transaction
+    order_by: merchant asc, txn_month asc
+  }
+
+  // fees on ACTUAL traffic per scheme (counterfactual steering lives in the scenario layer)
+  view: total_fees_by_scheme is {
+    group_by: card_scheme
+    aggregate:
+      transaction_count, matched_transaction_count, matched_pair_count,
+      total_fee_eur, fee_per_transaction
+    order_by: total_fee_eur desc
+  }
+}

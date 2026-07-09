@@ -1,0 +1,230 @@
+##! experimental.parameters
+
+// txn fact re-projected to strip inherited base-grain measures (fan-out safety)
+source: scenario_txn_base is payments_enriched -> { select: * }
+
+// participating ACI universe: ACIs listed in at least one specific (non-wildcard) rule
+source: fee_rule_aci_universe is fee_rule_aci_rows -> { group_by: aci_value }
+
+// rule × candidate-ACI expansion; wildcard (empty-list) rules apply to EVERY candidate
+source: fee_rule_aci_expanded is fees_base extend {
+  join_cross: cand is fee_rule_aci_universe
+} -> {
+  where: len!number(aci) = 0 or list_contains!boolean(aci, cand.aci_value)
+  select:
+    ID, card_scheme, account_type, capture_delay, monthly_fraud_level,
+    monthly_volume, merchant_category_code, is_credit, intracountry,
+    fixed_amount, rate,
+    candidate_aci is cand.aci_value
+}
+
+source: fee_scenarios(
+  scenario_scheme::string is null,     // override txn card_scheme in the counterfactual match
+  scenario_aci::string is null,        // override txn ACI in the counterfactual match
+  scenario_mcc::number is null,        // override merchant MCC in the counterfactual match
+  override_rule_id::number is null,    // rule whose rate is hypothetically replaced
+  override_rule_rate::number is null   // the replacement rate (bps)
+) is scenario_txn_base extend {
+  primary_key: psp_reference
+
+  // effective (counterfactual) attributes: param wins when set, else actual
+  dimension: eff_scheme is pick card_scheme when scenario_scheme is null else scenario_scheme
+  dimension: eff_aci is pick aci when scenario_aci is null else scenario_aci
+  dimension: eff_mcc is pick merchant_mcc when scenario_mcc is null else scenario_mcc
+
+  // BASELINE match — wildcard branch on every field (empty list / NULL scalar = all)
+  join_many: rules is fees_base on
+    card_scheme = rules.card_scheme
+    and (len!number(rules.account_type) = 0
+         or list_contains!boolean(rules.account_type, merchant_account_type))
+    and (len!number(rules.merchant_category_code) = 0
+         or list_contains!boolean(rules.merchant_category_code, merchant_mcc))
+    and (len!number(rules.aci) = 0 or list_contains!boolean(rules.aci, aci))
+    and (rules.capture_delay is null or rules.capture_delay = merchant_capture_delay_bucket)
+    and (rules.is_credit is null or rules.is_credit = is_credit)
+    and (rules.intracountry is null or rules.intracountry = intracountry_num)
+    and (rules.monthly_volume is null
+         or (rules.monthly_volume = '<100k' and monthly_volume_eur < 100000)
+         or (rules.monthly_volume = '100k-1m' and monthly_volume_eur >= 100000 and monthly_volume_eur < 1000000)
+         or (rules.monthly_volume = '1m-5m' and monthly_volume_eur >= 1000000 and monthly_volume_eur < 5000000)
+         or (rules.monthly_volume = '>5m' and monthly_volume_eur >= 5000000))
+    and (rules.monthly_fraud_level is null
+         or (rules.monthly_fraud_level = '<7.2%' and monthly_fraud_pct < 7.2)
+         or (rules.monthly_fraud_level = '7.2%-7.7%' and monthly_fraud_pct >= 7.2 and monthly_fraud_pct < 7.7)
+         or (rules.monthly_fraud_level = '7.7%-8.3%' and monthly_fraud_pct >= 7.7 and monthly_fraud_pct < 8.3)
+         or (rules.monthly_fraud_level = '>8.3%' and monthly_fraud_pct >= 8.3))
+
+  // COUNTERFACTUAL match — same predicate, but on the effective (overridden) attributes;
+  // with all scenario params null it reproduces the baseline exactly (zero delta by construction)
+  join_many: cf_rules is fees_base on
+    eff_scheme = cf_rules.card_scheme
+    and (len!number(cf_rules.account_type) = 0
+         or list_contains!boolean(cf_rules.account_type, merchant_account_type))
+    and (len!number(cf_rules.merchant_category_code) = 0
+         or list_contains!boolean(cf_rules.merchant_category_code, eff_mcc))
+    and (len!number(cf_rules.aci) = 0 or list_contains!boolean(cf_rules.aci, eff_aci))
+    and (cf_rules.capture_delay is null or cf_rules.capture_delay = merchant_capture_delay_bucket)
+    and (cf_rules.is_credit is null or cf_rules.is_credit = is_credit)
+    and (cf_rules.intracountry is null or cf_rules.intracountry = intracountry_num)
+    and (cf_rules.monthly_volume is null
+         or (cf_rules.monthly_volume = '<100k' and monthly_volume_eur < 100000)
+         or (cf_rules.monthly_volume = '100k-1m' and monthly_volume_eur >= 100000 and monthly_volume_eur < 1000000)
+         or (cf_rules.monthly_volume = '1m-5m' and monthly_volume_eur >= 1000000 and monthly_volume_eur < 5000000)
+         or (cf_rules.monthly_volume = '>5m' and monthly_volume_eur >= 5000000))
+    and (cf_rules.monthly_fraud_level is null
+         or (cf_rules.monthly_fraud_level = '<7.2%' and monthly_fraud_pct < 7.2)
+         or (cf_rules.monthly_fraud_level = '7.2%-7.7%' and monthly_fraud_pct >= 7.2 and monthly_fraud_pct < 7.7)
+         or (cf_rules.monthly_fraud_level = '7.7%-8.3%' and monthly_fraud_pct >= 7.7 and monthly_fraud_pct < 8.3)
+         or (cf_rules.monthly_fraud_level = '>8.3%' and monthly_fraud_pct >= 8.3))
+
+  // SCHEME-STEERING sweep: no scheme predicate — every scheme's rules match;
+  // grouping by scheme_steer_rules.card_scheme yields the per-candidate-scheme cost
+  join_many: scheme_steer_rules is fees_base on
+    (len!number(scheme_steer_rules.account_type) = 0
+         or list_contains!boolean(scheme_steer_rules.account_type, merchant_account_type))
+    and (len!number(scheme_steer_rules.merchant_category_code) = 0
+         or list_contains!boolean(scheme_steer_rules.merchant_category_code, merchant_mcc))
+    and (len!number(scheme_steer_rules.aci) = 0
+         or list_contains!boolean(scheme_steer_rules.aci, aci))
+    and (scheme_steer_rules.capture_delay is null or scheme_steer_rules.capture_delay = merchant_capture_delay_bucket)
+    and (scheme_steer_rules.is_credit is null or scheme_steer_rules.is_credit = is_credit)
+    and (scheme_steer_rules.intracountry is null or scheme_steer_rules.intracountry = intracountry_num)
+    and (scheme_steer_rules.monthly_volume is null
+         or (scheme_steer_rules.monthly_volume = '<100k' and monthly_volume_eur < 100000)
+         or (scheme_steer_rules.monthly_volume = '100k-1m' and monthly_volume_eur >= 100000 and monthly_volume_eur < 1000000)
+         or (scheme_steer_rules.monthly_volume = '1m-5m' and monthly_volume_eur >= 1000000 and monthly_volume_eur < 5000000)
+         or (scheme_steer_rules.monthly_volume = '>5m' and monthly_volume_eur >= 5000000))
+    and (scheme_steer_rules.monthly_fraud_level is null
+         or (scheme_steer_rules.monthly_fraud_level = '<7.2%' and monthly_fraud_pct < 7.2)
+         or (scheme_steer_rules.monthly_fraud_level = '7.2%-7.7%' and monthly_fraud_pct >= 7.2 and monthly_fraud_pct < 7.7)
+         or (scheme_steer_rules.monthly_fraud_level = '7.7%-8.3%' and monthly_fraud_pct >= 7.7 and monthly_fraud_pct < 8.3)
+         or (scheme_steer_rules.monthly_fraud_level = '>8.3%' and monthly_fraud_pct >= 8.3))
+
+  // ACI-STEERING sweep: no ACI predicate — candidate_aci (real column, wildcard-expanded) is the lever
+  join_many: aci_steer_rules is fee_rule_aci_expanded on
+    card_scheme = aci_steer_rules.card_scheme
+    and (len!number(aci_steer_rules.account_type) = 0
+         or list_contains!boolean(aci_steer_rules.account_type, merchant_account_type))
+    and (len!number(aci_steer_rules.merchant_category_code) = 0
+         or list_contains!boolean(aci_steer_rules.merchant_category_code, merchant_mcc))
+    and (aci_steer_rules.capture_delay is null or aci_steer_rules.capture_delay = merchant_capture_delay_bucket)
+    and (aci_steer_rules.is_credit is null or aci_steer_rules.is_credit = is_credit)
+    and (aci_steer_rules.intracountry is null or aci_steer_rules.intracountry = intracountry_num)
+    and (aci_steer_rules.monthly_volume is null
+         or (aci_steer_rules.monthly_volume = '<100k' and monthly_volume_eur < 100000)
+         or (aci_steer_rules.monthly_volume = '100k-1m' and monthly_volume_eur >= 100000 and monthly_volume_eur < 1000000)
+         or (aci_steer_rules.monthly_volume = '1m-5m' and monthly_volume_eur >= 1000000 and monthly_volume_eur < 5000000)
+         or (aci_steer_rules.monthly_volume = '>5m' and monthly_volume_eur >= 5000000))
+    and (aci_steer_rules.monthly_fraud_level is null
+         or (aci_steer_rules.monthly_fraud_level = '<7.2%' and monthly_fraud_pct < 7.2)
+         or (aci_steer_rules.monthly_fraud_level = '7.2%-7.7%' and monthly_fraud_pct >= 7.2 and monthly_fraud_pct < 7.7)
+         or (aci_steer_rules.monthly_fraud_level = '7.7%-8.3%' and monthly_fraud_pct >= 7.7 and monthly_fraud_pct < 8.3)
+         or (aci_steer_rules.monthly_fraud_level = '>8.3%' and monthly_fraud_pct >= 8.3))
+
+  dimension: baseline_matched is rules.ID is not null
+  dimension: scenario_matched is cf_rules.ID is not null
+
+  // -- base grain (fan-out-safe: distinct key / source locality)
+  measure: transaction_count is count(psp_reference)
+  measure: base_total_amount is source.sum(eur_amount)
+  measure: baseline_matched_txn_count is count(psp_reference) { where: baseline_matched }
+  measure: scenario_matched_txn_count is count(psp_reference) { where: scenario_matched }
+
+  // -- baseline vs counterfactual, SAME population, delta as its own measure
+  measure: baseline_total_fee_eur is rules.sum(rules.fixed_amount + rules.rate * eur_amount / 10000.0)
+  measure: baseline_avg_fee_eur is rules.avg(rules.fixed_amount + rules.rate * eur_amount / 10000.0)
+  measure: scenario_total_fee_eur is cf_rules.sum(cf_rules.fixed_amount + cf_rules.rate * eur_amount / 10000.0)
+  measure: scenario_avg_fee_eur is cf_rules.avg(cf_rules.fixed_amount + cf_rules.rate * eur_amount / 10000.0)
+  measure: fee_delta_eur is scenario_total_fee_eur - baseline_total_fee_eur
+
+  // -- rate override on ONE rule: only pairs on that rule contribute; own-rate override => 0
+  measure: rate_override_delta_eur is
+    rules.sum(
+      pick (override_rule_rate - rules.rate) * eur_amount / 10000.0
+      when rules.ID = override_rule_id else 0.0)
+  measure: rate_override_total_fee_eur is baseline_total_fee_eur + rate_override_delta_eur
+
+  // -- steering (match grain, per candidate)
+  measure: scheme_steered_total_fee_eur is
+    scheme_steer_rules.sum(scheme_steer_rules.fixed_amount + scheme_steer_rules.rate * eur_amount / 10000.0)
+  measure: scheme_steered_avg_fee_eur is
+    scheme_steer_rules.avg(scheme_steer_rules.fixed_amount + scheme_steer_rules.rate * eur_amount / 10000.0)
+  measure: scheme_steered_pair_count is scheme_steer_rules.count()
+  measure: aci_steered_total_fee_eur is
+    aci_steer_rules.sum(aci_steer_rules.fixed_amount + aci_steer_rules.rate * eur_amount / 10000.0)
+  measure: aci_steered_avg_fee_eur is
+    aci_steer_rules.avg(aci_steer_rules.fixed_amount + aci_steer_rules.rate * eur_amount / 10000.0)
+  measure: aci_steered_pair_count is aci_steer_rules.count()
+
+  view: scenario_fee_totals is {
+    aggregate:
+      transaction_count,
+      baseline_matched_txn_count, scenario_matched_txn_count,
+      baseline_total_fee_eur, scenario_total_fee_eur, fee_delta_eur
+  }
+
+  view: scenario_fees_by_merchant is {
+    group_by: merchant
+    aggregate:
+      transaction_count,
+      baseline_matched_txn_count, scenario_matched_txn_count,
+      baseline_total_fee_eur, scenario_total_fee_eur, fee_delta_eur
+    order_by: merchant asc
+  }
+
+  view: rate_override_totals is {
+    aggregate:
+      transaction_count,
+      baseline_total_fee_eur,
+      rate_override_delta_eur,
+      rate_override_total_fee_eur
+  }
+
+  view: scheme_steering_ranking is {
+    where: scheme_steer_rules.ID is not null
+    group_by: candidate_scheme is scheme_steer_rules.card_scheme
+    aggregate:
+      steered_txn_count is count(psp_reference),
+      scheme_steered_pair_count,
+      scheme_steered_total_fee_eur,
+      scheme_steered_avg_fee_eur
+    order_by: scheme_steered_total_fee_eur asc
+  }
+
+  view: aci_steering_ranking is {
+    where: aci_steer_rules.ID is not null
+    group_by: candidate_aci is aci_steer_rules.candidate_aci
+    aggregate:
+      steered_txn_count is count(psp_reference),
+      aci_steered_pair_count,
+      aci_steered_total_fee_eur,
+      aci_steered_avg_fee_eur
+    order_by: aci_steered_total_fee_eur asc, candidate_aci asc
+  }
+
+  // no-op guard: candidate must differ from the txn's CURRENT aci
+  view: fraud_aci_steering_ranking is {
+    where: has_fraudulent_dispute
+      and aci_steer_rules.ID is not null
+      and aci_steer_rules.candidate_aci != aci
+    group_by: candidate_aci is aci_steer_rules.candidate_aci
+    aggregate:
+      steered_txn_count is count(psp_reference),
+      aci_steered_pair_count,
+      aci_steered_total_fee_eur,
+      aci_steered_avg_fee_eur
+    order_by: aci_steered_total_fee_eur asc, candidate_aci asc
+  }
+
+  // refine with `where: rules.ID = <id>` (+ period); for "rule restricted to account
+  // types L" add `where: merchant_account_type != '<kept type>'` — those merchants lose the match
+  view: affected_merchants_by_rule is {
+    where: baseline_matched
+    group_by: merchant, merchant_account_type
+    aggregate:
+      matched_txn_count is count(psp_reference),
+      matched_amount_eur is rules.sum(eur_amount),
+      baseline_total_fee_eur
+    order_by: merchant asc
+  }
+}

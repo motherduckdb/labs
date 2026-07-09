@@ -1,34 +1,23 @@
 source: merchant_category_codes_base is duckdb.table('merchant_category_codes') extend {
   primary_key: mcc
 
-  // mcc stored as VARCHAR; numeric form needed to match BIGINT mcc columns elsewhere
+  // mcc stored as VARCHAR; numeric form needed to join merchants/fees (BIGINT codes)
   dimension: mcc_code is mcc::number
-  // first two digits of the 4-digit MCC indicate the broad category
+  // first two digits = industry category per MCC spec
   dimension: mcc_category_prefix is substr!string(mcc, 1, 2)
-  dimension: description_upper is upper(description)
+  dimension: description_lower is lower(description)
 
-  measure: code_count is count()
-  measure: distinct_mcc_count is count(mcc)
+  measure: mcc_count is count()
   measure: distinct_description_count is count(description)
-  measure: distinct_category_prefix_count is count(mcc_category_prefix)
-  measure: mcc_code_sum is mcc_code.sum()
-  measure: mcc_code_avg is mcc_code.avg()
-  measure: min_mcc_code is mcc_code.min()
-  measure: max_mcc_code is mcc_code.max()
 
   view: all_codes is {
-    select: mcc, mcc_code, description
+    select: mcc, description
     order_by: mcc asc
   }
 
   view: by_category_prefix is {
     group_by: mcc_category_prefix
-    aggregate: code_count, min_mcc_code, max_mcc_code
+    aggregate: mcc_count
     order_by: mcc_category_prefix asc
-  }
-
-  view: description_lookup is {
-    group_by: description, mcc, mcc_code
-    order_by: description asc
   }
 }
