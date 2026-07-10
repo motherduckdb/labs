@@ -46,7 +46,7 @@ exports:
     usage: "run: fee_rules(notional is 100, for_card_scheme is 'GlobalCard', for_credit is true) -> avg_fee_by_aci + { order_by: avg_fee_at_notional desc, rule_aci asc; limit: 1 }"
   - name: avg_fee_by_mcc
     kind: view
-    summary: Average-scenario fee per declared MCC code (+description); wildcard-MCC rules excluded; ordered most-expensive-first.
+    summary: Average-scenario fee per MCC over the FULL rule-derived MCC universe (every MCC appearing in any rule, including catalog-missing ones); wildcard (empty-MCC-list) rules INCLUDED in each MCC's average; returns mcc_code; ordered most-expensive-first.
     usage: "run: fee_rules(notional is 50000) -> avg_fee_by_mcc; take all top rows sharing the max avg_fee_at_notional for ties."
   - name: avg_fee_by_account_type
     kind: view

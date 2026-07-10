@@ -3,6 +3,14 @@
 // value universes derived from the data (never hardcoded literals)
 source: aci_values is payments_base -> { group_by: aci_value is aci }
 source: account_type_values is merchants_base -> { group_by: account_type }
+// candidate-MCC universe = the DISTINCT MCCs that actually appear in the fee rules,
+// obtained by unnesting the rule list column itself (`.each`). The MCC catalog
+// (merchant_category_codes_base) is INCOMPLETE — it drops rule MCCs like 5412/5911 —
+// so it must NOT be the ranking universe.
+source: fee_rule_mccs is duckdb.table('fees') -> {
+  where: len!number(merchant_category_code) > 0   // skip wildcard/empty-list rules (no MCC to enumerate)
+  group_by: mcc_value is merchant_category_code.each
+}
 
 // parameterized rule source: notional EUR + optional scoping filters.
 // Every filter parameter is wired through matches_filters, which every
@@ -31,6 +39,11 @@ source: fee_rules(
     on list_contains!boolean(aci, aci_match.aci_value)
   join_many: acct_match is account_type_values
     on list_contains!boolean(account_type, acct_match.account_type)
+  // candidate MCC from the rule-derived universe (not the catalog), WILDCARD-INCLUSIVE:
+  // an empty-list rule applies to EVERY candidate MCC, so it must feed every MCC's average.
+  join_many: mcc_candidate is fee_rule_mccs
+    on list_contains!boolean(merchant_category_code, mcc_candidate.mcc_value)
+       or len!number(merchant_category_code) = 0
 
   // fee = fixed + rate * value / 10000 (rate in basis points); null when notional unset
   dimension: fee_at_notional is fixed_amount + rate * notional / 10000
@@ -106,10 +119,13 @@ source: fee_rules(
     order_by: avg_fee_at_notional asc, rule_aci asc
   }
 
-  // participating universe only: rules that DECLARE MCCs (wildcards excluded)
+  // per-MCC average over the FULL rule-derived candidate universe (every MCC that
+  // appears in any rule, incl. catalog-missing ones like 5412/5911) with WILDCARD
+  // rules included in each MCC's average (via the mcc_candidate join). Returns the
+  // MCC KEY; ties at the extremum are surfaced by the caller via `= max`, not limit 1.
   view: avg_fee_by_mcc is {
-    where: matches_filters and len!number(merchant_category_code) > 0
-    group_by: mcc_code is mcc_info.mcc_code, mcc_description is mcc_info.description
+    where: matches_filters
+    group_by: mcc_code is mcc_candidate.mcc_value
     aggregate: distinct_rule_count, avg_fee_at_notional,
       min_fee_at_notional, max_fee_at_notional
     order_by: avg_fee_at_notional desc, mcc_code asc
