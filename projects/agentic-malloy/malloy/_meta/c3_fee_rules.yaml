@@ -1,0 +1,78 @@
+file: c3_fee_rules.malloy
+domain: payments fee optimization — fee-rule catalog analytics
+summary: >
+  Parameterized fee-rule source over the 1000-row fees table for "average
+  scenario" (rule-only, no transactions) questions. Parameters: notional
+  (hypothetical transaction value in EUR; fee = fixed_amount + rate*notional/10000)
+  plus optional scoping filters (card scheme, account type, MCC code or MCC
+  description, ACI, credit flag, domestic/international, capture-delay bucket,
+  monthly-volume bucket, monthly-fraud bucket). All filters honor wildcard
+  encodings — an empty-list / NULL rule field matches every value — and every
+  measure aggregates AFTER the filters via matches_filters, so a bound
+  parameter always narrows the result. List fields (account_type, MCC, ACI)
+  are exploded through join_many fan-outs to data-derived value universes;
+  measures use distinct-on-ID symmetric aggregation so they stay per-rule
+  correct under the fan-out. Ranking views cover only the participating
+  universe (rules that DECLARE a value; wildcard-only rules are excluded from
+  list-field rankings, as they carry no distinguishing signal).
+exports:
+  - name: aci_values
+    kind: source
+    summary: Observed ACI value universe (A–G), derived from payments.
+    usage: "Rarely queried directly; feeds the aci fan-out join in fee_rules."
+  - name: account_type_values
+    kind: source
+    summary: Observed merchant account-type universe, derived from merchants.
+    usage: "Rarely queried directly; feeds the account-type fan-out join in fee_rules."
+  - name: fee_rules
+    kind: source
+    summary: >
+      Parameterized fee-rule source (grain: one fee rule). Params: notional,
+      for_card_scheme, for_account_type, for_mcc (numeric code),
+      for_mcc_description (case-insensitive lookup-table text), for_aci,
+      for_credit, for_intracountry (true=domestic), for_capture_delay
+      ('<3','3-5','>5','immediate','manual'), for_volume_bucket
+      ('<100k','100k-1m','1m-5m','>5m'), for_fraud_bucket
+      ('<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'). All measures are
+      filter-scoped and fan-out safe.
+    usage: "run: fee_rules(notional is 100, for_card_scheme is 'GlobalCard', for_credit is true) -> { aggregate: avg_fee_at_notional }"
+  - name: avg_fee_by_card_scheme
+    kind: view
+    summary: Average/min/max fee at the notional per card scheme over matching rules, ordered cheapest-first with alphabetical tie-break.
+    usage: "run: fee_rules(notional is 50) -> avg_fee_by_card_scheme + { limit: 1 } for the cheapest scheme; reorder desc for the most expensive."
+  - name: avg_fee_by_aci
+    kind: view
+    summary: Average-scenario fee per declared ACI (wildcard-ACI rules excluded), cheapest-first, alphabetical tie-break.
+    usage: "run: fee_rules(notional is 100, for_card_scheme is 'GlobalCard', for_credit is true) -> avg_fee_by_aci + { order_by: avg_fee_at_notional desc, rule_aci asc; limit: 1 }"
+  - name: avg_fee_by_mcc
+    kind: view
+    summary: Average-scenario fee per declared MCC code (+description); wildcard-MCC rules excluded; ordered most-expensive-first.
+    usage: "run: fee_rules(notional is 50000) -> avg_fee_by_mcc; take all top rows sharing the max avg_fee_at_notional for ties."
+  - name: avg_fee_by_account_type
+    kind: view
+    summary: Average-scenario fee per declared account type (wildcard rules excluded).
+    usage: "run: fee_rules(notional is 1000) -> avg_fee_by_account_type"
+  - name: avg_fee_by_credit_scope
+    kind: view
+    summary: Average-scenario fee by credit/debit/any rule scope.
+    usage: "run: fee_rules(notional is 500) -> avg_fee_by_credit_scope"
+  - name: avg_fee_by_intracountry_scope
+    kind: view
+    summary: Average-scenario fee by domestic/international/any rule scope.
+    usage: "run: fee_rules(notional is 500) -> avg_fee_by_intracountry_scope"
+  - name: avg_fee_by_capture_delay
+    kind: view
+    summary: Average-scenario fee per declared capture-delay bucket (NULL-wildcard rules excluded).
+    usage: "run: fee_rules(notional is 100) -> avg_fee_by_capture_delay"
+  - name: matching_rule_ids
+    kind: view
+    summary: Deduplicated list of fee-rule IDs matching the bound parameters (e.g. all rules applying to account_type D and aci F).
+    usage: "run: fee_rules(for_account_type is 'D', for_aci is 'F') -> matching_rule_ids"
+  - name: matching_rule_detail
+    kind: view
+    summary: One row per matching rule with pricing terms, scopes, wildcard flags, and fee_at_notional.
+    usage: "bind filters + notional, then run matching_rule_detail; refine with extra where on fixed_amount/rate as needed"
+provides_for:
+  - "average-scenario fee comparisons at a hypothetical notional (cheapest / most expensive scheme, ACI, MCC, account type)"
+  - "rule-applicability lookups by declared merchant/transaction characteristics (fee IDs for a set of predicates)"
+  - "input rule universe for downstream fact×rule resolution layers (per-transaction fee computation, steering counterfactuals)"

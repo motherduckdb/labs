@@ -1,71 +1,63 @@
-// c1_merchant_profiles.malloy — merchant profile enriched with MCC description + acquirer country
-
+// merchant dimension enriched: MCC description + acquirer→country fan-out
+// CAUTION: join_many on the acquirer list fans out rows (one per acquirer);
+// use distinct_merchant_count (count(merchant)) — base merchant_count inflates here.
 source: merchant_profiles is merchants_base extend {
-  // mcc lookup stores codes as VARCHAR; match on its numeric cast (mcc_code)
-  join_one: mcc_info is merchant_category_codes_base
-    on merchant_category_code = mcc_info.mcc_code
 
-  // first listed acquirer treated as primary; list_extract is 1-based
-  join_one: primary_acquirer_info is acquirer_countries_base
-    on list_extract!string(acquirer, 1) = primary_acquirer_info.acquirer
+  // BIGINT merchant code = numeric form of the VARCHAR lookup key
+  join_one: mcc_lookup is merchant_category_codes_base
+    on merchant_category_code = mcc_lookup.mcc_code
 
-  // FAN-OUT: one row per (merchant, acquirer) — use distinct_merchant_count, not count()
-  join_many: acquirer_info is acquirer_countries_base
-    on list_contains!boolean(acquirer, acquirer_info.acquirer)
+  // list membership join: acquirer is a VARCHAR[]; one matched row per acquirer
+  join_many: acquirer_country is acquirer_countries_base
+    on list_contains!boolean(acquirer, acquirer_country.acquirer)
 
-  dimension: mcc_description is mcc_info.description
-  dimension: primary_acquirer is list_extract!string(acquirer, 1)
-  dimension: primary_acquirer_country is primary_acquirer_info.country_code
+  dimension: mcc_description is mcc_lookup.description
+  dimension: acquiring_country is acquirer_country.country_code
+  dimension: acquirer_name is acquirer_country.acquirer
 
-  // fan-out-safe (count(x) is distinct in Malloy)
+  // fan-out-safe (distinct) counts
   measure: distinct_merchant_count is count(merchant)
-  measure: acquirer_link_count is acquirer_info.count()
+  measure: acquiring_country_count is count(acquirer_country.country_code)
+  measure: distinct_acquirer_count is count(acquirer_country.acquirer)
 
-  view: profile_enriched is {
-    select:
+  // one row per merchant; acquirer fan-out collapsed into a nest
+  view: profile is {
+    group_by:
       merchant,
       account_type,
       account_type_description,
       merchant_category_code,
       mcc_description,
       capture_delay,
-      capture_delay_bucket,
-      acquirer,
-      acquirer_count,
-      primary_acquirer,
-      primary_acquirer_country
+      capture_delay_bucket
+    nest: acquirers is {
+      group_by: acquirer_name, acquiring_country
+      order_by: acquirer_name asc
+    }
     order_by: merchant asc
   }
 
-  view: by_mcc_described is {
+  view: by_acquiring_country is {
+    group_by: acquiring_country
+    aggregate: distinct_merchant_count, distinct_acquirer_count
+    order_by: distinct_merchant_count desc
+  }
+
+  view: by_acquirer is {
+    group_by: acquirer_name, acquiring_country
+    aggregate: distinct_merchant_count
+    order_by: distinct_merchant_count desc
+  }
+
+  view: by_mcc_profile is {
     group_by: merchant_category_code, mcc_description
     aggregate: distinct_merchant_count
     order_by: distinct_merchant_count desc
   }
 
-  view: merchant_acquirer_countries is {
-    group_by:
-      merchant,
-      acquirer_name is acquirer_info.acquirer,
-      acquirer_country is acquirer_info.country_code
-    order_by: merchant asc, acquirer_name asc
-  }
-
-  view: by_acquirer_country is {
-    group_by: acquirer_country is acquirer_info.country_code
-    aggregate: distinct_merchant_count, acquirer_link_count
-    order_by: distinct_merchant_count desc
-  }
-
-  view: by_account_type_described is {
+  view: by_account_type_profile is {
     group_by: account_type, account_type_description
-    aggregate: distinct_merchant_count
-    order_by: distinct_merchant_count desc
-  }
-
-  view: by_capture_delay_described is {
-    group_by: capture_delay, capture_delay_bucket
-    aggregate: distinct_merchant_count
+    aggregate: distinct_merchant_count, acquiring_country_count
     order_by: distinct_merchant_count desc
   }
 }

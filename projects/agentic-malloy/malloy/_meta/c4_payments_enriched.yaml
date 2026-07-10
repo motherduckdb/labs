@@ -1,0 +1,7 @@
+file: c4_payments_enriched.malloy
+domain: dabstep
+summary: (auto)
+exports:
+  - name: c4_payments_enriched
+    kind: source
+    summary: (auto)

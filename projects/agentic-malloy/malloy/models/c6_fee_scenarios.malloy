@@ -1,0 +1,303 @@
+// c6_fee_scenarios.malloy — counterfactual scenarios on top of the rule-matching model.
+// All four sources fan out payments × rules: base-grain measures inherited from
+// payments_enriched INFLATE here — use only the fan-out-safe measures defined below.
+
+##! experimental.parameters
+
+// ---------------------------------------------------------------------------
+// 1) CARD-SCHEME STEERING
+// rules matched on every predicate EXCEPT card_scheme (left free); grouping by
+// rule.card_scheme yields the counterfactual "all traffic on scheme s" totals.
+source: scheme_steering is payments_enriched extend {
+  join_many: rule is fee_rule_rows on
+    (len!number(rule.account_type) = 0
+         or list_contains!boolean(rule.account_type, account_type))
+    and (len!number(rule.merchant_category_code) = 0
+         or list_contains!boolean(rule.merchant_category_code, merchant_mcc))
+    and (len!number(rule.aci) = 0
+         or list_contains!boolean(rule.aci, aci))
+    and (rule.is_credit = null or rule.is_credit = is_credit)
+    and (rule.intracountry = null
+         or (rule.intracountry = 1 and is_intracountry)
+         or (rule.intracountry = 0 and not is_intracountry))
+    and (rule.capture_delay = null or rule.capture_delay = capture_delay_bucket)
+    and (rule.monthly_volume = null or rule.monthly_volume = monthly_volume_bucket)
+    and (rule.monthly_fraud_level = null
+         or rule.monthly_fraud_level = monthly_fraud_level_bucket)
+
+  dimension: candidate_scheme is rule.card_scheme
+
+  // fan-out-safe: count(x) is distinct; fee aggregated at match (rule) grain
+  measure: steered_transaction_count is count(psp_reference)
+  measure: steered_rule_count is count(rule.ID)
+  measure: steered_total_fee is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  measure: steered_avg_fee_per_match is
+    rule.avg(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  measure: steered_avg_fee_per_transaction is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+      / count(psp_reference)
+  // conservation: should be 0 (every tx must match >= 1 rule on some scheme)
+  measure: unmatched_transaction_count is
+    count(psp_reference) { where: rule.ID = null }
+
+  // rank ascending = cheapest scheme first; caller refines with merchant/period
+  view: scheme_steering_totals is {
+    where: candidate_scheme != null
+    group_by: candidate_scheme
+    aggregate: steered_transaction_count, steered_total_fee,
+      steered_avg_fee_per_transaction
+    order_by: steered_total_fee asc, candidate_scheme asc
+  }
+
+  view: scheme_steering_by_merchant is {
+    where: candidate_scheme != null
+    group_by: merchant, candidate_scheme
+    aggregate: steered_transaction_count, steered_total_fee,
+      steered_avg_fee_per_transaction
+    order_by: merchant asc, steered_total_fee asc, candidate_scheme asc
+  }
+
+  view: scheme_steering_by_merchant_month is {
+    where: candidate_scheme != null
+    group_by: merchant, month_num, candidate_scheme
+    aggregate: steered_transaction_count, steered_total_fee
+    order_by: merchant asc, month_num asc, steered_total_fee asc
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2) ACI STEERING OF FRAUDULENT TRAFFIC
+// fraud-flagged transactions crossed with the observed ACI universe (candidate
+// universe derived from the data), the no-op candidate (= current ACI) excluded,
+// then re-matched against rules under the overridden ACI.
+source: fraud_aci_steering is payments_enriched extend {
+  join_cross: cand is aci_values
+} -> {
+  where: has_fraudulent_dispute and cand.aci_value != aci  // counterfactual guard
+  select:
+    psp_reference,
+    merchant,
+    `year`,
+    month_num,
+    day_of_year,
+    card_scheme,
+    current_aci is aci,
+    candidate_aci is cand.aci_value,
+    is_credit,
+    eur_amount,
+    is_intracountry,
+    account_type,
+    merchant_mcc,
+    capture_delay_bucket,
+    monthly_volume_bucket,
+    monthly_fraud_level_bucket,
+    // one row per (transaction, candidate ACI)
+    scenario_key is concat(psp_reference::string, '-', cand.aci_value)
+} extend {
+  primary_key: scenario_key
+
+  join_many: rule is fee_rule_rows on
+    rule.card_scheme = card_scheme
+    and (len!number(rule.account_type) = 0
+         or list_contains!boolean(rule.account_type, account_type))
+    and (len!number(rule.merchant_category_code) = 0
+         or list_contains!boolean(rule.merchant_category_code, merchant_mcc))
+    // ACI predicate evaluated against the CANDIDATE, not the actual ACI
+    and (len!number(rule.aci) = 0
+         or list_contains!boolean(rule.aci, candidate_aci))
+    and (rule.is_credit = null or rule.is_credit = is_credit)
+    and (rule.intracountry = null
+         or (rule.intracountry = 1 and is_intracountry)
+         or (rule.intracountry = 0 and not is_intracountry))
+    and (rule.capture_delay = null or rule.capture_delay = capture_delay_bucket)
+    and (rule.monthly_volume = null or rule.monthly_volume = monthly_volume_bucket)
+    and (rule.monthly_fraud_level = null
+         or rule.monthly_fraud_level = monthly_fraud_level_bucket)
+
+  measure: steered_transaction_count is count(psp_reference)
+  measure: steered_rule_count is count(rule.ID)
+  measure: steered_total_fee is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  measure: steered_avg_fee_per_match is
+    rule.avg(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  measure: steered_avg_fee_per_transaction is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+      / count(psp_reference)
+  // candidate ACIs with zero matching rules for some tx surface here
+  measure: unmatched_scenario_count is count(scenario_key) { where: rule.ID = null }
+
+  // rank ascending = preferred (cheapest) ACI; caller refines merchant/period
+  view: aci_steering_totals is {
+    group_by: candidate_aci
+    aggregate: steered_transaction_count, steered_total_fee,
+      steered_avg_fee_per_transaction, unmatched_scenario_count
+    order_by: steered_total_fee asc, candidate_aci asc
+  }
+
+  view: aci_steering_by_merchant is {
+    group_by: merchant, candidate_aci
+    aggregate: steered_transaction_count, steered_total_fee,
+      steered_avg_fee_per_transaction
+    order_by: merchant asc, steered_total_fee asc, candidate_aci asc
+  }
+
+  // fee depends on scheme too — scheme:fee shaped ranking per candidate ACI
+  view: aci_steering_by_scheme is {
+    group_by: candidate_aci, card_scheme
+    aggregate: steered_transaction_count, steered_total_fee,
+      steered_avg_fee_per_transaction
+    order_by: steered_total_fee asc, candidate_aci asc, card_scheme asc
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3) MCC-CHANGE FEE DELTA
+// ONE join_many carrying the UNION of baseline + scenario rule matches (never
+// two live fan-outs); each match row is classified per leg and the delta is a
+// single rule-grain sum. new_mcc = merchant's own MCC (or unset) => delta 0.
+source: mcc_change_scenario(new_mcc::number is null) is payments_enriched extend {
+  join_many: rule is fee_rule_rows on
+    rule.card_scheme = card_scheme
+    and (len!number(rule.account_type) = 0
+         or list_contains!boolean(rule.account_type, account_type))
+    // union of both MCC legs; unset param falls back to the actual MCC (no-op)
+    and (len!number(rule.merchant_category_code) = 0
+         or list_contains!boolean(rule.merchant_category_code, merchant_mcc)
+         or list_contains!boolean(rule.merchant_category_code,
+              coalesce!number(new_mcc, merchant_mcc)))
+    and (len!number(rule.aci) = 0
+         or list_contains!boolean(rule.aci, aci))
+    and (rule.is_credit = null or rule.is_credit = is_credit)
+    and (rule.intracountry = null
+         or (rule.intracountry = 1 and is_intracountry)
+         or (rule.intracountry = 0 and not is_intracountry))
+    and (rule.capture_delay = null or rule.capture_delay = capture_delay_bucket)
+    and (rule.monthly_volume = null or rule.monthly_volume = monthly_volume_bucket)
+    and (rule.monthly_fraud_level = null
+         or rule.monthly_fraud_level = monthly_fraud_level_bucket)
+
+  // leg classification of each matched rule row (wildcard MCC rules match both)
+  dimension: matches_current_mcc is
+    len!number(rule.merchant_category_code) = 0
+    or list_contains!boolean(rule.merchant_category_code, merchant_mcc)
+  dimension: matches_scenario_mcc is
+    len!number(rule.merchant_category_code) = 0
+    or list_contains!boolean(rule.merchant_category_code,
+         coalesce!number(new_mcc, merchant_mcc))
+
+  measure: baseline_transaction_count is
+    count(psp_reference) { where: matches_current_mcc }
+  measure: scenario_transaction_count is
+    count(psp_reference) { where: matches_scenario_mcc }
+  measure: baseline_rule_count is count(rule.ID) { where: matches_current_mcc }
+  measure: scenario_rule_count is count(rule.ID) { where: matches_scenario_mcc }
+
+  measure: baseline_total_fee is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+    { where: matches_current_mcc }
+  measure: scenario_total_fee is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+    { where: matches_scenario_mcc }
+  // both legs in ONE relation grain: scenario - baseline per match row
+  measure: mcc_change_delta is
+    rule.sum((rule.fixed_amount + rule.rate * eur_amount / 10000)
+      * ((pick 1 when matches_scenario_mcc else 0)
+       - (pick 1 when matches_current_mcc else 0)))
+
+  view: mcc_change_by_merchant is {
+    group_by: merchant, merchant_mcc
+    aggregate:
+      baseline_transaction_count, scenario_transaction_count,
+      baseline_total_fee, scenario_total_fee, mcc_change_delta
+    order_by: merchant asc
+  }
+
+  view: mcc_change_summary is {
+    aggregate:
+      baseline_transaction_count, scenario_transaction_count,
+      baseline_rule_count, scenario_rule_count,
+      baseline_total_fee, scenario_total_fee, mcc_change_delta
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4) RULE-SCOPE-CHANGE MERCHANT IMPACT
+// one target rule; account_type predicate replaced by "= override" in the
+// scenario leg; the join carries the UNION of both legs; affected merchants
+// are the symmetric difference of the matched populations.
+source: rule_scope_change(
+  target_fee_id::number is null,
+  override_account_type::string is null
+) is payments_enriched extend {
+  join_many: rule is fee_rule_rows on
+    rule.ID = target_fee_id
+    and rule.card_scheme = card_scheme
+    and (len!number(rule.merchant_category_code) = 0
+         or list_contains!boolean(rule.merchant_category_code, merchant_mcc))
+    and (len!number(rule.aci) = 0
+         or list_contains!boolean(rule.aci, aci))
+    and (rule.is_credit = null or rule.is_credit = is_credit)
+    and (rule.intracountry = null
+         or (rule.intracountry = 1 and is_intracountry)
+         or (rule.intracountry = 0 and not is_intracountry))
+    and (rule.capture_delay = null or rule.capture_delay = capture_delay_bucket)
+    and (rule.monthly_volume = null or rule.monthly_volume = monthly_volume_bucket)
+    and (rule.monthly_fraud_level = null
+         or rule.monthly_fraud_level = monthly_fraud_level_bucket)
+    // union of as-is wildcard-aware match and overridden match
+    and ((len!number(rule.account_type) = 0
+          or list_contains!boolean(rule.account_type, account_type))
+         or (override_account_type != null
+             and account_type = override_account_type))
+
+  dimension: matched_as_is is
+    len!number(rule.account_type) = 0
+    or list_contains!boolean(rule.account_type, account_type)
+  // unset override = no-op scenario (delta guard: zero symmetric difference)
+  dimension: matched_overridden is
+    pick matched_as_is when override_account_type = null
+    else account_type = override_account_type
+
+  measure: as_is_transaction_count is
+    count(psp_reference) { where: matched_as_is }
+  measure: overridden_transaction_count is
+    count(psp_reference) { where: matched_overridden }
+  measure: as_is_merchant_count is count(merchant) { where: matched_as_is }
+  measure: overridden_merchant_count is count(merchant) { where: matched_overridden }
+
+  // symmetric difference only: merchants whose applicability status flips
+  view: affected_merchants is {
+    group_by: merchant
+    aggregate: as_is_transaction_count, overridden_transaction_count
+  } -> {
+    where: (as_is_transaction_count > 0 and overridden_transaction_count = 0)
+        or (as_is_transaction_count = 0 and overridden_transaction_count > 0)
+    select: merchant, as_is_transaction_count, overridden_transaction_count
+    order_by: merchant asc
+  }
+
+  // full before/after status per merchant
+  view: merchant_impact is {
+    group_by: merchant, account_type
+    aggregate: as_is_transaction_count, overridden_transaction_count
+  } -> {
+    select:
+      merchant, account_type,
+      as_is_transaction_count, overridden_transaction_count,
+      impact is
+        pick 'loses rule' when as_is_transaction_count > 0
+          and overridden_transaction_count = 0
+        pick 'gains rule' when as_is_transaction_count = 0
+          and overridden_transaction_count > 0
+        pick 'still matched' when as_is_transaction_count > 0
+          and overridden_transaction_count > 0
+        else 'never matched'
+    order_by: merchant asc
+  }
+
+  view: scope_change_summary is {
+    aggregate: as_is_merchant_count, overridden_merchant_count,
+      as_is_transaction_count, overridden_transaction_count
+  }
+}

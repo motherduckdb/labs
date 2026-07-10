@@ -1,0 +1,129 @@
+##! experimental.parameters
+
+// minimal rule-row source local to the matching layer (PK required so
+// join_many symmetric aggregates can dedupe the fan-out)
+source: fee_rule_rows is duckdb.table('fees') extend {
+  primary_key: ID
+}
+
+// transaction × fee-rule fan-out: each payment row matches every rule whose
+// predicates pass (wildcards: empty list / NULL scalar = "applies to all").
+// new_rate + target_fee_id drive the rate-change-delta counterfactual.
+// CAUTION: base-grain measures inherited from payments_enriched (transaction_count,
+// total_amount, ...) INFLATE here by the per-transaction match count — use the
+// fan-out-safe measures below (count(psp_reference), rule.sum(...)) instead.
+source: transaction_fees(
+  new_rate::number is null,
+  target_fee_id::number is null
+) is payments_enriched extend {
+
+  // on-clause references ONLY local materialized columns + rule columns;
+  // every match field carries its wildcard branch
+  join_many: rule is fee_rule_rows on
+    rule.card_scheme = card_scheme
+    and (len!number(rule.account_type) = 0
+         or list_contains!boolean(rule.account_type, account_type))
+    and (len!number(rule.merchant_category_code) = 0
+         or list_contains!boolean(rule.merchant_category_code, merchant_mcc))
+    and (len!number(rule.aci) = 0
+         or list_contains!boolean(rule.aci, aci))
+    and (rule.is_credit = null or rule.is_credit = is_credit)
+    and (rule.intracountry = null
+         or (rule.intracountry = 1 and is_intracountry)
+         or (rule.intracountry = 0 and not is_intracountry))
+    and (rule.capture_delay = null or rule.capture_delay = capture_delay_bucket)
+    and (rule.monthly_volume = null or rule.monthly_volume = monthly_volume_bucket)
+    and (rule.monthly_fraud_level = null
+         or rule.monthly_fraud_level = monthly_fraud_level_bucket)
+
+  dimension: matched_fee_id is rule.ID
+  dimension: matched_fixed_amount is rule.fixed_amount
+  dimension: matched_rate is rule.rate
+
+  // fan-out-safe entity counts (count(x) is distinct)
+  measure: matched_transaction_count is count(psp_reference)
+  measure: matched_merchant_count is count(merchant)
+  measure: matched_rule_count is count(rule.ID)
+  measure: match_row_count is rule.count()
+  // conservation check: should be 0 (every transaction must match >= 1 rule)
+  measure: unmatched_transaction_count is count(psp_reference) { where: rule.ID = null }
+
+  // per-match fee = fixed + rate * amount / 10000, aggregated at rule (match) grain
+  measure: total_fee_amount is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  measure: avg_fee_amount is
+    rule.avg(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  measure: min_fee_amount is
+    min(rule.fixed_amount + rule.rate * eur_amount / 10000)
+  measure: max_fee_amount is
+    max(rule.fixed_amount + rule.rate * eur_amount / 10000)
+
+  // counterfactual: only the transactions matched by target_fee_id contribute;
+  // new_rate set to the rule's own rate yields a ZERO delta by construction
+  measure: rate_change_delta is
+    rule.sum((new_rate - rule.rate) * eur_amount / 10000)
+    { where: rule.ID = target_fee_id }
+  measure: delta_transaction_count is
+    count(psp_reference) { where: rule.ID = target_fee_id }
+  measure: delta_baseline_fee is
+    rule.sum(rule.fixed_amount + rule.rate * eur_amount / 10000)
+    { where: rule.ID = target_fee_id }
+
+  // set of rule IDs matched by the scoped traffic (refine with merchant/time filters)
+  view: applicable_fee_ids is {
+    where: rule.ID != null
+    group_by: matched_fee_id
+    order_by: matched_fee_id asc
+    limit: 1000
+  }
+
+  // merchants matched per rule (refine with `where: matched_fee_id = ...`)
+  view: merchants_for_fee is {
+    where: rule.ID != null
+    group_by: matched_fee_id, merchant
+    aggregate: matched_transaction_count, total_fee_amount
+    order_by: matched_fee_id asc, merchant asc
+    limit: 10000
+  }
+
+  view: total_fees_by_merchant is {
+    group_by: merchant
+    aggregate: matched_transaction_count, match_row_count,
+      total_fee_amount, avg_fee_amount, min_fee_amount, max_fee_amount
+    order_by: total_fee_amount desc
+  }
+
+  view: total_fees_by_merchant_month is {
+    group_by: merchant, month_num
+    aggregate: matched_transaction_count, total_fee_amount, avg_fee_amount
+    order_by: merchant asc, month_num asc
+  }
+
+  view: total_fees_by_merchant_scheme is {
+    group_by: merchant, card_scheme
+    aggregate: matched_transaction_count, total_fee_amount, avg_fee_amount
+    order_by: merchant asc, card_scheme asc
+  }
+
+  // one row per transaction with its resolved fee total across matching rules
+  view: fee_per_transaction is {
+    group_by: psp_reference, merchant, `year`, month_num, day_of_year,
+      card_scheme, aci, is_credit, eur_amount
+    aggregate: matched_rule_count, total_fee_amount
+    order_by: psp_reference asc
+    limit: 10000
+  }
+
+  // rate-change counterfactual (bind new_rate + target_fee_id when calling)
+  view: rate_change_delta_by_merchant is {
+    group_by: merchant
+    aggregate: delta_transaction_count, delta_baseline_fee, rate_change_delta
+    order_by: merchant asc
+  }
+
+  // conservation validation: unmatched_transaction_count must be 0
+  view: match_coverage is {
+    aggregate: matched_transaction_count, unmatched_transaction_count,
+      match_row_count, matched_rule_count
+  }
+}

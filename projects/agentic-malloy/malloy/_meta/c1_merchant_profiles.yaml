@@ -1,48 +1,47 @@
 file: c1_merchant_profiles.malloy
-domain: payment processing — merchant static profiles
+domain: payments fee optimization — merchant dimension
 summary: >
-  Merchant-grain profile source (30 merchants) enriching merchants_base with
-  (1) the MCC description lookup (merchant_category_codes.mcc is VARCHAR, joined via
-  its numeric cast mcc_code), (2) per-acquirer country resolution (merchants.acquirer
-  is a list; join_many fans out one row per merchant×acquirer), and (3) a primary
-  (first-listed) acquirer with its country. Exposes account_type (+ human description),
-  capture_delay in both raw setting ('1','2','7','immediate','manual') and fee-rule
-  bucket domain ('<3','3-5','>5','immediate','manual'), MCC + description, and acquirer
-  geography. This is the canonical merchant-attribute surface downstream fee-matching
-  sources join onto transactions. NOTE grain: the acquirer_info join_many multiplies
-  merchant rows by acquirer count — use distinct_merchant_count (fan-out-safe) rather
-  than merchants_base.merchant_count when acquirer_info is touched.
+  Merchant dimension (30 merchants) enriched with the human-readable MCC
+  description (via a numeric-cast join to the merchant_category_codes lookup)
+  and the acquirer list unnested against the acquirer→country lookup. Exposes
+  every merchant-side attribute the fee-rule matcher needs — account_type,
+  capture_delay_bucket (concrete day settings mapped to rule buckets),
+  merchant_category_code — plus acquiring-country attributes for the
+  domestic/international distinction. NOTE the acquirer join is a join_many
+  (one row per acquirer per merchant); base-grain counts inflate on the fanned
+  grain, so use the distinct measures defined here.
 exports:
   - name: merchant_profiles
     kind: source
-    summary: merchants_base + mcc_info (join_one, description lookup) + primary_acquirer_info (join_one) + acquirer_info (join_many over the acquirer list). Dimensions mcc_description, primary_acquirer, primary_acquirer_country; measures distinct_merchant_count (fan-out-safe), acquirer_link_count.
-    usage: "run: merchant_profiles -> { where: merchant = 'X'; select: account_type, capture_delay_bucket, merchant_category_code, mcc_description } — or filter by mcc_description ~ '%TAXICAB%' to resolve a description to codes/merchants."
-  - name: profile_enriched
+    summary: >
+      merchants_base + join_one mcc_lookup (description by numeric MCC) +
+      join_many acquirer_country (list_contains membership on the acquirer
+      list). Dimensions: mcc_description, acquirer_name, acquiring_country.
+      Fan-out-safe measures: distinct_merchant_count, distinct_acquirer_count,
+      acquiring_country_count.
+    usage: "run: merchant_profiles -> profile + { where: merchant = 'Rafa_AI' } for one merchant's full rule-matching attributes; or group_by any attribute with distinct_merchant_count."
+  - name: profile
     kind: view
-    summary: One row per merchant with all profile attributes (account type + description, MCC + description, capture delay raw + bucket, acquirer list, primary acquirer + country).
-    usage: "run: merchant_profiles -> profile_enriched + { where: merchant = 'X' } for one merchant's full profile."
-  - name: by_mcc_described
+    summary: One row per merchant with account type, MCC (code + description), capture delay (raw + rule bucket), and a nested list of acquirers with their countries.
+    usage: "filter with `+ { where: merchant = '<name>' }` or by account_type / merchant_category_code; grain is one row per merchant."
+  - name: by_acquiring_country
     kind: view
-    summary: Merchant counts per MCC code with its textual description.
-    usage: "run: merchant_profiles -> by_mcc_described; filter mcc_description ~ pattern to map a description to code(s)."
-  - name: merchant_acquirer_countries
+    summary: Distinct merchants and acquirers per acquiring country.
+    usage: "run as-is; ranking by merchant presence per acquiring country."
+  - name: by_acquirer
     kind: view
-    summary: Fan-out listing — one row per merchant×acquirer with the acquirer's country (resolves local-acquiring geography).
-    usage: "run: merchant_profiles -> merchant_acquirer_countries + { where: merchant = 'X' } to see which countries a merchant acquires in."
-  - name: by_acquirer_country
+    summary: Distinct merchants per acquirer (with its country).
+    usage: "run as-is or filter to one acquiring_country."
+  - name: by_mcc
     kind: view
-    summary: Distinct merchants and acquirer links per acquiring country.
-    usage: "run: merchant_profiles -> by_acquirer_country (uses fan-out-safe distinct counts)."
-  - name: by_account_type_described
+    summary: Distinct merchants per MCC code with description.
+    usage: "run as-is; add `+ { where: mcc_description ~ '%...%' }` to resolve a business-type description to merchants."
+  - name: by_account_type_profile
     kind: view
-    summary: Distinct-merchant counts per account type with human-readable description.
-    usage: "run: merchant_profiles -> by_account_type_described."
-  - name: by_capture_delay_described
-    kind: view
-    summary: Distinct-merchant counts per raw capture-delay setting alongside its fee-rule bucket mapping.
-    usage: "run: merchant_profiles -> by_capture_delay_described to see how merchant settings map into rule buckets."
+    summary: Merchant and acquiring-country counts per account type.
+    usage: "run as-is for account-type composition of the merchant portfolio."
 provides_for:
-  - "enriched-transaction sources: project account_type, merchant_category_code, capture_delay_bucket onto payments before fee-rule matching"
-  - "MCC description→code resolution for questions that reference a category by name"
-  - "counterfactual MCC/account-type override scenarios (start from profile attributes, replace one field)"
-  - "local-acquiring analysis: merchant acquirer countries vs transaction issuing countries"
+  - "fee-rule matching layer: supplies the merchant-side predicates (account_type, capture_delay_bucket, merchant_category_code) as one enriched dimension per merchant"
+  - "enriched payment fact sources: join_one by merchant name to attach merchant attributes to transactions"
+  - "MCC-description resolution: map description text to the merchants carrying that code"
+  - "domestic/international analysis: acquiring_country per merchant acquirer relationship"

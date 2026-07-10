@@ -1,0 +1,59 @@
+file: c5_transaction_fees.malloy
+domain: payments fee-rule resolution — per-transaction fee computation via fact×rule wildcard matching
+summary: >
+  The central fee-resolution layer. transaction_fees fans each enriched 2023 payment
+  (payments_enriched: merchant attributes + monthly volume/fraud buckets materialized
+  as local columns) out against every fee rule whose predicates match, with a wildcard
+  branch on all eight match fields (empty list / NULL scalar = applies to all;
+  fees.intracountry is a 0/1 DOUBLE with NULL = both). Per-match fee is
+  fixed_amount + rate * eur_amount / 10000, aggregated at the rule (match) grain so
+  totals are fan-out-safe. Parameters new_rate / target_fee_id drive the single-rule
+  rate-change counterfactual delta. Base-grain measures inherited from
+  payments_enriched inflate under the fan-out — use the measures defined here.
+exports:
+  - name: fee_rule_rows
+    kind: source
+    summary: Minimal fees table source with primary_key ID, used as the join_many target so symmetric aggregates dedupe correctly.
+    usage: "Internal helper; query fee_rules (c3) for rule-only analysis instead."
+  - name: transaction_fees
+    kind: source (parameterized: new_rate, target_fee_id — both optional)
+    summary: Payment × matching-fee-rule grain with fee measures (total/avg/min/max), applicability sets, coverage validation, and the rate-change delta.
+    usage: "run: transaction_fees -> <view> + { where: merchant = 'X' and month_num = 12 } (or day_of_year = N); bind params only for deltas: transaction_fees(new_rate is 1, target_fee_id is 141)."
+  - name: applicable_fee_ids
+    kind: view
+    summary: Distinct fee rule IDs matched by the scoped traffic.
+    usage: "Scope with where: merchant = '<m>' (+ month_num / day_of_year) then read matched_fee_id list."
+  - name: merchants_for_fee
+    kind: view
+    summary: Merchants matched by each rule, with transaction counts and fee totals.
+    usage: "Refine with where: matched_fee_id = <ID> (+ time filters) to get the affected merchants for one rule."
+  - name: total_fees_by_merchant
+    kind: view
+    summary: Total/avg/min/max resolved fees per merchant (full standard aggregation set).
+    usage: "Scope with time filters (month_num, day_of_year) for period totals; total_fee_amount is the 'total fees paid'."
+  - name: total_fees_by_merchant_month
+    kind: view
+    summary: Fee totals at merchant × natural-month grain.
+    usage: "Filter to one merchant and/or month; read total_fee_amount."
+  - name: total_fees_by_merchant_scheme
+    kind: view
+    summary: Fee totals per merchant per actual card scheme (as-processed, NOT the steering counterfactual).
+    usage: "Descriptive split only; use the counterfactual steering layer for what-if scheme routing."
+  - name: fee_per_transaction
+    kind: view
+    summary: One row per transaction with its matched-rule count and summed fee.
+    usage: "Filter to a merchant/day to audit per-transaction resolution; total_fee_amount is that transaction's fee."
+  - name: rate_change_delta_by_merchant
+    kind: view
+    summary: Per-merchant delta if target_fee_id's rate were changed to new_rate, plus baseline fee and contributing transaction count.
+    usage: "run: transaction_fees(new_rate is <r>, target_fee_id is <id>) -> rate_change_delta_by_merchant + { where: merchant = '<m>' and month_num = 12 }."
+  - name: match_coverage
+    kind: view
+    summary: Conservation check — unmatched_transaction_count must be 0 over any scope.
+    usage: "Run over any filter scope to validate the match; nonzero unmatched means a dropped wildcard branch."
+provides_for:
+  - "applicable-fee-ID questions per merchant/period (thin where on merchant + month_num/day_of_year over applicable_fee_ids)"
+  - "affected-merchants-per-rule questions (merchants_for_fee filtered to one matched_fee_id)"
+  - "total-fees-paid questions at day/month/year grain (total_fees_by_merchant + time filters)"
+  - "rate-change delta counterfactuals (parameters new_rate/target_fee_id)"
+  - "downstream counterfactual layers (scheme steering, ACI steering, MCC change) that re-run this match with one overridden attribute"

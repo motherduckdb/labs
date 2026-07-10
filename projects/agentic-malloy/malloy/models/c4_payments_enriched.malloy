@@ -1,0 +1,117 @@
+// payment fact × merchant profile × merchant-month metrics, collapsed to ONE
+// physical row per transaction (both joins are join_one → no fan-out).
+// Projection MATERIALIZES the joined/derived predicates as real local columns
+// so downstream rule-matching join_many clauses reference only local fields.
+source: payments_enriched is payments_base extend {
+  join_one: merchant_info is merchants_base with merchant
+  // composite month key built from local columns only
+  join_one: monthly is merchant_monthly_metrics
+    on concat(merchant, '-', month_num::string) = monthly.merchant_month_key
+} -> {
+  select:
+    psp_reference,
+    merchant,
+    card_scheme,
+    `year`,
+    day_of_year,
+    hour_of_day,
+    minute_of_hour,
+    month_num,
+    is_credit,
+    eur_amount,
+    aci,
+    issuing_country,
+    acquirer_country,
+    ip_country,
+    shopper_interaction,
+    device_type,
+    has_fraudulent_dispute,
+    is_refused_by_adyen,
+    is_intracountry,
+    // merchant-side rule predicates, now local columns
+    account_type is merchant_info.account_type,
+    merchant_mcc is merchant_info.merchant_category_code,
+    capture_delay_setting is merchant_info.capture_delay,
+    capture_delay_bucket is merchant_info.capture_delay_bucket,
+    // derived monthly predicates (exact fee-rule bucket strings)
+    monthly_volume_eur is monthly.monthly_volume_eur,
+    monthly_fraud_rate is monthly.monthly_fraud_rate,
+    monthly_volume_bucket is monthly.monthly_volume_bucket,
+    monthly_fraud_level_bucket is monthly.monthly_fraud_level_bucket
+} extend {
+  primary_key: psp_reference
+
+  // fees.intracountry is DOUBLE 0/1 — numeric form for rule equality
+  dimension: intracountry_value is pick 1 when is_intracountry else 0
+
+  measure: transaction_count is count()
+  measure: distinct_merchant_count is count(merchant)
+
+  measure: total_amount is eur_amount.sum()
+  measure: avg_amount is eur_amount.avg()
+  measure: min_amount is eur_amount.min()
+  measure: max_amount is eur_amount.max()
+
+  measure: fraud_count is count() { where: has_fraudulent_dispute }
+  measure: fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
+  measure: fraud_rate_by_volume is
+    eur_amount.sum() { where: has_fraudulent_dispute } / eur_amount.sum()
+  measure: fraud_rate_by_count is
+    count() { where: has_fraudulent_dispute } / count()
+
+  measure: credit_count is count() { where: is_credit }
+  measure: credit_share is count() { where: is_credit } / count()
+
+  measure: intracountry_count is count() { where: is_intracountry }
+  measure: intracountry_share is count() { where: is_intracountry } / count()
+
+  // full per-transaction predicate vector (input row shape for rule resolution)
+  view: transaction_predicates is {
+    select:
+      psp_reference, merchant, `year`, month_num, day_of_year,
+      card_scheme, aci, is_credit, eur_amount,
+      is_intracountry, intracountry_value,
+      account_type, merchant_mcc, capture_delay_bucket,
+      monthly_volume_bucket, monthly_fraud_level_bucket
+    order_by: psp_reference asc
+  }
+
+  // one row per merchant-month with all merchant-side predicates + traffic totals
+  view: predicate_profile is {
+    group_by:
+      merchant, month_num,
+      account_type, merchant_mcc, capture_delay_bucket,
+      monthly_volume_bucket, monthly_fraud_level_bucket
+    aggregate: transaction_count, total_amount, fraud_amount, fraud_rate_by_volume
+    order_by: merchant asc, month_num asc
+  }
+
+  view: by_merchant_month is {
+    group_by: merchant, month_num
+    aggregate:
+      transaction_count, total_amount, avg_amount,
+      fraud_count, fraud_amount, fraud_rate_by_volume,
+      credit_share, intracountry_share
+    order_by: merchant asc, month_num asc
+  }
+
+  view: by_merchant_scheme is {
+    group_by: merchant, card_scheme
+    aggregate: transaction_count, total_amount, avg_amount, credit_share, intracountry_share
+    order_by: merchant asc, card_scheme asc
+  }
+
+  view: avg_amount_by_issuing_country is {
+    group_by: issuing_country
+    aggregate: transaction_count, avg_amount, total_amount
+    order_by: avg_amount asc
+  }
+
+  // fraud-flagged traffic sliced by current ACI/scheme (ACI-steering input)
+  view: fraud_traffic_by_aci is {
+    where: has_fraudulent_dispute
+    group_by: merchant, card_scheme, aci
+    aggregate: transaction_count, total_amount, avg_amount
+    order_by: merchant asc, card_scheme asc, aci asc
+  }
+}

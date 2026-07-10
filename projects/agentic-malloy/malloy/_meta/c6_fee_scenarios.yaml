@@ -1,0 +1,60 @@
+file: c6_fee_scenarios.malloy
+domain: payments fee optimization — counterfactual scenario analysis over the transaction × fee-rule matching model
+summary: >
+  Four counterfactual sources built on payments_enriched × fee_rule_rows. Each keeps
+  exactly ONE rule fan-out (never two live join_many legs co-aggregated): (1)
+  scheme_steering re-resolves rules with card_scheme left free so grouping by
+  rule.card_scheme gives "route all traffic to scheme s" fee totals; (2)
+  fraud_aci_steering crosses fraud-flagged transactions with the observed ACI universe
+  (current ACI excluded as the no-op) and re-resolves rules under the candidate ACI;
+  (3) mcc_change_scenario carries the UNION of baseline and new-MCC rule matches in one
+  join and computes the fee delta as a single rule-grain sum (new_mcc unset or equal to
+  the merchant's own MCC yields a zero delta by construction); (4) rule_scope_change
+  narrows one rule's account_type predicate to a single value and exposes the symmetric
+  difference of the matched-merchant populations. All fee math is
+  fixed_amount + rate * eur_amount / 10000 aggregated at the match (rule) grain; every
+  match field carries its wildcard branch (empty list / NULL scalar = applies-to-all).
+  Base-grain measures inherited from payments_enriched inflate on these fanned sources —
+  use only the measures defined here (count(psp_reference) is distinct-safe).
+exports:
+  - name: scheme_steering
+    kind: source
+    summary: Payments fanned to rules matched on every predicate except card scheme; candidate_scheme = rule.card_scheme gives counterfactual per-scheme fee totals.
+    usage: "run: scheme_steering -> scheme_steering_totals + { where: merchant = 'X' and month_num = 6 }; order asc = cheapest scheme, take limit 1 (desc for maximum); steered_total_fee is the associated cost."
+  - name: scheme_steering_totals
+    kind: view
+    summary: Per candidate scheme — transaction count, total steered fee, avg fee per transaction, ordered cheapest-first with alphabetical tie-break.
+    usage: "refine with merchant / month_num / day_of_year / `year` filters; ARGMIN is the first row, ARGMAX the last (or reorder desc)."
+  - name: fraud_aci_steering
+    kind: source
+    summary: Fraud-flagged transactions × candidate ACIs (data-derived universe, current ACI excluded) re-matched against rules under the candidate ACI; grain = (transaction, candidate_aci) × matching rules.
+    usage: "run: fraud_aci_steering -> aci_steering_totals + { where: merchant = 'X' and month_num = 2 }; first row = preferred (lowest-fee) ACI; use aci_steering_by_scheme for scheme:fee shaped output."
+  - name: aci_steering_totals
+    kind: view
+    summary: Per candidate ACI — steered transaction count, total fee, avg fee per transaction; ascending total with alphabetical tie-break.
+    usage: "refine with merchant/period filters; candidates with unmatched_scenario_count > 0 have traffic no rule covers under that ACI."
+  - name: mcc_change_scenario
+    kind: source
+    summary: Parameterized (new_mcc) counterfactual — merchant's MCC replaced for the whole period, rules re-resolved; baseline, scenario, and delta computed in one fan-out.
+    usage: "run: mcc_change_scenario(new_mcc is 7523) -> mcc_change_by_merchant + { where: merchant = 'X' and `year` = 2023 }; mcc_change_delta = scenario_total_fee - baseline_total_fee; new_mcc unset => delta 0."
+  - name: mcc_change_by_merchant
+    kind: view
+    summary: Per merchant — baseline vs scenario transaction counts, fee totals, and the delta.
+    usage: "bind new_mcc on the source, filter to the merchant and period; read mcc_change_delta."
+  - name: rule_scope_change
+    kind: source
+    summary: Parameterized (target_fee_id, override_account_type) rule-predicate edit — which merchants gain/lose applicability of one fee rule when its account_type scope is narrowed to a single value.
+    usage: "run: rule_scope_change(target_fee_id is 64, override_account_type is 'S') -> affected_merchants + { where: `year` = 2023 }; result = merchants whose match status flips (symmetric difference)."
+  - name: affected_merchants
+    kind: view
+    summary: Merchants in the symmetric difference of {matched as-is} vs {matched under the override} — the impact set of the scope change.
+    usage: "bind both params; refine with `year`/month filters; empty result means the edit changes nothing."
+  - name: merchant_impact
+    kind: view
+    summary: Full per-merchant before/after status ('loses rule' / 'gains rule' / 'still matched' / 'never matched') for the edited rule.
+    usage: "bind both params; use when the direction of impact (gain vs loss) matters, not just the affected set."
+provides_for:
+  - "cheapest / most expensive card scheme to steer a merchant's traffic to over any period, with the associated total cost (scheme_steering_totals filtered by merchant + time)"
+  - "preferred ACI for re-routing fraudulent traffic at lowest fees, per merchant and period, with per-scheme breakdown (fraud_aci_steering views)"
+  - "fee delta a merchant would pay under a different MCC for a period (mcc_change_scenario with new_mcc bound)"
+  - "merchants affected if a fee rule were restricted to one account type (rule_scope_change with target_fee_id + override_account_type bound)"

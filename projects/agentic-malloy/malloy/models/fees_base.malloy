@@ -1,49 +1,49 @@
-source: fees_base is duckdb.table('fees') extend {
+##! experimental.parameters
+
+// notional: hypothetical transaction value in EUR for fee-at-notional fields (fee = fixed_amount + rate * value / 10000)
+source: fees_base(notional::number is null) is duckdb.table('fees') extend {
   primary_key: ID
 
-  // -- wildcard flags: empty list (not NULL) = "applies to all" for list fields; NULL for scalars
+  // wildcard encoding: empty LIST (never NULL) = "applies to all" for list fields
   dimension: applies_all_account_types is len!number(account_type) = 0
   dimension: applies_all_mccs is len!number(merchant_category_code) = 0
   dimension: applies_all_acis is len!number(aci) = 0
+  // wildcard encoding: NULL = "applies to all" for scalar fields
   dimension: applies_all_capture_delays is capture_delay is null
   dimension: applies_all_fraud_levels is monthly_fraud_level is null
   dimension: applies_all_volumes is monthly_volume is null
   dimension: applies_all_credit is is_credit is null
   dimension: applies_all_intracountry is intracountry is null
 
-  // -- intracountry stored as 0/1 DOUBLE with NULL wildcard
-  dimension: domestic_only is intracountry = 1
-  dimension: international_only is intracountry = 0
+  // intracountry stored as DOUBLE 0/1, NULL = both
+  dimension: intracountry_scope is
+    pick 'domestic' when intracountry = 1
+    pick 'international' when intracountry = 0
+    else 'any'
+  dimension: credit_scope is
+    pick 'credit' when is_credit = true
+    pick 'debit' when is_credit = false
+    else 'any'
 
-  // -- rate is in basis points: fee = fixed_amount + rate * value / 10000
-  dimension: rate_fraction is rate / 10000.0
-  dimension: rate_pct is rate / 100.0
+  dimension: account_type_count is len!number(account_type)
+  dimension: mcc_count is len!number(merchant_category_code)
+  dimension: aci_count is len!number(aci)
 
-  // -- parsed numeric bounds of the volume tier strings (k=1e3, m=1e6); null max = unbounded
-  dimension: monthly_volume_min_eur is
-    pick 0 when monthly_volume = '<100k'
-    pick 100000 when monthly_volume = '100k-1m'
-    pick 1000000 when monthly_volume = '1m-5m'
-    pick 5000000 when monthly_volume = '>5m'
-    else null
-  dimension: monthly_volume_max_eur is
-    pick 100000 when monthly_volume = '<100k'
-    pick 1000000 when monthly_volume = '100k-1m'
-    pick 5000000 when monthly_volume = '1m-5m'
-    else null
+  // count of non-wildcard predicate fields; 0 = catch-all rule, 8 = fully specific
+  dimension: specificity is
+      (pick 0 when len!number(account_type) = 0 else 1)
+    + (pick 0 when len!number(merchant_category_code) = 0 else 1)
+    + (pick 0 when len!number(aci) = 0 else 1)
+    + (pick 0 when capture_delay is null else 1)
+    + (pick 0 when monthly_fraud_level is null else 1)
+    + (pick 0 when monthly_volume is null else 1)
+    + (pick 0 when is_credit is null else 1)
+    + (pick 0 when intracountry is null else 1)
 
-  // -- parsed numeric bounds of the fraud tier strings, in percent; null max = unbounded
-  dimension: fraud_level_min_pct is
-    pick 0 when monthly_fraud_level = '<7.2%'
-    pick 7.2 when monthly_fraud_level = '7.2%-7.7%'
-    pick 7.7 when monthly_fraud_level = '7.7%-8.3%'
-    pick 8.3 when monthly_fraud_level = '>8.3%'
-    else null
-  dimension: fraud_level_max_pct is
-    pick 7.2 when monthly_fraud_level = '<7.2%'
-    pick 7.7 when monthly_fraud_level = '7.2%-7.7%'
-    pick 8.3 when monthly_fraud_level = '7.7%-8.3%'
-    else null
+  // rate is in basis points (per 10000)
+  dimension: rate_pct is rate / 100
+  // per-rule fee at the parameterized notional value (null when notional unset)
+  dimension: fee_at_notional is fixed_amount + rate * notional / 10000
 
   measure: rule_count is count()
 
@@ -56,4 +56,38 @@ source: fees_base is duckdb.table('fees') extend {
   measure: min_rate is rate.min()
   measure: max_rate is rate.max()
   measure: total_rate is rate.sum()
+
+  // unweighted "average scenario" fee across matching rules at the notional
+  measure: avg_fee_at_notional is fee_at_notional.avg()
+  measure: min_fee_at_notional is fee_at_notional.min()
+  measure: max_fee_at_notional is fee_at_notional.max()
+  measure: total_fee_at_notional is fee_at_notional.sum()
+
+  measure: wildcard_account_type_rules is count() { where: len!number(account_type) = 0 }
+  measure: wildcard_mcc_rules is count() { where: len!number(merchant_category_code) = 0 }
+  measure: wildcard_aci_rules is count() { where: len!number(aci) = 0 }
+
+  view: by_card_scheme is {
+    group_by: card_scheme
+    aggregate: rule_count, avg_fixed_amount, avg_rate, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional
+    order_by: card_scheme asc
+  }
+
+  view: by_intracountry_scope is {
+    group_by: intracountry_scope
+    aggregate: rule_count, avg_fixed_amount, avg_rate, avg_fee_at_notional
+  }
+
+  view: by_credit_scope is {
+    group_by: credit_scope
+    aggregate: rule_count, avg_fixed_amount, avg_rate, avg_fee_at_notional
+  }
+
+  view: rule_detail is {
+    select: ID, card_scheme, account_type, capture_delay, monthly_fraud_level,
+      monthly_volume, merchant_category_code, is_credit, aci, fixed_amount,
+      rate, intracountry
+    order_by: ID asc
+  }
 }

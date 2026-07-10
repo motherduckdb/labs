@@ -1,11 +1,15 @@
 source: acquirer_countries_base is duckdb.table('acquirer_countries') extend {
   primary_key: acquirer
 
-  // display-friendly name: underscores -> spaces
-  dimension: acquirer_display_name is replace!string(acquirer, '_', ' ')
+  dimension:
+    // human-friendly acquirer name: underscores -> spaces
+    acquirer_name is replace!string(acquirer, '_', ' ')
+    // domestic-side region grouping derived from country_code
+    is_eu_country is country_code ? 'FR' | 'IT' | 'NL'
 
-  measure: acquirer_count is count()
-  measure: country_count is count(country_code)
+  measure:
+    acquirer_count is count()
+    country_count is count(country_code)
 
   view: by_country is {
     group_by: country_code

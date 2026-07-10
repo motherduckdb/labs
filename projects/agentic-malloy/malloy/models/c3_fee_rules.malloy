@@ -1,0 +1,170 @@
+##! experimental.parameters
+
+// value universes derived from the data (never hardcoded literals)
+source: aci_values is payments_base -> { group_by: aci_value is aci }
+source: account_type_values is merchants_base -> { group_by: account_type }
+
+// parameterized rule source: notional EUR + optional scoping filters.
+// Every filter parameter is wired through matches_filters, which every
+// measure/view aggregates AFTER (wildcard branch on each match field:
+// empty list / NULL scalar = "applies to all").
+source: fee_rules(
+  notional::number is null,
+  for_card_scheme::string is null,
+  for_account_type::string is null,
+  for_mcc::number is null,
+  for_mcc_description::string is null,
+  for_aci::string is null,
+  for_credit::boolean is null,
+  for_intracountry::boolean is null,
+  for_capture_delay::string is null,
+  for_volume_bucket::string is null,
+  for_fraud_bucket::string is null
+) is duckdb.table('fees') extend {
+  primary_key: ID
+
+  // list-membership fan-outs: each joined row = one declared list element.
+  // Base-grain aggregates stay per-rule via symmetric aggregation on ID.
+  join_many: mcc_info is merchant_category_codes_base
+    on list_contains!boolean(merchant_category_code, mcc_info.mcc_code)
+  join_many: aci_match is aci_values
+    on list_contains!boolean(aci, aci_match.aci_value)
+  join_many: acct_match is account_type_values
+    on list_contains!boolean(account_type, acct_match.account_type)
+
+  // fee = fixed + rate * value / 10000 (rate in basis points); null when notional unset
+  dimension: fee_at_notional is fixed_amount + rate * notional / 10000
+  dimension: rate_pct is rate / 100
+
+  dimension: intracountry_scope is
+    pick 'domestic' when intracountry = 1
+    pick 'international' when intracountry = 0
+    else 'any'
+  dimension: credit_scope is
+    pick 'credit' when is_credit = true
+    pick 'debit' when is_credit = false
+    else 'any'
+
+  dimension: applies_all_account_types is len!number(account_type) = 0
+  dimension: applies_all_mccs is len!number(merchant_category_code) = 0
+  dimension: applies_all_acis is len!number(aci) = 0
+
+  // wildcard branch on EVERY match field: null param = unscoped;
+  // empty list / null scalar rule field = rule applies to all values
+  dimension: matches_filters is
+    (for_card_scheme is null or card_scheme = for_card_scheme)
+    and (for_account_type is null or len!number(account_type) = 0
+         or list_contains!boolean(account_type, for_account_type))
+    and (for_mcc is null or len!number(merchant_category_code) = 0
+         or list_contains!boolean(merchant_category_code, for_mcc))
+    and (for_mcc_description is null or len!number(merchant_category_code) = 0
+         or lower!string(mcc_info.description) = lower!string(for_mcc_description))
+    and (for_aci is null or len!number(aci) = 0
+         or list_contains!boolean(aci, for_aci))
+    and (for_credit is null or is_credit is null or is_credit = for_credit)
+    and (for_intracountry is null or intracountry is null
+         or (for_intracountry and intracountry = 1)
+         or (not for_intracountry and intracountry = 0))
+    and (for_capture_delay is null or capture_delay is null
+         or capture_delay = for_capture_delay)
+    and (for_volume_bucket is null or monthly_volume is null
+         or monthly_volume = for_volume_bucket)
+    and (for_fraud_bucket is null or monthly_fraud_level is null
+         or monthly_fraud_level = for_fraud_bucket)
+
+  // count(ID) is distinct -> fan-out safe; filtered so every parameter narrows it
+  measure: distinct_rule_count is count(ID) { where: matches_filters }
+
+  // unweighted "average scenario" fee across the matching rules at the notional
+  measure: avg_fee_at_notional is fee_at_notional.avg() { where: matches_filters }
+  measure: min_fee_at_notional is fee_at_notional.min() { where: matches_filters }
+  measure: max_fee_at_notional is fee_at_notional.max() { where: matches_filters }
+  measure: total_fee_at_notional is fee_at_notional.sum() { where: matches_filters }
+
+  measure: avg_fixed_amount is fixed_amount.avg() { where: matches_filters }
+  measure: min_fixed_amount is fixed_amount.min() { where: matches_filters }
+  measure: max_fixed_amount is fixed_amount.max() { where: matches_filters }
+  measure: avg_rate is rate.avg() { where: matches_filters }
+  measure: min_rate is rate.min() { where: matches_filters }
+  measure: max_rate is rate.max() { where: matches_filters }
+
+  // rank schemes by average-scenario fee; alphabetical tie-break; caller reorders/limits
+  view: avg_fee_by_card_scheme is {
+    where: matches_filters
+    group_by: card_scheme
+    aggregate: distinct_rule_count, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional, avg_fixed_amount, avg_rate
+    order_by: avg_fee_at_notional asc, card_scheme asc
+  }
+
+  // participating universe only: rules that DECLARE an ACI (wildcards excluded)
+  view: avg_fee_by_aci is {
+    where: matches_filters and len!number(aci) > 0
+    group_by: rule_aci is aci_match.aci_value
+    aggregate: distinct_rule_count, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional asc, rule_aci asc
+  }
+
+  // participating universe only: rules that DECLARE MCCs (wildcards excluded)
+  view: avg_fee_by_mcc is {
+    where: matches_filters and len!number(merchant_category_code) > 0
+    group_by: mcc_code is mcc_info.mcc_code, mcc_description is mcc_info.description
+    aggregate: distinct_rule_count, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional desc, mcc_code asc
+    limit: 1000
+  }
+
+  // participating universe only: rules that DECLARE account types
+  view: avg_fee_by_account_type is {
+    where: matches_filters and len!number(account_type) > 0
+    group_by: rule_account_type is acct_match.account_type
+    aggregate: distinct_rule_count, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional asc, rule_account_type asc
+  }
+
+  view: avg_fee_by_credit_scope is {
+    where: matches_filters
+    group_by: credit_scope
+    aggregate: distinct_rule_count, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional asc
+  }
+
+  view: avg_fee_by_intracountry_scope is {
+    where: matches_filters
+    group_by: intracountry_scope
+    aggregate: distinct_rule_count, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional asc
+  }
+
+  view: avg_fee_by_capture_delay is {
+    where: matches_filters and capture_delay != null
+    group_by: capture_delay
+    aggregate: distinct_rule_count, avg_fee_at_notional,
+      min_fee_at_notional, max_fee_at_notional
+    order_by: avg_fee_at_notional asc, capture_delay asc
+  }
+
+  // the set of rule IDs matching the bound parameters (group_by dedups the fan-out)
+  view: matching_rule_ids is {
+    where: matches_filters
+    group_by: ID
+    order_by: ID asc
+    limit: 1000
+  }
+
+  // one row per matching rule (list fields summarized as counts; group_by dedups)
+  view: matching_rule_detail is {
+    where: matches_filters
+    group_by:
+      ID, card_scheme, capture_delay, monthly_fraud_level, monthly_volume,
+      credit_scope, intracountry_scope, fixed_amount, rate, rate_pct,
+      fee_at_notional, applies_all_account_types, applies_all_mccs, applies_all_acis
+    order_by: ID asc
+    limit: 1000
+  }
+}

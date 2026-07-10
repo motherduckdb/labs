@@ -1,35 +1,46 @@
 file: fees_base.malloy
-domain: payment-processing fee rules
+domain: payment-processing fee rules (pricing rule table, wildcard-matched against merchants/transactions)
 summary: >
-  Base semantic source over the fee-rules table (1 row per rule ID, 1000 rules).
-  Each rule binds a card scheme plus optional matching conditions (account-type
-  list, MCC list, ACI list, capture-delay bucket, monthly-fraud tier,
-  monthly-volume tier, credit flag, intracountry flag) to a price:
-  fee = fixed_amount + rate * transaction_value / 10000 (rate is in basis
-  points). Wildcard semantics: an EMPTY list [] on a list field, or NULL on a
-  scalar field, means the rule applies to ALL values of that field. This file
-  contains no joins — matching against merchants/payments belongs in a
-  higher-level model.
+  Base semantic source over the 1000-row `fees` rule table, one row per fee rule (primary key ID).
+  Each rule prices a transaction as fee = fixed_amount + rate * transaction_value / 10000, and scopes
+  itself via predicate fields with wildcard semantics: list fields (account_type, merchant_category_code,
+  aci) use an EMPTY LIST to mean "applies to all"; scalar fields (capture_delay, monthly_fraud_level,
+  monthly_volume, is_credit, intracountry) use NULL. The source is parameterized by `notional` (a
+  hypothetical transaction value in EUR) so fee-at-notional measures evaluate the fee a rule would
+  charge for any user-supplied amount without touching the payments table. No joins here — join logic
+  lives in downstream composite models.
 exports:
   - name: fees_base
-    kind: source
+    kind: source (parameterized: notional::number, default null)
     summary: >
-      One row per fee rule. Dimensions expose the raw rule fields plus:
-      per-field wildcard flags (applies_all_*), the domestic/international
-      reading of the 0/1 intracountry column, rate as a fraction/percent, and
-      parsed numeric bounds of the range-string tiers (monthly_volume_min/max_eur,
-      fraud_level_min/max_pct; null max = unbounded). Measures cover rule_count
-      and sum/avg/min/max of fixed_amount and rate — all at rule grain (safe to
-      aggregate any way).
+      One row per fee rule. Dimensions expose per-field wildcard flags (applies_all_*), human-readable
+      scope labels (intracountry_scope: domestic/international/any; credit_scope: credit/debit/any),
+      list cardinalities, a `specificity` score (count of non-wildcard predicate fields, 0 = catch-all),
+      rate_pct (rate is basis points), and fee_at_notional (fixed_amount + rate * notional / 10000).
+      Measures cover the full sum/avg/min/max set for fixed_amount, rate, and fee_at_notional, plus
+      rule_count and wildcard-rule counts. All measures are rule-grain (unweighted over rules), which
+      is exactly the "average scenario" fee semantics.
     usage: >
-      Rule-space queries: filter with wildcard-inclusive predicates, e.g.
-      `where: card_scheme = 'NexPay' and (applies_all_account_types or
-      list_contains!boolean(account_type, 'H'))`, then group_by/aggregate; for
-      an average scenario fee at a notional N, aggregate
-      `avg(fixed_amount + rate * N / 10000)` over the filtered rules and
-      order_by it to rank a dimension (scheme, ACI, MCC).
+      Instantiate with the question's euro amount — `run: fees_base(notional is 5000) -> { where: card_scheme = 'NexPay' and (len!number(aci)=0 or list_contains!boolean(aci,'C')); group_by: card_scheme; aggregate: avg_fee_at_notional }`
+      — remembering the wildcard branch (`len!number(col)=0 or list_contains!boolean(col, x)` for lists,
+      `col is null or col = x` for scalars) on EVERY filter field; rank schemes/ACIs by ordering on
+      avg_fee_at_notional with an alphabetical tiebreak.
+  - name: by_card_scheme
+    kind: view
+    summary: Rule count and fixed/rate/fee-at-notional statistics grouped by card scheme.
+    usage: "`run: fees_base(notional is 1000) -> by_card_scheme + { where: <wildcard-aware filters> }`; order by avg_fee_at_notional asc/desc for cheapest/most expensive scheme in the average scenario."
+  - name: by_intracountry_scope
+    kind: view
+    summary: Rule statistics grouped by domestic/international/any scope (NULL intracountry = 'any').
+    usage: "`run: fees_base -> by_intracountry_scope` to compare domestic vs cross-border pricing across rules."
+  - name: by_credit_scope
+    kind: view
+    summary: Rule statistics grouped by credit/debit/any scope (NULL is_credit = 'any').
+    usage: "`run: fees_base -> by_credit_scope` to compare credit vs debit rule pricing."
+  - name: rule_detail
+    kind: view
+    summary: Full projection of every rule field ordered by ID, for inspecting a specific fee rule.
+    usage: "`run: fees_base -> rule_detail + { where: ID = 384 }` to read one rule's predicates, fixed_amount and rate."
 provides_for:
-  - fees.malloy (rule-matching joins against payments + merchants)
-  - applicable-fee-ID resolution for a merchant/transaction profile
-  - average-scenario-fee ranking across schemes/ACIs/account types/MCCs
-  - counterfactual rule-override (rate/MCC/ACI/scheme) fee-delta models
+  - fees.malloy (composite model joining fees rules to payments/merchants for applicable-fee-ID resolution, total-fees-paid, and counterfactual scenarios)
+  - any query needing the fee-at-notional / average-scenario-fee surface over the rule table alone

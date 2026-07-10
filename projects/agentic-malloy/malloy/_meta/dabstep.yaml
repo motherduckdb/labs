@@ -1,118 +1,66 @@
 file: dabstep.malloy
-domain: payment processing — merchant transactions, scheme fee rules (wildcard matching), fee attribution and counterfactual fee scenarios
+domain: Payment processing — merchants, transactions, and wildcard-encoded fee rules; fee resolution, totals, and counterfactual (steering / rate / MCC / rule-scope) analysis.
 summary: >
-  Thin top-level query surface over the semantic layer. Rule-space questions (average/cheapest/most-expensive
-  fee at a notional value, applicable rule IDs for attribute constraints) run through the parameterized
-  fee_rules* sources; transaction-space questions (total fees paid, applicable fee IDs per merchant/period,
-  merchants matched by a rule) run through fee_matched_payments (the fact×rule fan-out engine); counterfactuals
-  (rate override delta, MCC/ACI/scheme override, scheme/ACI steering) run through the parameterized
-  fee_scenarios source. Every query here is a named view reference — refine with `+ { where: … }` for
-  merchant/period scoping; time filters use txn_date/txn_month (e.g. `txn_date ? @2023-12`) or day_of_year.
+  Thin top layer of named, reusable queries over the intermediate sources. The heavy
+  lifting (fee-rule wildcard matching, monthly volume/fraud bucketing, counterfactual
+  fan-outs) lives in transaction_fees, fee_rules, scheme_steering, fraud_aci_steering,
+  mcc_change_scenario, and rule_scope_change; every query here is answerable with a
+  thin `+ { where: ... }` refinement. Parameterized concepts (fee at a notional,
+  rate-change delta, MCC-change delta, rule-scope narrowing) are invoked directly on
+  their parameterized sources as documented per export.
 exports:
-  - name: merchant_directory
+  - name: fees_by_merchant_day
     kind: query
-    summary: One row per merchant with account type, MCC + description, capture-delay bucket, acquirers and primary acquirer country.
-    usage: "run: merchant_directory; or `+ { where: merchant = 'X' }` for one profile."
-  - name: mcc_directory
+    summary: Total/avg resolved fees per merchant per day of year (actual rule matches summed per transaction).
+    usage: "run: fees_by_merchant_day + { where: merchant = 'X' and day_of_year = 10 } — total_fee_amount is the euros owed that day."
+  - name: fees_by_merchant
     kind: query
-    summary: Full MCC code→description lookup (769 codes).
-    usage: "Resolve a description to its code with `+ { where: description ~ '%Taxicab%' }`."
-  - name: acquirer_country_directory
+    summary: Total fees paid per merchant over all matched traffic (full-year 2023 by default).
+    usage: "run: fees_by_merchant + { where: merchant = 'X' } — read total_fee_amount."
+  - name: fees_by_merchant_month
     kind: query
-    summary: Acquirer → country lookup.
-    usage: "run: acquirer_country_directory."
-  - name: card_scheme_universe
-    kind: query
-    summary: The four card schemes with rule counts (data-derived universe).
-    usage: "run: card_scheme_universe."
-  - name: observed_aci_universe
-    kind: query
-    summary: ACIs observed in payments with transaction counts.
-    usage: "run: observed_aci_universe."
-  - name: fee_rule_catalog
-    kind: query
-    summary: All 1000 fee rules with every match field and price; empty list / NULL = wildcard (applies to all).
-    usage: "`+ { where: ID = 17 }` to inspect one rule."
-  - name: scheme_fee_ranking_default
-    kind: query
-    summary: Average-scenario fee per card scheme over matching rules at a notional value (rule space, no transactions).
-    usage: "Re-instantiate for the real question: `run: fee_rules(notional is 50) -> scheme_fee_ranking` — first row asc = cheapest, order desc = most expensive; add filter_* params (account_type, mcc, aci, is_credit, …) to scope the rule set."
-  - name: aci_fee_ranking_default
-    kind: query
-    summary: Average-scenario fee per ACI (exploded, non-wildcard rules only) at a notional value.
-    usage: "`run: fee_rules_by_aci(notional is 100, filter_card_scheme is 'GlobalCard', filter_is_credit is true) -> aci_fee_ranking` — order desc for most expensive; ties broken alphabetically."
-  - name: mcc_fee_ranking_default
-    kind: query
-    summary: Average-scenario fee per MCC (exploded) with description, at a notional value.
-    usage: "`run: fee_rules_by_mcc(notional is 50000) -> mcc_fee_ranking` — top rows share max avg fee for 'most expensive MCC' (list all ties)."
-  - name: account_type_fee_ranking_default
-    kind: query
-    summary: Average-scenario fee per account type (exploded) at a notional value.
-    usage: "Re-instantiate with notional/filters; order asc/desc as the question demands."
-  - name: matching_fee_ids_default
-    kind: query
-    summary: Rule IDs whose conditions (wildcard-inclusive) satisfy a set of attribute constraints.
-    usage: "`run: fee_rules(filter_account_type is 'D', filter_aci is 'F') -> matching_fee_ids` — one row per applicable ID."
-  - name: fee_match_conservation
-    kind: query
-    summary: Conservation check — transactions matched vs unmatched by ≥1 rule, pair count, total fee.
-    usage: "run: fee_match_conservation (unmatched_transaction_count should be ~0)."
-  - name: merchant_total_fees
-    kind: query
-    summary: Total fees (EUR) per merchant on actual traffic (sum of fee over all matched rule pairs).
-    usage: "`+ { where: txn_date ? @2023 }` for a year; result column total_fee_eur."
-  - name: merchant_month_fees
-    kind: query
-    summary: Total fees per merchant per natural month.
-    usage: "`+ { where: merchant = 'X' and txn_month ? @2023-12 }` → total_fee_eur for that month."
-  - name: merchant_daily_fees
-    kind: query
-    summary: Total fees per merchant per day of year.
-    usage: "`+ { where: merchant = 'X' and day_of_year = 300 }` → the day's total_fee_eur."
+    summary: Total fees per merchant per natural calendar month.
+    usage: "run: fees_by_merchant_month + { where: merchant = 'X' and month_num = 12 }."
   - name: applicable_fee_ids_by_merchant
     kind: query
-    summary: Distinct fee-rule IDs matching each merchant's transactions (full wildcard-aware matching incl. monthly volume/fraud tiers).
-    usage: "`+ { where: merchant = 'X' and txn_month ? @2023-10 }` (or `txn_date ? @2023`) → the applicable Fee IDs list."
-  - name: merchants_matching_rule
+    summary: Per merchant, the distinct fee-rule IDs that match its actual transactions (wildcard rules included).
+    usage: "run: applicable_fee_ids_by_merchant + { where: merchant = 'X' and month_num = 10 } — read the nested fee_ids list; add day_of_year for a single day."
+  - name: merchants_matched_by_fee
     kind: query
-    summary: Merchants with ≥1 transaction matched by given rule(s) in a period (reverse rule→merchant lookup).
-    usage: "`+ { where: rules.ID = 17 and txn_date ? @2023 }` → affected merchants."
-  - name: rule_incidence
+    summary: Merchants (with traffic/fee totals) matched by each fee rule — the inverse of applicability.
+    usage: "run: merchants_matched_by_fee + { where: matched_fee_id = 17 } — the merchant column is the affected set."
+  - name: scheme_steering_ranking
     kind: query
-    summary: Per-rule matched transaction count, matched volume, and fee revenue; matched_amount_eur supports manual rate-delta math ((new_rate−rate)·volume/10000).
-    usage: "`+ { where: rules.ID = 141 and merchant = 'X' and txn_month ? @2023-12 }`."
-  - name: scenario_fee_delta_by_merchant
+    summary: Counterfactual total fee per merchant if all its traffic ran on each card scheme (ascending = cheapest).
+    usage: "run: scheme_steering_ranking + { where: merchant = 'X'; limit: 1 } for the minimum; order_by: steered_total_fee desc for the maximum; add month_num for one month."
+  - name: scheme_steering_ranking_by_month
     kind: query
-    summary: Baseline vs counterfactual total fees and delta per merchant under attribute overrides (MCC / scheme / ACI); defaults ⇒ zero delta.
-    usage: "MCC change: `run: fee_scenarios(scenario_mcc is 7523) -> scenario_fees_by_merchant + { where: merchant = 'X' and txn_date ? @2023 }` → fee_delta_eur."
-  - name: rate_override_delta
+    summary: Scheme-steering totals at merchant × month grain.
+    usage: "run: scheme_steering_ranking_by_month + { where: merchant = 'X' and month_num = 2; limit: 1 }."
+  - name: fraud_aci_preference
     kind: query
-    summary: Fee delta if ONE rule's rate is replaced by a hypothetical value, over scoped transactions.
-    usage: "`run: fee_scenarios(override_rule_id is 141, override_rule_rate is 1) -> rate_override_totals + { where: merchant = 'X' and txn_month ? @2023-12 }` → rate_override_delta_eur."
-  - name: scheme_steering_by_merchant
+    summary: Counterfactual fees per candidate ACI for a merchant's fraud-flagged traffic, no-op candidate excluded (ascending = preferred).
+    usage: "run: fraud_aci_preference + { where: merchant = 'X'; limit: 1 }; add month_num in the where for a single month."
+  - name: fraud_aci_preference_by_scheme
     kind: query
-    summary: Per merchant × candidate scheme — total fees if ALL traffic were routed through that scheme; rank asc for min, desc for max.
-    usage: "`+ { where: merchant = 'X' and txn_date ? @2023 }` (or a month) then take first/last row → {scheme}:{scheme_steered_total_fee_eur}."
-  - name: fraud_aci_steering_by_merchant
+    summary: Fraud-traffic ACI steering broken out by card scheme (scheme:fee shaped ranking).
+    usage: "run: fraud_aci_preference_by_scheme + { where: merchant = 'X'; limit: 1 } — cheapest candidate_aci × scheme pair first."
+  - name: fee_match_conservation
     kind: query
-    summary: Per merchant × candidate ACI — total fees if fraudulent transactions moved to that ACI (current ACI excluded); asc = preferred choice.
-    usage: "`+ { where: merchant = 'X' and txn_date ? @2023 }` → first row is the lowest-fee ACI with its cost."
-  - name: rule_affected_merchants
+    summary: Validation — every transaction must match ≥1 rule; unmatched_transaction_count must be 0.
+    usage: "run: fee_match_conservation (optionally + a merchant/period where) and assert unmatched_transaction_count = 0."
+  - name: avg_amount_by_issuing_country
     kind: query
-    summary: Merchants (with account type) matched by a rule — supports 'rule restricted to account type L' counterfactuals via set difference.
-    usage: "`+ { where: rules.ID = 64 and txn_date ? @2023 and merchant_account_type != 'S' }` → merchants that would lose the match."
-  - name: avg_txn_value_by_issuing_country
+    summary: Average/total transaction value by issuing country over enriched payments.
+    usage: "run: avg_amount_by_issuing_country + { where: merchant = 'X' and card_scheme = 'NexPay' and month_num ? 5 to 6 }."
+  - name: merchant_predicate_profile
     kind: query
-    summary: Average transaction value grouped by issuing country, ascending.
-    usage: "`+ { where: merchant = 'X' and card_scheme = 'NexPay' and txn_date ? @2023-05 to @2023-07 }`."
-  - name: merchant_month_tier_inputs
-    kind: query
-    summary: Per merchant-month volume (EUR) and fraud level (%) — the inputs fee-rule volume/fraud tiers bucket on.
-    usage: "`+ { where: merchant = 'X' }` to inspect tier qualification."
+    summary: Per merchant-month, all fee-rule matching inputs (account type, MCC, capture-delay bucket, monthly volume/fraud buckets) plus traffic totals.
+    usage: "run: merchant_predicate_profile + { where: merchant = 'X' } — use to inspect why rules do/don't match."
 provides_for:
-  - "average-scenario fee questions at any notional value, ranked by scheme / ACI / MCC / account type"
-  - "applicable fee IDs by attribute constraints (rule space) or by merchant + period (transaction space)"
-  - "total fees paid by merchant for a day / month / year"
-  - "rule → affected-merchant lookups, including account-type-restriction counterfactuals"
-  - "rate-override, MCC-change, scheme-steering and fraud-ACI-steering counterfactual deltas"
-  - "plain transaction analytics (average value by country, fraud/volume tier inputs)"
+  - "Fee at a notional / average-scenario rankings: run the parameterized rule source directly, e.g. `run: fee_rules(notional is 50) -> avg_fee_by_card_scheme` (also avg_fee_by_aci, avg_fee_by_mcc, avg_fee_by_account_type); scope with for_card_scheme / for_account_type / for_mcc_description / for_credit etc."
+  - "Rule ID lookup by attribute filters (no traffic): `run: fee_rules(for_account_type is 'D', for_aci is 'F') -> matching_rule_ids`."
+  - "Rate-change delta: `run: transaction_fees(target_fee_id is N, new_rate is R) -> rate_change_delta_by_merchant + { where: merchant = 'X' and month_num = 12 }` — zero delta when R equals the rule's own rate."
+  - "MCC-change delta: `run: mcc_change_scenario(new_mcc is 7523) -> mcc_change_by_merchant + { where: merchant = 'X' }` — read mcc_change_delta."
+  - "Rule-scope narrowing impact: `run: rule_scope_change(target_fee_id is N, override_account_type is 'S') -> affected_merchants`."
+  - "Descriptive payments/merchant slices: payments_base, payments_enriched, merchant_profiles, merchant_monthly_metrics views (by_merchant, by_card_scheme, merchant_bucket_profile, profile, codes_by_description on merchant_category_codes_base for MCC text → code resolution)."

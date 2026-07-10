@@ -1,32 +1,36 @@
 file: merchant_category_codes_base.malloy
-domain: payments fee optimization — merchant category code (MCC) reference
+domain: Payments fee optimization — Merchant Category Code (MCC) reference/lookup table
 summary: >
-  Base semantic source over the merchant_category_codes lookup table (769 rows,
-  one row per MCC). Grain: one MCC code with its textual business-type
-  description. mcc is stored as VARCHAR; the mcc_code dimension exposes the
-  numeric cast needed to join against merchants.merchant_category_code and
-  fees.merchant_category_code lists (both numeric). No joins in this file.
+  Base source over the merchant_category_codes lookup table (769 rows, one per MCC).
+  Maps each four-digit MCC (stored as VARCHAR) to its human-readable business description.
+  Exposes a numeric mcc_code dimension for joining/matching against merchants.merchant_category_code
+  and fees.merchant_category_code (both BIGINT-valued), plus category-prefix breakdowns and
+  description-text resolution helpers. No joins — pure reference layer.
 exports:
   - name: merchant_category_codes_base
     kind: source
     summary: >
-      One row per MCC. Dimensions: mcc (string, PK), description, mcc_code
-      (numeric cast for joining), mcc_category_prefix (first two digits =
-      industry category), description_lower (case-insensitive matching).
-      Measures: mcc_count, distinct_description_count.
-    usage: >
-      Resolve a description to its code with
-      `run: merchant_category_codes_base -> { where: description_lower ~ '%eating%'; select: mcc_code, description }`;
-      join into merchant/fee models via mcc_code = merchants.merchant_category_code.
-  - name: all_codes
+      One row per MCC. Dimensions: mcc_code (numeric cast of the VARCHAR mcc column — use this
+      to compare with merchant/fee MCC values), mcc_category_prefix / mcc_subcategory_suffix
+      (first-two / last-two digit split), description_lower (case-normalized for text search).
+      Measures: mcc_count (rows), distinct_mcc_count, distinct_description_count, and the full
+      aggregation set over mcc_code (sum_mcc_code, avg_mcc_code, min_mcc_code, max_mcc_code).
+      Note this is the full DEFINED domain of MCCs — some codes may appear in zero merchants/
+      transactions; do not use it as the participating universe for rankings.
+    usage: "run: merchant_category_codes_base -> { where: mcc_code = 5812; select: mcc_code, description } to resolve a code; filter description_lower ~ '%hotel%' to resolve by name."
+  - name: mcc_universe
     kind: view
-    summary: Full MCC catalog projection (mcc, description) ordered by code.
-    usage: "`run: merchant_category_codes_base -> all_codes + { where: mcc_code ? 5000 to 6000 }` to browse a code range."
+    summary: Full defined domain of MCC codes with descriptions, ordered by code — the "possible values of MCC" surface.
+    usage: "run: merchant_category_codes_base -> mcc_universe (optionally + { where: mcc_category_prefix = '58' })."
+  - name: codes_by_description
+    kind: view
+    summary: Description → numeric code(s) resolution, for user questions that reference an MCC by its business-type text rather than its number.
+    usage: "run: merchant_category_codes_base -> codes_by_description + { where: description_lower ~ '%taxi%' }."
   - name: by_category_prefix
     kind: view
-    summary: Count of MCC codes per two-digit industry category prefix.
-    usage: "`run: merchant_category_codes_base -> by_category_prefix` for the category distribution of the catalog."
+    summary: Count of MCC codes per two-digit industry prefix (first two digits = category).
+    usage: "run: merchant_category_codes_base -> by_category_prefix."
 provides_for:
-  - merchants_base.malloy (resolve merchant_category_code to a description via mcc_code)
-  - fees_base.malloy (label MCC codes appearing in fee-rule merchant_category_code lists)
-  - description-to-code resolution when a question names an MCC by its business-type text
+  - "merchants source: join_one lookup on merchants.merchant_category_code = mcc_code to attach the business-type description."
+  - "fees source: resolve MCC lists in fee rules to human-readable descriptions (via list_contains against mcc_code)."
+  - "MCC-change-delta scenarios: resolve a user-named business category (description text) to the candidate MCC code(s) before re-running fee rule matching."

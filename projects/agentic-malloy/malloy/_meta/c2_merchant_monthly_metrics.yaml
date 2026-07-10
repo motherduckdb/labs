@@ -1,0 +1,45 @@
+file: c2_merchant_monthly_metrics.malloy
+domain: payments fee optimization — merchant monthly volume & fraud metrics
+summary: >
+  One source at merchant × natural-calendar-month grain (2023), built by collapsing
+  the payments fact table BEFORE any rule fan-out. For each merchant-month it holds
+  the transaction count, total volume in EUR, fraudulent volume/count, and the
+  volume-weighted fraud rate (fraud EUR / total EUR, per the fee-rule definition),
+  plus two derived dimensions that map those raw values into the EXACT categorical
+  strings used by the fees rule table: monthly_volume_bucket ('<100k','100k-1m',
+  '1m-5m','>5m') and monthly_fraud_level_bucket ('<7.2%','7.2%-7.7%','7.7%-8.3%',
+  '>8.3%'). This is the canonical input for fee-rule matching on the monthly_volume
+  and monthly_fraud_level predicates: downstream fee-resolution sources should
+  join_one to this source on merchant_month_key (merchant + '-' + month_num) rather
+  than recomputing monthly aggregates after a fan-out.
+exports:
+  - name: merchant_monthly_metrics
+    kind: source
+    summary: >
+      Merchant × month grain (primary key merchant_month_key). Raw columns:
+      monthly_transaction_count, monthly_volume_eur, monthly_fraud_amount,
+      monthly_fraud_tx_count. Derived: monthly_fraud_rate (volume-weighted,
+      zero-safe), monthly_volume_bucket and monthly_fraud_level_bucket in the
+      fee-rule string domains. Measures cover sum/avg/min/max of volume and
+      fraud rate plus merchant-month and distinct-merchant counts.
+    usage: "where: merchant = 'X' and month_num = 12 then read monthly_volume_bucket / monthly_fraud_level_bucket; or join_one ... with merchant_month_key from a fee-resolution source."
+  - name: metrics_detail
+    kind: view
+    summary: One row per merchant-month with raw metrics and both rule-bucket strings.
+    usage: "run: merchant_monthly_metrics -> metrics_detail + { where: merchant = 'Rafa_AI' } for one merchant's 12-month trajectory."
+  - name: by_volume_bucket
+    kind: view
+    summary: Distribution of merchant-months across the four monthly_volume rule buckets.
+    usage: "run: merchant_monthly_metrics -> by_volume_bucket (optionally + { where: month_num ? 1 to 6 })."
+  - name: by_fraud_level_bucket
+    kind: view
+    summary: Distribution of merchant-months across the four monthly_fraud_level rule buckets.
+    usage: "run: merchant_monthly_metrics -> by_fraud_level_bucket."
+  - name: merchant_bucket_profile
+    kind: view
+    summary: Per-merchant yearly totals with a nested month-by-month bucket trajectory.
+    usage: "run: merchant_monthly_metrics -> merchant_bucket_profile + { where: merchant = 'X' }."
+provides_for:
+  - "fee-rule applicability matching: supplies the monthly_volume and monthly_fraud_level bucket strings a rule's predicates are compared against (join_one with merchant_month_key from any transaction-level fee-resolution source)"
+  - "total-fees-paid and applicable-fee-ID computations that need per-month volume/fraud context per merchant"
+  - "monthly volume / fraud-rate reporting per merchant without re-aggregating the payments fact after a join_many fan-out"

@@ -1,15 +1,12 @@
 source: merchants_base is duckdb.table('merchants') extend {
   primary_key: merchant
 
-  // safe cast: 'immediate'/'manual' -> null, day strings -> numbers
-  dimension: capture_delay_days is capture_delay:::number
-
-  // merchant setting mapped to fee-rule bucket domain ('<3','3-5','>5','immediate','manual')
+  // maps concrete day settings to fee-rule capture_delay buckets ('<3','3-5','>5','immediate','manual')
   dimension: capture_delay_bucket is
-    pick capture_delay when capture_delay ? 'immediate' | 'manual'
-    pick '<3' when capture_delay_days < 3
-    pick '3-5' when capture_delay_days <= 5
-    else '>5'
+    pick '<3' when capture_delay = '1' | '2'
+    pick '3-5' when capture_delay = '3' | '4' | '5'
+    pick '>5' when capture_delay = '7'
+    else capture_delay
 
   dimension: account_type_description is
     pick 'Enterprise - Retail' when account_type = 'R'
@@ -18,9 +15,12 @@ source: merchants_base is duckdb.table('merchants') extend {
     pick 'Platform - Franchise' when account_type = 'F'
     pick 'Platform - SaaS' when account_type = 'S'
     pick 'Other' when account_type = 'O'
-    else account_type
+    else 'Unknown'
 
-  // list column: len, not cardinality
+  // mcc as string for joining a VARCHAR lookup table
+  dimension: mcc_string is merchant_category_code::string
+
+  // list columns: use len!number, never `is null`
   dimension: acquirer_count is len!number(acquirer)
   dimension: has_multiple_acquirers is len!number(acquirer) > 1
 
@@ -31,17 +31,16 @@ source: merchants_base is duckdb.table('merchants') extend {
   measure: avg_acquirer_count is acquirer_count.avg()
   measure: min_acquirer_count is acquirer_count.min()
   measure: max_acquirer_count is acquirer_count.max()
-  measure: total_acquirer_links is acquirer_count.sum()
 
   view: by_account_type is {
     group_by: account_type, account_type_description
-    aggregate: merchant_count
+    aggregate: merchant_count, mcc_count
     order_by: merchant_count desc
   }
 
   view: by_mcc is {
     group_by: merchant_category_code
-    aggregate: merchant_count
+    aggregate: merchant_count, account_type_count
     order_by: merchant_count desc
   }
 
@@ -51,13 +50,7 @@ source: merchants_base is duckdb.table('merchants') extend {
     order_by: merchant_count desc
   }
 
-  view: by_capture_delay_bucket is {
-    group_by: capture_delay_bucket
-    aggregate: merchant_count
-    order_by: merchant_count desc
-  }
-
-  view: profile is {
+  view: merchant_profile is {
     select:
       merchant,
       account_type,

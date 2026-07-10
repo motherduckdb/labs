@@ -1,0 +1,82 @@
+// merchant × natural-month grain (2023, non-leap), collapsed from payments before any
+// rule fan-out so monthly totals are grain-invariant; buckets reproduce the EXACT
+// fees.monthly_volume / fees.monthly_fraud_level rule strings from the profile.
+source: merchant_monthly_metrics is payments_base -> {
+  group_by: merchant, month_num
+  aggregate:
+    monthly_transaction_count is count()
+    monthly_volume_eur is eur_amount.sum()
+    monthly_fraud_amount is eur_amount.sum() { where: has_fraudulent_dispute }
+    monthly_fraud_tx_count is count() { where: has_fraudulent_dispute }
+} extend {
+  // composite key for later join_one from fee-resolution layers
+  dimension: merchant_month_key is concat(merchant, '-', month_num::string)
+  primary_key: merchant_month_key
+
+  // filtered sum is NULL when a merchant-month has zero fraud rows → coalesce, not raw null
+  dimension: monthly_fraud_rate is
+    coalesce!number(monthly_fraud_amount, 0) / monthly_volume_eur
+
+  // exact rule-domain strings: {'<100k','100k-1m','1m-5m','>5m'}
+  dimension: monthly_volume_bucket is
+    pick '<100k' when monthly_volume_eur < 100000
+    pick '100k-1m' when monthly_volume_eur < 1000000
+    pick '1m-5m' when monthly_volume_eur < 5000000
+    else '>5m'
+
+  // exact rule-domain strings: {'<7.2%','7.2%-7.7%','7.7%-8.3%','>8.3%'}
+  dimension: monthly_fraud_level_bucket is
+    pick '<7.2%' when monthly_fraud_rate < 0.072
+    pick '7.2%-7.7%' when monthly_fraud_rate < 0.077
+    pick '7.7%-8.3%' when monthly_fraud_rate < 0.083
+    else '>8.3%'
+
+  measure: merchant_month_count is count()
+  measure: distinct_merchant_count is count(merchant)
+
+  measure: total_volume_eur is monthly_volume_eur.sum()
+  measure: avg_monthly_volume is monthly_volume_eur.avg()
+  measure: min_monthly_volume is monthly_volume_eur.min()
+  measure: max_monthly_volume is monthly_volume_eur.max()
+
+  measure: total_fraud_amount is monthly_fraud_amount.sum()
+  measure: avg_monthly_fraud_rate is monthly_fraud_rate.avg()
+  measure: min_monthly_fraud_rate is monthly_fraud_rate.min()
+  measure: max_monthly_fraud_rate is monthly_fraud_rate.max()
+
+  // one row per merchant-month with both raw metrics and rule-bucket strings
+  view: metrics_detail is {
+    select:
+      merchant, month_num, merchant_month_key,
+      monthly_transaction_count, monthly_volume_eur,
+      monthly_fraud_amount, monthly_fraud_tx_count, monthly_fraud_rate,
+      monthly_volume_bucket, monthly_fraud_level_bucket
+    order_by: merchant asc, month_num asc
+  }
+
+  view: by_volume_bucket is {
+    group_by: monthly_volume_bucket
+    aggregate: merchant_month_count, distinct_merchant_count,
+      total_volume_eur, avg_monthly_volume
+    order_by: merchant_month_count desc
+  }
+
+  view: by_fraud_level_bucket is {
+    group_by: monthly_fraud_level_bucket
+    aggregate: merchant_month_count, distinct_merchant_count,
+      avg_monthly_fraud_rate, total_volume_eur
+    order_by: merchant_month_count desc
+  }
+
+  // per-merchant trajectory across the year, buckets nested per month
+  view: merchant_bucket_profile is {
+    group_by: merchant
+    aggregate: total_volume_eur, avg_monthly_volume, avg_monthly_fraud_rate
+    nest: by_month is {
+      group_by: month_num, monthly_volume_eur, monthly_fraud_rate,
+        monthly_volume_bucket, monthly_fraud_level_bucket
+      order_by: month_num asc
+    }
+    order_by: merchant asc
+  }
+}
