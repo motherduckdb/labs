@@ -316,13 +316,19 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     const stripped = stripMention(msg.text, deps.botUserId).trim();
 
     // Command intercept BEFORE any LLM turn (and before the mutex, so a stray
-    // command never gets blocked behind a running turn).
-    const cmd = stripped.match(USE_DB_RE);
+    // command never gets blocked behind a running turn). The command is
+    // single-line, and stripMention collapses newlines — so match against the
+    // raw first line, or a following prose line would fold into the name list.
+    const firstLine = stripMention(msg.text.split('\n')[0], deps.botUserId).trim();
+    const cmd = firstLine.match(USE_DB_RE);
     if (cmd) {
+      // Slack clients can also append same-line junk to the message text
+      // (e.g. an app-attribution "*Sent using* <@…>" suffix) — keep only
+      // tokens shaped like database names.
       const dbs = cmd[1]
         .split(/[,\s]+/)
         .map((s) => s.trim().replace(/^`|`$/g, ''))
-        .filter((s) => s.length > 0);
+        .filter((s) => /^[A-Za-z0-9_][\w.$-]*$/.test(s));
       if (dbs.length === 0) {
         await post(msg.channel, replyTs, 'Usage: `use db <name>[, <name>…]`');
         return;

@@ -1,7 +1,8 @@
 # Dive examples
 
 Reference MotherDuck Dives used by `lib/gemini-dive-guide.ts` as worked
-visual examples in the `get_dive_guide` response. They're real, shipped
+visual examples in the Gemini-tuned dive guide (served when the model
+intercepts `get_guide("dives.md")`). They're real, shipped
 dives from the public gallery — picked for showing the visual target
 the model should aim for (typography hierarchy, design tokens, skeleton
 patterns, recharts styling, fully wired `useSQLQuery` calls, etc.).
@@ -40,4 +41,4 @@ Each file shape:
 4. Import + append in `lib/gemini-dive-guide.ts`.
 
 Keep the catalog small — each example is ~50-100 KB of tokens in every
-`get_dive_guide` response.
+served dive-guide response.

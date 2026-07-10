@@ -30,10 +30,19 @@ async function getBrowser(): Promise<Browser> {
   return browserPromise;
 }
 
+/** Breathing room kept around the chart tile inside the shot, in CSS px. */
+const CLIP_PAD_PX = 16;
+
 /**
  * Render a self-contained HTML document (an mviz embed) to a PNG buffer.
- * The page is ~900px wide; we screenshot the `.dashboard` root that mviz
- * emits and fall back to a full-page shot if that element is absent.
+ *
+ * The page is 900px wide and mviz lays the chart out on its 16-column grid,
+ * so the fence's `size=[w,h]` decides the `.grid-item` box (w=8 → ~424px
+ * wide, taller h → taller box). Screenshot THAT box — plus a little padding,
+ * clamped to the dashboard — so the PNG Slack displays is the size the spec
+ * asked for, not a full-width canvas with dead space beside a half-width
+ * chart. Multi-tile embeds and missing selectors fall back to the
+ * `.dashboard` root, then to a full-page shot.
  */
 export async function renderHtmlToPng(html: string): Promise<Buffer> {
   const browser = await getBrowser();
@@ -54,17 +63,30 @@ export async function renderHtmlToPng(html: string): Promise<Buffer> {
     await page.waitForTimeout(500);
 
     const root = page.locator('.dashboard').first();
-    let buffer: Buffer;
+    let buffer: Buffer | null = null;
     try {
-      if ((await root.count()) > 0) {
+      const dashBox = (await root.count()) > 0 ? await root.boundingBox() : null;
+      const items = page.locator('.dashboard .grid-item');
+      const itemBox = (await items.count()) === 1 ? await items.first().boundingBox() : null;
+      if (dashBox && itemBox) {
+        const x = Math.max(dashBox.x, itemBox.x - CLIP_PAD_PX);
+        const y = Math.max(dashBox.y, itemBox.y - CLIP_PAD_PX);
+        buffer = await page.screenshot({
+          type: 'png',
+          clip: {
+            x,
+            y,
+            width: Math.min(dashBox.x + dashBox.width, itemBox.x + itemBox.width + CLIP_PAD_PX) - x,
+            height: Math.min(dashBox.y + dashBox.height, itemBox.y + itemBox.height + CLIP_PAD_PX) - y,
+          },
+        });
+      } else if (dashBox) {
         buffer = await root.screenshot({ type: 'png' });
-      } else {
-        buffer = await page.screenshot({ type: 'png', fullPage: true });
       }
     } catch {
-      buffer = await page.screenshot({ type: 'png', fullPage: true });
+      // fall through to the full-page shot
     }
-    return buffer;
+    return buffer ?? (await page.screenshot({ type: 'png', fullPage: true }));
   } finally {
     await page.close().catch(() => {});
   }

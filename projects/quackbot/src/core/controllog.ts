@@ -53,7 +53,7 @@ export interface Session {
   postings: PostingRow[];
 }
 
-let projectId = 'data-chat-mini';
+let projectId = 'quackbot';
 let baseLogDir = 'logs';
 const als = new AsyncLocalStorage<Session>();
 
@@ -123,7 +123,7 @@ function emit(opts: EmitOpts): void {
   });
 }
 
-const AGENT = 'agent:data-chat-mini';
+const AGENT = 'agent:quackbot';
 
 export function modelPrompt(args: {
   taskId: string; agentId?: string; runId: string; provider: string; model: string;

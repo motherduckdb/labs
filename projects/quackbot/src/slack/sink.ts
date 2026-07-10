@@ -47,14 +47,14 @@ const TOOL_VERBS: Record<string, string> = {
   list_tables: 'inspecting schema',
   list_columns: 'inspecting schema',
   list_databases: 'inspecting schema',
-  query_context_layer: 'checking saved context',
-  update_context_layer: 'saving context',
+  list_guides: 'checking saved guides',
+  get_guide: 'reading a guide',
+  create_guide: 'saving a guide',
+  update_guide: 'updating a guide',
   search_catalog: 'searching catalog',
-  ask_docs_question: 'reading docs',
   save_dive: 'saving dive',
   list_dives: 'browsing dives',
   read_dive: 'reading dive',
-  get_dive_guide: 'reading the dive guide',
 };
 
 function verbFor(name: string): string {

@@ -4,16 +4,17 @@ import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.j
 import { getMotherDuckMcpUrl } from './motherduck-env';
 
 /**
- * Read-only allowlist, plus the two context-layer tools.
+ * Read-only allowlist, plus the guide tools that back durable memory.
  *
- * Unlike data-chat-mini — which shadowed `query_context_layer` /
- * `update_context_layer` with LOCAL IndexedDB handlers and kept those names OUT
- * of the allowlist so the browser could intercept them before MCP dispatch —
- * quackbot uses the REAL MotherDuck MCP context-layer tools. There is no client
- * round-trip: the fragments live in MotherDuck and the tools dispatch over MCP
- * like every other allowlisted tool. So both names are allowlisted here, and
- * saving durable data context is a first-class feature of the bot, not a
- * browser-side simulation.
+ * data-chat-mini shadowed `query_context_layer` / `update_context_layer` with
+ * LOCAL IndexedDB handlers — those tool *shapes* were an interception, and the
+ * live MotherDuck MCP server exposes no such tools (verified against
+ * api.motherduck.com/mcp). What the server DOES expose is **guides**: durable
+ * markdown documents with list/get/create/update CRUD. quackbot's memory layer
+ * is built on them directly — a saved convention becomes a guide under
+ * `users/<bot user>/quackbot/`, durable and visible to every future
+ * conversation. The dive-authoring guide is a guide too: `get_guide("dives.md")`
+ * (the server retired `get_dive_guide`).
  */
 export const ALLOWED_TOOLS = new Set([
   'query',
@@ -21,30 +22,74 @@ export const ALLOWED_TOOLS = new Set([
   'list_columns',
   'list_databases',
   'search_catalog',
-  'ask_docs_question',
-  'query_context_layer',
-  'update_context_layer',
-  // Dive tools. Reads (`list_dives`, `read_dive`, `get_dive_guide`) are always
-  // safe. Among the Dive WRITES, only `save_dive` is allowlisted — see the
-  // classification comment below for why the edit tools are deliberately left out.
+  // Guides: reads are unrestricted; the two writes are additionally gated by
+  // the GUIDE_WRITE_PATH guard below.
+  'list_guides',
+  'get_guide',
+  'create_guide',
+  'update_guide',
+  // Dive tools. Reads (`list_dives`, `read_dive`) are always safe. Among the
+  // Dive WRITES, only `save_dive` is allowlisted — see the classification
+  // comment below for why the edit tools are deliberately left out.
   'save_dive',
   'list_dives',
   'read_dive',
-  'get_dive_guide',
 ]);
+
+/**
+ * Guide writes may only target quackbot's own namespace: a personal guide
+ * folder named `quackbot/` under the bot's MotherDuck user (the server itself
+ * enforces the `users/<username>/` half for non-admin tokens; this guard adds
+ * the `quackbot/` segment so the bot can never touch other personal guides,
+ * and rejects id-only selection so the path check cannot be bypassed).
+ */
+export const GUIDE_WRITE_PATH = /^users\/[^/]+\/quackbot\/.+/;
+const GUIDE_WRITE_TOOLS = new Set(['create_guide', 'update_guide']);
+
+export function guideWriteViolation(
+  toolName: string,
+  args: Record<string, unknown> | undefined,
+): string | null {
+  if (!GUIDE_WRITE_TOOLS.has(toolName)) return null;
+  // An `id` alongside a valid path could win server-side selection and land
+  // the write on an arbitrary guide — path is the only allowed selector.
+  if (args && args.id !== undefined && args.id !== null) {
+    return `${toolName} must select the guide by \`path\` only — do not pass \`id\`.`;
+  }
+  const path = args?.path;
+  if (typeof path !== 'string' || !GUIDE_WRITE_PATH.test(path)) {
+    return (
+      `${toolName} may only write guides under users/<username>/quackbot/ ` +
+      `(got ${typeof path === 'string' ? `'${path}'` : 'no path'}). ` +
+      `Select the guide by \`path\` (not \`id\`), under that folder.`
+    );
+  }
+  // The regex alone would pass `users/x/quackbot/../../other.md` — reject
+  // dot segments, empty segments, and backslashes so the prefix can't be
+  // escaped if the server normalizes paths.
+  const segments = path.split('/');
+  if (segments.some((s) => s === '' || s === '.' || s === '..' || s.includes('\\'))) {
+    return `${toolName} path may not contain empty, '.', '..', or backslash segments (got '${path}').`;
+  }
+  return null;
+}
 
 /**
  * Tool guardrail classification. This is the named boundary between safe reads
  * and gated writes, kept intact even where the allowlist is permissive.
- * `query_rw`, `share_dive_data`, `edit_dive_content`, `update_dive`, and
- * `delete_dive` are classified here but absent from ALLOWED_TOOLS, so
- * `executeToolWithStatus` rejects them before they ever reach MotherDuck.
+ * `query_rw`, `share_dive_data`, `edit_dive_content`, `update_dive`,
+ * `edit_guide_content`, `update_guide_metadata`, `set_guide_access`,
+ * `delete_dive`, and `delete_guide` are classified here but absent from
+ * ALLOWED_TOOLS, so `executeToolWithStatus` rejects them before they ever
+ * reach MotherDuck.
  *
- * Two MUTATING tools are *deliberately* allowlisted:
+ * Three MUTATING tools are *deliberately* allowlisted:
  *
- *   - `update_context_layer` — writing durable data context (join keys, grain
- *     rules, metric defs) is a core feature and there is no browser round-trip
- *     to gate it behind anymore.
+ *   - `create_guide` / `update_guide` — writing durable data context (join
+ *     keys, grain rules, metric defs) is a core feature. Both are additionally
+ *     gated by the GUIDE_WRITE_PATH guard above, so they can only touch
+ *     quackbot's own guide folder; create_guide is also collision-safe on the
+ *     server (a duplicate path errors rather than overwrites).
  *   - `save_dive` — and ONLY save_dive among the Dive writes. Per mdw-turbo's
  *     isCanvasAutoApproved rationale, save_dive always mints a FRESH dive id,
  *     so it can never clobber an existing dive. `edit_dive_content` and
@@ -59,13 +104,17 @@ export const ALLOWED_TOOLS = new Set([
  */
 export const READONLY_TOOLS = new Set([
   'query', 'list_tables', 'list_columns', 'list_databases',
-  'search_catalog', 'ask_docs_question', 'query_context_layer',
-  'list_dives', 'read_dive', 'get_dive_guide',
+  'search_catalog', 'list_guides', 'get_guide',
+  'list_dives', 'read_dive',
 ]);
 
 export const MUTATING_TOOLS = new Set([
   'query_rw',
-  'update_context_layer',
+  'create_guide',
+  'update_guide',
+  'edit_guide_content',
+  'update_guide_metadata',
+  'set_guide_access',
   'save_dive',
   'edit_dive_content',
   'update_dive',
@@ -74,6 +123,7 @@ export const MUTATING_TOOLS = new Set([
 
 export const DESTRUCTIVE_TOOLS = new Set([
   'delete_dive',
+  'delete_guide',
 ]);
 
 /**
@@ -82,14 +132,15 @@ export const DESTRUCTIVE_TOOLS = new Set([
  * In quackbot v1 nothing pauses for confirmation: Slack has no confirmation
  * handshake yet, so this never gates an executed tool. The function and its
  * classification are retained as the canonical policy boundary. The non-
- * allowlisted writes (`query_rw`, `edit_dive_content`, `update_dive`,
- * `share_dive_data`, `delete_dive`) can never reach here in practice — they are
- * rejected at the allowlist. The two allowlisted MUTATING tools return false:
- * `update_context_layer` (saving context runs unattended) and `save_dive`
- * (always mints a fresh id, so it is safe to run without approval). Restoring
- * confirmation would mean wiring a Slack interactive-button flow (post a
- * "confirm this write?" message, block on the button click) and having callers
- * honor a `true` return here before dispatching.
+ * allowlisted writes (`query_rw`, dive edits, guide metadata/access edits,
+ * the deletes) can never reach here in practice — they are rejected at the
+ * allowlist. The three allowlisted MUTATING tools return false: `create_guide`
+ * and `update_guide` (path-guarded to quackbot's own guide folder, so they run
+ * unattended) and `save_dive` (always mints a fresh id, so it is safe to run
+ * without approval). Restoring confirmation would mean wiring a Slack
+ * interactive-button flow (post a "confirm this write?" message, block on the
+ * button click) and having callers honor a `true` return here before
+ * dispatching.
  */
 export function requiresConfirmation(
   toolName: string,
@@ -97,10 +148,10 @@ export function requiresConfirmation(
 ): boolean {
   if (DESTRUCTIVE_TOOLS.has(toolName)) return true;
   if (!MUTATING_TOOLS.has(toolName)) return false;
-  if (toolName === 'update_context_layer' || toolName === 'save_dive') {
+  if (toolName === 'create_guide' || toolName === 'update_guide' || toolName === 'save_dive') {
     // v1: these allowlisted writes run without a confirmation handshake (no
     // Slack button flow yet). save_dive mints a fresh dive id so it cannot
-    // clobber; update_context_layer is deliberately false for every action.
+    // clobber; the guide writes are confined by GUIDE_WRITE_PATH.
     return false;
   }
   return true;
@@ -113,15 +164,18 @@ export interface MCPTool {
 }
 
 /**
- * Create an MCP client authenticated with the MotherDuck read scaling token.
+ * Create an MCP client authenticated with the MotherDuck token. Guide and
+ * Dive writes require a standard write-capable PAT (a read scaling token is
+ * read-only by design and would reject them).
  *
- * Read scaling: a read scaling token directs each connection to one of the
- * read-only replicas ("ducklings"), so a fleet of concurrent users fans out
- * across replicas on a single token — that distribution comes from the token
- * itself, regardless of any hint. `session_name` (legacy alias `session_hint`)
- * additionally pins a session to a specific replica for cache affinity; we set
- * it to a per-thread key (the Slack thread the request belongs to) so repeated
- * questions in one thread land on the same replica.
+ * If a read scaling token IS used (reads-only deployment): it directs each
+ * connection to one of the read-only replicas ("ducklings"), so a fleet of
+ * concurrent users fans out across replicas on a single token — that
+ * distribution comes from the token itself, regardless of any hint.
+ * `session_name` (legacy alias `session_hint`) additionally pins a session to
+ * a specific replica for cache affinity; we set it to a per-thread key (the
+ * Slack thread the request belongs to) so repeated questions in one thread
+ * land on the same replica.
  *
  * Caveat: `session_name` affinity is documented for the DuckDB / Postgres
  * connection strings, NOT (yet) for the MCP HTTP transport. We pass it as a
@@ -135,7 +189,7 @@ export async function createMCPClient(
 ): Promise<Client> {
   const token = process.env.MOTHERDUCK_TOKEN;
   if (!token) {
-    throw new Error('No MOTHERDUCK_TOKEN configured. Set a read scaling token in .env.');
+    throw new Error('No MOTHERDUCK_TOKEN configured. Set a write-capable PAT in .env.');
   }
 
   const url = new URL(getMotherDuckMcpUrl());
@@ -201,6 +255,12 @@ export async function executeToolWithStatus(
   // ALLOWED_TOOLS rather than reintroduce a bypass.
   if (!ALLOWED_TOOLS.has(name)) {
     throw new Error(`Tool "${name}" is not in the allowed (read-only) tool set`);
+  }
+  // Returned as a tool error (not thrown) so the model sees the message and
+  // can retry with a conforming path.
+  const violation = guideWriteViolation(name, args);
+  if (violation) {
+    return { text: violation, isError: true };
   }
   const result = await client.callTool({ name, arguments: args }, undefined, requestOptions);
   if (result.structuredContent != null) {

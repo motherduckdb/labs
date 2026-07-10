@@ -259,7 +259,7 @@ export async function streamChatCompletion(params: {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'X-Title': 'data-chat-mini',
+        'X-Title': 'quackbot',
         'HTTP-Referer': 'https://github.com/motherduckdb/labs',
       },
       body: JSON.stringify(body),

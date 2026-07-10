@@ -130,6 +130,26 @@ describe('buildTurnRunner command intercept', () => {
     expect(calls.loopStarts).toBe(0); // no agentic turn ran
     expect(calls.posts.some((p) => p.text?.includes('Databases for this channel'))).toBe(true);
   });
+
+  it('ignores trailing client junk after the database names (observed live: MCP attribution suffix)', async () => {
+    const { deps, calls } = makeDeps();
+    const runner = buildTurnRunner(deps);
+    await runner.handle({
+      channel: 'D1',
+      user: 'U1',
+      text: 'use database sample_data *Sent using* <@U09JNJ9UA5A>',
+      ts: '1.2',
+    });
+    expect(calls.setChannelDatabases).toEqual([{ channel: 'D1', dbs: ['sample_data'] }]);
+
+    await runner.handle({
+      channel: 'D1',
+      user: 'U1',
+      text: 'use db my_db\nsome unrelated second line',
+      ts: '1.3',
+    });
+    expect(calls.setChannelDatabases[1]).toEqual({ channel: 'D1', dbs: ['my_db'] });
+  });
 });
 
 describe('buildTurnRunner dedupe', () => {

@@ -17,10 +17,42 @@ const SUCCESS_FIELD_TOOLS = new Set([
   'update_dive',
   'edit_dive_content',
   'delete_dive',
-  'update_context_layer',
+  'create_guide',
+  'update_guide',
+  'edit_guide_content',
+  'delete_guide',
   'share_dive_data',
   'query_rw',
 ]);
+
+/**
+ * Guide-tool args the models pad with junk. GPT profiles fill EVERY optional
+ * schema field with "" / 0 / an all-empty `reference` object, and the server
+ * rejects those — observed live as 3-4 failed `list_guides` rounds before the
+ * model learned to send minimal args. Strip empty-string and null values, and
+ * drop a `reference` whose only surviving field is `type`.
+ */
+const GUIDE_ARG_SANITIZED_TOOLS = new Set(['list_guides', 'get_guide']);
+
+function sanitizeGuideArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (value === '' || value === null || value === undefined) continue;
+    if (key === 'reference' && value && typeof value === 'object') {
+      const ref = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).filter(
+          ([, v]) => v !== '' && v !== null && v !== undefined,
+        ),
+      );
+      const meaningful = Object.keys(ref).filter((k) => k !== 'type');
+      if (meaningful.length === 0) continue;
+      out.reference = ref;
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
 
 export function applyToolArgDefaults(
   name: string,
@@ -28,6 +60,9 @@ export function applyToolArgDefaults(
 ): Record<string, unknown> {
   if (name === 'list_dives' && !('include_org_shares' in args)) {
     return { ...args, include_org_shares: true };
+  }
+  if (GUIDE_ARG_SANITIZED_TOOLS.has(name)) {
+    return sanitizeGuideArgs(args);
   }
   return args;
 }

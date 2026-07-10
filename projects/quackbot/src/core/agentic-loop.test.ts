@@ -306,40 +306,59 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(result.finishReason).toBe('done');
   });
 
-  it('does NOT intercept context tools — query_context_layer flows through dispatchTool', async () => {
+  it('does NOT intercept ordinary guide reads — list_guides flows through dispatchTool, even on Gemini', async () => {
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
-      content: JSON.stringify({ fragments: [] }),
+      content: JSON.stringify({ guides: [] }),
       isError: false,
     }));
     const { result, events } = await runLoop({
       streams: [
-        () => toolCallStream([{ id: 'ctx_1', name: 'query_context_layer', args: { query: 'join keys' } }]),
-        () => textStream('No saved context yet.'),
+        () => toolCallStream([{ id: 'ctx_1', name: 'list_guides', args: { keyword: 'join keys' } }]),
+        () => textStream('No saved guides yet.'),
       ],
       dispatchToolImpl,
+      profileId: 'google/gemini-3-flash-preview',
     });
 
     // Dispatched like any other tool: real dispatch path, tool_start/tool_end events.
     expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
     expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({
-      name: 'query_context_layer',
-      args: { query: 'join keys' },
+      name: 'list_guides',
+      args: { keyword: 'join keys' },
     });
-    expect(events.some((e) => e.type === 'tool_start' && e.call.name === 'query_context_layer')).toBe(true);
-    expect(events.some((e) => e.type === 'tool_end' && e.call.name === 'query_context_layer')).toBe(true);
+    expect(events.some((e) => e.type === 'tool_start' && e.call.name === 'list_guides')).toBe(true);
+    expect(events.some((e) => e.type === 'tool_end' && e.call.name === 'list_guides')).toBe(true);
 
     // No pause: the loop continued to a second LLM call and finished normally.
     expect(result.finishReason).toBe('done');
-    expect(result.turnToolNames).toEqual(new Set(['query_context_layer']));
+    expect(result.turnToolNames).toEqual(new Set(['list_guides']));
     const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
     expect(toolResult).toMatchObject({
       type: 'tool_result',
       tool_use_id: 'ctx_1',
-      content: JSON.stringify({ fragments: [] }),
+      content: JSON.stringify({ guides: [] }),
     });
   });
 
-  it('intercepts get_dive_guide on Gemini profiles with the local guide, never dispatching to MCP', async () => {
+  it('does NOT intercept get_guide with a non-dives.md path on Gemini profiles', async () => {
+    vi.mocked(buildGeminiDiveGuide).mockClear();
+    const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'a saved convention',
+      isError: false,
+    }));
+    await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'g_1', name: 'get_guide', args: { path: 'users/bot/quackbot/taxi-data.md' } }]),
+        () => textStream('Read it.'),
+      ],
+      dispatchToolImpl,
+      profileId: 'google/gemini-3-flash-preview',
+    });
+    expect(buildGeminiDiveGuide).not.toHaveBeenCalled();
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('intercepts get_guide("dives.md") on Gemini profiles with the local guide, never dispatching to MCP', async () => {
     vi.mocked(buildGeminiDiveGuide).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: 'mcp guide (should not be used)',
@@ -347,7 +366,7 @@ describe('runAgenticLoop with TurnSink', () => {
     }));
     const { result, events } = await runLoop({
       streams: [
-        () => toolCallStream([{ id: 'guide_1', name: 'get_dive_guide', args: {} }]),
+        () => toolCallStream([{ id: 'guide_1', name: 'get_guide', args: { path: 'dives.md' } }]),
         () => textStream('Guide read, building the dive.'),
       ],
       dispatchToolImpl,
@@ -363,12 +382,12 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(startIndex).toBeGreaterThanOrEqual(0);
     expect(endIndex).toBeGreaterThan(startIndex);
     expect(events[endIndex]).toMatchObject({
-      call: { id: 'guide_1', name: 'get_dive_guide', result: 'GEMINI-TUNED DIVE GUIDE' },
+      call: { id: 'guide_1', name: 'get_guide', result: 'GEMINI-TUNED DIVE GUIDE' },
     });
 
     // The synthesized tool_result feeds the next LLM call like a real dispatch.
     expect(result.finishReason).toBe('done');
-    expect(result.turnToolNames).toEqual(new Set(['get_dive_guide']));
+    expect(result.turnToolNames).toEqual(new Set(['get_guide']));
     const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
     expect(toolResult).toEqual({
       type: 'tool_result',
@@ -377,7 +396,7 @@ describe('runAgenticLoop with TurnSink', () => {
     });
   });
 
-  it('passes get_dive_guide through to dispatchTool on non-Gemini profiles', async () => {
+  it('passes get_guide("dives.md") through to dispatchTool on non-Gemini profiles', async () => {
     vi.mocked(buildGeminiDiveGuide).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: 'mcp claude guide content',
@@ -385,7 +404,7 @@ describe('runAgenticLoop with TurnSink', () => {
     }));
     const { result } = await runLoop({
       streams: [
-        () => toolCallStream([{ id: 'guide_2', name: 'get_dive_guide', args: {} }]),
+        () => toolCallStream([{ id: 'guide_2', name: 'get_guide', args: { path: 'dives.md' } }]),
         () => textStream('Guide read.'),
       ],
       dispatchToolImpl,
@@ -394,14 +413,14 @@ describe('runAgenticLoop with TurnSink', () => {
 
     expect(buildGeminiDiveGuide).not.toHaveBeenCalled();
     expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
-    expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'get_dive_guide' });
+    expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'get_guide', args: { path: 'dives.md' } });
     const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
     expect(toolResult).toMatchObject({ content: 'mcp claude guide content' });
   });
 
   it('leaves no unpaired tool_use when auth expires mid-way through a multi-tool round', async () => {
     vi.mocked(buildGeminiDiveGuide).mockClear();
-    // Round of three: get_dive_guide is Gemini-intercepted and succeeds,
+    // Round of three: the dives.md guide read is Gemini-intercepted and succeeds,
     // query throws an auth error, list_tables never runs.
     const dispatchToolImpl = vi.fn(async (opts: { client: Client; name: string; args: Record<string, unknown> }) => {
       if (opts.name === 'query') throw new Error('401 Unauthorized');
@@ -410,7 +429,7 @@ describe('runAgenticLoop with TurnSink', () => {
     const { result, events } = await runLoop({
       streams: [
         () => toolCallStream([
-          { id: 'guide_1', name: 'get_dive_guide', args: {} },
+          { id: 'guide_1', name: 'get_guide', args: { path: 'dives.md' } },
           { id: 'query_1', name: 'query', args: { sql: 'select 1' } },
           { id: 'tables_1', name: 'list_tables', args: {} },
         ]),
@@ -444,6 +463,6 @@ describe('runAgenticLoop with TurnSink', () => {
     });
 
     // The round's tools — including the intercepted guide — are recorded.
-    expect(result.turnToolNames).toEqual(new Set(['get_dive_guide', 'query', 'list_tables']));
+    expect(result.turnToolNames).toEqual(new Set(['get_guide', 'query', 'list_tables']));
   });
 });

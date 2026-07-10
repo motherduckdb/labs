@@ -7,32 +7,45 @@ import {
   DESTRUCTIVE_TOOLS,
   requiresConfirmation,
   executeToolWithStatus,
+  guideWriteViolation,
 } from './mcp-client';
 
 describe('quackbot tool allowlist', () => {
-  it('allowlists both context-layer tools (the key change from data-chat-mini)', () => {
-    expect(ALLOWED_TOOLS.has('query_context_layer')).toBe(true);
-    expect(ALLOWED_TOOLS.has('update_context_layer')).toBe(true);
+  it('allowlists the guide tools that back durable memory (the key change from data-chat-mini)', () => {
+    for (const t of ['list_guides', 'get_guide', 'create_guide', 'update_guide']) {
+      expect(ALLOWED_TOOLS.has(t)).toBe(true);
+    }
+    // The invented context-layer shapes are gone — they never existed on the
+    // live MCP server.
+    expect(ALLOWED_TOOLS.has('query_context_layer')).toBe(false);
+    expect(ALLOWED_TOOLS.has('update_context_layer')).toBe(false);
   });
 
-  it('keeps query_rw and delete_dive classified but NOT allowlisted', () => {
+  it('keeps query_rw and the deletes classified but NOT allowlisted', () => {
     expect(MUTATING_TOOLS.has('query_rw')).toBe(true);
     expect(DESTRUCTIVE_TOOLS.has('delete_dive')).toBe(true);
+    expect(DESTRUCTIVE_TOOLS.has('delete_guide')).toBe(true);
     expect(ALLOWED_TOOLS.has('query_rw')).toBe(false);
     expect(ALLOWED_TOOLS.has('delete_dive')).toBe(false);
+    expect(ALLOWED_TOOLS.has('delete_guide')).toBe(false);
   });
 
-  it('classifies query_context_layer as read-only and update_context_layer as mutating', () => {
-    expect(READONLY_TOOLS.has('query_context_layer')).toBe(true);
-    expect(READONLY_TOOLS.has('update_context_layer')).toBe(false);
-    expect(MUTATING_TOOLS.has('update_context_layer')).toBe(true);
+  it('classifies guide reads as read-only and guide writes as mutating', () => {
+    expect(READONLY_TOOLS.has('list_guides')).toBe(true);
+    expect(READONLY_TOOLS.has('get_guide')).toBe(true);
+    for (const t of ['create_guide', 'update_guide', 'edit_guide_content', 'update_guide_metadata', 'set_guide_access']) {
+      expect(READONLY_TOOLS.has(t)).toBe(false);
+      expect(MUTATING_TOOLS.has(t)).toBe(true);
+    }
   });
 
   it('allowlists the Dive reads', () => {
-    for (const t of ['list_dives', 'read_dive', 'get_dive_guide']) {
+    for (const t of ['list_dives', 'read_dive']) {
       expect(ALLOWED_TOOLS.has(t)).toBe(true);
       expect(READONLY_TOOLS.has(t)).toBe(true);
     }
+    // get_dive_guide is retired server-side; the dive guide is get_guide("dives.md").
+    expect(ALLOWED_TOOLS.has('get_dive_guide')).toBe(false);
   });
 
   it('allowlists save_dive but ONLY save_dive among the Dive writes', () => {
@@ -45,13 +58,65 @@ describe('quackbot tool allowlist', () => {
       expect(ALLOWED_TOOLS.has(t)).toBe(false);
     }
   });
+
+  it('allowlists guide writes but keeps the metadata/access edits blocked', () => {
+    for (const t of ['edit_guide_content', 'update_guide_metadata', 'set_guide_access']) {
+      expect(ALLOWED_TOOLS.has(t)).toBe(false);
+    }
+  });
+});
+
+describe('guideWriteViolation (path guard on the allowlisted guide writes)', () => {
+  it('accepts writes under users/<username>/quackbot/', () => {
+    expect(guideWriteViolation('create_guide', { path: 'users/jm_quackbot/quackbot/taxi-data.md' })).toBeNull();
+    expect(guideWriteViolation('update_guide', { path: 'users/someone_else/quackbot/x.md' })).toBeNull();
+  });
+
+  it('rejects writes outside the quackbot folder', () => {
+    expect(guideWriteViolation('create_guide', { path: 'revenue-billing/mrr.md' })).toMatch(/quackbot/);
+    expect(guideWriteViolation('update_guide', { path: 'users/jm_quackbot/personal-notes.md' })).toMatch(/quackbot/);
+    expect(guideWriteViolation('create_guide', { path: 'users/jm_quackbot/quackbot/' })).toMatch(/quackbot/);
+  });
+
+  it('rejects id-only selection so the path check cannot be bypassed', () => {
+    expect(guideWriteViolation('update_guide', { id: 'some-uuid', content: 'x' })).toMatch(/path/);
+    expect(guideWriteViolation('create_guide', undefined)).toMatch(/path/);
+  });
+
+  it('rejects an id passed ALONGSIDE a valid path (server-side selection could prefer it)', () => {
+    expect(
+      guideWriteViolation('update_guide', {
+        id: 'some-org-guide-uuid',
+        path: 'users/jm_quackbot/quackbot/ok.md',
+        content: 'x',
+      }),
+    ).toMatch(/path.*only|do not pass/);
+  });
+
+  it('rejects dot-segment traversal and malformed segments inside the quackbot folder', () => {
+    for (const path of [
+      'users/jm_quackbot/quackbot/../../core-metrics/nrr.md',
+      'users/jm_quackbot/quackbot/./x.md',
+      'users/jm_quackbot/quackbot//x.md',
+      'users/jm_quackbot/quackbot/..\\x.md',
+    ]) {
+      expect(guideWriteViolation('create_guide', { path })).toBeTruthy();
+    }
+    // Dots WITHIN a filename stay legal.
+    expect(guideWriteViolation('create_guide', { path: 'users/jm_quackbot/quackbot/v1.2-notes.md' })).toBeNull();
+  });
+
+  it('never fires for reads or non-guide tools', () => {
+    expect(guideWriteViolation('get_guide', { path: 'dives.md' })).toBeNull();
+    expect(guideWriteViolation('list_guides', undefined)).toBeNull();
+    expect(guideWriteViolation('query', { sql: 'SELECT 1' })).toBeNull();
+  });
 });
 
 describe('requiresConfirmation (quackbot v1: no Slack confirmation handshake)', () => {
-  it('never confirms context writes, for any action', () => {
-    for (const action of ['create', 'update', 'delete', undefined]) {
-      expect(requiresConfirmation('update_context_layer', action ? { action } : undefined)).toBe(false);
-    }
+  it('never confirms the path-guarded guide writes', () => {
+    expect(requiresConfirmation('create_guide', { path: 'users/x/quackbot/y.md' })).toBe(false);
+    expect(requiresConfirmation('update_guide', { path: 'users/x/quackbot/y.md' })).toBe(false);
   });
 
   it('never confirms save_dive (fresh id, cannot clobber)', () => {
@@ -60,10 +125,14 @@ describe('requiresConfirmation (quackbot v1: no Slack confirmation handshake)', 
 
   it('still classifies destructive/other mutating tools as needing confirmation', () => {
     expect(requiresConfirmation('delete_dive', undefined)).toBe(true);
+    expect(requiresConfirmation('delete_guide', undefined)).toBe(true);
     expect(requiresConfirmation('query_rw', undefined)).toBe(true);
     expect(requiresConfirmation('edit_dive_content', undefined)).toBe(true);
     expect(requiresConfirmation('update_dive', undefined)).toBe(true);
     expect(requiresConfirmation('share_dive_data', undefined)).toBe(true);
+    expect(requiresConfirmation('edit_guide_content', undefined)).toBe(true);
+    expect(requiresConfirmation('update_guide_metadata', undefined)).toBe(true);
+    expect(requiresConfirmation('set_guide_access', undefined)).toBe(true);
   });
 
   it('does not confirm plain reads', () => {
@@ -85,6 +154,18 @@ describe('executeToolWithStatus allowlist enforcement (no bypass)', () => {
     await expect(
       executeToolWithStatus(dummyClient, 'query_rw', { sql: 'DROP TABLE t' }),
     ).rejects.toThrow(/not in the allowed/);
+  });
+
+  it('returns a tool error (not a dispatch) for a guide write outside the quackbot folder', async () => {
+    // The guard fires before the client is touched, so the bare stub proves
+    // no MCP call happens.
+    const result = await executeToolWithStatus(dummyClient, 'create_guide', {
+      path: 'revenue-billing/mrr.md',
+      title: 't',
+      content: 'c',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/users\/<username>\/quackbot\//);
   });
 
   it('cannot be bypassed by a stray extra positional argument', async () => {

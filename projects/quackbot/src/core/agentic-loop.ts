@@ -24,11 +24,12 @@ export type { AgenticLoopFinishReason } from './turn-sink';
  * Ported from data-chat-mini's lib/agentic-loop.ts with two deliberate changes:
  *   1. SSE emission is replaced by a TurnSink (see turn-sink.ts) — the loop is
  *      transport-agnostic and the Slack layer supplies the sink.
- *   2. The context-layer tools are NOT intercepted. data-chat-mini paused the
- *      loop for a browser/IndexedDB round-trip on query_context_layer /
- *      update_context_layer; quackbot allowlists them on the real MotherDuck
- *      MCP (see mcp-client.ts), so they flow through dispatchTool like any
- *      other tool and the 'context_pause' finish reason no longer exists.
+ *   2. No context-layer interception. data-chat-mini paused the loop for a
+ *      browser/IndexedDB round-trip on its invented query_context_layer /
+ *      update_context_layer tool shapes; quackbot's durable memory is the real
+ *      MotherDuck guides tools (see mcp-client.ts), which flow through
+ *      dispatchTool like any other tool — the 'context_pause' finish reason no
+ *      longer exists.
  */
 
 export interface RunAgenticLoopOpts {
@@ -288,14 +289,18 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
 
         opts.sink.onToolStart({ id: toolId, name: toolName, args: toolInput });
 
-        // `get_dive_guide` is intercepted on Gemini profiles — we never call
-        // MCP. MotherDuck's MCP exposes `claude` / `chatgpt` / `claude_code` /
-        // `other` variants but no `gemini` variant, and the `other` fallback
-        // produced a persistent 30-42% dive-write failure rate on Gemini in
-        // mdw-turbo (their issue #149). We return a Gemini-tuned guide built
-        // locally; other model families get the real MCP guide variants,
-        // which work. See gemini-dive-guide.ts.
-        if (toolName === 'get_dive_guide' && /gemini/i.test(profile.id)) {
+        // The dive-authoring guide (`get_guide` with path "dives.md" — the
+        // server retired the old `get_dive_guide` tool) is intercepted on
+        // Gemini profiles — we never call MCP. The stock guide produced a
+        // persistent 30-42% dive-write failure rate on Gemini in mdw-turbo
+        // (their issue #149). We return a Gemini-tuned guide built locally;
+        // other model families get the real server guide, which works. See
+        // gemini-dive-guide.ts.
+        if (
+          toolName === 'get_guide' &&
+          (toolInput?.path as string | undefined) === 'dives.md' &&
+          /gemini/i.test(profile.id)
+        ) {
           const tStart = Date.now();
           const content = buildGeminiDiveGuide();
           toolResults.push({ type: 'tool_result', tool_use_id: toolId, content });

@@ -1,10 +1,12 @@
 /**
  * Gemini-tuned dive guide.
  *
- * The MotherDuck MCP `get_dive_guide` tool exposes a `chatgpt` / `claude` /
- * `claude_code` / `other` variant — there is no `gemini` variant. Because
- * mdw-turbo runs on Gemini 3 Flash, fetching the `other` (default) guide and
- * passing it through has produced a persistent 30-42% failure rate on
+ * The dive-authoring guide is served by the MotherDuck MCP as
+ * `get_guide("dives.md")` (mdw-turbo's era exposed it as a dedicated
+ * `get_dive_guide` tool with `chatgpt` / `claude` / `claude_code` / `other`
+ * variants — no `gemini` variant). Because mdw-turbo runs on Gemini 3 Flash,
+ * fetching the default guide and passing it through produced a persistent
+ * 30-42% failure rate on
  * `save_dive` / `update_dive` / `edit_dive_content` (see issue #149). Two
  * concrete causes from the failure analysis:
  *   1. Wrong hook + wrong package — the model writes `useQuery` from
@@ -20,8 +22,9 @@
  * by workflow phases, then reference material. The MCP guide content is
  * preserved in substance — only the ordering and emphasis change.
  *
- * The agentic loop intercepts `get_dive_guide` on Gemini profiles and returns
- * this string instead of dispatching to MCP (see src/core/agentic-loop.ts).
+ * The agentic loop intercepts `get_guide("dives.md")` on Gemini profiles and
+ * returns this string instead of dispatching to MCP (see
+ * src/core/agentic-loop.ts).
  */
 
 import galacticCoffee from './dive-examples/galactic-coffee.json';
@@ -280,9 +283,9 @@ You are always in one of these phases. Do not skip phases.
 
 ### Phase EXPLORE
 
-1. Query the **context layer** first (\`query_context_layer\` with the
-   database name as \`reference\`) to find established naming conventions,
-   palette choices, and domain memos for this database.
+1. Check saved **guides** first (\`list_guides\` with the database name as
+   \`keyword\`, then \`get_guide\` on relevant paths) to find established naming
+   conventions, palette choices, and domain memos for this database.
 2. Inspect schema with \`list_columns\` / \`search_catalog\` rather than
    guessing column names. Hallucinated identifiers are a common failure
    mode that the catalog lookup eliminates.
