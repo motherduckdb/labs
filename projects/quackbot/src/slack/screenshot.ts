@@ -34,6 +34,37 @@ async function getBrowser(): Promise<Browser> {
 const CLIP_PAD_PX = 16;
 
 /**
+ * The embed HTML (`processMvizMarkdown`) is fully self-contained — the chart
+ * library is inlined and the specs render with no runtime `fetch`/XHR. The
+ * ONLY legitimate external request is the Google Fonts `@import` in
+ * mviz-theme's `MVIZ_FONT_IMPORT_URL` (the CSS on fonts.googleapis.com, then
+ * the font files on fonts.gstatic.com).
+ *
+ * Chart content is model- and query-data-derived, i.e. attacker-influenced, so
+ * we treat the render as hostile: even if injected markup or a raw-JS chart
+ * option executes inside the page, this allowlist denies it any network egress.
+ * Blocking everything except the two font hosts kills SSRF to internal
+ * services / the cloud metadata endpoint (169.254.169.254), loopback, private
+ * ranges, `file://` reads, and exfiltration to arbitrary hosts.
+ */
+const ALLOWED_FONT_HOSTS = new Set(['fonts.googleapis.com', 'fonts.gstatic.com']);
+
+export function isAllowedResourceUrl(rawUrl: string): boolean {
+  // Inline/embedded schemes carry no network egress and no filesystem access.
+  if (/^(data|blob|about):/i.test(rawUrl)) return true;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  // Only HTTPS to the Google Fonts hosts. Everything else — http:, file:, any
+  // other host, and every IP-literal (so loopback/link-local/private targets
+  // can't be reached by hostname or by raw address) — is denied.
+  return url.protocol === 'https:' && ALLOWED_FONT_HOSTS.has(url.hostname);
+}
+
+/**
  * Render a self-contained HTML document (an mviz embed) to a PNG buffer.
  *
  * The page is 900px wide and mviz lays the chart out on its 16-column grid,
@@ -51,6 +82,18 @@ export async function renderHtmlToPng(html: string): Promise<Buffer> {
     deviceScaleFactor: 2,
   });
   try {
+    // Sandbox the render's network: allow only the self-contained embed's font
+    // fetch, abort everything else. This is the load-bearing control against
+    // SSRF/exfil from attacker-influenced chart content — see the comment on
+    // isAllowedResourceUrl. Registered before setContent so the very first
+    // subresource load is already gated.
+    await page.route('**/*', (route) => {
+      if (isAllowedResourceUrl(route.request().url())) {
+        void route.continue();
+      } else {
+        void route.abort();
+      }
+    });
     // networkidle is best-effort: the embed may pull a webfont, and a slow
     // font CDN shouldn't block the shot. If it times out we screenshot what
     // rendered anyway.

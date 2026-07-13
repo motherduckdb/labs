@@ -143,6 +143,11 @@ function normalizeMvizSizeSpec(chartType: string, sizeSpec: string): string {
   return sizeSpec;
 }
 
+// mviz option keys whose values are serialized as raw JavaScript rather than
+// data. Stripped from every chart spec so injected content can't reach the
+// inline <script> as executable code.
+const RAW_CODE_KEYS = new Set(['_js_', '_fn_', '_func_', '_raw_', '_eval_']);
+
 export function sanitizeMvizMarkdown(markdown: string): string {
   return markdown.replace(
     /```(big_value|bar|line|table|sparkline|text|note|alert|textarea|delta|area|pie|scatter|heatmap|waterfall|funnel|sankey|boxplot|histogram|calendar|combo|dumbbell|xmr|pct_bar|donut)([^\n]*)\n([\s\S]*?)```/g,
@@ -152,9 +157,21 @@ export function sanitizeMvizMarkdown(markdown: string): string {
 
         const sanitize = (obj: unknown): unknown => {
           if (obj === null || obj === undefined) return '';
+          // String values are JSON-serialized straight into an inline
+          // <script> (mviz emits `chart.setOption(<json>)`). JSON.stringify
+          // does not escape `<`/`>`/`/`, so a value containing `</script>`
+          // would close the element and let the rest parse as HTML
+          // (`</script><img onerror=…>`). Backslash-escaping the slash means
+          // the HTML tokenizer can't match a closing tag, while the string the
+          // chart renders is unchanged at JS runtime.
+          if (typeof obj === 'string') return obj.replace(/<\/(script)/gi, '<\\/$1');
           if (Array.isArray(obj)) return obj.map(sanitize);
           if (typeof obj === 'object') {
             return Object.entries(obj as Record<string, unknown>).reduce((acc, [key, value]) => {
+              // Drop mviz's raw-code escape hatches: a `{"_js_": "…"}` value is
+              // serialized as executable JS inside the option object, not data.
+              // Chart specs from an LLM/query never legitimately need them.
+              if (RAW_CODE_KEYS.has(key)) return acc;
               acc[key] = sanitize(value);
               return acc;
             }, {} as Record<string, unknown>);
