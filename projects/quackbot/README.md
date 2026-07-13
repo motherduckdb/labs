@@ -77,6 +77,49 @@ Invite the bot to a channel (or DM it), then:
 - `@quackbot use database <name>` — switches which database(s) the channel queries by default (`src/store/settings.ts`)
 - `@quackbot save that as a dive` — memorializes the thread's finding as a MotherDuck Dive (`save_dive`, create-only)
 
+## Deploy (Fly.io)
+
+quackbot runs on Fly as a plain worker — Socket Mode dials out to Slack, so
+there's no inbound HTTP, no public URL, and no health-checked port. The
+`Dockerfile` builds on the Playwright base image (pinned to the lockfile's
+playwright version) so headless Chromium ships with the machine, and
+`fly.toml` carries the non-secret config.
+
+```bash
+brew install flyctl && fly auth login   # once
+cd projects/quackbot
+fly apps create quackbot                # once; pick another name if taken and update fly.toml
+```
+
+Set the five secrets from your local `.env` (or type them out with
+`fly secrets set KEY=value ...`):
+
+```bash
+grep -E '^(SLACK_BOT_TOKEN|SLACK_APP_TOKEN|MOTHERDUCK_TOKEN|OPENROUTER_API_KEY|DATABASE_URL)=' .env | fly secrets import
+```
+
+If you're pointing at a fresh Postgres instead of reusing the dev one, apply
+the migration first (`psql $DATABASE_URL -f migrations/001_init.sql`). Then:
+
+```bash
+fly deploy --ha=false
+fly logs   # look for "[quackbot] running (Socket Mode)"
+```
+
+Two operational caveats, both consequences of Socket Mode:
+
+- **Run exactly one machine** (`--ha=false`, and don't `fly scale count` up).
+  Slack load-balances events across every open Socket Mode connection, and the
+  per-thread mutex + event dedupe in `src/slack/handlers.ts` are per-process —
+  two machines would each handle a random half of the traffic.
+- **Stop `npm run dev` locally while the Fly machine is up** (or vice versa)
+  for the same reason: a local dev process and the deployed one count as two
+  connections, and messages will land on whichever Slack picks.
+
+Telemetry note: controllog JSONL lands on the machine's ephemeral disk
+(`logs/controllog/`) and is lost on redeploy — fine for now; add a Fly volume
+or a periodic upload if that starts to matter.
+
 ## How it works
 
 Turn flow, one Slack message at a time (`src/slack/handlers.ts`'s `buildTurnRunner`):

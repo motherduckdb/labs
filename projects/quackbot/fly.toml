@@ -1,0 +1,28 @@
+# quackbot — Slack Socket Mode worker. The bot dials OUT to Slack, so there
+# is deliberately no [http_service] / [[services]] section: nothing listens
+# for inbound traffic and Fly should not health-check a port.
+#
+# Deploy with `fly deploy --ha=false` — Slack load-balances Socket Mode
+# events across all open connections, and the per-thread mutex + event
+# dedupe in src/slack/handlers.ts are per-process, so exactly one machine
+# must run at a time.
+
+app = "quackbot"
+primary_region = "sea"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret config (mirrors .env). Secrets — SLACK_BOT_TOKEN,
+# SLACK_APP_TOKEN, MOTHERDUCK_TOKEN, OPENROUTER_API_KEY, DATABASE_URL —
+# are set via `fly secrets set`, never here.
+[env]
+  OPENROUTER_MODEL = "openai/gpt-5.6-luna"
+  MOTHERDUCK_API_URL = "https://api.motherduck.com"
+  QUACKBOT_THINKING_LEVEL = "low"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # Headless Chromium for chart PNGs is the memory hog; bump to "2gb" if
+  # renders OOM.
+  memory = "1gb"
