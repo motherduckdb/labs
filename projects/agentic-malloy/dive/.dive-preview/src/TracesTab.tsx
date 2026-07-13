@@ -1,5 +1,5 @@
 import { useSQLQuery, useDiveState } from "@motherduck/react-sql-query";
-import { N, rows, STORY, INK, ARM, PATH, SERIF, SANS, MONO, Head, Loading, sel, OFFICIAL, PREFIX, CONTROLLED } from "./lib";
+import { N, rows, esc, STORY, INK, ARM, PATH, SERIF, SANS, MONO, Head, Loading, sel, OFFICIAL, PREFIX, CONTROLLED } from "./lib";
 
 export default function TracesTab() {
   const runsQ = useSQLQuery(`SELECT run_id, run_label FROM "agentic_malloy_story"."main"."runs" WHERE arm='malloy' AND split='test' ORDER BY correct DESC`);
@@ -16,12 +16,12 @@ export default function TracesTab() {
   const trace = useSQLQuery(
     `SELECT kind, tool, status, ms, arg, files, output, t
       FROM "agentic_malloy_story"."main"."trace_events"
-      WHERE run_id='${runId}' AND task_id='${task}'
+      WHERE run_id='${esc(runId)}' AND task_id='${esc(task)}'
       ORDER BY ord`,
     { enabled: !!runId && !!task },
   );
   const verdict = useSQLQuery(
-    `SELECT is_correct, answer_path, predicted, gold FROM "agentic_malloy_story"."main"."results" WHERE run_label='${runLabel.replace(/'/g, "''")}' AND task_id='${task}' LIMIT 1`,
+    `SELECT is_correct, answer_path, predicted, gold FROM "agentic_malloy_story"."main"."results" WHERE run_label='${esc(runLabel)}' AND task_id='${esc(task)}' LIMIT 1`,
     { enabled: !!task },
   );
   const tr = rows(trace.data);

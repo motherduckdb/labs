@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useSQLQuery, useDiveState } from "@motherduck/react-sql-query";
 import { BarChart, Bar, XAxis, YAxis, ReferenceLine, LabelList, ResponsiveContainer } from "recharts";
 import { N, rows, pct, STORY, INK, ARM, PATH, SERIF, SANS, MONO, Lede, Figure, Stat, OFFICIAL, PREFIX } from "./lib";
@@ -32,7 +33,7 @@ export default function StoryTab() {
     <button onClick={onClick} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: ARM.malloy, fontFamily: SANS, fontSize: 13, fontWeight: 600, borderBottom: `1px solid ${ARM.malloy}55` }}>{children} →</button>
   );
 
-  const runsQ = useSQLQuery(`SELECT run_label, arm, acc_pct, median_prompt_tokens AS tok, pct_sql, controlled_pair FROM "agentic_malloy_story"."main"."runs" WHERE split='test' ORDER BY acc_pct DESC`);
+  const runsQ = useSQLQuery(`SELECT run_label, arm, acc_pct, median_prompt_tokens AS tok, pct_sql, controlled_pair FROM "agentic_malloy_story"."main"."runs" WHERE split='test' ORDER BY acc_pct DESC, run_label`);
   const aciQ = useSQLQuery(`SELECT r.run_label, count(*) AS n, sum(r.is_correct::int) AS correct
     FROM "agentic_malloy_story"."main"."results" r JOIN "agentic_malloy_story"."main"."tasks" t USING (task_id)
     WHERE t.family='aci_most_expensive_template' AND r.run_label IN ('Baseline · markdown+SQL (gemini)','${OFFICIAL}','${PREFIX}') GROUP BY r.run_label`);
@@ -41,12 +42,20 @@ export default function StoryTab() {
   const rr = rows(runsQ.data);
   const baseline = rr.find((r) => r.arm === "baseline");
   const malloy = rr.filter((r) => r.arm === "malloy");
-  const best = malloy[0];
+  // "Best" is the official run everywhere this tab cites it (accuracy stat, SQL-share
+  // finding, chapter-6 path split all describe OFFICIAL) — don't let a reordering of
+  // acc_pct silently make the stat and the path counts describe different runs.
+  const best = malloy.find((r) => r.run_label === OFFICIAL) ?? malloy[0];
   const ctrlB = rr.find((r) => r.controlled_pair && r.arm === "baseline");
   const ctrlM = rr.find((r) => r.controlled_pair && r.arm === "malloy");
   const tokMult = ctrlB && ctrlM ? N(ctrlM.tok) / N(ctrlB.tok) : 0;
   const officialSql = best ? N(best.pct_sql) : 0;
-  const chart = malloy.map((r) => ({ label: String(r.run_label).replace("Malloy · ", ""), acc: N(r.acc_pct) }));
+  // Stable identity: recharts restarts its entry animation whenever the data prop
+  // changes identity, and this tab re-renders several times while aciQ/pathQ resolve.
+  const chart = useMemo(
+    () => rows(runsQ.data).filter((r) => r.arm === "malloy").map((r) => ({ label: String(r.run_label).replace("Malloy · ", ""), acc: N(r.acc_pct) })),
+    [runsQ.data],
+  );
   const aci = rows(aciQ.data);
   const aBase = aci.find((r) => String(r.run_label).includes("Baseline"));
   const aView = aci.find((r) => String(r.run_label).includes("pre-fix"));
@@ -97,8 +106,8 @@ export default function StoryTab() {
                 <BarChart data={chart} layout="vertical" margin={{ left: 8, right: 52, top: 14, bottom: 4 }}>
                   <XAxis type="number" domain={[0, 100]} hide />
                   <YAxis type="category" dataKey="label" width={188} tick={{ fontSize: 11, fill: INK.muted, fontFamily: SANS }} axisLine={false} tickLine={false} />
-                  <ReferenceLine x={N(baseline?.acc_pct) || 99.8} stroke={ARM.baseline} strokeDasharray="4 3" label={{ value: `baseline ${baseline ? pct(baseline.acc_pct) : ""}`, position: "top", fontSize: 10.5, fill: ARM.baseline, fontFamily: SANS }} />
-                  <Bar dataKey="acc" fill={ARM.malloy} radius={[0, 2, 2, 0]} barSize={14}>
+                  {baseline ? <ReferenceLine x={N(baseline.acc_pct)} stroke={ARM.baseline} strokeDasharray="4 3" label={{ value: `baseline ${pct(baseline.acc_pct)}`, position: "top", fontSize: 10.5, fill: ARM.baseline, fontFamily: SANS }} /> : null}
+                  <Bar dataKey="acc" fill={ARM.malloy} radius={[0, 2, 2, 0]} barSize={14} isAnimationActive={false}>
                     <LabelList dataKey="acc" position="right" formatter={(v: number) => `${v}%`} style={{ fontFamily: MONO, fontSize: 11, fill: INK.text }} />
                   </Bar>
                 </BarChart>

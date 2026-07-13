@@ -79,7 +79,7 @@ export default function LayerTab() {
 
       <Rule />
 
-      <Head kicker="read the source" title="The model files">{`${rows(files.data).length || 11} files. Click to read the Malloy.`}</Head>
+      <Head kicker="read the source" title="The model files">{files.isLoading ? "Loading files…" : `${rows(files.data).length} files. Click to read the Malloy.`}</Head>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <div style={{ minWidth: 220 }}>
           {files.isLoading ? <Loading label="…" /> : (

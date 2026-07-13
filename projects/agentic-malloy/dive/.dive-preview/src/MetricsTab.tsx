@@ -1,5 +1,5 @@
 import { useSQLQuery, useDiveState } from "@motherduck/react-sql-query";
-import { N, rows, pct, STORY, INK, ARM, PATH, SERIF, SANS, MONO, Head, Figure, Loading, BarCell, Rule, Tip, noteFor, sel, td, tdL, th, thL } from "./lib";
+import { N, rows, pct, esc, STORY, INK, ARM, PATH, SERIF, SANS, MONO, Head, Figure, Loading, BarCell, Rule, Tip, noteFor, sel, td, tdL, th, thL } from "./lib";
 
 const pathColor = (p: string) => (p === "sql" ? PATH.sql : p === "view" ? "#0a6aa8" : p === "authored" ? "#7ba6c4" : PATH.other);
 
@@ -19,7 +19,7 @@ export default function MetricsTab() {
   const story3 = useSQLQuery(`SELECT run_label, arm, answer_path, is_correct, predicted, gold,
       coalesce(malloy_source, compiled_sql) AS code
     FROM "agentic_malloy_story"."main"."results"
-    WHERE task_id='${task}' AND run_label IN
+    WHERE task_id='${esc(task)}' AND run_label IN
       ('Baseline · markdown+SQL (gemini)','Malloy · sonnet+opus · official (pre-fix)','Malloy · sonnet+opus · official')
     ORDER BY CASE WHEN arm='baseline' THEN 0 WHEN run_label LIKE '%pre-fix%' THEN 1 ELSE 2 END`);
   const cards = rows(story3.data);
@@ -35,9 +35,9 @@ export default function MetricsTab() {
   const [onlyAF, setOnlyAF] = useDiveState<string>("ex_af", "no");
   const [page, setPage] = useDiveState<number>("ex_page", 0);
   const runOpts = m.map((r) => String(r.run_label));
-  const w: string[] = [`r.run_label='${run.replace(/'/g, "''")}'`];
-  if (level !== "all") w.push(`r.level='${level}'`);
-  if (path !== "all") w.push(`r.answer_path='${path}'`);
+  const w: string[] = [`r.run_label='${esc(run)}'`];
+  if (level !== "all") w.push(`r.level='${esc(level)}'`);
+  if (path !== "all") w.push(`r.answer_path='${esc(path)}'`);
   if (correct !== "all") w.push(`r.is_correct=${correct === "correct"}`);
   if (onlyAF === "yes") w.push(`t.always_fail`);
   const where = w.join(" AND ");

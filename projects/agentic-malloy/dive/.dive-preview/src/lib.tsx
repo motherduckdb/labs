@@ -7,6 +7,8 @@ import { Loader2 } from "lucide-react";
 export const N = (v: unknown): number => (v != null ? Number(v) : 0);
 export const rows = (d: unknown): any[] => (Array.isArray(d) ? d : []);
 export const pct = (v: unknown) => `${N(v).toFixed(1)}%`;
+// Escape a value for use inside a single-quoted SQL literal.
+export const esc = (v: unknown) => String(v ?? "").replace(/'/g, "''");
 
 export const STORY = `"agentic_malloy_story"."main"`;
 export const LOGS = `"agentic_malloy_logs"."main"`;
