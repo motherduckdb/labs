@@ -8,7 +8,7 @@
 # must run at a time.
 
 app = "quackbot"
-primary_region = "sea"
+primary_region = "sjc"
 
 [build]
   dockerfile = "Dockerfile"
