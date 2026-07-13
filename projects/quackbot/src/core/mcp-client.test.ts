@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   ALLOWED_TOOLS,
@@ -8,6 +8,8 @@ import {
   requiresConfirmation,
   executeToolWithStatus,
   guideWriteViolation,
+  databaseAllowViolation,
+  configuredDatabaseAllowlist,
 } from './mcp-client';
 
 describe('quackbot tool allowlist', () => {
@@ -106,10 +108,49 @@ describe('guideWriteViolation (path guard on the allowlisted guide writes)', () 
     expect(guideWriteViolation('create_guide', { path: 'users/jm_quackbot/quackbot/v1.2-notes.md' })).toBeNull();
   });
 
+  it('rejects percent-encoded and Unicode look-alike traversal', () => {
+    for (const path of [
+      'users/jm_quackbot/quackbot/%2e%2e/%2e%2e/victim.md', // percent-encoded ..
+      'users/jm_quackbot/quackbot/a%2f%2e%2e%2fvictim.md', // encoded slash+..
+      'users/jm_quackbot/quackbot/．．/x.md', // fullwidth ．．
+      'users/jm_quackbot/quackbot/x y.md', // whitespace
+      'users/jm_quackbot/quackbot/café.md', // non-ASCII
+    ]) {
+      expect(guideWriteViolation('create_guide', { path })).toBeTruthy();
+    }
+  });
+
   it('never fires for reads or non-guide tools', () => {
     expect(guideWriteViolation('get_guide', { path: 'dives.md' })).toBeNull();
     expect(guideWriteViolation('list_guides', undefined)).toBeNull();
     expect(guideWriteViolation('query', { sql: 'SELECT 1' })).toBeNull();
+  });
+});
+
+describe('databaseAllowViolation (optional QUACKBOT_DATABASES hard cap)', () => {
+  const original = process.env.QUACKBOT_DATABASES;
+  afterEach(() => {
+    if (original === undefined) delete process.env.QUACKBOT_DATABASES;
+    else process.env.QUACKBOT_DATABASES = original;
+  });
+
+  it('is a no-op when the allowlist is unset (token grants remain the boundary)', () => {
+    delete process.env.QUACKBOT_DATABASES;
+    expect(configuredDatabaseAllowlist()).toEqual([]);
+    expect(databaseAllowViolation({ database: 'anything', sql: 'SELECT 1' })).toBeNull();
+  });
+
+  it('rejects a database arg outside the configured allowlist', () => {
+    process.env.QUACKBOT_DATABASES = 'sample_data, taxi';
+    expect(databaseAllowViolation({ database: 'sample_data' })).toBeNull();
+    expect(databaseAllowViolation({ database: 'taxi' })).toBeNull();
+    expect(databaseAllowViolation({ database: 'finance_prod' })).toMatch(/not in this deployment/);
+  });
+
+  it('does not fire for calls without a database arg', () => {
+    process.env.QUACKBOT_DATABASES = 'sample_data';
+    expect(databaseAllowViolation({ sql: 'SELECT 1' })).toBeNull();
+    expect(databaseAllowViolation(undefined)).toBeNull();
   });
 });
 

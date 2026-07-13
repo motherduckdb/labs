@@ -64,12 +64,59 @@ export function guideWriteViolation(
       `Select the guide by \`path\` (not \`id\`), under that folder.`
     );
   }
-  // The regex alone would pass `users/x/quackbot/../../other.md` — reject
-  // dot segments, empty segments, and backslashes so the prefix can't be
-  // escaped if the server normalizes paths.
+  // The prefix regex alone would pass `users/x/quackbot/../../other.md`, and a
+  // naive `..`/backslash check misses encoded (`%2e%2e`) or Unicode look-alike
+  // (fullwidth `．．`) traversal if the server decodes/normalizes the path. So
+  // require every segment to be a plain ASCII slug: this one charset check
+  // rejects empty segments, backslashes, percent-encoding, whitespace, and any
+  // non-ASCII character in a single pass. Dot-only segments still have to be
+  // rejected explicitly (they satisfy the charset), while dots *within* a
+  // filename (e.g. `v1.2-notes.md`) stay legal.
   const segments = path.split('/');
-  if (segments.some((s) => s === '' || s === '.' || s === '..' || s.includes('\\'))) {
-    return `${toolName} path may not contain empty, '.', '..', or backslash segments (got '${path}').`;
+  if (segments.some((s) => s === '.' || s === '..')) {
+    return `${toolName} path may not contain '.' or '..' segments (got '${path}').`;
+  }
+  if (segments.some((s) => !/^[A-Za-z0-9._-]+$/.test(s))) {
+    return (
+      `${toolName} path segments must be plain [A-Za-z0-9._-] slugs — no empty, ` +
+      `encoded, Unicode, or backslash segments (got '${path}').`
+    );
+  }
+  return null;
+}
+
+/**
+ * Optional hard allowlist of databases any tool call may target, read from the
+ * `QUACKBOT_DATABASES` env (comma-separated). Empty/unset ⇒ no restriction and
+ * the MotherDuck token's own grants remain the only boundary (which is the real
+ * security wall — the token can physically only reach databases it was granted,
+ * even via `use db` or ATTACH). When set, this is defense-in-depth: a tool call
+ * whose `database` argument is outside the list is rejected at dispatch, so even
+ * a prompt-injected model — or a user's `use db` on an un-listed name — can't
+ * steer a query at a database the operator didn't intend the bot to touch.
+ *
+ * Limitation, stated honestly: this gates the explicit `database` argument only,
+ * not a fully-qualified `db.schema.table` reference buried in SQL text. The
+ * token-grant boundary still covers that case; this narrows the common path.
+ */
+export function configuredDatabaseAllowlist(): string[] {
+  return (process.env.QUACKBOT_DATABASES ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+export function databaseAllowViolation(
+  args: Record<string, unknown> | undefined,
+): string | null {
+  const allow = configuredDatabaseAllowlist();
+  if (allow.length === 0) return null;
+  const db = args?.database;
+  if (typeof db === 'string' && db.length > 0 && !allow.includes(db)) {
+    return (
+      `Database "${db}" is not in this deployment's allowed set ` +
+      `(${allow.join(', ')}). Query one of those instead.`
+    );
   }
   return null;
 }
@@ -261,6 +308,13 @@ export async function executeToolWithStatus(
   const violation = guideWriteViolation(name, args);
   if (violation) {
     return { text: violation, isError: true };
+  }
+  // Defense-in-depth: cap which databases a tool call may target (no-op unless
+  // QUACKBOT_DATABASES is set). Returned as a tool error so the model can retry
+  // against an allowed database rather than crashing the turn.
+  const dbViolation = databaseAllowViolation(args);
+  if (dbViolation) {
+    return { text: dbViolation, isError: true };
   }
   const result = await client.callTool({ name, arguments: args }, undefined, requestOptions);
   if (result.structuredContent != null) {

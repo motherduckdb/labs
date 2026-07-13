@@ -120,6 +120,45 @@ Telemetry note: controllog JSONL lands on the machine's ephemeral disk
 (`logs/controllog/`) and is lost on redeploy — fine for now; add a Fly volume
 or a periodic upload if that starts to matter.
 
+## Security & data boundaries
+
+Now that the bot is cloud-hosted, everyone who can message it is an untrusted
+input source, and so is the content of any database row it reads (a value can
+carry injected instructions). The boundaries that matter:
+
+- **The MotherDuck token's grants are the tenancy wall.** Every query runs
+  under one shared `MOTHERDUCK_TOKEN`; there is no per-user impersonation (the
+  sibling `superduck` bot makes the same tradeoff — real per-user OAuth would
+  need a public callback endpoint a Socket Mode bot can't host). A user can
+  `use db <anything>` or coax the model toward another database, but the token
+  can only ever reach databases it was actually granted — `ATTACH` doesn't
+  widen that, it just names an already-granted database. **So the operative
+  rule is: only grant the bot's MotherDuck account databases that are OK for
+  every Slack user who can reach it.** There is no per-channel data isolation.
+- **`QUACKBOT_DATABASES` is an optional hard cap** (defense-in-depth). When
+  set, a tool call whose `database` argument is outside the list is rejected at
+  dispatch (`databaseAllowViolation` in `src/core/mcp-client.ts`), and `use db`
+  refuses un-listed names. Unset ⇒ no restriction and the token grants remain
+  the only boundary. It gates the explicit `database` arg, not a fully-qualified
+  `db.schema.table` buried in SQL — the token grant still covers that.
+- **Writes are confined, not confirmed.** The only mutating tools the model can
+  reach are `create_guide` / `update_guide` (path-guarded to the bot's own
+  `users/<bot>/quackbot/` folder — the guard rejects `..`, encoded, and Unicode
+  traversal) and `save_dive` (create-only, fresh id). `query_rw` and every
+  delete/edit tool are blocked at the allowlist and can never run, even under a
+  fully hijacked model. The residual: injected content **can** still create a
+  new guide (or overwrite one) inside that folder unattended — durable-memory
+  poisoning, bounded to the bot's namespace. Closing that fully needs a Slack
+  confirmation handshake (see `requiresConfirmation`); it's a known follow-up.
+- **Chart rendering is network-isolated.** Chart specs are attacker-influenced,
+  so the headless-Chromium screenshot path denies all egress except the Google
+  Fonts the self-contained embed needs, and the spec sanitizer strips raw-JS
+  option keys and neutralizes `</script>` breakout — no SSRF/exfil even if
+  injected markup runs (`src/slack/screenshot.ts`, `src/core/mviz-processor.ts`).
+- **Secrets** never reach logs, prompts, Slack, or rendered output; `.env` is
+  git- and docker-ignored and not baked into any image layer. Postgres always
+  connects over verified TLS (`resolvePoolConfig` in `src/store/pg.ts`).
+
 ## How it works
 
 Turn flow, one Slack message at a time (`src/slack/handlers.ts`'s `buildTurnRunner`):

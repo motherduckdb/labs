@@ -2,7 +2,12 @@ import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
-import { createMCPClient, getFilteredTools, mcpToolsToAnthropicFormat } from '../core/mcp-client';
+import {
+  createMCPClient,
+  getFilteredTools,
+  mcpToolsToAnthropicFormat,
+  configuredDatabaseAllowlist,
+} from '../core/mcp-client';
 import { buildSystemPrompt } from '../core/system-prompt';
 import { getModelProfile } from '../core/llm-client';
 import { runAgenticLoop, type ThinkingLevel } from '../core/agentic-loop';
@@ -332,6 +337,22 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       if (dbs.length === 0) {
         await post(msg.channel, replyTs, 'Usage: `use db <name>[, <name>…]`');
         return;
+      }
+      // If the deployment pins an allowlist (QUACKBOT_DATABASES), reject names
+      // outside it here for immediate feedback — the dispatch-time guard in
+      // mcp-client would block queries against them anyway.
+      const allow = configuredDatabaseAllowlist();
+      if (allow.length > 0) {
+        const rejected = dbs.filter((d) => !allow.includes(d));
+        if (rejected.length > 0) {
+          await post(
+            msg.channel,
+            replyTs,
+            `:no_entry: Not available to this bot: ${rejected.map((d) => `\`${d}\``).join(', ')}. ` +
+              `Allowed: ${allow.map((d) => `\`${d}\``).join(', ')}.`,
+          );
+          return;
+        }
       }
       try {
         await deps.setChannelDatabases(msg.channel, dbs);
