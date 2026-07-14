@@ -34,4 +34,19 @@ describe('resolvePoolConfig — TLS is always verified unless explicitly disable
     const cfg = resolvePoolConfig('postgres://u:p@host/db?sslmode=disable');
     expect(cfg.ssl).toBe(false);
   });
+
+  it('sets a client-side query_timeout but NOT server-side statement_timeout', () => {
+    // statement_timeout is a Postgres startup parameter that PlanetScale's
+    // pooler rejects; query_timeout is a client-side JS timer and is safe.
+    for (const url of [
+      'postgres://u:p@host/db',
+      'postgres://u:p@host/db?sslrootcert=system',
+      'postgres://u:p@host/db?sslmode=disable',
+    ]) {
+      const cfg = resolvePoolConfig(url) as Record<string, unknown>;
+      expect(cfg.query_timeout).toBe(30_000);
+      expect(cfg.connectionTimeoutMillis).toBe(10_000);
+      expect('statement_timeout' in cfg).toBe(false);
+    }
+  });
 });

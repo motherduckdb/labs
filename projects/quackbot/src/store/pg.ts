@@ -19,11 +19,17 @@ let pool: Pool | null = null;
 // Bound every connection and query so a slow/hung Postgres can't wedge a turn
 // (which holds the per-thread mutex + MCP client open) indefinitely. Applied to
 // every config branch below.
+//
+// All CLIENT-side (pool/JS timers): connectionTimeoutMillis + idleTimeoutMillis
+// are pool timers, and query_timeout is node-postgres's own per-query JS timer.
+// NOTE: `statement_timeout` is deliberately NOT set — pg sends it as a server
+// STARTUP parameter, which PlanetScale's connection pooler rejects outright
+// ("unsupported startup parameter: statement_timeout"). query_timeout reaps a
+// hung query client-side and needs no server cooperation.
 const POOL_TIMEOUTS = {
   max: 5,
   connectionTimeoutMillis: 10_000,
   idleTimeoutMillis: 30_000,
-  statement_timeout: 30_000,
   query_timeout: 30_000,
 } as const;
 
