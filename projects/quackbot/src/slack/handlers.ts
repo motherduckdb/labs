@@ -15,7 +15,14 @@ import * as controllog from '../core/controllog';
 import { getConversation, saveConversation } from '../store/conversations';
 import { resolveDatabases, setChannelDatabases } from '../store/settings';
 import type { TurnSink } from '../core/turn-sink';
+import { redactError } from '../core/redact';
 import { SlackTurnSink, type SlackTurnSinkOpts } from './sink';
+import {
+  makeConfirmRequester,
+  registerConfirmationActions,
+  type ConfirmRequesterOpts,
+  type ConfirmCall,
+} from './confirm';
 
 /**
  * Slack event → agentic turn orchestration.
@@ -69,6 +76,7 @@ export interface TurnRunnerDeps {
   setChannelDatabases: typeof setChannelDatabases;
   controllog: Pick<typeof controllog, 'createSession' | 'runInSession' | 'flushSession'>;
   createSink: (opts: SlackTurnSinkOpts) => FinalizableSink;
+  makeConfirmRequester: (opts: ConfirmRequesterOpts) => (call: ConfirmCall) => Promise<boolean>;
   botUserId?: string;
   thinkingLevel?: ThinkingLevel;
 }
@@ -92,6 +100,7 @@ function defaultDeps(client: WebClient, botUserId?: string): TurnRunnerDeps {
     setChannelDatabases,
     controllog,
     createSink: (opts) => new SlackTurnSink(opts),
+    makeConfirmRequester,
     botUserId,
     thinkingLevel: resolveThinkingLevel(),
   };
@@ -257,6 +266,14 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
 
           const runId = `chat_${Date.now()}`;
           const taskId = `chat:${runId}`;
+          // Durable writes pause for an Approve/Deny click from the initiating
+          // user, posted into this same thread.
+          const confirmTool = deps.makeConfirmRequester({
+            client: deps.client,
+            channel: msg.channel,
+            threadTs: replyTs,
+            initiatingUser: msg.user,
+          });
           const result = await deps.runAgenticLoop({
             messages,
             turnStartIndex,
@@ -270,6 +287,7 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             runId,
             requestText: userText,
             historyLength: priorMessages.length,
+            confirmTool,
           });
 
           await deps.saveConversation(msg.channel, threadTs, result.finalMessages, databases);
@@ -286,7 +304,7 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         }
       });
     } catch (err) {
-      console.error('[quackbot] turn failed:', err);
+      console.error('[quackbot] turn failed:', redactError(err));
       await post(msg.channel, replyTs, ':warning: Something went wrong handling that — check the logs.');
     } finally {
       if (mcpClient) {
@@ -408,6 +426,9 @@ export function registerHandlers(app: App): void {
   // resolves — the runner closure reads `deps.botUserId` on each turn.
   const deps = defaultDeps(app.client, undefined);
   const runner = buildTurnRunner(deps);
+
+  // Approve/Deny buttons for durable-write confirmations (src/slack/confirm.ts).
+  registerConfirmationActions(app);
 
   void app.client.auth
     .test()

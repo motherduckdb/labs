@@ -16,6 +16,17 @@ let pool: Pool | null = null;
  * explicit options, so a stray `?ssl=0` / `?sslmode=no-verify` would otherwise
  * silently weaken the config set here.
  */
+// Bound every connection and query so a slow/hung Postgres can't wedge a turn
+// (which holds the per-thread mutex + MCP client open) indefinitely. Applied to
+// every config branch below.
+const POOL_TIMEOUTS = {
+  max: 5,
+  connectionTimeoutMillis: 10_000,
+  idleTimeoutMillis: 30_000,
+  statement_timeout: 30_000,
+  query_timeout: 30_000,
+} as const;
+
 export function resolvePoolConfig(raw: string): PoolConfig {
   const sslDisabled = /(?:^|[?&])sslmode=disable(?:&|$)/i.test(raw);
   const TLS_PARAMS = ['ssl', 'sslmode', 'sslrootcert', 'sslcert', 'sslkey'];
@@ -28,7 +39,7 @@ export function resolvePoolConfig(raw: string): PoolConfig {
     // so pass through with explicit strict TLS still applied.
     return {
       connectionString: raw,
-      max: 5,
+      ...POOL_TIMEOUTS,
       ssl: sslDisabled ? false : { rejectUnauthorized: true },
     };
   }
@@ -53,13 +64,13 @@ export function resolvePoolConfig(raw: string): PoolConfig {
     if (sslcert) ssl.cert = readFileSync(sslcert, 'utf8');
     if (sslkey) ssl.key = readFileSync(sslkey, 'utf8');
     for (const key of TLS_PARAMS) url.searchParams.delete(key);
-    return { connectionString: url.toString(), max: 5, ssl };
+    return { connectionString: url.toString(), ...POOL_TIMEOUTS, ssl };
   }
 
   for (const key of TLS_PARAMS) url.searchParams.delete(key);
   return {
     connectionString: url.toString(),
-    max: 5,
+    ...POOL_TIMEOUTS,
     ssl: sslDisabled ? false : { rejectUnauthorized: true },
   };
 }

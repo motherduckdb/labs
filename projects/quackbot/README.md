@@ -33,8 +33,11 @@ Same required elements as data-chat-mini, mapped onto Slack:
    Mode (no public URL needed) with the bot scopes and event subscriptions
    quackbot needs (`app_mention`, `message.im`, plus the two
    `assistant_thread_*` events for Slack's AI-assistant container).
-   Interactivity is off — there's no button/interactive-message flow in v1
-   (see [Out of scope](#out-of-scope)).
+   **Interactivity is on** — it powers the Approve/Deny buttons for durable-write
+   confirmations (Socket Mode delivers the button clicks over the same
+   websocket, so no request URL is needed). If you installed an earlier version
+   with interactivity off, toggle **Interactivity & Shortcuts → on** (or
+   re-apply the manifest), or guide/dive saves will time out and be declined.
 2. **Install the app to your workspace**, then collect two tokens:
    - **`SLACK_BOT_TOKEN`** — OAuth & Permissions → Bot User OAuth Token
      (`xoxb-...`).
@@ -141,15 +144,17 @@ carry injected instructions). The boundaries that matter:
   refuses un-listed names. Unset ⇒ no restriction and the token grants remain
   the only boundary. It gates the explicit `database` arg, not a fully-qualified
   `db.schema.table` buried in SQL — the token grant still covers that.
-- **Writes are confined, not confirmed.** The only mutating tools the model can
-  reach are `create_guide` / `update_guide` (path-guarded to the bot's own
-  `users/<bot>/quackbot/` folder — the guard rejects `..`, encoded, and Unicode
-  traversal) and `save_dive` (create-only, fresh id). `query_rw` and every
-  delete/edit tool are blocked at the allowlist and can never run, even under a
-  fully hijacked model. The residual: injected content **can** still create a
-  new guide (or overwrite one) inside that folder unattended — durable-memory
-  poisoning, bounded to the bot's namespace. Closing that fully needs a Slack
-  confirmation handshake (see `requiresConfirmation`); it's a known follow-up.
+- **Durable writes are confirmed, then confined.** The only mutating tools the
+  model can reach are `create_guide` / `update_guide` / `save_dive`; `query_rw`
+  and every delete/edit tool are blocked at the allowlist and can never run,
+  even under a fully hijacked model. Each allowed write now pauses for an
+  Approve/Deny click from the **initiating user** before it runs
+  (`src/slack/confirm.ts` + `requiresConfirmation`) — so prompt-injected content
+  can *propose* a write but can't commit one unattended. Deny, timeout (2 min),
+  or a failed prompt-post all fail closed (no write). Behind that, the writes
+  stay confined: guide paths are guarded to the bot's own
+  `users/<bot>/quackbot/` folder (the guard rejects `..`, percent-encoded, and
+  Unicode traversal) and `save_dive` is create-only with a fresh id.
 - **Chart rendering is network-isolated.** Chart specs are attacker-influenced,
   so the headless-Chromium screenshot path denies all egress except the Google
   Fonts the self-contained embed needs, and the spec sanitizer strips raw-JS
@@ -227,10 +232,8 @@ same per-run conversation explorer and cost/latency/token rollups.
 ## Out of scope
 
 OAuth / multi-identity auth (the bot token is the only identity — every user
-in a channel shares it), a confirmation handshake for the allowlisted
-writes (v1 lets `create_guide`, `update_guide`, and `save_dive` run
-unattended; restoring confirmation means a Slack interactive-button flow, and
-interactivity is off in the manifest), Dive *mutation* (`edit_dive_content`,
+in a channel shares it; the token's grants are the tenancy boundary, see
+[Security & data boundaries](#security--data-boundaries)), Dive *mutation* (`edit_dive_content`,
 `update_dive`, `delete_dive`, `share_dive_data` are classified but never
 allowlisted — creation can't clobber an existing dive, edits to a
 caller-supplied id can, and there's no confirmation UI to gate that), guide

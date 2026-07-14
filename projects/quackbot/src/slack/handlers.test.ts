@@ -107,6 +107,7 @@ function makeDeps(overrides: Partial<TurnRunnerDeps> = {}): {
       flushSession: vi.fn(async () => {}) as never,
     },
     createSink: vi.fn(() => sink) as never,
+    makeConfirmRequester: vi.fn(() => async () => true) as never,
     botUserId: 'BOT',
     thinkingLevel: 'medium',
     ...overrides,

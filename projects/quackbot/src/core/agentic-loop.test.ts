@@ -124,6 +124,7 @@ function joinedText(events: RecordedEvent[]): string {
 async function runLoop(opts: {
   streams: Array<() => ReadableStream<Uint8Array>>;
   dispatchToolImpl?: RunAgenticLoopOpts['dispatchToolImpl'];
+  confirmTool?: RunAgenticLoopOpts['confirmTool'];
   profileId?: string;
 }) {
   const { events, sink } = createRecordingSink();
@@ -149,6 +150,7 @@ async function runLoop(opts: {
     historyLength: 0,
     streamChatCompletion: streamChatCompletion as unknown as RunAgenticLoopOpts['streamChatCompletion'],
     ...(opts.dispatchToolImpl && { dispatchToolImpl: opts.dispatchToolImpl }),
+    ...(opts.confirmTool && { confirmTool: opts.confirmTool }),
   });
   return { result, events, streamChatCompletion };
 }
@@ -243,6 +245,68 @@ describe('runAgenticLoop with TurnSink', () => {
       },
       { role: 'assistant', content: [{ type: 'text', text: 'The answer is 42.' }] },
     ]);
+  });
+
+  it('dispatches a durable write after confirmTool approves it', async () => {
+    const confirmTool = vi.fn(async (_c: { id: string; name: string; args: Record<string, unknown> }) => true);
+    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'guide saved', isError: false,
+    }));
+    const { result, streamChatCompletion } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'w1', name: 'create_guide', args: { path: 'users/u/quackbot/a.md', content: 'x' } }]),
+        () => textStream('Saved.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    expect(confirmTool).toHaveBeenCalledTimes(1);
+    expect(confirmTool.mock.calls[0][0]).toMatchObject({ name: 'create_guide' });
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    expect(streamChatCompletion).toHaveBeenCalledTimes(2);
+    expect(result.finishReason).toBe('done');
+  });
+
+  it('skips a durable write and returns an error tool_result when confirmTool denies it', async () => {
+    const confirmTool = vi.fn(async () => false);
+    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'guide saved', isError: false,
+    }));
+    const { result, events } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'w1', name: 'update_guide', args: { path: 'users/u/quackbot/a.md', content: 'x' } }]),
+        () => textStream('Okay, not saving.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    // The write never reached MCP...
+    expect(dispatchToolImpl).not.toHaveBeenCalled();
+    // ...but the round stayed paired: a tool_result (is_error) was recorded and
+    // surfaced to the sink, and the loop continued to a final answer.
+    const toolEnd = events.find((e) => e.type === 'tool_end');
+    expect(toolEnd).toMatchObject({ call: { name: 'update_guide', error: true } });
+    const toolMsg = result.newTurnMessages.find((m) => m.role === 'user') as { content: Array<Record<string, unknown>> };
+    expect(toolMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'w1', is_error: true });
+    expect(String(toolMsg.content[0].content)).toMatch(/declined/i);
+    expect(result.finishReason).toBe('done');
+  });
+
+  it('does NOT confirm a plain read even when confirmTool is supplied', async () => {
+    const confirmTool = vi.fn(async () => true);
+    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'rows', isError: false,
+    }));
+    await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'r1', name: 'query', args: { sql: 'select 1' } }]),
+        () => textStream('Answer.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    expect(confirmTool).not.toHaveBeenCalled();
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
   });
 
   it('turns a complete table fence into onMvizPending + onMvizBlock without leaking fence text', async () => {

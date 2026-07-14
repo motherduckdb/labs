@@ -1,6 +1,7 @@
 import { streamChatCompletion as defaultStreamChatCompletion } from './llm-client';
 import type { ModelProfile } from './llm-client';
 import { dispatchTool as defaultDispatchTool } from './tool-dispatch';
+import { requiresConfirmation } from './mcp-client';
 import { buildGeminiDiveGuide } from './gemini-dive-guide';
 import {
   stepMvizFence,
@@ -47,6 +48,13 @@ export interface RunAgenticLoopOpts {
   historyLength: number;
   streamChatCompletion?: typeof defaultStreamChatCompletion;
   dispatchToolImpl?: typeof defaultDispatchTool;
+  /**
+   * Gate for tools that `requiresConfirmation` flags (durable writes). Resolves
+   * true to proceed, false to skip. When omitted, no confirmation is requested
+   * and writes proceed — the Slack layer always supplies one; test/other
+   * callers opt in explicitly.
+   */
+  confirmTool?: (call: { id: string; name: string; args: Record<string, unknown> }) => Promise<boolean>;
 }
 
 export interface RunAgenticLoopResult {
@@ -317,6 +325,30 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
             console.error('[Controllog] toolEnd error:', logErr);
           }
           continue;
+        }
+
+        // Durable writes (create_guide / update_guide / save_dive) pause for an
+        // explicit user Approve before running — this is the block that stops a
+        // prompt-injected write from committing unattended. On deny/timeout the
+        // tool is skipped with an error tool_result so the round stays paired.
+        if (opts.confirmTool && requiresConfirmation(toolName, toolInput)) {
+          const approved = await opts.confirmTool({ id: toolId, name: toolName, args: toolInput });
+          if (!approved) {
+            const declined = `The user declined to run ${toolName}. Do not retry it — continue without this write.`;
+            toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: declined, is_error: true });
+            opts.sink.onToolEnd({ id: toolId, name: toolName, result: declined, error: true });
+            try {
+              cl.toolEnd({
+                taskId: opts.taskId, runId: opts.runId,
+                toolName, toolUseId: toolId, ok: false,
+                durationMs: 0, iteration: iterations,
+                payload: { declined: true },
+              });
+            } catch (logErr) {
+              console.error('[Controllog] toolEnd error:', logErr);
+            }
+            continue;
+          }
         }
 
         const tStart = Date.now();

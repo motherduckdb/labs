@@ -2,6 +2,8 @@
 // (see streamChatCompletion). The `reasoning` (thinking) param only works on
 // that endpoint, and we hand-convert Anthropic-style messages to OpenAI format.
 
+import { redact } from './redact';
+
 // ---------------------------------------------------------------------------
 // Single-model profile (default: Gemini 3 Flash; swap via OPENROUTER_MODEL).
 // ---------------------------------------------------------------------------
@@ -269,7 +271,9 @@ export async function streamChatCompletion(params: {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`OpenRouter error ${response.status}: ${text}`);
+    // Redact: the response body is echoed into a thrown error that is logged
+    // (and could surface upstream request detail); scrub token-shaped content.
+    throw new Error(`OpenRouter error ${response.status}: ${redact(text)}`);
   }
 
   return response.body!;

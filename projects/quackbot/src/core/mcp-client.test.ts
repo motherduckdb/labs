@@ -154,14 +154,14 @@ describe('databaseAllowViolation (optional QUACKBOT_DATABASES hard cap)', () => 
   });
 });
 
-describe('requiresConfirmation (quackbot v1: no Slack confirmation handshake)', () => {
-  it('never confirms the path-guarded guide writes', () => {
-    expect(requiresConfirmation('create_guide', { path: 'users/x/quackbot/y.md' })).toBe(false);
-    expect(requiresConfirmation('update_guide', { path: 'users/x/quackbot/y.md' })).toBe(false);
+describe('requiresConfirmation (Slack Approve/Deny handshake gates durable writes)', () => {
+  it('confirms the allowlisted guide writes', () => {
+    expect(requiresConfirmation('create_guide', { path: 'users/x/quackbot/y.md' })).toBe(true);
+    expect(requiresConfirmation('update_guide', { path: 'users/x/quackbot/y.md' })).toBe(true);
   });
 
-  it('never confirms save_dive (fresh id, cannot clobber)', () => {
-    expect(requiresConfirmation('save_dive', undefined)).toBe(false);
+  it('confirms save_dive', () => {
+    expect(requiresConfirmation('save_dive', undefined)).toBe(true);
   });
 
   it('still classifies destructive/other mutating tools as needing confirmation', () => {

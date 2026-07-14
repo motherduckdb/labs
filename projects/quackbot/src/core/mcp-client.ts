@@ -174,34 +174,26 @@ export const DESTRUCTIVE_TOOLS = new Set([
 ]);
 
 /**
- * Whether a tool call must pause for explicit user approval.
+ * Whether a tool call must pause for explicit user approval before it runs.
  *
- * In quackbot v1 nothing pauses for confirmation: Slack has no confirmation
- * handshake yet, so this never gates an executed tool. The function and its
- * classification are retained as the canonical policy boundary. The non-
- * allowlisted writes (`query_rw`, dive edits, guide metadata/access edits,
- * the deletes) can never reach here in practice — they are rejected at the
- * allowlist. The three allowlisted MUTATING tools return false: `create_guide`
- * and `update_guide` (path-guarded to quackbot's own guide folder, so they run
- * unattended) and `save_dive` (always mints a fresh id, so it is safe to run
- * without approval). Restoring confirmation would mean wiring a Slack
- * interactive-button flow (post a "confirm this write?" message, block on the
- * button click) and having callers honor a `true` return here before
- * dispatching.
+ * Every mutating or destructive tool requires confirmation. In practice only
+ * the three allowlisted writes (`create_guide` / `update_guide` / `save_dive`)
+ * can actually reach here — the rest are rejected at the allowlist first — so
+ * this gates exactly those. The agentic loop honors a `true` return by calling
+ * its `confirmTool` (the Slack Approve/Deny handshake in `src/slack/confirm.ts`)
+ * and only dispatching on approval. This is what stops prompt-injected content
+ * from committing an unattended durable write; the GUIDE_WRITE_PATH guard and
+ * save_dive's fresh-id behavior remain as the confinement backstop.
+ *
+ * `toolArgs` is unused today but kept in the signature so a future policy can
+ * confirm selectively (e.g. only `update_guide` overwrites, not first creates).
  */
 export function requiresConfirmation(
   toolName: string,
   toolArgs: Record<string, unknown> | undefined,
 ): boolean {
-  if (DESTRUCTIVE_TOOLS.has(toolName)) return true;
-  if (!MUTATING_TOOLS.has(toolName)) return false;
-  if (toolName === 'create_guide' || toolName === 'update_guide' || toolName === 'save_dive') {
-    // v1: these allowlisted writes run without a confirmation handshake (no
-    // Slack button flow yet). save_dive mints a fresh dive id so it cannot
-    // clobber; the guide writes are confined by GUIDE_WRITE_PATH.
-    return false;
-  }
-  return true;
+  void toolArgs;
+  return DESTRUCTIVE_TOOLS.has(toolName) || MUTATING_TOOLS.has(toolName);
 }
 
 export interface MCPTool {
