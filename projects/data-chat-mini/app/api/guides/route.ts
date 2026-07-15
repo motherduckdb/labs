@@ -96,6 +96,21 @@ async function callWrite(
   return { ok: true, data };
 }
 
+class GuideReadError extends Error {}
+
+/** Fail loudly when the upstream MCP omits or rejects a required guide tool. */
+async function callRead(
+  client: Client,
+  name: 'get_guide' | 'list_guides',
+  args: Record<string, unknown>,
+): Promise<string> {
+  const { text, isError } = await executeToolWithStatus(client, name, args, true);
+  if (isError) {
+    throw new GuideReadError(`${name} failed: ${text || 'unknown MCP error'}`);
+  }
+  return text;
+}
+
 export async function GET(request: NextRequest) {
   const path = request.nextUrl.searchParams.get('path') || undefined;
   const versionParam = request.nextUrl.searchParams.get('version');
@@ -109,12 +124,12 @@ export async function GET(request: NextRequest) {
           args.version = Number(versionParam);
           args.merge_overlays = false; // version reads target the stored org guide
         }
-        const { text } = await executeToolWithStatus(client, 'get_guide', args, true);
+        const text = await callRead(client, 'get_guide', args);
         const parsed = parseJson(text);
         const content = typeof parsed.text === 'string' ? parsed.text : text;
         return Response.json({ path, content, version: parseVersion(content) });
       }
-      const { text } = await executeToolWithStatus(client, 'list_guides', {}, true);
+      const text = await callRead(client, 'list_guides', {});
       const parsed = parseJson(text);
       const guides = Array.isArray(parsed.guides) ? (parsed.guides as GuideSummary[]) : [];
       const tree = typeof parsed.tree === 'string' ? parsed.tree : '';
@@ -125,6 +140,9 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('[Guides] GET error:', error);
     if (isAuthError(error)) return authExpiredResponse();
+    if (error instanceof GuideReadError) {
+      return Response.json({ error: error.message }, { status: 502 });
+    }
     return Response.json({ error: 'Failed to fetch guides' }, { status: 500 });
   }
 }
