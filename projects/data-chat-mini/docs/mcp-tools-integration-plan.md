@@ -1,4 +1,10 @@
-# Integrating the staging MCP tool surface into data-chat-mini
+# Historical plan: integrating the MCP guide surface into data-chat-mini
+
+> Completed. This was written against the 2026-07-08 staging-only guide
+> rollout. As of 2026-07-15, production has the required interface and
+> data-chat-mini targets production by default. See
+> `context-layer-guide-migration.md` for current status and run
+> `npm run mcp:validate` before production deployment.
 
 Companion to [mcp-prod-vs-staging-tool-diff.md](mcp-prod-vs-staging-tool-diff.md) (full per-tool diff of the two servers, 2026-07-08).
 

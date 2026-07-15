@@ -14,8 +14,8 @@
  * the app token (internal — bypasses the LLM allowlist); the personal-guide
  * guard in `assertGuideWriteAllowed` still applies to create/update.
  *
- * Read scaling: the per-session id arrives in the `x-session-id` header and is
- * threaded into the MCP connection as a session hint.
+ * The per-session id arrives in the `x-session-id` header and is threaded into
+ * the MCP connection as a session hint.
  */
 import { createMCPClient, executeToolWithStatus, isPersonalGuidePath } from '@/lib/mcp-client';
 import { isAuthError, authExpiredResponse, getSessionHint } from '@/lib/api-helpers';

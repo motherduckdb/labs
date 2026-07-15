@@ -1,4 +1,9 @@
-# MotherDuck MCP Tool Diff — Prod vs Staging
+# Historical MotherDuck MCP Tool Diff — Prod vs Staging
+
+> Snapshot from 2026-07-08. This comparison is retained as migration history,
+> not as the current production contract. As of 2026-07-15, production includes
+> the guide subsystem plus `list_views` and `list_macros`. The authoritative
+> launch check is `npm run mcp:validate` against `https://api.motherduck.com/mcp`.
 
 Prod server prefix: `mcp__claude_ai_MotherDuck__` (33 tools)
 Staging server prefix: `mcp__claude_ai_MotherDuck_Staging__` (41 tools)

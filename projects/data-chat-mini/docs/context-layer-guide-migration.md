@@ -1,9 +1,14 @@
 # Context layer → MCP guides migration
 
-Status as of 2026-07-08. The IndexedDB context layer (the placeholder built while
+Status as of 2026-07-15. The IndexedDB context layer (the placeholder built while
 the real context engine was in flight) has been **replaced in the live app** by
 the MotherDuck **guide subsystem**. This doc records what shipped and the work
 that was deliberately **deferred** to keep the workshop demo green.
+
+The guide subsystem is now available on the production MCP. data-chat-mini
+defaults to `https://api.motherduck.com`; run `npm run mcp:validate` with the
+deployment PAT before each production rollout to verify tool discovery and the
+two read entry points.
 
 ## What the guide subsystem is
 
@@ -20,8 +25,8 @@ overlay-merge onto org guides.
   `assertGuideWriteAllowed` (`lib/mcp-client.ts`): org-wide writes and non-`users/`
   paths are rejected before dispatch.
 
-Verified 2026-07-08: the app's `MOTHERDUCK_TOKEN` can create/edit/delete personal
-guides as `owner_name: matson`. A live chat turn drove
+Verified 2026-07-08 against staging: a user-scoped `MOTHERDUCK_TOKEN` can
+create/edit/delete personal guides as `owner_name: matson`. A live chat turn drove
 `get_guide("guides.md")` → `list_tables` → `get_guide(nba guide)` →
 `create_guide(users/matson/…)` end-to-end with no local round-trip.
 
@@ -63,9 +68,9 @@ live app** but load-bearing for the demo:
 3. **Panel niceties (optional).** Restore table↔guide linking (badge + click-to-
    filter) using `list_guides`' structured `references` / reverse `reference`
    lookup — dropped in this pass because `list_guides` summaries omit references.
-4. **Prod fallback.** With no guides on prod, the app currently has no context
-   layer there. Decide whether that's acceptable or whether prod needs guides
-   seeded (see `mcp-tools-integration-plan.md`).
+4. ~~**Prod fallback.**~~ **Resolved 2026-07-15:** production now advertises the
+   guide subsystem and data-chat-mini targets it by default. Production still
+   needs a user-scoped PAT so personal guide creation has a username claim.
 
 ### Known race (pre-existing)
 

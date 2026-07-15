@@ -10,8 +10,7 @@ import { getMotherDuckMcpUrl } from './motherduck-env';
  * allowed but constrained to private personal guides by `assertGuideWriteAllowed`.
  *
  * getFilteredTools intersects this set with what the server advertises, so
- * against prod (no guides yet) these staging-only names simply never appear —
- * safe to allowlist unconditionally.
+ * feature-gated or older servers can omit names without breaking the app.
  */
 export const ALLOWED_TOOLS = new Set([
   'query',
@@ -110,7 +109,6 @@ export const DESTRUCTIVE_TOOLS = new Set([
  */
 export function requiresConfirmation(
   toolName: string,
-  _toolArgs: Record<string, unknown> | undefined,
 ): boolean {
   if (DESTRUCTIVE_TOOLS.has(toolName)) return true;
   if (!MUTATING_TOOLS.has(toolName)) return false;
@@ -126,14 +124,19 @@ export interface MCPTool {
 }
 
 /**
- * Create an MCP client authenticated with the MotherDuck read scaling token.
+ * Create an MCP client authenticated with the configured MotherDuck token.
  *
- * Read scaling: a read scaling token directs each connection to one of the
- * read-only replicas ("ducklings"), so a fleet of concurrent users fans out
- * across replicas on a single token — that distribution comes from the token
- * itself, regardless of any hint. `session_name` (legacy alias `session_hint`)
- * additionally pins a session to a specific replica for cache affinity; we set
- * it to the per-browser session id.
+ * A user-scoped PAT is required for the complete guide experience because the
+ * guide service needs an authenticated username to create personal guides. A
+ * read scaling token can still be used for read-only deployments, but personal
+ * guide creation may be unavailable.
+ *
+ * Read scaling: when such a token is configured, each connection is directed
+ * to one of the read-only replicas ("ducklings"), so a fleet of concurrent
+ * users fans out across replicas on a single token — that distribution comes
+ * from the token itself, regardless of any hint. `session_name` (legacy alias
+ * `session_hint`) additionally pins a session to a specific replica for cache
+ * affinity; we set it to the per-browser session id.
  *
  * Caveat: `session_name` affinity is documented for the DuckDB / Postgres
  * connection strings, NOT (yet) for the MCP HTTP transport. We pass it as a
@@ -147,7 +150,7 @@ export async function createMCPClient(
 ): Promise<Client> {
   const token = process.env.MOTHERDUCK_TOKEN;
   if (!token) {
-    throw new Error('No MOTHERDUCK_TOKEN configured. Set a read scaling token in .env.local.');
+    throw new Error('No MOTHERDUCK_TOKEN configured. Set a production user-scoped PAT in .env.local.');
   }
 
   const url = new URL(getMotherDuckMcpUrl());

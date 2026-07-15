@@ -4,9 +4,8 @@ A minimal **chat with your data** app for MotherDuck — distilled from the
 internal `mdw-turbo` tool down to just the chat panel. Ask questions in natural
 language; the agent explores the schema, runs **read-only** SQL over MCP, and
 renders answers as inline [mviz](https://www.npmjs.com/package/mviz) charts and
-tables. Conversation history and a local context layer live in your browser
-(IndexedDB). It's built to run a **large fleet of concurrent users** on a single
-MotherDuck **read scaling token**.
+tables. Conversation history lives in your browser (IndexedDB); durable context
+lives in MotherDuck's versioned **guides** subsystem.
 
 > Experimental. Part of [MotherDuck Labs](../../README.md).
 
@@ -16,12 +15,12 @@ Each required element of an agentic data-chat app, kept as small as possible:
 
 | Element | Where |
 |---|---|
-| Database with data (MotherDuck) | MCP `query` + catalog tools; read scaling token |
+| Database with data (MotherDuck) | MCP `query` + catalog tools; production PAT |
 | Interact with the DB (MCP) | `lib/mcp-client.ts` — StreamableHTTP MCP client, read-only allowlist |
 | Visual request / tool calls / response | `app/chat/ChatPanel.tsx` — SSE stream, inline content segments |
 | Fast charting | `lib/mviz-*.ts` + `app/components/MvizFrame.tsx` (mviz 1.7.0, embed mode) |
 | History | `lib/chat-storage.ts` (IndexedDB) + `ChatHistorySidebar` |
-| Context | `lib/context-store.ts` (IndexedDB) behind MotherDuck context-tool shapes |
+| Context | MCP guides + `app/api/guides`; IndexedDB context remains only for the legacy demo replay |
 | Schema explorer | `app/chat/SchemaExplorerSidebar.tsx` + `app/api/schema` |
 | System prompt (the "intelligence") | `lib/system-prompt.ts` — when to explore, when to chart, read-only |
 | Tool guardrails | `lib/mcp-client.ts` — READONLY / MUTATING / DESTRUCTIVE classification |
@@ -35,9 +34,9 @@ cp .env.example .env.local   # fill in MOTHERDUCK_TOKEN + OPENROUTER_API_KEY
 npm run dev                  # http://localhost:3000
 ```
 
-- **`MOTHERDUCK_TOKEN`** — a MotherDuck **read scaling token** (Settings → Tokens). Read-only by nature; safe for a fleet.
+- **`MOTHERDUCK_TOKEN`** — a production MotherDuck **user-scoped PAT** (Settings → Tokens). The username claim is needed to create personal guides. Data access stays read-only because `query_rw` is never exposed.
 - **`OPENROUTER_API_KEY`** — the LLM is called via OpenRouter (default model `google/gemini-3-flash-preview`, swap with `OPENROUTER_MODEL`).
-- **`MOTHERDUCK_API_URL`** — defaults to staging; set to `https://api.motherduck.com` for prod.
+- **`MOTHERDUCK_API_URL`** — defaults to production (`https://api.motherduck.com`). Override it only for explicit staging tests, using a token from the same environment.
 
 Pick a database, then ask away — e.g. *"what tables are here?"*, *"chart revenue by
 month"*, *"remember that orders join customers on customer_id"*.
@@ -51,19 +50,19 @@ subdirectory.
    settings (the repo root is a monorepo with no top-level `package.json`).
    Deploying from inside this folder with the CLI handles this automatically.
 2. **Environment variables** (Production): `MOTHERDUCK_TOKEN`,
-   `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (optional), and
-   `MOTHERDUCK_API_URL=https://api.motherduck.com` — **the default is staging**,
-   so set it explicitly for prod.
-3. **Protect the deployment.** This app has **no application-level auth** — a
-   read scaling token plus a per-session id stands in for identity. An open URL
-   therefore exposes your catalog to anyone (read-only) and lets them spend your
+   `OPENROUTER_API_KEY`, and `OPENROUTER_MODEL` (optional). Production is the
+   built-in MotherDuck API default; setting
+   `MOTHERDUCK_API_URL=https://api.motherduck.com` explicitly is harmless.
+3. **Protect the deployment.** This app has **no application-level auth** and
+   uses one server-side PAT for every visitor. An open URL therefore exposes the
+   PAT owner's catalog and personal guides, and lets visitors spend the shared
    OpenRouter budget. Turn on Vercel **Deployment Protection → Password
    Protection** with scope **All Deployments** (not just Preview) before sharing
    the URL.
-4. **Use a read scaling, read-only token** for `MOTHERDUCK_TOKEN`. Read-only is
-   enforced *by the token type*, not by SQL inspection — the `query` tool runs
-   model-generated SQL unmodified, so a read-write token would remove the
-   guarantee.
+4. **Use a user-scoped PAT** for `MOTHERDUCK_TOKEN`. The username claim enables
+   personal guide creation. Data remains read-only at the MCP boundary: the app
+   allowlists `query` and never advertises or dispatches `query_rw`. Guide writes
+   are separately constrained to `users/<username>/...` paths.
 5. **Function timeout / plan.** `app/api/chat/route.ts` sets `maxDuration = 300`
    for the streaming agentic loop. Vercel Hobby clamps functions to ~60s
    (long turns get cut off); Pro / Fluid Compute honors 300s. A single MCP query
@@ -72,7 +71,8 @@ subdirectory.
 ```bash
 # from projects/data-chat-mini/
 npx vercel link            # create/link the project
-npx vercel env add MOTHERDUCK_TOKEN production   # repeat per var
+npx vercel env add MOTHERDUCK_TOKEN production   # repeat per required var
+npm run mcp:validate                            # validate the production contract
 npx vercel deploy --prod
 ```
 
@@ -101,21 +101,16 @@ The guided rail covers:
   rejected before execution. The guardrail layer is the named boundary; re-enabling
   a write means adding it to the allowlist **and** restoring a confirmation
   handshake.
-- **Read scaling fan-out.** A [read scaling token](https://motherduck.com/docs/key-tasks/authenticating-and-connecting-to-motherduck/read-scaling/)
-  directs each connection to one of the read replicas, so concurrent users
-  spread across the fleet on a single token. Each browser also gets a random
-  session id (localStorage), passed as `session_name` (the canonical param;
-  `session_hint` is its legacy alias) for per-session replica cache affinity.
-  Note: `session_name` affinity is documented for the DuckDB/Postgres
-  connection strings, not (yet) the MCP HTTP transport — we pass it on the MCP
-  URL, honored if forwarded, harmless if not. The token-level fan-out works
-  regardless.
-- **Context = local IndexedDB behind MotherDuck tool shapes.** The model calls
-  `query_context_layer` / `update_context_layer` (the real MotherDuck names), but
-  those calls are intercepted server-side, streamed to the browser as a
-  `context_tool` event, serviced against IndexedDB, and the loop resumes with the
-  result. Swappable to the real MotherDuck context layer later by simply not
-  intercepting.
+- **Token and session model.** Production uses a user-scoped PAT so guide writes
+  have an authenticated owner. Each browser still gets a random session id
+  (localStorage), passed as `session_name` for cache affinity when supported by
+  the MCP transport. A read scaling token can be substituted for read-only
+  deployments, but it may not support personal guide creation.
+- **Context = MotherDuck guides.** The model reads `guides.md` before SQL and can
+  read relevant org/personal guides, then persist durable learnings as small
+  personal guides. The guide manager uses `/api/guides` for viewing, editing,
+  history, and deletion. The old IndexedDB context-tool round trip remains only
+  to support the recorded demo until it is re-recorded.
 - **mviz inline.** The model emits ` ```table ` / ` ```bar ` / ` ```line ` /
   ` ```dumbbell ` fenced blocks; a streaming fence detector renders each into a
   sandboxed iframe at its natural position in the reply.
@@ -157,6 +152,7 @@ are present. See [docs/demo-validation.md](docs/demo-validation.md).
 
 ## Out of scope
 
-Canvas, prism, dives, MotherDuck-side writes, the HMAC/ledger confirmation
-handshake, chat sharing, compaction, server-side chat history, and OAuth/multi-
-identity auth — a single read scaling token + per-session id replaces auth.
+Canvas, prism, dives, data writes, the HMAC/ledger confirmation handshake, chat
+sharing, compaction, server-side chat history, and OAuth/multi-identity auth.
+This is a protected single-identity deployment; Vercel deployment protection is
+the application access boundary.

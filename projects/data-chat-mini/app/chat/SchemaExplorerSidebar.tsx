@@ -105,7 +105,11 @@ export function SchemaExplorerSidebar({
   }, [demoReplay]);
 
   useEffect(() => {
-    refreshGuides();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refreshGuides();
+    });
+    return () => { cancelled = true; };
   }, [refreshGuides, contextReloadKey]);
 
   const activeTables = demoReplay ? DEMO_SCHEMA_TABLES : tables;
@@ -392,7 +396,12 @@ function GuidePopover({
   }, []);
 
   useEffect(() => {
-    if (!creating && guide) loadContent(guide.path);
+    if (creating || !guide) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadContent(guide.path);
+    });
+    return () => { cancelled = true; };
   }, [creating, guide, loadContent]);
 
   // Escape closes the popover (but not while a text field is focused mid-edit).
@@ -488,7 +497,7 @@ function GuidePopover({
       onListChanged();
       setGuide(next);
       setMode('view');
-      loadContent(next.path);
+      void loadContent(next.path);
       if (next.path !== guide!.path) onRenamed(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
