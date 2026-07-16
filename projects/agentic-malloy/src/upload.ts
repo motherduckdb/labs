@@ -30,6 +30,57 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTROLLOG_DIR = path.join(REPO_ROOT, 'results', 'controllog');
 
+/**
+ * Per-run validation-usage rollup (long format: one row per run × validation type)
+ * for the Dive's multi-series line chart. Answer-time checks are derived uniformly
+ * from the logged events so BOTH historical and future runs are covered:
+ *   - lint / answer_shape / raw_sql_ban : scraped from tool_result outputs
+ *   - escalation                        : the evaluation_result.escalated flag
+ * (The new `quality_finding` events give a finer per-code breakdown for deeper
+ * analysis; this rollup stays on the uniform scrape so every past run is comparable.)
+ */
+function validationUsageSql(db: string): string {
+  const E = `${db}.main.events`;
+  return `CREATE OR REPLACE TABLE ${db}.main.validation_usage AS
+WITH ev AS (
+  SELECT run_id, actor_task_id AS task, payload_json.author_model AS model,
+         (payload_json.escalated)::BOOLEAN AS escalated
+  FROM ${E} WHERE kind='evaluation_result'
+),
+tr AS (
+  SELECT run_id, actor_task_id AS task,
+    max(CASE WHEN payload_json.output ILIKE '%[lint applied%' THEN 1 ELSE 0 END) AS lint,
+    max(CASE WHEN payload_json.output ILIKE '%NOT YET RECORDED%' OR payload_json.output ILIKE '%answer-shape%' THEN 1 ELSE 0 END) AS answer_shape,
+    max(CASE WHEN payload_json.output ILIKE '%raw SQL%' AND payload_json.output ILIKE '%NOT recorded%' THEN 1 ELSE 0 END) AS raw_sql_ban
+  FROM ${E} WHERE kind='tool_result'
+  GROUP BY 1,2
+),
+runstart AS (SELECT run_id, min(event_time) AS run_started FROM ${E} GROUP BY 1),
+per_task AS (
+  SELECT ev.run_id, ev.task, any_value(ev.model) AS model,
+    max(CASE WHEN ev.escalated THEN 1 ELSE 0 END) AS escalation,
+    COALESCE(max(tr.lint),0) AS lint,
+    COALESCE(max(tr.answer_shape),0) AS answer_shape,
+    COALESCE(max(tr.raw_sql_ban),0) AS raw_sql_ban
+  FROM ev LEFT JOIN tr ON tr.run_id=ev.run_id AND tr.task=ev.task
+  GROUP BY ev.run_id, ev.task
+),
+agg AS (
+  SELECT run_id, any_value(model) AS model, count(*) AS n_tasks,
+    sum(lint) AS lint, sum(answer_shape) AS answer_shape,
+    sum(raw_sql_ban) AS raw_sql_ban, sum(escalation) AS escalation
+  FROM per_task GROUP BY run_id
+),
+long AS (
+  SELECT run_id, model, n_tasks, validation_type, n_used
+  FROM agg UNPIVOT (n_used FOR validation_type IN (lint, answer_shape, raw_sql_ban, escalation))
+)
+SELECT l.run_id, r.run_started, l.model, l.n_tasks, l.validation_type, l.n_used,
+       round(100.0*l.n_used/l.n_tasks, 2) AS pct
+FROM long l JOIN runstart r USING (run_id)
+ORDER BY r.run_started, l.validation_type`;
+}
+
 export async function uploadControllog(opts: {
   database: string;
   logDir?: string;
@@ -60,6 +111,12 @@ export async function uploadControllog(opts: {
       );
       postings = Number((await conn.runAndReadAll(`SELECT count(*) AS n FROM ${db}.main.postings`)).getRowObjects()[0].n);
     }
+    // Derived telemetry: per-run % of questions that triggered each answer-time
+    // validation (the Dive's validation-usage line chart reads this). Rebuilt from
+    // `events` each upload so it back-populates all history and stays current.
+    // A materialized TABLE (not a VIEW) so the next upload's CREATE OR REPLACE TABLE
+    // events has no dependent view to fail on.
+    await conn.run(validationUsageSql(db));
     return { events, postings };
   } finally {
     conn.closeSync();
