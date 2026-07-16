@@ -227,6 +227,19 @@ export function utility(args: {
   });
 }
 
+/**
+ * Telemetry-only emitter for build-time quality checks (semantic gates, source
+ * gates, degeneracy smells, raw-SQL rejections). Records WHICH checks fired on a
+ * given build round and the outcome, so a run can measure how often each check
+ * actually triggers. Carries NO postings and is never read by any control-flow —
+ * it only appends an event; a missing session makes it a no-op (see event()).
+ */
+export function qualityFinding(args: {
+  taskId: string; runId?: string; payload: Record<string, unknown>;
+}): void {
+  event({ kind: 'quality_finding', taskId: args.taskId, agentId, runId: args.runId, payload: args.payload });
+}
+
 export function runMetadata(args: {
   runId: string; resolvedConfig: Record<string, unknown>;
   commitSha?: string; repo?: string; dirty?: boolean; dirtyFiles?: string[]; agentName?: string;

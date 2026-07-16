@@ -403,6 +403,13 @@ export async function runTask(opts: RunTaskOpts): Promise<TaskResult> {
         result = { content: `Error: ${e instanceof Error ? e.message : String(e)}`, isError: true };
       }
       cl.toolResult({ taskId, runId, name: call.name, callId, ok: !result.isError, durationMs: Date.now() - ts, model: activeModel, output: result.content.slice(0, 2000) });
+      // LOGGING ONLY — drain any answer-shape telemetry the tool stashed on state and
+      // emit it to controllog for analysis. This is NEVER sent back to the model (it
+      // touches neither `result.content`, `trace`, nor `toolResults`).
+      if (deps.state.pendingShapeFinding) {
+        cl.qualityFinding({ taskId, runId, payload: { phase: 'answer', tool: call.name, ...deps.state.pendingShapeFinding } });
+        deps.state.pendingShapeFinding = null;
+      }
       trace.push({ step: 'function_call_output', name: call.name, output: result.content.slice(0, 2000), status: result.isError ? 'error' : 'ok' });
       toolResults.push({ type: 'tool_result', tool_use_id: callId, content: result.content, ...(result.isError && { is_error: true }) });
       // Only Malloy-authoring failures count toward escalation — an exploration

@@ -28,7 +28,7 @@ import { complete } from './llm-client.js';
 import { MalloyRuntime } from './malloy-runtime.js';
 import { viewQualitySmells, smellSummary } from './view-quality.js';
 import { layerSourceGate } from './malloy-source.js';
-import { semanticSelfVerify, parseSources, semanticFindingSummary } from './semantic-verify.js';
+import { semanticSelfVerify, parseSources, semanticFindingSummary, type SemanticFinding } from './semantic-verify.js';
 import { detectRawSqlInMalloy } from './linter.js';
 import { extractGlossary, groundGlossary, renderGlossary, type GlossaryEntry } from './glossary.js';
 import * as cl from './controllog.js';
@@ -390,7 +390,10 @@ export async function hashLayerOnDisk(modelsDir: string = MODELS_DIR, metaDir: s
  * throws — a probe failure yields no finding (conservative). Kept small + local
  * so the gate block stays readable.
  */
-async function semanticVerifyFile(justAuthored: string, modelsDir: string, dbPath: string): Promise<string> {
+// Returns the SAME diagnostic string as before in `.diag` (control-flow reads
+// only `.diag`); `.findings` is added purely so the caller can LOG which semantic
+// checks fired. Best-effort: on any failure returns an empty diag + no findings.
+async function semanticVerifyFile(justAuthored: string, modelsDir: string, dbPath: string): Promise<{ diag: string; findings: SemanticFinding[] }> {
   try {
     const files = (await readdir(modelsDir)).filter((f) => f.endsWith('.malloy'));
     const allSources = [] as ReturnType<typeof parseSources>;
@@ -398,12 +401,12 @@ async function semanticVerifyFile(justAuthored: string, modelsDir: string, dbPat
     const rt = new MalloyRuntime({ ...(dbPath ? { databasePath: dbPath } : {}), modelsDir });
     try {
       const findings = await semanticSelfVerify({ rt, fileText: justAuthored, allSources, verify: { timeoutMs: VIEW_VALIDATION_TIMEOUT_MS } });
-      return semanticFindingSummary(findings);
+      return { diag: semanticFindingSummary(findings), findings };
     } finally {
       await rt.close();
     }
   } catch {
-    return ''; // verification is best-effort; never block a build on its own failure
+    return { diag: '', findings: [] }; // verification is best-effort; never block a build on its own failure
   }
 }
 
@@ -566,8 +569,26 @@ async function authorStage(opts: {
       // (only clear, numerically-confirmed violations), so it routes through this
       // SAME nudge/accept path. Cross-file source list lets the base-key chain
       // resolve across the already-authored files.
-      const semanticDiag = await semanticVerifyFile(malloy, opts.modelsDir, opts.dbPath);
+      const { diag: semanticDiag, findings: semanticFindings } = await semanticVerifyFile(malloy, opts.modelsDir, opts.dbPath);
       const qualityDiag = [smellHint, gateDiag, semanticDiag].filter(Boolean).join('\n\n');
+      // LOGGING ONLY — record which quality checks fired this round + the outcome
+      // so a run can measure per-check trigger frequency. Reads existing locals;
+      // mutates nothing; does not affect qualityDiag, the nudge decision below, or
+      // the return value. `willNudge` mirrors the exact condition of the next `if`.
+      if (opts.runId) {
+        const willNudge = !!qualityDiag && !smellNudged && round < opts.maxRounds;
+        cl.qualityFinding({
+          taskId: opts.label, runId: opts.runId,
+          payload: {
+            phase: 'build', stage: opts.label, round, mode,
+            gate_codes: gateFindings.map((f) => f.code),
+            semantic_codes: semanticFindings.map((f) => f.code),
+            smell: !!v.smellDiag,
+            any_finding: !!qualityDiag,
+            outcome: willNudge ? 'nudged' : (qualityDiag ? 'accepted_with_findings' : 'clean'),
+          },
+        });
+      }
       if (qualityDiag && !smellNudged && round < opts.maxRounds) {
         smellNudged = true;
         forceFull = true;

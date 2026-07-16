@@ -38,6 +38,14 @@ export interface RunState {
    *  warn): a first submit with a shape warning is NOT latched (the agent may
    *  reconsider/resubmit); any subsequent submit latches unconditionally. */
   shapeWarned?: boolean;
+  /** LOGGING ONLY (never shown to the model): signature of the answer rows deferred
+   *  on the one-shot shape warning, so a later latch can record whether the resubmit
+   *  actually changed the answer. */
+  shapeDeferredSig?: string | null;
+  /** LOGGING ONLY (never shown to the model): a pending answer-shape telemetry
+   *  payload the harness drains to controllog after the tool call. Purely for
+   *  analysis of how often each shape code fires + its outcome. */
+  pendingShapeFinding?: Record<string, unknown> | null;
   /** The most recent SUCCESSFUL run_malloy result (compiled + ran + returned rows),
    *  captured so the budget-guard can auto-submit a best-effort answer when the agent
    *  never submits on its own. (Undefined until the first successful run_malloy.) */
@@ -336,10 +344,17 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     // warning is NOT latched, so the agent can reconsider/resubmit; the resubmit
     // always records (no non-submission/correctness regression).
     const warnings = answerShapeWarnings({ question: deps.question, guidelines: deps.guidelines, source: fixedSrc, columns: cols, rows: positional });
+    // LOGGING ONLY (never shown to the model): stash which shape codes fired + the
+    // outcome for later controllog emission. Does not change the model-visible
+    // content returned below or the one-shot defer/latch decision.
+    const shapeSig = JSON.stringify(positional);
     if (warnings.length && !state.shapeWarned) {
       state.shapeWarned = true;
+      state.shapeDeferredSig = shapeSig;
+      state.pendingShapeFinding = { check: 'answer_shape', path: 'malloy', codes: warnings.map((w) => w.code), outcome: 'deferred' };
       return { content: shapeWarnMessage(warnings), isError: false };
     }
+    state.pendingShapeFinding = { check: 'answer_shape', path: 'malloy', codes: warnings.map((w) => w.code), outcome: 'submitted', warned_note: warnings.length > 0, after_deferral: state.shapeDeferredSig != null, changed_after_deferral: state.shapeDeferredSig != null ? shapeSig !== state.shapeDeferredSig : null };
     await latchAnswer(deps, { malloy: fixedSrc, compiledSql: r.sql!, rows: positional });
     return { content: `Submitted. ${r.rows!.length} row(s).${shapeWarnNote(warnings)}`, isError: false };
   }
@@ -364,10 +379,15 @@ export async function dispatchTool(deps: ToolDeps, name: string, args: Record<st
     // format discipline). Column names aren't available from positional SQL rows, so
     // the >1-column check infers the count from the first row.
     const warnings = answerShapeWarnings({ question: deps.question, guidelines: deps.guidelines, source: sql, rows: positional });
+    // LOGGING ONLY (never shown to the model): same telemetry as the Malloy path.
+    const shapeSig = JSON.stringify(positional);
     if (warnings.length && !state.shapeWarned) {
       state.shapeWarned = true;
+      state.shapeDeferredSig = shapeSig;
+      state.pendingShapeFinding = { check: 'answer_shape', path: 'sql', codes: warnings.map((w) => w.code), outcome: 'deferred' };
       return { content: shapeWarnMessage(warnings), isError: false };
     }
+    state.pendingShapeFinding = { check: 'answer_shape', path: 'sql', codes: warnings.map((w) => w.code), outcome: 'submitted', warned_note: warnings.length > 0, after_deferral: state.shapeDeferredSig != null, changed_after_deferral: state.shapeDeferredSig != null ? shapeSig !== state.shapeDeferredSig : null };
     state.submitted = true;
     state.finalCompiledSql = sql; // predicted_sql for the scorer
     state.finalRows = positional;

@@ -136,6 +136,8 @@ export async function repairFileStage(opts: {
       diag =
         'PROHIBITED: your edit introduces a NEW `duckdb.sql(...)` raw-SQL block. Raw SQL is not allowed in the semantic layer. Re-do the fix in PURE Malloy (joins via join_one/join_many, value universes via a Malloy query/group_by or the typed unnest escape over the base table, individual functions via `fn!returntype(...)`). Return edits with no `duckdb.sql(...)`.';
       console.log(`  ✗ improve ${opts.file} round ${round}: REJECTED — edit adds duckdb.sql(...) (raw SQL prohibited)`);
+      // LOGGING ONLY — record the raw-SQL gate firing; does not alter the reject/retry below.
+      if (opts.runId) cl.qualityFinding({ taskId: opts.file, runId: opts.runId, payload: { phase: 'build', stage: `improve:${opts.file}`, round, check: 'raw_sql_ban', outcome: 'rejected' } });
       if (round === opts.maxRounds) return { ok: false, file: opts.file, rounds: round, applied: totalApplied, diag, ...agg };
       continue;
     }
