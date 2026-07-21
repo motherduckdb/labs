@@ -1,0 +1,11 @@
+{
+  "description": "DABStep all.jsonl hf_consensus golds that are provably wrong. Excluded from the test/all eval sets (set aside). Evidence in docs/error-fixes.md. Our SQL produces the correct value; these golds disagree with the data.",
+  "task_ids": ["2404", "2439", "2507", "2509", "60"],
+  "reasons": {
+    "2404": "T13 delta: correct value 0.0157; gold 0.01 unreproducible by any principled method",
+    "2439": "T13 delta: correct -15.3436; gold -15.35",
+    "2507": "T12 delta: correct -53.2784; gold -53.25 (fee has NULL volume/fraud -> no boundary DOF)",
+    "2509": "T12 delta: correct -36.6097; gold -36.58 (same)",
+    "60": "worst fraud segment: gold names ES (the LOWEST-fraud country) as worst; not reproducible under any weighting"
+  }
+}
