@@ -1,6 +1,10 @@
 # Migration plan: new MotherDuck MCP tool surface
 
-**Status: Phases 0–2 COMPLETE (2026-07-23) — Phases 3–5 pending.**
+**Status: Phases 0, 1, 2, 4, 5 COMPLETE (2026-07-23) — remaining: Phase 3
+(Gemini dive benchmark → trim override) and the live Slack smoke (§3).**
+Phase 4: 3 memories re-homed to quackbot/air-quality, quackbot/nba, quackbot/taxi
+(catalog refs attached to the two that name real tables; `scripts/rehome-memories.ts`).
+Phase 5: `src/core/mcp-parsers.ts` deleted (all exports verified dead).
 Phase 2 landed: eager `get_query_guide` injection (`src/core/query-guide.ts`,
 15-min TTL cache for prompt-cache stability, failure → prompt falls back to the
 "call it first" mandate); the other Phase-2 prompt items (relatedGuides flow,
