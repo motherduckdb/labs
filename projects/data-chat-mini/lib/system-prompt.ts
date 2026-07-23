@@ -12,37 +12,40 @@ export function buildSystemPrompt(databases: string[], mcpToolNames?: string[]):
   const primaryDb = databases[0] || 'default';
   const attachedDbs = databases.slice(1);
   // Guides are the context engine, available only on servers that advertise
-  // them. The read side (get_guide/list_guides) and write side
+  // them. The read side (get_query_guide/get_guide/list_guides) and write side
   // (create_guide/edit_guide_content) are gated independently so the prompt
   // never tells the model to call a tool it wasn't given.
   const hasGuides = mcpToolNames?.includes('get_guide') ?? false;
+  const hasQueryGuide = mcpToolNames?.includes('get_query_guide') ?? false;
   const canWriteGuides = mcpToolNames?.includes('create_guide') ?? false;
+  const bootstrapCall = hasQueryGuide ? 'get_query_guide' : 'list_guides';
 
   const guideWriteBlock = canWriteGuides
     ? `
 
-## Saving what you learn — small, atomic personal guides
-When you discover a durable, reusable rule (a join key, a metric definition, a grain/filter caveat, a column meaning), persist it as a **personal guide** so future conversations inherit it. This is the replacement for scratch memory — treat it as writing to the org's knowledge base, carefully.
-1. **Personal namespace only.** Write under \`users/<your-username>/…\` with \`access: "user"\` (private). Discover \`<your-username>\` from the \`users/<username>/\` paths in the guide tree (\`list_guides\` / \`get_guide("guides.md")\`). You cannot and must not write org-wide guides — those are curated by admins and read-only to you.
+## Saving what you learn — small, atomic private guides
+When you discover a durable, reusable rule (a join key, a metric definition, a grain/filter caveat, a column meaning), persist it as a **private guide** so future conversations inherit it. This is the replacement for scratch memory — treat it as writing to the org's knowledge base, carefully.
+1. **Private, under the app's topic namespace.** Create with \`topic: "data-chat-mini/<area>"\` (e.g. \`data-chat-mini/joins\`) and never set \`access\` — guides you create are private (\`access: "user"\`) automatically. You cannot and must not write org-wide guides — those are curated by admins and read-only to you.
 2. **One guide = one focused topic.** Keep each guide small and scannable (a clear title + a handful of rules), not a dumping ground. Prefer a guide per table or per metric.
-3. **Edit before you duplicate.** \`list_guides\` (or \`get_guide\`) first; if a relevant personal guide already exists, extend it with \`edit_guide_content\` instead of creating a near-duplicate. Use \`create_guide\` only for a genuinely new topic.
-4. **Attach references.** Point the guide's \`references\` at the catalog tables/views it explains, so it surfaces when someone works with those objects.
+3. **List before you create — creates do NOT deduplicate.** Creating twice with the same title silently makes a second guide. Always \`list_guides({topic: "data-chat-mini/<area>"})\` first; if a relevant guide exists, extend it by uuid with \`edit_guide_content\` (small fix: \`edits: [{old_string, new_string}]\`) or \`update_guide\` (full rewrite). Use \`create_guide\` only for a genuinely new topic.
+4. **Attach references.** Point the guide's \`references\` (type \`"catalog"\`) at the tables/views it explains, so it surfaces when someone works with those objects.
 5. **Rules, not answers.** Save the durable *definition* (how team scoring is computed, which filter avoids double-counting), never the point-in-time result of this analysis. If it has specific numbers or an "as of <date>", it belongs in chat, not a guide.
-6. **After saving, say so in prose** — e.g. "Saved a personal guide on the orders↔customers join key."`
+6. **After saving, say so in prose** — e.g. "Saved a private guide on the orders↔customers join key."`
     : '';
 
   const guidesSection = hasGuides
     ? `
 
 ## Org guides — the context layer
-This server provides \`get_guide\` / \`list_guides\`: curated markdown about the data (metric definitions, join/filter conventions, grain caveats, pitfalls). Guides are the context layer — read them before you write SQL.
-- **Once per conversation**, before your first data-tool call, call \`get_guide("guides.md")\`. It returns the org's query guidance plus the guide tree (including your personal \`users/<username>/…\` namespace). Do NOT re-fetch it on later turns.
-- \`list_tables\` / \`search_catalog\` results, and the guide tree, point at relevant topic/table guides — read one with \`get_guide(path)\` whenever it plausibly bears on the question. Apply its rules to your first schema inspection and SQL, not after an avoidable error.
-- Org guides are authoritative shared truth; your personal guides are your own durable learnings. When they conflict, prefer the org guide and say so.${guideWriteBlock}`
+Guides are curated markdown about the data (metric definitions, join/filter conventions, grain caveats, pitfalls), organized by \`topic\` and read by \`uuid\`. Guides are the context layer — read them before you write SQL.
+- **Once per conversation**, before your first data-tool call, call \`${bootstrapCall}\`. It returns the org's query guidance plus an overview of guide topics. Do NOT re-fetch it on later turns.
+- Navigate with \`list_guides({topic})\` (topics nest like folders), then read a guide with \`get_guide({uuid})\` whenever it plausibly bears on the question. \`search_catalog\` / \`list_tables\` results also point at related guides. Apply their rules to your first schema inspection and SQL, not after an avoidable error.
+- **Never pass a uuid you did not copy verbatim from a tool result** (\`list_guides\`, \`search_catalog\`, or a guide-write response). Invented uuids fail and waste turns.
+- Org guides are authoritative shared truth; your private guides are your own durable learnings. When they conflict, prefer the org guide and say so.${guideWriteBlock}`
     : '';
 
   const guideToolList = hasGuides
-    ? ', `get_guide`, `list_guides`, `list_views`, `list_macros`'
+    ? `${hasQueryGuide ? ', `get_query_guide`' : ''}, \`get_guide\`, \`list_guides\`, \`list_views\`, \`list_macros\``
       + (canWriteGuides ? ', `create_guide`, `edit_guide_content`, `update_guide`' : '')
     : '';
 
@@ -54,7 +57,7 @@ ${attachedDbs.length > 0 ? `- Attached: ${attachedDbs.join(', ')}` : ''}
 
 ## Turn protocol (non-negotiable)
 ${hasGuides
-  ? `For ANY message that will touch a data tool, ground yourself in the context layer FIRST. Once per conversation, before your first data-tool call, call \`get_guide("guides.md")\`; then read any relevant table/topic guide before inspecting schema or writing SQL. Guides can redefine table grain, required filters, join keys, and metric definitions, so reading them first changes which tables you inspect and how you query. The ONLY messages that skip this are purely conversational replies that touch no data tool.`
+  ? `For ANY message that will touch a data tool, ground yourself in the context layer FIRST. Once per conversation, before your first data-tool call, call \`${bootstrapCall}\`; then read any relevant table/topic guide (\`list_guides({topic})\` → \`get_guide({uuid})\`) before inspecting schema or writing SQL. Guides can redefine table grain, required filters, join keys, and metric definitions, so reading them first changes which tables you inspect and how you query. The ONLY messages that skip this are purely conversational replies that touch no data tool.`
   : `Never guess table or column names. Before querying, inspect the schema with \`list_tables\` / \`list_columns\` / \`search_catalog\`. The ONLY messages that skip tool use are purely conversational replies that touch no data.`}${guidesSection}
 
 ## Available Tools
@@ -62,7 +65,7 @@ ${hasGuides
 ### DATA TOOLS (all read-only)
 The MotherDuck data tools (\`query\`, \`list_tables\`, \`list_columns\`, \`list_databases\`, \`search_catalog\`, \`ask_docs_question\`${guideToolList}) carry their own authoritative descriptions — follow those. Tools that take a \`database\` default to \`"${primaryDb}"\` unless the user points elsewhere.${
     canWriteGuides
-      ? '\nThe guide-write tools (`create_guide`, `edit_guide_content`, `update_guide`) write ONLY private personal guides under `users/<username>/…` — see "Saving what you learn".'
+      ? '\nThe guide-write tools (`create_guide`, `edit_guide_content`, `update_guide`) write ONLY private guides (`access: "user"`, topic `data-chat-mini/…`) — see "Saving what you learn".'
       : ''
   }
 

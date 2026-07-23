@@ -7,7 +7,8 @@ import { getMotherDuckMcpUrl } from './motherduck-env';
  * Allowlist of MCP tools the app exposes. Reads are unconditional; the guide
  * subsystem is the real "context engine" (it replaced the local IndexedDB
  * context layer — see docs/mcp-tools-integration-plan.md). Guide WRITES are
- * allowed but constrained to private personal guides by `assertGuideWriteAllowed`.
+ * allowed but constrained to private (`access:"user"`) guides by
+ * `assertGuideWriteAllowed` / `assertGuideWriteTargetAllowed`.
  *
  * getFilteredTools intersects this set with what the server advertises, so
  * feature-gated or older servers can omit names without breaking the app.
@@ -19,23 +20,30 @@ export const ALLOWED_TOOLS = new Set([
   'list_databases',
   'search_catalog',
   'ask_docs_question',
-  // Guides — read side (curated org/personal context).
+  // Guides — read side (curated org/personal context). Guides are selected by
+  // topic (`list_guides({topic})`) and read by uuid (`get_guide({uuid})`);
+  // `get_query_guide` is the org-wide bootstrap (query guidance + topic map).
+  'get_query_guide',
   'get_guide',
   'list_guides',
   'list_views',
   'list_macros',
   // Guides — write side (the agent persists durable learnings here instead of
-  // the old local context layer). Constrained to personal guides below.
+  // the old local context layer). Constrained to private guides below.
   'create_guide',
   'update_guide',
   'edit_guide_content',
 ])
 
 /**
- * Guide write tools. The agent may only create/edit PERSONAL guides
- * (`users/<you>/…`, private) — never org-wide truth. `create_guide` is guarded
- * on path + access here; `update_guide`/`edit_guide_content` rely on the
- * server enforcing per-owner access (a non-admin token cannot own org guides).
+ * Guide write tools. The agent may only create/edit PRIVATE guides
+ * (`access: "user"`) — never org-wide truth. On the new topic/uuid surface,
+ * privacy is the `access` field (forced to "user" at dispatch), grouping is
+ * the `topic` label, and update/edit target guides by uuid. The server rejects
+ * uuid writes to guides the token doesn't own and gates org-visible creates;
+ * `assertGuideWriteTargetAllowed` additionally refuses to touch any guide that
+ * isn't `access: "user"`, so an over-privileged token can't edit org guides
+ * through this unauthenticated app.
  */
 export const GUIDE_WRITE_TOOLS = new Set([
   'create_guide',
@@ -43,36 +51,108 @@ export const GUIDE_WRITE_TOOLS = new Set([
   'edit_guide_content',
 ])
 
-/** Personal-guide namespace: the only paths guide writes may target. */
-export function isPersonalGuidePath(path: unknown): path is string {
-  return typeof path === 'string' && /^users\//i.test(path.trim());
-}
+/** Topic namespace for guides the MODEL creates (human UI may use any topic). */
+export const MODEL_GUIDE_TOPIC = /^data-chat-mini(\/[a-z0-9._-]+)*$/;
 
 /**
- * Reject guide writes that would escape the personal-guide sandbox. Applies to
- * EVERY guide-write tool (create/update/edit), not just create — an
- * `update_guide`/`edit_guide_content` targeting an org path (e.g.
- * `revenue-billing/foo.md`) or an opaque `id` must not slip through, since these
- * tools are model-visible and the app token can edit existing guides. Throws
- * with a message the agentic loop surfaces to the model as a tool error.
+ * Synchronous pre-dispatch checks for guide writes. Applies to every
+ * guide-write tool. `internal` marks trusted app routes (the guide manager
+ * UI), which may pick any topic; model-driven writes are confined to the
+ * `data-chat-mini/…` topic namespace and catalog-only references. Throws with
+ * a message the agentic loop surfaces to the model as a tool error.
  */
-export function assertGuideWriteAllowed(name: string, args: Record<string, unknown>): void {
+export function assertGuideWriteAllowed(
+  name: string,
+  args: Record<string, unknown>,
+  internal?: boolean,
+): void {
   if (!GUIDE_WRITE_TOOLS.has(name)) return;
   const access = typeof args.access === 'string' ? args.access.toLowerCase() : undefined;
   if (access === 'organization') {
     throw new Error(
-      `${name}: this app may only write personal guides — set access:"user" (org-wide guides are admin-only).`,
+      `${name}: this app may only write private guides — set access:"user" (org-wide guides are admin-only).`,
     );
   }
-  // id-based targeting can't be namespace-checked before dispatch — require a path.
-  if ('id' in args && args.id) {
+  // The old surface selected guides by path; reject it loudly so the model
+  // re-reads the tool schema instead of retrying a dead arg shape.
+  if ('path' in args && args.path) {
     throw new Error(
-      `${name}: target the guide by its "users/<username>/…" path, not id — guide writes are limited to personal guides.`,
+      `${name}: guides are no longer selected by path — create with title+topic, or target an existing guide by the "uuid" returned from list_guides.`,
     );
   }
-  if (!isPersonalGuidePath(args.path)) {
+  if (name === 'create_guide' && !internal) {
+    const topic = typeof args.topic === 'string' ? args.topic.trim() : '';
+    if (!MODEL_GUIDE_TOPIC.test(topic)) {
+      throw new Error(
+        `create_guide: saved learnings must use a topic under "data-chat-mini/…" (e.g. "data-chat-mini/joins"); got "${topic || '(no topic)'}".`,
+      );
+    }
+  }
+  if (!internal && Array.isArray(args.references)) {
+    for (const ref of args.references) {
+      const type = ref && typeof ref === 'object' ? (ref as Record<string, unknown>).type : undefined;
+      if (type !== 'catalog') {
+        throw new Error(
+          `${name}: only references of type "catalog" (tables/views the guide explains) are allowed here.`,
+        );
+      }
+    }
+  }
+}
+
+/** Tools that mutate or destroy an existing guide selected by uuid. */
+const UUID_GUIDE_WRITE_TOOLS = new Set([
+  'update_guide',
+  'edit_guide_content',
+  'update_guide_metadata',
+  'set_guide_access',
+  'delete_guide',
+]);
+
+/**
+ * get_guide returns rendered text whose second line is
+ * "uuid: <uuid> · vN · <access>" — the only place the API exposes a guide's
+ * access level for a by-uuid lookup.
+ */
+export function parseGuideHeader(text: string): { version: number | null; access: string | null } {
+  const m = text.match(/^uuid:\s*\S+\s*·\s*v(\d+)\s*·\s*(\w+)\s*$/im);
+  return m ? { version: Number(m[1]), access: m[2].toLowerCase() } : { version: null, access: null };
+}
+
+/**
+ * Async guard for uuid-targeted guide mutations: resolve the target via
+ * get_guide and refuse anything that isn't a private (`access: "user"`)
+ * guide. The server already rejects writes to guides the token doesn't own —
+ * this additionally keeps org-wide guides read-only even if the configured
+ * token happens to own them (this app has no per-user auth in front of it).
+ * Fails closed when the target can't be resolved.
+ */
+export async function assertGuideWriteTargetAllowed(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<void> {
+  if (!UUID_GUIDE_WRITE_TOOLS.has(name)) return;
+  const uuid = typeof args.uuid === 'string' ? args.uuid.trim() : '';
+  if (!uuid) {
+    throw new Error(`${name}: target the guide by the "uuid" returned from list_guides.`);
+  }
+  const result = await client.callTool({ name: 'get_guide', arguments: { uuid } });
+  const text = Array.isArray(result.content)
+    ? result.content
+        .map((block) => {
+          const b = block as { type: string; text?: string };
+          return b.type === 'text' ? (b.text ?? '') : '';
+        })
+        .join('\n')
+    : '';
+  if (result.isError === true) {
+    throw new Error(`${name}: could not resolve guide ${uuid} to verify access (${text || 'get_guide failed'}).`);
+  }
+  const { access } = parseGuideHeader(text);
+  if (access !== 'user') {
     throw new Error(
-      `${name}: writes are limited to personal guides under "users/<username>/…" (got "${typeof args.path === 'string' ? args.path : '(no path)'}"). Org-wide guides are read-only here.`,
+      `${name}: guide ${uuid} is ${access ?? 'of unknown access'} — this app may only modify private (access:"user") guides.`,
     );
   }
 }
@@ -86,7 +166,7 @@ export function assertGuideWriteAllowed(name: string, args: Record<string, unkno
 export const READONLY_TOOLS = new Set([
   'query', 'list_tables', 'list_columns', 'list_databases',
   'search_catalog', 'ask_docs_question',
-  'get_guide', 'list_guides', 'list_views', 'list_macros',
+  'get_query_guide', 'get_guide', 'list_guides', 'list_views', 'list_macros',
 ]);
 
 export const MUTATING_TOOLS = new Set([
@@ -94,6 +174,8 @@ export const MUTATING_TOOLS = new Set([
   'create_guide',
   'update_guide',
   'edit_guide_content',
+  'update_guide_metadata',
+  'set_guide_access',
 ]);
 
 export const DESTRUCTIVE_TOOLS = new Set([
@@ -212,8 +294,11 @@ export async function executeToolWithStatus(
   if (!internal && !ALLOWED_TOOLS.has(name)) {
     throw new Error(`Tool "${name}" is not in the allowed tool set`);
   }
-  // Personal-guide sandbox: block org-wide / non-users writes before dispatch.
-  assertGuideWriteAllowed(name, args);
+  // Private-guide sandbox: block org-wide writes before dispatch. The sync
+  // guard checks args; the async guard resolves uuid targets and refuses any
+  // guide that isn't access:"user".
+  assertGuideWriteAllowed(name, args, internal);
+  await assertGuideWriteTargetAllowed(client, name, args);
   const result = await client.callTool({ name, arguments: args }, undefined, requestOptions);
   if (result.structuredContent != null) {
     return { text: JSON.stringify(result.structuredContent), isError: result.isError === true };

@@ -19,7 +19,7 @@ describe('detectPayloadFailure', () => {
   });
 
   it('treats a successful guide write as not failed', () => {
-    const raw = JSON.stringify({ success: true, guide: { path: 'users/me/x.md' } });
+    const raw = JSON.stringify({ success: true, guide: { uuid: '0198f00d-0000-7000-8000-000000000000' } });
     expect(detectPayloadFailure('create_guide', raw).failed).toBe(false);
     expect(detectPayloadFailure('update_guide', raw).failed).toBe(false);
   });
@@ -35,5 +35,10 @@ describe('applyToolArgDefaults', () => {
     expect(applyToolArgDefaults('list_dives', {}).include_org_shares).toBe(true);
     expect(applyToolArgDefaults('list_dives', { include_org_shares: false }).include_org_shares).toBe(false);
     expect(applyToolArgDefaults('query', { sql: 'select 1' })).toEqual({ sql: 'select 1' });
+  });
+
+  it('forces create_guide to access:"user", even when the model asks for org', () => {
+    expect(applyToolArgDefaults('create_guide', { title: 'x' }).access).toBe('user');
+    expect(applyToolArgDefaults('create_guide', { access: 'organization' }).access).toBe('user');
   });
 });

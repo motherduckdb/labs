@@ -34,7 +34,7 @@ cp .env.example .env.local   # fill in MOTHERDUCK_TOKEN + OPENROUTER_API_KEY
 npm run dev                  # http://localhost:3000
 ```
 
-- **`MOTHERDUCK_TOKEN`** — a production MotherDuck **user-scoped PAT** (Settings → Tokens). The username claim is needed to create personal guides. Data access stays read-only because `query_rw` is never exposed.
+- **`MOTHERDUCK_TOKEN`** — a production MotherDuck **user-scoped PAT** (Settings → Tokens). The authenticated user owns the private guides the app creates. Data access stays read-only because `query_rw` is never exposed. Prefer a dedicated non-admin account: the app refuses to modify org-wide guides, but the token's grants are the real tenancy boundary.
 - **`OPENROUTER_API_KEY`** — the LLM is called via OpenRouter (default model `google/gemini-3-flash-preview`, swap with `OPENROUTER_MODEL`).
 - **`MOTHERDUCK_API_URL`** — defaults to production (`https://api.motherduck.com`). Override it only for explicit staging tests, using a token from the same environment.
 
@@ -59,10 +59,12 @@ subdirectory.
    OpenRouter budget. Turn on Vercel **Deployment Protection → Password
    Protection** with scope **All Deployments** (not just Preview) before sharing
    the URL.
-4. **Use a user-scoped PAT** for `MOTHERDUCK_TOKEN`. The username claim enables
-   personal guide creation. Data remains read-only at the MCP boundary: the app
-   allowlists `query` and never advertises or dispatches `query_rw`. Guide writes
-   are separately constrained to `users/<username>/...` paths.
+4. **Use a user-scoped PAT** for `MOTHERDUCK_TOKEN`. The authenticated user
+   owns the private guides the app creates. Data remains read-only at the MCP
+   boundary: the app allowlists `query` and never advertises or dispatches
+   `query_rw`. Guide writes are separately constrained to private
+   (`access: "user"`) guides — creates are forced private, and uuid-targeted
+   edits are refused unless the target guide is itself private.
 5. **Function timeout / plan.** `app/api/chat/route.ts` sets `maxDuration = 300`
    for the streaming agentic loop. Vercel Hobby clamps functions to ~60s
    (long turns get cut off); Pro / Fluid Compute honors 300s. A single MCP query
@@ -105,12 +107,14 @@ The guided rail covers:
   have an authenticated owner. Each browser still gets a random session id
   (localStorage), passed as `session_name` for cache affinity when supported by
   the MCP transport. A read scaling token can be substituted for read-only
-  deployments, but it may not support personal guide creation.
-- **Context = MotherDuck guides.** The model reads `guides.md` before SQL and can
-  read relevant org/personal guides, then persist durable learnings as small
-  personal guides. The guide manager uses `/api/guides` for viewing, editing,
-  history, and deletion. The old IndexedDB context-tool round trip remains only
-  to support the recorded demo until it is re-recorded.
+  deployments, but it may not support private guide creation.
+- **Context = MotherDuck guides (topic/uuid surface).** The model calls
+  `get_query_guide` before SQL (org query guidance + topic overview), navigates
+  with `list_guides({topic})` → `get_guide({uuid})`, and persists durable
+  learnings as small private guides under the `data-chat-mini/…` topic. The
+  guide manager uses `/api/guides` for viewing, editing, history, and deletion.
+  The old IndexedDB context-tool round trip remains only to support the
+  recorded demo until it is re-recorded.
 - **mviz inline.** The model emits ` ```table ` / ` ```bar ` / ` ```line ` /
   ` ```dumbbell ` fenced blocks; a streaming fence detector renders each into a
   sandboxed iframe at its natural position in the reply.

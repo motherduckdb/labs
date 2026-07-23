@@ -1,14 +1,28 @@
 # Context layer → MCP guides migration
 
-Status as of 2026-07-15. The IndexedDB context layer (the placeholder built while
-the real context engine was in flight) has been **replaced in the live app** by
-the MotherDuck **guide subsystem**. This doc records what shipped and the work
+Status as of 2026-07-15, **updated 2026-07-23 for the topic/uuid guide
+surface**. The IndexedDB context layer (the placeholder built while the real
+context engine was in flight) has been **replaced in the live app** by the
+MotherDuck **guide subsystem**. This doc records what shipped and the work
 that was deliberately **deferred** to keep the workshop demo green.
+
+> **2026-07-23 — topic/uuid migration.** The MCP guide platform moved from
+> path-addressing (`get_guide("guides.md")`, `users/<username>/…` namespaces)
+> to **topic/uuid addressing**: `list_guides({topic})` navigates folder-like
+> topics, `get_guide({uuid})` reads a guide, `get_query_guide` is the org-wide
+> bootstrap, and privacy is the `access` field (`user` = private). data-chat-mini
+> migrated accordingly (same change as quackbot PR #81 / agentic-sql-context-mcp
+> PR #83): the write guard now forces `access:"user"` and confines model creates
+> to the `data-chat-mini/…` topic; uuid-targeted writes are resolved via
+> `get_guide` and refused unless the target is private; `/api/guides` and the
+> sidebar guide manager are uuid/topic-based (lazy per-topic listing). Note the
+> new surface does NOT deduplicate creates — the prompt mandates
+> list-before-create. Any path-era references below are historical.
 
 The guide subsystem is now available on the production MCP. data-chat-mini
 defaults to `https://api.motherduck.com`; run `npm run mcp:validate` with the
 deployment PAT before each production rollout to verify tool discovery and the
-two read entry points.
+two read entry points (`get_query_guide`, `list_guides`).
 
 ## What the guide subsystem is
 

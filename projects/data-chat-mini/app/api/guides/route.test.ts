@@ -1,6 +1,6 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
-import { GET, PATCH } from './route';
+import { GET, PATCH, POST } from './route';
 
 const mcp = vi.hoisted(() => ({
   createMCPClient: vi.fn(),
@@ -16,10 +16,10 @@ vi.mock('@/lib/mcp-client', async (importOriginal) => {
   };
 });
 
-// PATCH's authorization checks (personal-namespace gate + org-promotion block)
-// run before any MotherDuck connection, so these exercise them with a minimal
-// request stub and never touch MCP.
-function patchReq(body: unknown): NextRequest {
+// The authorization checks (org-promotion block, uuid requirement) run before
+// any MotherDuck connection, so these exercise them with a minimal request
+// stub and never touch MCP.
+function jsonReq(body: unknown): NextRequest {
   return { json: async () => body } as unknown as NextRequest;
 }
 
@@ -55,28 +55,45 @@ describe('/api/guides GET upstream errors', () => {
       isError: true,
     });
 
-    const res = await GET(getReq('/api/guides?path=guides.md'));
+    const res = await GET(getReq('/api/guides?uuid=0198f00d-0000-7000-8000-000000000000'));
 
     expect(res.status).toBe(502);
     expect((await res.json()).error).toMatch(/get_guide not found/i);
   });
+
+  it('parses version and access from the rendered guide header', async () => {
+    mcp.executeToolWithStatus.mockResolvedValue({
+      text: JSON.stringify({
+        text: 'My guide\nuuid: 0198f00d-0000-7000-8000-000000000000 · v3 · user\n\nA one-liner.\n\n# Body',
+      }),
+      isError: false,
+    });
+
+    const res = await GET(getReq('/api/guides?uuid=0198f00d-0000-7000-8000-000000000000'));
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.version).toBe(3);
+    expect(data.access).toBe('user');
+  });
 });
 
-describe('/api/guides PATCH authorization', () => {
-  it('blocks promoting a guide to org-wide visibility (403)', async () => {
-    const res = await PATCH(patchReq({ path: 'users/matson/nba/x.md', access: 'organization' }));
+describe('/api/guides mutation authorization', () => {
+  it('POST blocks creating an org-wide guide (403)', async () => {
+    const res = await POST(jsonReq({ title: 'x', content: '# y', access: 'organization' }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/private/i);
+  });
+
+  it('PATCH blocks promoting a guide to org-wide visibility (403)', async () => {
+    const res = await PATCH(jsonReq({ uuid: '0198f00d-0000-7000-8000-000000000000', access: 'organization' }));
     expect(res.status).toBe(403);
     expect((await res.json()).error).toMatch(/org-wide/i);
   });
 
-  it('blocks mutations outside the personal namespace (403)', async () => {
-    const res = await PATCH(patchReq({ path: 'revenue-billing/awr.md', content: '# hijack' }));
-    expect(res.status).toBe(403);
-    expect((await res.json()).error).toMatch(/personal guides/i);
-  });
-
-  it('blocks renaming a personal guide into the org namespace (403)', async () => {
-    const res = await PATCH(patchReq({ path: 'users/matson/x.md', newPath: 'revenue-billing/x.md' }));
-    expect(res.status).toBe(403);
+  it('PATCH requires a uuid (400)', async () => {
+    const res = await PATCH(jsonReq({ content: '# hijack' }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/uuid/i);
   });
 });

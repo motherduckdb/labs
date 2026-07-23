@@ -3,6 +3,10 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 const PROD_MCP_URL = 'https://api.motherduck.com/mcp';
 
+// The topic/uuid guide surface (landed 2026-07-23): guides are grouped by
+// `topic`, addressed by `uuid`, and `get_query_guide` is the org-wide
+// bootstrap. `set_guide_access` is no longer consumed by the app (creates are
+// forced private and promotion is blocked), so it left the contract.
 const CONTRACT = {
   query: ['database', 'sql'],
   list_databases: [],
@@ -12,14 +16,14 @@ const CONTRACT = {
   list_macros: ['database'],
   search_catalog: ['query'],
   ask_docs_question: ['question'],
-  get_guide: ['path'],
+  get_query_guide: [],
+  get_guide: ['uuid'],
   list_guides: [],
-  create_guide: ['path', 'title', 'content'],
-  update_guide: [],
-  edit_guide_content: ['edits'],
-  update_guide_metadata: [],
-  set_guide_access: ['access'],
-  delete_guide: [],
+  create_guide: ['title', 'content'],
+  update_guide: ['uuid'],
+  edit_guide_content: ['uuid', 'edits'],
+  update_guide_metadata: ['uuid'],
+  delete_guide: ['uuid'],
 };
 
 function fail(message) {
@@ -67,7 +71,7 @@ try {
     validateSchema(byName.get(name), requiredProperties);
   }
 
-  await validateRead(client, 'get_guide', { path: 'guides.md' });
+  await validateRead(client, 'get_query_guide', {});
   await validateRead(client, 'list_guides', {});
 
   console.log(

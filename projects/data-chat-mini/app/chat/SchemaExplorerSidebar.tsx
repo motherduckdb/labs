@@ -13,10 +13,17 @@ interface SelectedTable { schema: string; name: string }
 
 /** One guide as summarized by list_guides. */
 interface GuideSummary {
-  path: string;
+  uuid: string;
+  topic: string;
   title: string;
   description: string;
   access: string;
+}
+
+/** One topic (folder) row as summarized by list_guides. */
+interface TopicSummary {
+  topic: string;
+  guide_count: number;
 }
 
 /** A catalog reference row in the (advanced) references editor. */
@@ -29,7 +36,7 @@ const PROSE =
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 /**
- * get_guide returns a *rendered* text: "<title>\n<path · vN · access>\n\n
+ * get_guide returns a *rendered* text: "<title>\n<uuid: … · vN · access>\n\n
  * <description>\n\n<stored markdown>". Recover the stored markdown body by
  * stripping only the lines that match the known title/meta/description, so
  * an edit round-trip doesn't fold the preamble back into the body.
@@ -61,7 +68,9 @@ export function SchemaExplorerSidebar({
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [openColumns, setOpenColumns] = useState<Record<string, boolean>>({});
   const [guides, setGuides] = useState<GuideSummary[]>([]);
-  const [username, setUsername] = useState<string | null>(null);
+  const [topics, setTopics] = useState<TopicSummary[]>([]);
+  // Guides fetched lazily per opened topic ('loading' while in flight).
+  const [openTopics, setOpenTopics] = useState<Record<string, GuideSummary[] | 'loading'>>({});
   const [guidesError, setGuidesError] = useState<string | null>(null);
   const [guidesLoading, setGuidesLoading] = useState(false);
   // Popover target: an existing guide (view/edit) or a blank create form.
@@ -91,6 +100,10 @@ export function SchemaExplorerSidebar({
     if (demoReplay) return;
     setGuidesLoading(true);
     setGuidesError(null);
+    // The root listing returns root-level guides plus every topic (flattened,
+    // with counts); per-topic guides load lazily on expansion. A refresh
+    // collapses open topics so nothing shows stale content.
+    setOpenTopics({});
     fetch('/api/guides', { headers: { 'x-session-id': getSessionId() } })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -98,11 +111,47 @@ export function SchemaExplorerSidebar({
       })
       .then((data) => {
         setGuides(Array.isArray(data.guides) ? data.guides : []);
-        setUsername(typeof data.username === 'string' ? data.username : null);
+        setTopics(Array.isArray(data.topics) ? data.topics : []);
       })
       .catch((err) => setGuidesError(err instanceof Error ? err.message : 'Failed to load guides'))
       .finally(() => setGuidesLoading(false));
   }, [demoReplay]);
+
+  const toggleTopic = useCallback((topic: string) => {
+    setOpenTopics((prev) => {
+      if (prev[topic]) {
+        const next = { ...prev };
+        delete next[topic];
+        return next;
+      }
+      return { ...prev, [topic]: 'loading' };
+    });
+  }, []);
+
+  // Fetch guides for topics newly marked 'loading'.
+  useEffect(() => {
+    const pending = Object.entries(openTopics).filter(([, v]) => v === 'loading').map(([t]) => t);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    for (const topic of pending) {
+      fetch(`/api/guides?topic=${encodeURIComponent(topic)}`, { headers: { 'x-session-id': getSessionId() } })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((data) => {
+          if (cancelled) return;
+          setOpenTopics((prev) =>
+            prev[topic] === 'loading' ? { ...prev, [topic]: Array.isArray(data.guides) ? data.guides : [] } : prev,
+          );
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setOpenTopics((prev) => (prev[topic] === 'loading' ? { ...prev, [topic]: [] } : prev));
+        });
+    }
+    return () => { cancelled = true; };
+  }, [openTopics]);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,8 +166,14 @@ export function SchemaExplorerSidebar({
   const visibleGuides = useMemo(() => {
     if (scope === 'all') return guides;
     const dbNorm = norm(database);
-    return guides.filter((g) => norm(`${g.path} ${g.title} ${g.description}`).includes(dbNorm));
+    return guides.filter((g) => norm(`${g.topic} ${g.title} ${g.description}`).includes(dbNorm));
   }, [guides, scope, database]);
+
+  const visibleTopics = useMemo(() => {
+    if (scope === 'all') return topics;
+    const dbNorm = norm(database);
+    return topics.filter((t) => norm(t.topic).includes(dbNorm));
+  }, [topics, scope, database]);
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
@@ -240,7 +295,7 @@ export function SchemaExplorerSidebar({
           <div className="flex items-center justify-between mb-2">
             <div className="sidebar-heading compact">
               <span>Guides</span>
-              <code>{visibleGuides.length}</code>
+              <code>{visibleGuides.length + visibleTopics.reduce((n, t) => n + t.guide_count, 0)}</code>
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -288,12 +343,13 @@ export function SchemaExplorerSidebar({
           {!demoReplay && !guidesError && guidesLoading && guides.length === 0 && (
             <div className="text-xs text-[var(--muted)]">Loading guides…</div>
           )}
-          {!demoReplay && !guidesError && !guidesLoading && guides.length === 0 && (
+          {!demoReplay && !guidesError && !guidesLoading && guides.length === 0 && topics.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
-              No guides yet. Create one, or the assistant saves durable rules it learns as personal guides.
+              No guides yet. Create one, or the assistant saves durable rules it learns as private guides.
             </div>
           )}
-          {!demoReplay && !guidesError && guides.length > 0 && visibleGuides.length === 0 && (
+          {!demoReplay && !guidesError && (guides.length > 0 || topics.length > 0)
+            && visibleGuides.length === 0 && visibleTopics.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
               No guides mention <code>{database}</code>.{' '}
               <button onClick={() => setScope('all')} className="text-[var(--accent)] hover:underline">
@@ -304,28 +360,45 @@ export function SchemaExplorerSidebar({
 
           <ul className="text-sm flex flex-col gap-2">
             {visibleGuides.map((g) => (
-              <li key={g.path}>
-                <button
-                  type="button"
-                  onClick={() => setPopover({ kind: 'guide', guide: g })}
-                  className="context-fragment-card w-full text-left"
-                  title="Open guide"
-                >
-                  <div className="flex items-start gap-2">
-                    <span className="flex-1 font-medium text-[13px] leading-snug">{g.title || g.path}</span>
-                    <span
-                      className="shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 text-[10px] font-medium text-[var(--accent)]"
-                      title={g.access === 'organization' ? 'Org-wide guide' : 'Personal guide'}
-                    >
-                      {g.access === 'organization' ? 'org' : 'personal'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-[var(--muted)] mt-1 line-clamp-2">
-                    {g.description || g.path}
-                  </p>
-                </button>
+              <li key={g.uuid}>
+                <GuideCard guide={g} onOpen={() => setPopover({ kind: 'guide', guide: g })} />
               </li>
             ))}
+          </ul>
+
+          {/* Topics (folders) — guides load lazily on expansion. */}
+          <ul className="text-sm mt-2">
+            {visibleTopics.map((t) => {
+              const loaded = openTopics[t.topic];
+              return (
+                <li key={t.topic} className="mb-0.5">
+                  <button
+                    onClick={() => toggleTopic(t.topic)}
+                    className="schema-table-button"
+                    title={`${t.guide_count} guide${t.guide_count === 1 ? '' : 's'} in ${t.topic}`}
+                  >
+                    <span className="schema-caret">{loaded ? '▾' : '▸'}</span>
+                    <span className="truncate font-medium">{t.topic}</span>
+                    <span className="ml-1 text-[10px] text-[var(--muted)]">{t.guide_count}</span>
+                  </button>
+                  {loaded === 'loading' && (
+                    <div className="pl-6 py-0.5 text-xs text-[var(--muted)]">loading guides…</div>
+                  )}
+                  {Array.isArray(loaded) && (
+                    <ul className="flex flex-col gap-2 pl-4 py-1">
+                      {loaded.map((g) => (
+                        <li key={g.uuid}>
+                          <GuideCard guide={g} onOpen={() => setPopover({ kind: 'guide', guide: g })} />
+                        </li>
+                      ))}
+                      {loaded.length === 0 && (
+                        <li className="py-0.5 text-xs text-[var(--muted)]">no guides at this level</li>
+                      )}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       </div>
@@ -333,7 +406,6 @@ export function SchemaExplorerSidebar({
       {popover && (
         <GuidePopover
           initialGuide={popover.kind === 'guide' ? popover.guide : null}
-          username={username}
           activeDatabase={database}
           onClose={() => setPopover(null)}
           onListChanged={refreshGuides}
@@ -344,18 +416,40 @@ export function SchemaExplorerSidebar({
   );
 }
 
+function GuideCard({ guide: g, onOpen }: { guide: GuideSummary; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="context-fragment-card w-full text-left"
+      title="Open guide"
+    >
+      <div className="flex items-start gap-2">
+        <span className="flex-1 font-medium text-[13px] leading-snug">{g.title || '(untitled)'}</span>
+        <span
+          className="shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 text-[10px] font-medium text-[var(--accent)]"
+          title={g.access === 'organization' ? 'Org-wide guide' : 'Private guide'}
+        >
+          {g.access === 'organization' ? 'org' : 'private'}
+        </span>
+      </div>
+      <p className="text-xs text-[var(--muted)] mt-1 line-clamp-2">
+        {g.description || g.topic || '—'}
+      </p>
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------
 
 function GuidePopover({
   initialGuide,
-  username,
   activeDatabase,
   onClose,
   onListChanged,
   onRenamed,
 }: {
   initialGuide: GuideSummary | null;
-  username: string | null;
   activeDatabase: string;
   onClose: () => void;
   onListChanged: () => void;
@@ -377,15 +471,15 @@ function GuidePopover({
   // Edit / create form.
   const [fTitle, setFTitle] = useState(initialGuide?.title ?? '');
   const [fDesc, setFDesc] = useState(initialGuide?.description ?? '');
-  const [fPath, setFPath] = useState(creating ? (username ? `users/${username}/` : 'users/') : (initialGuide?.path ?? ''));
+  const [fTopic, setFTopic] = useState(creating ? 'data-chat-mini/' : (initialGuide?.topic ?? ''));
   const [fBody, setFBody] = useState('');
   const [fComment, setFComment] = useState('');
   const [replaceRefs, setReplaceRefs] = useState(false);
   const [refRows, setRefRows] = useState<RefRow[]>([{ database: activeDatabase, schema: '', table: '', description: '' }]);
 
-  const loadContent = useCallback((path: string) => {
+  const loadContent = useCallback((uuid: string) => {
     setLoading(true);
-    fetch(`/api/guides?path=${encodeURIComponent(path)}`, { headers: { 'x-session-id': getSessionId() } })
+    fetch(`/api/guides?uuid=${encodeURIComponent(uuid)}`, { headers: { 'x-session-id': getSessionId() } })
       .then((res) => res.json())
       .then((data) => {
         setContent(typeof data.content === 'string' ? data.content : '');
@@ -399,7 +493,7 @@ function GuidePopover({
     if (creating || !guide) return;
     let cancelled = false;
     queueMicrotask(() => {
-      if (!cancelled) void loadContent(guide.path);
+      if (!cancelled) void loadContent(guide.uuid);
     });
     return () => { cancelled = true; };
   }, [creating, guide, loadContent]);
@@ -424,7 +518,7 @@ function GuidePopover({
   const beginEdit = () => {
     setFTitle(guide?.title ?? '');
     setFDesc(guide?.description ?? '');
-    setFPath(guide?.path ?? '');
+    setFTopic(guide?.topic ?? '');
     setFBody(storedBody);
     setFComment('');
     setReplaceRefs(false);
@@ -451,14 +545,16 @@ function GuidePopover({
     setError(null);
     try {
       if (creating) {
-        if (!fPath.trim() || !fTitle.trim() || !fBody.trim()) {
-          setError('Path, title, and content are required.');
+        if (!fTitle.trim() || !fBody.trim()) {
+          setError('Title and content are required.');
           setBusy(false);
           return;
         }
         const body: Record<string, unknown> = {
-          path: fPath.trim(), title: fTitle.trim(), content: fBody, description: fDesc.trim(),
+          title: fTitle.trim(), content: fBody, description: fDesc.trim(),
         };
+        const topic = fTopic.trim().replace(/^\/+|\/+$/g, '');
+        if (topic) body.topic = topic;
         if (fComment.trim()) body.changeComment = fComment.trim();
         if (replaceRefs) body.references = buildReferences();
         const res = await fetch('/api/guides', {
@@ -474,10 +570,11 @@ function GuidePopover({
       }
 
       // Edit existing: send only what changed.
-      const body: Record<string, unknown> = { path: guide!.path };
+      const body: Record<string, unknown> = { uuid: guide!.uuid };
+      const topic = fTopic.trim().replace(/^\/+|\/+$/g, '');
       if (fTitle.trim() !== guide!.title) body.title = fTitle.trim();
       if (fDesc.trim() !== guide!.description) body.description = fDesc.trim();
-      if (fPath.trim() && fPath.trim() !== guide!.path) body.newPath = fPath.trim();
+      if (topic !== guide!.topic) body.topic = topic;
       if (fBody !== storedBody) body.content = fBody;
       if (replaceRefs) body.references = buildReferences();
       if (fComment.trim()) body.changeComment = fComment.trim();
@@ -489,7 +586,8 @@ function GuidePopover({
       const data = await res.json();
       if (!res.ok || data.error) { setError(data.error || `HTTP ${res.status}`); setBusy(false); return; }
       const next: GuideSummary = {
-        path: typeof data.path === 'string' ? data.path : guide!.path,
+        uuid: guide!.uuid,
+        topic,
         title: fTitle.trim() || guide!.title,
         description: fDesc.trim(),
         access: guide!.access,
@@ -497,8 +595,8 @@ function GuidePopover({
       onListChanged();
       setGuide(next);
       setMode('view');
-      void loadContent(next.path);
-      if (next.path !== guide!.path) onRenamed(next);
+      void loadContent(next.uuid);
+      if (next.topic !== guide!.topic) onRenamed(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
     } finally {
@@ -508,11 +606,11 @@ function GuidePopover({
 
   const remove = async () => {
     if (!guide) return;
-    if (!window.confirm(`Delete guide "${guide.title || guide.path}"? It can be recovered from version history by an admin.`)) return;
+    if (!window.confirm(`Delete guide "${guide.title || guide.uuid}"? It can be recovered from version history by an admin.`)) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/guides?path=${encodeURIComponent(guide.path)}`, {
+      const res = await fetch(`/api/guides?uuid=${encodeURIComponent(guide.uuid)}`, {
         method: 'DELETE',
         headers: { 'x-session-id': getSessionId() },
       });
@@ -536,13 +634,13 @@ function GuidePopover({
     if (!guide) return;
     setHistoryVersion(v);
     setHistoryContent(null);
-    fetch(`/api/guides?path=${encodeURIComponent(guide.path)}&version=${v}`, { headers: { 'x-session-id': getSessionId() } })
+    fetch(`/api/guides?uuid=${encodeURIComponent(guide.uuid)}&version=${v}`, { headers: { 'x-session-id': getSessionId() } })
       .then((res) => res.json())
       .then((data) => setHistoryContent(typeof data.content === 'string' ? data.content : ''))
       .catch(() => setHistoryContent('Failed to load this version.'));
   };
 
-  const title = creating ? 'New guide' : (guide?.title || guide?.path || 'Guide');
+  const title = creating ? 'New guide' : (guide?.title || 'Guide');
 
   return createPortal(
     <div
@@ -560,14 +658,14 @@ function GuidePopover({
               {guide && (
                 <span
                   className="shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]"
-                  title={guide.access === 'organization' ? 'Org-wide guide' : 'Personal guide'}
+                  title={guide.access === 'organization' ? 'Org-wide guide' : 'Private guide'}
                 >
-                  {guide.access === 'organization' ? 'org' : 'personal'}
+                  {guide.access === 'organization' ? 'org' : 'private'}
                 </span>
               )}
             </div>
             {mode === 'view' && guide?.description && <div className="guide-modal-desc">{guide.description}</div>}
-            {guide && <div className="guide-modal-path">{guide.path}</div>}
+            {guide && <div className="guide-modal-path">{guide.topic || '(no topic)'}</div>}
           </div>
           <button className="icon-button" onClick={onClose} title="Close" aria-label="Close guide" disabled={busy}>✕</button>
         </div>
@@ -625,10 +723,10 @@ function GuidePopover({
                 <input className="guide-input" value={fDesc} onChange={(e) => setFDesc(e.target.value)} placeholder="One-line summary" />
               </div>
               <div className="guide-field">
-                <label className="guide-field-label">{creating ? 'Path' : 'Path (rename to move)'}</label>
-                <input className="guide-input" value={fPath} onChange={(e) => setFPath(e.target.value)} placeholder="users/you/topic.md" spellCheck={false} />
+                <label className="guide-field-label">{creating ? 'Topic' : 'Topic (change to move)'}</label>
+                <input className="guide-input" value={fTopic} onChange={(e) => setFTopic(e.target.value)} placeholder="data-chat-mini/joins" spellCheck={false} />
                 {creating && (
-                  <span className="guide-refs-note">Personal guides live under <code>users/{username ?? 'you'}/…</code> and are private.</span>
+                  <span className="guide-refs-note">Guides created here are private (<code>access: user</code>). The topic is a slash-separated folder label, e.g. <code>data-chat-mini/nba</code>.</span>
                 )}
               </div>
               <div className="guide-field">

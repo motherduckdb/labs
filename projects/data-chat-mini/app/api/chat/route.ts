@@ -41,8 +41,9 @@ export async function POST(request: NextRequest) {
     // session hint so concurrent users fan out across read replicas.
     mcpClient = await createMCPClient(sessionId);
     const mcpTools = await getFilteredTools(mcpClient);
-    // The context layer is now the MCP guide subsystem (get_guide/list_guides +
-    // personal-guide writes), dispatched like any other MCP tool. The legacy
+    // The context layer is now the MCP guide subsystem (get_query_guide +
+    // list_guides/get_guide + private-guide writes), dispatched like any other
+    // MCP tool. The legacy
     // local CONTEXT_TOOLS round-trip is no longer advertised to the model; its
     // plumbing survives only for the demo harness pending a re-record (see
     // docs/context-layer-guide-migration.md).
