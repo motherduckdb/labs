@@ -1,17 +1,20 @@
 """SQL agent whose tools proxy the MotherDuck context MCP server.
 
-Six tools, one loop:
-  - `list_guides`   — browse the semantic layer (the guide tree / a folder)
-  - `get_guide`     — read one guide's full markdown
-  - `list_tables`   — list tables/views in the target database
-  - `list_columns`  — describe one table's columns
-  - `query`         — run a SELECT, return up to ~50 rows as text
-  - `submit_answer` — submit the SQL whose result IS the answer
+Seven tools, one loop:
+  - `get_query_guide` — entry point: org query guidance + the guide topic catalog
+  - `list_guides`     — browse the semantic layer by topic (guides carry uuids)
+  - `get_guide`       — read one guide's full markdown by its uuid
+  - `list_tables`     — list tables/views in the target database
+  - `list_columns`    — describe one table's columns
+  - `query`           — run a SELECT, return up to ~50 rows as text
+  - `submit_answer`   — submit the SQL whose result IS the answer
 
 The agent always has a compact SKILL (procedure + where-knowledge-lives) in its
 system prompt; the heavy domain knowledge is fetched on demand via the guides
-(list_guides/get_guide), which ARE the semantic layer — the MCP server exposes
-no `context_layer` tool. All data + schema access goes through the MCP session
+(get_query_guide/list_guides/get_guide), which ARE the semantic layer — the MCP
+server exposes no `context_layer` tool. Guides are addressed by server-minted
+uuid (discovered at runtime via list_guides), never by path. All data + schema
+access goes through the MCP session
 (an `MCPSession` from src.mcp_client), so nothing runs in-process; the queries
 execute server-side against `md:<db>`.
 
@@ -220,9 +223,12 @@ _BASE_SYSTEM_PROMPT = """You are an expert data analyst. You answer factoid ques
 **Database:** {database}  (MotherDuck, DuckDB SQL). Schema: main.
 Use fully-qualified names when helpful: `{database}.main.table_name`.
 
-You have six tools:
-- `list_guides` — browse the semantic layer. Knowledge about this dataset (fee rules, bucketing, terminology, SQL patterns, answer formatting) is NOT in this prompt; it lives in guides you fetch on demand. Call with no argument to see the guide tree, or with `partial_path` (e.g. "dabstep/") to drill into a folder. See the Semantic Layer section of the skill below.
-- `get_guide` — read one guide's full markdown by its `path`.
+Knowledge about this dataset (fee rules, bucketing, terminology, SQL patterns, answer formatting) is NOT in this prompt; it lives in guides you fetch on demand. Guides are grouped under topics and addressed by an opaque `uuid` you discover at runtime (you cannot guess it).
+
+You have seven tools:
+- `get_query_guide` — call this FIRST. Returns the org query guidance plus the catalog of guide topics. Orient here before writing SQL.
+- `list_guides` — drill into a topic. No argument lists the top-level catalog. Our guides live under `dabstep/<domain>`: list `dabstep` to see the domains, then list a leaf topic (e.g. `dabstep/fees`) to get each guide's `uuid` and one-line `description`.
+- `get_guide` — read one guide's full markdown by the `uuid` from a `list_guides` listing.
 - `list_tables` — list tables/views.
 - `list_columns` — describe one table's columns.
 - `query` — run a SELECT (returns up to ~50 rows).
@@ -246,7 +252,7 @@ USER_PROMPT_TEMPLATE = """Question: {question}
 
 Guidelines: {guidelines}
 
-The validator is strict about output format — follow the guidelines exactly. If unsure about formatting, rounding, separators, or "Not Applicable" rules, fetch the `answer_format` context.
+The validator is strict about output format — follow the guidelines exactly. If unsure about formatting, rounding, separators, or "Not Applicable" rules, list `dabstep/answer_format` and read that guide.
 """
 
 
@@ -419,40 +425,65 @@ def _format_query_display(result: MCPResult, row_cap: int = _QUERY_DISPLAY_ROW_C
 
 def _make_tools(state: RunState) -> list:
     @function_tool
-    async def list_guides(partial_path: str | None = None) -> str:
-        """Browse the semantic layer (the guide tree — this dataset's knowledge).
+    async def get_query_guide() -> str:
+        """Entry point to the semantic layer. Call this FIRST, before writing SQL.
 
-        - Call with NO argument to list the whole guide tree (paths + one-line
-          descriptions, no bodies).
-        - Call with `partial_path` (e.g. "dabstep/") to drill into a folder.
-
-        Read a specific guide's full text with `get_guide(path)`.
+        Returns the org query guidance plus the catalog of guide topics (the
+        knowledge folders for this dataset). Once oriented, drill into a topic
+        with `list_guides(topic=...)`, then read a specific guide with
+        `get_guide(uuid=...)`.
         """
         start_time, start_perf = _tool_timing_start()
         try:
-            result = await state.mcp.call_tool("list_guides", {"partial_path": partial_path})
+            result = await state.mcp.call_tool("get_query_guide", {})
         except Exception as e:
-            state.record(_with_tool_timing({"tool": "list_guides", "path": partial_path, "error": str(e)}, start_time, start_perf))
+            state.record(_with_tool_timing({"tool": "get_query_guide", "error": str(e)}, start_time, start_perf))
             return f"ERROR: {e}" + _budget_suffix(state)
         if result.is_error:
-            state.record(_with_tool_timing({"tool": "list_guides", "path": partial_path, "error": result.text}, start_time, start_perf))
+            state.record(_with_tool_timing({"tool": "get_query_guide", "error": result.text}, start_time, start_perf))
             return f"ERROR: {result.text}" + _budget_suffix(state)
-        state.record(_with_tool_timing({"tool": "list_guides", "path": partial_path, "result_chars": len(result.text)}, start_time, start_perf))
+        state.record(_with_tool_timing({"tool": "get_query_guide", "result_chars": len(result.text)}, start_time, start_perf))
         return result.text + _budget_suffix(state)
 
     @function_tool
-    async def get_guide(path: str) -> str:
-        """Read one guide's full markdown body by its `path`."""
+    async def list_guides(topic: str | None = None) -> str:
+        """Browse the guide catalog by topic (this dataset's knowledge).
+
+        - Call with NO argument for the top-level catalog of topics.
+        - Call with a PARENT topic (e.g. "dabstep") to see its domain sub-topics.
+        - Call with a LEAF topic (e.g. "dabstep/fees") to get the guides in that
+          domain, each with a `uuid` and one-line `description`.
+
+        Read a specific guide's full text with `get_guide(uuid)`.
+        """
         start_time, start_perf = _tool_timing_start()
         try:
-            result = await state.mcp.call_tool("get_guide", {"path": path})
+            result = await state.mcp.call_tool("list_guides", {"topic": topic})
         except Exception as e:
-            state.record(_with_tool_timing({"tool": "get_guide", "path": path, "error": str(e)}, start_time, start_perf))
+            state.record(_with_tool_timing({"tool": "list_guides", "topic": topic, "error": str(e)}, start_time, start_perf))
             return f"ERROR: {e}" + _budget_suffix(state)
         if result.is_error:
-            state.record(_with_tool_timing({"tool": "get_guide", "path": path, "error": result.text}, start_time, start_perf))
+            state.record(_with_tool_timing({"tool": "list_guides", "topic": topic, "error": result.text}, start_time, start_perf))
             return f"ERROR: {result.text}" + _budget_suffix(state)
-        state.record(_with_tool_timing({"tool": "get_guide", "path": path, "result_chars": len(result.text)}, start_time, start_perf))
+        state.record(_with_tool_timing({"tool": "list_guides", "topic": topic, "result_chars": len(result.text)}, start_time, start_perf))
+        return result.text + _budget_suffix(state)
+
+    @function_tool
+    async def get_guide(uuid: str) -> str:
+        """Read one guide's full markdown body by its `uuid`.
+
+        Obtain the uuid from a `list_guides` listing — you cannot guess it.
+        """
+        start_time, start_perf = _tool_timing_start()
+        try:
+            result = await state.mcp.call_tool("get_guide", {"uuid": uuid})
+        except Exception as e:
+            state.record(_with_tool_timing({"tool": "get_guide", "uuid": uuid, "error": str(e)}, start_time, start_perf))
+            return f"ERROR: {e}" + _budget_suffix(state)
+        if result.is_error:
+            state.record(_with_tool_timing({"tool": "get_guide", "uuid": uuid, "error": result.text}, start_time, start_perf))
+            return f"ERROR: {result.text}" + _budget_suffix(state)
+        state.record(_with_tool_timing({"tool": "get_guide", "uuid": uuid, "result_chars": len(result.text)}, start_time, start_perf))
         return result.text + _budget_suffix(state)
 
     @function_tool
@@ -538,7 +569,7 @@ def _make_tools(state: RunState) -> list:
         state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "rows": len(rows)}, start_time, start_perf))
         return f"Submitted. {len(rows)} rows."
 
-    return [list_guides, get_guide, list_tables, list_columns, query, submit_answer]
+    return [get_query_guide, list_guides, get_guide, list_tables, list_columns, query, submit_answer]
 
 
 @dataclass

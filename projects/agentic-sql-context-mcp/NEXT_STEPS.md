@@ -4,8 +4,9 @@ A fork of `agentic-sql-claude-edition` that swaps the five hand-built agent tool
 (`semantic_lookup` + in-process DuckDB `list_tables`/`list_columns`/`query`/`submit_answer`)
 for the **MotherDuck context-MCP** tool surface:
 
-- **Semantic layer → MCP guides**: `list_guides` / `get_guide` (the 27 `context/items/*.md`
-  are published as guides under `dabstep/<domain>/<id>.md` by `asm guides-load`).
+- **Semantic layer → MCP guides** (topic/uuid model): `get_query_guide` → `list_guides(topic)`
+  → `get_guide(uuid)`. The 27 `context/items/*.md` are published as guides under topics
+  `dabstep/<domain>` by `asm guides-load`.
 - **Data/schema → MCP tools**: `list_tables` / `list_columns` / `search_catalog` / `query`.
 - **`submit_answer`**: kept as a thin local scoring latch — runs the SQL via MCP `query`
   and captures positional rows for `score.py`.
@@ -14,74 +15,127 @@ The agent talks to the MotherDuck MCP over streamable-HTTP (`src/mcp_client.py`)
 session per task. Everything else (DABStep scorer, controllog, CLI, results format,
 OpenRouter provider + caching) is reused verbatim from the baseline.
 
-## ✅ What works (verified)
+## ✅ Blocker RESOLVED — guide reads work (deploy landed 2026-07-23)
 
-- Full build complete; all modules import; `asm` CLI registers `load` / `guides-load` /
-  `evaluate` / `summary` / `context`.
-- **Single-eval smoke PASSED**: task `347` (non-fee) → **1/1 correct**, `$0.034`, 15 turns,
-  via the prod MotherDuck MCP. This validates the whole plumbing: per-task MCP session,
-  `list_tables`/`list_columns`/`query` (with the `database` arg injected in `mcp_client.py`),
-  `submit_answer` latching positional rows, scoring, controllog, and the watch renderer.
-- The always-on `SKILL.md` (PART 1 + answer-format rules) still carries formatting
-  correctness without guides — the smoke answer used the strict `[k: v, ...]` format.
+The platform migration from **path-addressing → topic/uuid addressing** deployed and is
+**verified live on the raw prod endpoint this fork uses** (`api.motherduck.com/mcp`, the
+`jm_agentic_malloy` service-account token). The read gap that blocked the whole runbook is
+gone. Verified round-trip (`scripts/guide_smoketest.py`, **PASS**):
 
-## ⛔ The blocker (root cause)
+```
+get_query_guide()                         -> OK   (org query guidance + topic catalog)
+create_guide(topic="dabstep/…", access=user) -> uuid
+list_guides(topic="dabstep/…")            -> guides[] each carrying uuid + description
+get_guide(uuid)                           -> full guide body (rendered markdown)
+delete_guide(uuid)                        -> cleaned up
+```
 
-**The service account we're authenticated as does not have the guide MCP tools.**
+### The confirmed contract (re-dumped from the live schemas)
+- **`get_query_guide()`** — no args. Entry point; returns rendered text: org query guidance
+  + a catalog of topics (folders w/ counts) and any topicless guides (inline uuid).
+- **`list_guides(topic=…)`** — optional `topic`. Listing a PARENT topic (`dabstep`) returns
+  child `topics:[{topic, guide_count}]` (the domains) and empty `guides`; listing a LEAF
+  topic (`dabstep/fees`) returns `guides:[{uuid, topic, title, access, description}]`.
+- **`get_guide(uuid=…)`** — required `uuid` (+ optional `version`). Returns the full guide
+  body as rendered text in `structuredContent.text`. **`path` is gone**; guides are
+  addressed only by the opaque server-minted uuid.
+- **`create_guide`** — required `title`, `content`; optional `topic`, `description`,
+  `access` (`user`|`organization`, default `user`), `external_id`. Returns
+  `structuredContent.guide.id` = uuid. **No `path`.** `external_id` is NOT a dedup key —
+  two creates with the same external_id mint two uuids, so idempotency must be local.
+- **`update_guide(uuid, content)`** — refreshes the BODY only.
+  **`update_guide_metadata(uuid, title, description, topic)`** — refreshes metadata.
 
-- `SELECT current_user` → **`jm_agentic_malloy`** (a service account in a *different org*).
-- That org's MCP build at `https://api.motherduck.com/mcp` exposes **23 tools and no
-  general guide tools** (`list_guides`/`get_guide`/`create_guide`/`update_guide` are absent;
-  only `get_dive_guide` exists). So `asm guides-load` fails with
-  `-32602: Tool create_guide not found`, and the agent's guide tools error out.
-- The guide tools *do* exist on other MotherDuck deployments (staging, and the org the
-  claude.ai connector uses), just not for this account/org yet.
+## ✅ Code migrated to the topic/uuid model (this session, 2026-07-23)
 
-Everything except the guide half is proven working on prod.
+- **`src/mcp_client.py`** — `AGENT_TOOLS` gained `get_query_guide`; `GUIDE_WRITE_TOOLS`
+  gained `update_guide_metadata`. Path handling removed: `_guide_path_violation` →
+  `_guide_write_violation` (per-tool required fields + topic-charset guard). Read args for
+  `get_query_guide`/`list_guides`/`get_guide` are empty-stripped.
+- **`src/agent.py`** — deleted `_guide_prefix`/`_apply_guide_prefix` (path rewriting).
+  Tools are now `get_query_guide()` → `list_guides(topic=…)` → `get_guide(uuid=…)`; tool
+  list and system prompt teach the three-step topic/uuid navigation.
+- **`src/guides_load.py`** — publishes each item under topic `dabstep/<domain>`
+  (title = item id, description = summary, `access` from `DABSTEP_GUIDES_ACCESS`,
+  `external_id` = item id). Idempotency is **lock-driven** via a committed
+  **`guides.lock.json`** (`id → {uuid, topic, title, access}`): known uuid → `update_guide`
+  + `update_guide_metadata`; unknown → `create_guide` + capture uuid. `--dry-run` verified:
+  27 items → `dabstep/{answer_format 3, bucketing 3, fees 4, schema 4, sql_patterns 11,
+  terminology 2}`.
+- **`src/run.py`** — `asm guides-load` output now prints `id / topic / uuid / action`.
+- **`src/skill/SKILL.md`** — navigation rewritten to `get_query_guide → list_guides(topic)
+  → get_guide(uuid)`; the "#1 cause of wrong answers" warning preserved (browse, then read
+  the body by uuid — don't reconstruct from titles).
+- **`scripts/guide_smoketest.py`** — rewritten to the new flow; **PASSES** on prod.
+- **`.env`** — `DABSTEP_GUIDES_PREFIX=dabstep` (a topic prefix now, not a path),
+  `DABSTEP_GUIDES_ACCESS=user` (the service-account token can only write personal guides;
+  org writes are admin-only).
 
-## ▶️ Next steps (Thursday)
+## ✅ Other plumbing already proven
 
-1. **Use an account/org that has the guide MCP tools on prod.** Options, in order of
-   preference:
-   - Get a **PAT for an org where guides are enabled** (e.g. matson's MDW org, or once
-     guides are enabled for the `jm_agentic_malloy` org). Drop it in `.env` as
-     `MOTHERDUCK_TOKEN`.
-   - If guides live on a non-default endpoint, set `MOTHERDUCK_API_URL` accordingly
-     (the client appends `/mcp`). Default is `https://api.motherduck.com`.
-   - Confirm the target with a one-liner tool probe: `list_tools()` on the endpoint
-     should include `list_guides` + `create_guide` (see `src/mcp_client.py` for the
-     connect shape; there's a probe snippet in the PR description).
-2. **Put the DABStep data in that same account** so guides + data co-locate on one MCP:
-   `uv run asm load` (builds the DB named by `MD_DATABASE`). `mcp_client.py` injects
-   `MD_DATABASE` into every `query`/`list_tables`/`list_columns` call, so keep `MD_DATABASE`
-   pointed at whatever DB `asm load` builds.
-3. **Publish the guides**: `uv run asm guides-load --dry-run` (preview paths), then
-   `uv run asm guides-load`. Namespace controls:
-   - `DABSTEP_GUIDES_PREFIX` (default `dabstep`) and `DABSTEP_GUIDES_ACCESS`
-     (default `organization`). If org-level writes are rejected, re-run with
-     `DABSTEP_GUIDES_PREFIX="users/<username>/dabstep"` and `DABSTEP_GUIDES_ACCESS="user"`.
-   - Migration is idempotent (create → update-on-exists).
-4. **Smoke a fee question** (the guides matter here), e.g.
-   `uv run asm evaluate --task-id 1711 --watch` — watch the trace show
-   `list_guides` → `get_guide` calls before the SQL.
-5. **Run the train set**: `uv run asm evaluate --split templates` (26 reps). Compare to the
-   baseline's template accuracy. Then `--split test` (419 held-out) vs the baseline's
-   419/419 @ ~$7.91.
+- Full build imports; `asm` CLI registers `load` / `guides-load` / `evaluate` / `summary` /
+  `context`.
+- **Single-eval smoke PASSED** earlier: task `347` (non-fee) → 1/1 correct, `$0.034`, via
+  the prod MCP — validates per-task session, `list_tables`/`list_columns`/`query` (with
+  `database` injected), `submit_answer` positional-row latching, scoring, controllog, watch
+  renderer.
+- The always-on `SKILL.md` (PART 1 + answer-format rules) carries formatting correctness
+  even before any guide fetch.
+
+## ▶️ Next steps — the runbook (unblocked; run in order)
+
+1. **Publish the guides**: `uv run asm guides-load --dry-run` (sanity), then
+   `uv run asm guides-load`. This creates the 27 guides under `dabstep/<domain>` and writes
+   `guides.lock.json`. Re-runs are idempotent (update by locked uuid). Commit
+   `guides.lock.json`.
+   - Note: the earlier one-time run (pre-migration) left ~27 `dabstep/*` path-model orphans
+     + a few probe guides in the `jm_agentic_malloy` personal namespace. They're hidden from
+     the org catalog and harmless; ignore them, or delete by uuid if you want a clean slate.
+2. **Confirm data is loaded**: `uv run asm load` builds/refreshes the DB named by
+   `MD_DATABASE`. `mcp_client.py` injects `MD_DATABASE` into every
+   `query`/`list_tables`/`list_columns`.
+3. **Smoke a fee question**: `uv run asm evaluate --task-id 1711 --watch` — the trace must
+   show `get_query_guide` → `list_guides(topic="dabstep/…")` → `get_guide(uuid)` returning a
+   body before the SQL, and land the answer.
+4. **Run the template split**: `uv run asm evaluate --split templates` (26 reps) — compare
+   to the baseline's template accuracy.
+5. **Run the held-out test**: `uv run asm evaluate --split test` (419) — compare accuracy +
+   cost to `agentic-sql-claude-edition`'s 419/419 @ ~$7.91.
+6. **Render traces**: `controllog-viz review --source results --latest --open` — confirm the
+   new MCP guide calls appear in the trace.
 
 ## Setup recap
 
 ```bash
 uv sync
 cp .env.example .env        # OPENROUTER_API_KEY + a guide-enabled MOTHERDUCK_TOKEN + MD_DATABASE
-#                           # optional: MOTHERDUCK_API_URL if guides are on a non-default endpoint
+#                           # optional: MOTHERDUCK_API_URL if the MCP is on a non-default endpoint
 ```
 
 ## Open questions / watch-items
 
-- **Guide granularity**: we publish 27 per-item guides (preserves the baseline's
-  progressive disclosure). If `list_guides`/`get_guide` prove chatty, consider fewer,
-  larger domain guides — but that trades away selective loading.
+- **Guide granularity**: 27 per-item guides preserve the baseline's progressive disclosure.
+  If `list_guides`/`get_guide` prove chatty at the domain level, consider fewer, larger
+  domain guides — but that trades away selective loading.
 - **`submit_answer` row completeness**: confirm the MCP `query` returns the full result set
-  for the scored SQL (no server row cap); the exploration `query` tool caps *display* only.
-- **`list_columns` arg name**: we pass `{table, database}` (matches the prod schema). If a
-  future MCP build changes this, adjust the tool body in `src/agent.py`.
+  for the scored SQL (no server row cap); the exploration `query` caps *display* only.
+- **uuid discovery cost**: the model must `list_guides(topic)` to obtain a uuid before
+  `get_guide` — one extra hop vs the old hardcodable path. `get_query_guide` up front should
+  keep this cheap; watch the template-split turn counts.
+- **`list_columns` arg name**: we pass `{table, database}` (matches the prod schema). Adjust
+  the tool body in `src/agent.py` if a future MCP build changes it.
+
+---
+
+### History (pre-2026-07-23 blocker — kept for context)
+
+Before the deploy, guide **reads** were non-functional across the whole guides MCP surface:
+you could `create_guide`/`list_guides` but `get_guide` 404'd for every address form (path,
+topic, leaf, and even the uuid `create_guide` returned), because the backend had already
+moved to id-addressing while `get_guide`'s schema still exposed only `path` and
+`list_guides` never emitted a uuid. Root-caused via the `merge_overlays:false` error
+*"Guides must be identified by id; the topic is a grouping label, not an address"*, and
+confirmed platform-wide (matson org, 274 guides, via the claude.ai connector) — not a
+per-account issue. The 2026-07-23 deploy shipped both missing rungs (`get_guide(uuid)` +
+`list_guides` returning uuids) plus the `get_query_guide` entry point, which is what the
+current code targets.

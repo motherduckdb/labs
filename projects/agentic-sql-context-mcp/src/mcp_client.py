@@ -34,18 +34,29 @@ from mcp.client.streamable_http import streamablehttp_client
 DEFAULT_BASE_URL = "https://api.motherduck.com"
 
 # Read-only exploration + guide reads: everything the AGENT may call.
+#
+# Guide navigation is the topic/uuid model (post-2026-07-23 platform deploy):
+#   get_query_guide()          -> entry point; org query guidance + topic catalog
+#   list_guides(topic=...)     -> guides at that topic, each carrying its uuid
+#   get_guide(uuid=...)        -> the full guide body
+# The old path-addressed model (list_guides(partial_path/keyword), get_guide(path))
+# is gone; guides are identified solely by the server-minted uuid.
 AGENT_TOOLS = {
     "query",
     "list_tables",
     "list_columns",
     "search_catalog",
+    "get_query_guide",
     "list_guides",
     "get_guide",
 }
 
 # Guide WRITES — used ONLY by the guides migration (via allow_write=True /
 # call_tool_write), never exposed on the agent path.
-GUIDE_WRITE_TOOLS = {"create_guide", "update_guide"}
+#   create_guide          -> mints a new guide (requires title + content)
+#   update_guide          -> refreshes a guide BODY by uuid (requires uuid + content)
+#   update_guide_metadata -> refreshes title/description/topic by uuid (requires uuid)
+GUIDE_WRITE_TOOLS = {"create_guide", "update_guide", "update_guide_metadata"}
 
 # The full set any call may name. Anything outside this is rejected at dispatch.
 ALLOWED_TOOLS = AGENT_TOOLS | GUIDE_WRITE_TOOLS
@@ -54,14 +65,16 @@ ALLOWED_TOOLS = AGENT_TOOLS | GUIDE_WRITE_TOOLS
 # payload level (the MCP envelope's isError stays false). We parse the content
 # and promote such a payload failure to a real tool error — the quackbot
 # detectPayloadFailure behavior.
-SUCCESS_FIELD_TOOLS = {"create_guide", "update_guide"}
+SUCCESS_FIELD_TOOLS = {"create_guide", "update_guide", "update_guide_metadata"}
 
-# Guide-path guard: every character of the path must be a plain slug char. This
-# single charset check rejects backslashes, percent-encoding, whitespace, and
-# any non-ASCII look-alike in one pass; dot-only segments are rejected
-# separately below (they satisfy the charset). Dots *within* a filename
-# (e.g. `v1.2-notes.md`) stay legal.
-_GUIDE_PATH_CHARSET = re.compile(r"^[A-Za-z0-9._/-]+$")
+# Guide-topic guard: every character of the topic label must be a plain slug
+# char. This single charset check rejects backslashes, percent-encoding,
+# whitespace, and any non-ASCII look-alike in one pass; dot-only segments are
+# rejected separately below (they satisfy the charset). A topic is a
+# slash-separated grouping label (e.g. `dabstep/payments`), NOT an address —
+# guides are addressed by uuid — so this is last-mile confinement on where a
+# write lands, not a path traversal concern.
+_GUIDE_TOPIC_CHARSET = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
 def mcp_url() -> str:
@@ -88,26 +101,51 @@ class MCPResult:
     rows: list | None
 
 
-def _guide_path_violation(name: str, args: dict) -> str | None:
-    """Light path guard for guide writes.
+def _guide_write_violation(name: str, args: dict) -> str | None:
+    """Light guard for guide writes under the topic/uuid model.
 
-    Rejects `.`/`..` segments and any path outside the [A-Za-z0-9._/-] charset,
-    so a prompt-injected or padded path cannot traverse out of its folder. The
-    server itself enforces the `users/<username>/` half for non-admin tokens;
-    this is the last-mile confinement on the client. Returned as a tool error
-    (not raised) so the caller/model can retry with a conforming path.
+    Guide writes no longer take a `path`; guides are addressed by uuid and
+    grouped by an optional `topic` label. Required fields differ per tool:
+
+      * create_guide          -> non-empty `title` AND `content` (mints a guide).
+      * update_guide          -> non-empty `uuid` AND `content` (rewrites the
+                                 BODY only; title/description/topic are ignored).
+      * update_guide_metadata -> non-empty `uuid` (refreshes title/description/
+                                 topic; carries no content).
+
+    In all cases, `topic` (only meaningful on create_guide and
+    update_guide_metadata) — when supplied — must stay within the
+    [A-Za-z0-9._/-] charset with no `.`/`..` segments, so a prompt-injected or
+    padded label cannot land a guide in a surprising folder. Visibility is
+    governed separately by `access` (user vs organization), enforced per token.
+
+    Returned as a tool error (not raised) so the caller/model can retry with a
+    conforming payload.
     """
-    path = args.get("path")
-    if not isinstance(path, str) or not path:
-        return f"{name} requires a string `path` argument."
-    segments = path.split("/")
-    if any(seg in (".", "..") for seg in segments):
-        return f"{name} path may not contain '.' or '..' segments (got '{path}')."
-    if not _GUIDE_PATH_CHARSET.match(path):
-        return (
-            f"{name} path must be plain [A-Za-z0-9._/-] characters — no empty, "
-            f"encoded, Unicode, whitespace, or backslash segments (got '{path}')."
-        )
+    if name == "create_guide":
+        required = ("title", "content")
+    elif name == "update_guide":
+        required = ("uuid", "content")
+    elif name == "update_guide_metadata":
+        required = ("uuid",)
+    else:
+        required = ("title", "content")
+    for field in required:
+        value = args.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return f"{name} requires a non-empty string `{field}` argument."
+    topic = args.get("topic")
+    if topic is not None:
+        if not isinstance(topic, str) or not topic:
+            return f"{name} `topic` must be a non-empty string when provided."
+        if any(seg in (".", "..") for seg in topic.split("/")):
+            return f"{name} topic may not contain '.' or '..' segments (got '{topic}')."
+        if not _GUIDE_TOPIC_CHARSET.match(topic):
+            return (
+                f"{name} topic must be plain [A-Za-z0-9._/-] characters — no "
+                f"empty, encoded, Unicode, whitespace, or backslash segments "
+                f"(got '{topic}')."
+            )
     return None
 
 
@@ -115,7 +153,9 @@ def _sanitize_guide_args(args: dict) -> dict:
     """Drop empty-string / None arg values from a guide-read call.
 
     Models pad every optional schema field with "" / null; the server rejects
-    those, so we strip them before dispatch (quackbot's sanitizeGuideArgs).
+    those, so we strip them before dispatch (quackbot's sanitizeGuideArgs). Under
+    the topic/uuid model this keeps a bare `list_guides()` (no topic → catalog
+    root) and `get_guide(uuid=...)` clean of empty companions.
     """
     return {k: v for k, v in args.items() if v != "" and v is not None}
 
@@ -206,12 +246,14 @@ class MCPSession:
             call_args.setdefault(
                 "database", os.environ.get("MD_DATABASE", "agentic_sql_claude")
             )
-        elif name in ("list_guides", "get_guide"):
+        elif name in ("get_query_guide", "list_guides", "get_guide"):
+            # get_query_guide takes no args; list_guides takes an optional topic;
+            # get_guide takes a uuid. All tolerate the empty-padding strip.
             call_args = _sanitize_guide_args(call_args)
 
-        # 4. Guide-path guard for writes.
+        # 4. Guide-write guard (topic + required fields).
         if name in GUIDE_WRITE_TOOLS:
-            violation = _guide_path_violation(name, call_args)
+            violation = _guide_write_violation(name, call_args)
             if violation is not None:
                 return MCPResult(text=violation, is_error=True, rows=None)
 

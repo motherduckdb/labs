@@ -164,7 +164,7 @@ def context_cmd() -> None:
         "local context store.\n"
     )
     console.print("  • Publish the local context items as guides:")
-    console.print("      [cyan]asm guides-load --dry-run[/cyan]   # preview the planned paths")
+    console.print("      [cyan]asm guides-load --dry-run[/cyan]   # preview the planned topics")
     console.print("      [cyan]asm guides-load[/cyan]             # create/update the guides")
     console.print(
         "  • Browse them via the MCP (list_guides/get_guide) — the read-only path\n"
@@ -174,16 +174,16 @@ def context_cmd() -> None:
 
 @cli.command("guides-load")
 @click.option("--dry-run", is_flag=True, default=False,
-              help="Preview the planned guide paths without making any MCP calls.")
+              help="Preview the planned guide topics without making any MCP calls.")
 @click.option("--prefix", default=None,
-              help="Guide-path prefix (default $DABSTEP_GUIDES_PREFIX or 'dabstep').")
+              help="Guide topic prefix (default $DABSTEP_GUIDES_PREFIX or 'dabstep').")
 def guides_load_cmd(dry_run: bool, prefix: str | None) -> None:
     """Publish the local context items to the MotherDuck MCP as guides.
 
     The write half of the "context layer IS guides" swap: each context item is
-    created (or, idempotently, updated) as a guide via the guide-write tools.
-    Requires MOTHERDUCK_TOKEN; org-level guides need an admin token (see
-    guides_load for the personal-namespace fallback).
+    created (or, idempotently, updated via the committed guides.lock.json) as a
+    guide via the guide-write tools. Requires MOTHERDUCK_TOKEN; org-level guides
+    need an admin token (see guides_load for the access/prefix config).
     """
     if not dry_run and not os.environ.get("MOTHERDUCK_TOKEN"):
         raise click.ClickException("MOTHERDUCK_TOKEN is not set.")
@@ -194,7 +194,8 @@ def guides_load_cmd(dry_run: bool, prefix: str | None) -> None:
 
     table = Table(show_header=True, box=None, padding=(0, 2))
     table.add_column("id", style="cyan")
-    table.add_column("path")
+    table.add_column("topic")
+    table.add_column("uuid", style="dim")
     table.add_column("action")
     action_style = {
         "created": "green", "updated": "green", "planned": "dim", "failed": "red",
@@ -205,7 +206,12 @@ def guides_load_cmd(dry_run: bool, prefix: str | None) -> None:
         row_action = f"[{style}]{action}[/{style}]"
         if r.get("error"):
             row_action += f"  [red]{str(r['error'])[:80]}[/red]"
-        table.add_row(str(r.get("id")), str(r.get("path")), row_action)
+        table.add_row(
+            str(r.get("id")),
+            str(r.get("topic")),
+            str(r.get("uuid") or "—"),
+            row_action,
+        )
     console.print(table)
 
     created = sum(1 for r in results if r.get("action") == "created")
