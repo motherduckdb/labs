@@ -1,6 +1,10 @@
 # Migration plan: new MotherDuck MCP tool surface
 
-**Status: Phases 0–1 COMPLETE (2026-07-23) — Phases 2–5 pending.** Written 2026-07-23
+**Status: Phases 0–2 COMPLETE (2026-07-23) — Phases 3–5 pending.**
+Phase 2 landed: eager `get_query_guide` injection (`src/core/query-guide.ts`,
+15-min TTL cache for prompt-cache stability, failure → prompt falls back to the
+"call it first" mandate); the other Phase-2 prompt items (relatedGuides flow,
+endorsed-dive preference) were already absorbed into Phase 1's prompt rewrite. Written 2026-07-23
 against the live prod MCP (`api.motherduck.com/mcp`); staging exposes the same tool
 list. Phase 1 landed: uuid+topic guide guard (`guideWriteViolation` rewrite), new
 read tools + `edit_guide_content` allowlisted, arg sanitizers/defaults for the new

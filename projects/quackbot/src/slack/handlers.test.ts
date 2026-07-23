@@ -75,6 +75,7 @@ function makeDeps(overrides: Partial<TurnRunnerDeps> = {}): {
     getFilteredTools: vi.fn(async () => []) as never,
     mcpToolsToAnthropicFormat: vi.fn(() => []) as never,
     buildSystemPrompt: vi.fn(() => 'system') as never,
+    fetchQueryGuideBlock: vi.fn(async () => 'ORG GUIDE BLOCK') as never,
     getModelProfile: vi.fn(() => ({
       id: 'm',
       maxTokens: 1000,
@@ -272,6 +273,38 @@ describe('buildTurnRunner DM history keying (finding 5)', () => {
     const runner = buildTurnRunner(deps);
     await runner.handle({ channel: 'D9', user: 'U1', text: 'in a thread', ts: '11.2', threadTs: '11.1', channelType: 'im' });
     expect(calls.saved.map((s) => s.threadTs)).toEqual(['11.1']);
+  });
+});
+
+describe('buildTurnRunner query-guide injection', () => {
+  it('fetches the query guide with the MCP client and passes it into buildSystemPrompt', async () => {
+    const mcpClient = { close: vi.fn(async () => {}) };
+    const fetchQueryGuideBlock = vi.fn(async () => 'ORG GUIDE BLOCK');
+    const buildSystemPrompt = vi.fn(() => 'system');
+    const { deps } = makeDeps({
+      createMCPClient: vi.fn(async () => mcpClient) as never,
+      fetchQueryGuideBlock: fetchQueryGuideBlock as never,
+      buildSystemPrompt: buildSystemPrompt as never,
+    });
+    const runner = buildTurnRunner(deps);
+    await runner.handle({ channel: 'C1', user: 'U1', text: '<@BOT> hi', ts: '50.1' });
+
+    expect(fetchQueryGuideBlock).toHaveBeenCalledWith(mcpClient);
+    expect(buildSystemPrompt).toHaveBeenCalledWith(['db1'], 'ORG GUIDE BLOCK');
+  });
+
+  it('still builds the prompt (with null guide) when the fetch fails', async () => {
+    const fetchQueryGuideBlock = vi.fn(async () => null);
+    const buildSystemPrompt = vi.fn(() => 'system');
+    const { deps, calls } = makeDeps({
+      fetchQueryGuideBlock: fetchQueryGuideBlock as never,
+      buildSystemPrompt: buildSystemPrompt as never,
+    });
+    const runner = buildTurnRunner(deps);
+    await runner.handle({ channel: 'C1', user: 'U1', text: '<@BOT> hi', ts: '51.1' });
+
+    expect(buildSystemPrompt).toHaveBeenCalledWith(['db1'], null);
+    expect(calls.loopStarts).toBe(1); // turn still ran
   });
 });
 

@@ -9,6 +9,7 @@ import {
   configuredDatabaseAllowlist,
 } from '../core/mcp-client';
 import { buildSystemPrompt } from '../core/system-prompt';
+import { fetchQueryGuideBlock } from '../core/query-guide';
 import { getModelProfile } from '../core/llm-client';
 import { runAgenticLoop, type ThinkingLevel } from '../core/agentic-loop';
 import * as controllog from '../core/controllog';
@@ -68,6 +69,7 @@ export interface TurnRunnerDeps {
   getFilteredTools: typeof getFilteredTools;
   mcpToolsToAnthropicFormat: typeof mcpToolsToAnthropicFormat;
   buildSystemPrompt: typeof buildSystemPrompt;
+  fetchQueryGuideBlock: typeof fetchQueryGuideBlock;
   getModelProfile: typeof getModelProfile;
   runAgenticLoop: typeof runAgenticLoop;
   getConversation: typeof getConversation;
@@ -92,6 +94,7 @@ function defaultDeps(client: WebClient, botUserId?: string): TurnRunnerDeps {
     getFilteredTools,
     mcpToolsToAnthropicFormat,
     buildSystemPrompt,
+    fetchQueryGuideBlock,
     getModelProfile,
     runAgenticLoop,
     getConversation,
@@ -256,7 +259,12 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           const mcpTools = await deps.getFilteredTools(mcpClient);
           const tools = deps.mcpToolsToAnthropicFormat(mcpTools);
           const profile = deps.getModelProfile();
-          const systemPrompt = deps.buildSystemPrompt(databases);
+          // Eagerly pull the org query guidance once (cached ~15min) and inject
+          // it into the system prompt, saving a get_query_guide round-trip per
+          // turn. Failure-tolerant: null falls back to the "call it first"
+          // prompt mandate rather than breaking the turn.
+          const queryGuide = await deps.fetchQueryGuideBlock(mcpClient);
+          const systemPrompt = deps.buildSystemPrompt(databases, queryGuide);
 
           const messages: Array<{ role: string; content: unknown }> = [
             ...priorMessages,
