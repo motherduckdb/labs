@@ -253,6 +253,8 @@ USER_PROMPT_TEMPLATE = """Question: {question}
 Guidelines: {guidelines}
 
 The validator is strict about output format — follow the guidelines exactly. If unsure about formatting, rounding, separators, or "Not Applicable" rules, list `dabstep/answer_format` and read that guide.
+
+Guideline sanity-check: a guideline can be mislabeled. If it shows a `{{card_scheme}}:{{fee}}` format but the question asks which **ACI** (Authorization Characteristics Indicator) to steer fraudulent transactions toward for the lowest fees (the "move fraudulent transactions towards a different ACI … lowest possible fees" family), that format is WRONG for this question — the answer is exactly ONE ACI letter (A–E), e.g. `D`. Do NOT add `card_scheme` to your GROUP BY and do NOT put a card-scheme name in the output; emit only the ACI letter. (This does NOT apply to "which card **scheme** should the merchant steer traffic to" questions — those really are `{{card_scheme}}:{{fee}}`.)
 """
 
 

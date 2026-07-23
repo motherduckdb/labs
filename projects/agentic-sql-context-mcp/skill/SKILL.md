@@ -27,7 +27,11 @@ Before writing any SQL, load context progressively in **three** steps:
 2. `get_guide(uuid="<uuid>")` — → the **full markdown body** of a guide you chose.
    The uuid comes from the Step 1 listing — it is opaque and CANNOT be guessed or
    hardcoded; you must read it off a fresh `list_guides` listing. Call once per guide
-   you need; fetch several as needed.
+   you need; fetch several as needed. **Never pass a uuid you did not copy verbatim
+   from a `list_guides` result** — do not invent, pattern-fill, or repeat a made-up
+   uuid. If you can't find the right guide, re-run `list_guides` on the topic; a
+   `get_guide` that errors means the uuid is wrong, so go back and list, don't retry
+   variations.
 
 Progressive disclosure is these three steps (query-guide → list → get). You do not
 need every guide for every question. Use PART 3 below to pick the right
