@@ -297,16 +297,18 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
 
         opts.sink.onToolStart({ id: toolId, name: toolName, args: toolInput });
 
-        // The dive-authoring guide (`get_guide` with path "dives.md" — the
-        // server retired the old `get_dive_guide` tool) is intercepted on
+        // The dive-authoring guide (`get_dive_guide`) is intercepted on
         // Gemini profiles — we never call MCP. The stock guide produced a
         // persistent 30-42% dive-write failure rate on Gemini in mdw-turbo
-        // (their issue #149). We return a Gemini-tuned guide built locally;
-        // other model families get the real server guide, which works. See
-        // gemini-dive-guide.ts.
+        // (their issue #149). We return a Gemini-tuned guide built locally,
+        // regardless of the `client` arg the model passed; other model
+        // families get the real server guide, which works. See
+        // gemini-dive-guide.ts. Phase 0 (2026-07-23, MCP_MIGRATION_PLAN.md)
+        // found the stock `client:'other'` guide now covers most of this
+        // override's content — Phase 3 will benchmark and likely trim the
+        // override, but behavior stays identical until then.
         if (
-          toolName === 'get_guide' &&
-          (toolInput?.path as string | undefined) === 'dives.md' &&
+          toolName === 'get_dive_guide' &&
           /gemini/i.test(profile.id)
         ) {
           const tStart = Date.now();

@@ -16,14 +16,14 @@ Same required elements as data-chat-mini, mapped onto Slack:
 |---|---|---|
 | Interface | Next.js chat panel, SSE to the browser | Slack thread, via `@slack/bolt` Socket Mode (`src/slack/app.ts`, `src/slack/handlers.ts`) |
 | History | Browser-local IndexedDB | Postgres, keyed by `(channel, thread_ts)` (`src/store/conversations.ts`) |
-| Context | Local IndexedDB behind invented `query_context_layer` / `update_context_layer` tool *shapes* — an interception, not a real write (no such tools exist on the live MCP server) | Real MotherDuck **guides**: `list_guides` / `get_guide` / `create_guide` / `update_guide` are allowlisted in `src/core/mcp-client.ts`, and a saved convention becomes a guide under `users/<bot user>/quackbot/` — durable and visible to every future conversation, not just other tabs in one browser |
+| Context | Local IndexedDB behind invented `query_context_layer` / `update_context_layer` tool *shapes* — an interception, not a real write (no such tools exist on the live MCP server) | Real MotherDuck **guides** (uuid-selected, topic-grouped): `get_query_guide` / `list_guides` / `get_guide` / `create_guide` / `update_guide` / `edit_guide_content` are allowlisted in `src/core/mcp-client.ts`, and a saved convention becomes a private guide under `topic: 'quackbot/<area>'` — durable and visible to every future conversation, not just other tabs in one browser |
 | Charts | Sandboxed iframe (`MvizFrame.tsx`) | mviz embed HTML rendered by headless Chromium (`src/slack/screenshot.ts`) and uploaded as a PNG into the thread |
 | Tables | Same sandboxed iframe | Native Slack `markdown` block — a real GFM table (`src/slack/viz.ts` classifies the fence, `src/slack/markdown.ts` builds the block) |
 | Streaming / turn events | SSE frames to the browser (`lib/sse-encoder.ts`) | A `TurnSink` interface (`src/core/turn-sink.ts`) the agentic loop calls directly; `src/slack/sink.ts`'s `SlackTurnSink` repaints one placeholder message with `chat.update`, throttled to roughly one repaint per 1.5s, splitting into continuation messages once a render exceeds Slack's block-size caps |
 | System prompt | `lib/system-prompt.ts` | `src/core/system-prompt.ts` — same read-only analyst persona, reworded for Slack threads and image-based charts |
-| Tool guardrails | READONLY / MUTATING / DESTRUCTIVE classification (`lib/mcp-client.ts`) | Same classification (`src/core/mcp-client.ts`); guide reads join the allowlist as read-only, `create_guide` / `update_guide` as allowlisted (unconfirmed) writes gated by a path guard to the bot's own `users/<bot user>/quackbot/` folder — `query_rw`, `delete_dive`, and `delete_guide` stay classified but never allowlisted |
+| Tool guardrails | READONLY / MUTATING / DESTRUCTIVE classification (`lib/mcp-client.ts`) | Same classification (`src/core/mcp-client.ts`); guide reads join the allowlist as read-only, `create_guide` / `update_guide` / `edit_guide_content` as allowlisted confirmed writes gated to the `quackbot/` topic namespace with `access` forced private — `query_rw`, `set_guide_access`, `delete_dive`, and `delete_guide` stay classified but never allowlisted |
 | Telemetry | `lib/controllog.ts` → labs `controllog` / `controllog-viz` | Same emitter, unchanged (`src/core/controllog.ts`), database name `quackbot` |
-| Memorialization | — (dives out of scope) | MotherDuck Dives: `save_dive` create-only, Gemini-tuned interception of the dive-authoring guide (`get_guide("dives.md")`, `src/core/gemini-dive-guide.ts`), advisory react-hooks lint on saved source (`src/core/dive-linter.ts`) — ported from internal `mdw-turbo` |
+| Memorialization | — (dives out of scope) | MotherDuck Dives: `save_dive` create-only, Gemini-tuned interception of the dive-authoring guide (`get_dive_guide`, `src/core/gemini-dive-guide.ts`), advisory react-hooks lint on saved source (`src/core/dive-linter.ts`) — ported from internal `mdw-turbo` |
 
 ## Setup
 
@@ -172,7 +172,7 @@ Turn flow, one Slack message at a time (`src/slack/handlers.ts`'s `buildTurnRunn
 2. A `use db <name>[, <name>…]` message is intercepted before any LLM call and just updates `channel_settings` (`src/store/settings.ts`) — no model turn.
 3. Otherwise the bot reacts :eyes: to the triggering message, loads the conversation from Postgres by `(channel, thread_ts)`, and posts a placeholder reply ("_:duck: on it…_").
 4. An MCP client connects to MotherDuck with `${channel}:${thread_ts}` as the `session_name` hint, for read-scaling replica affinity (`src/core/mcp-client.ts`'s `createMCPClient`).
-5. The agentic loop (`src/core/agentic-loop.ts`) runs against that MCP client and the Slack-specific system prompt (`src/core/system-prompt.ts`), driving a `TurnSink` instead of an SSE stream. `src/slack/sink.ts`'s `SlackTurnSink` implements it: text/thinking/tool-status deltas repaint the placeholder via `chat.update`, throttled to roughly one repaint per 1.5s; a completed ` ```table ` fence splices in as a native Slack `markdown` block inline (`src/slack/viz.ts` + `src/slack/markdown.ts`); a completed chart fence (`bar` / `line` / `dumbbell`) renders to a PNG through headless Chromium and uploads as its own thread message (`src/slack/screenshot.ts` + `files.uploadV2`); guide tool calls (`list_guides` / `get_guide` / `create_guide` / `update_guide`) dispatch straight through MCP like any other allowlisted tool — the agentic loop's own comment header notes data-chat-mini's `'context_pause'` finish reason "no longer exists" here, since nothing pauses for a browser round-trip.
+5. The agentic loop (`src/core/agentic-loop.ts`) runs against that MCP client and the Slack-specific system prompt (`src/core/system-prompt.ts`), driving a `TurnSink` instead of an SSE stream. `src/slack/sink.ts`'s `SlackTurnSink` implements it: text/thinking/tool-status deltas repaint the placeholder via `chat.update`, throttled to roughly one repaint per 1.5s; a completed ` ```table ` fence splices in as a native Slack `markdown` block inline (`src/slack/viz.ts` + `src/slack/markdown.ts`); a completed chart fence (`bar` / `line` / `dumbbell`) renders to a PNG through headless Chromium and uploads as its own thread message (`src/slack/screenshot.ts` + `files.uploadV2`); guide tool calls (`get_query_guide` / `list_guides` / `get_guide` / `create_guide` / `update_guide` / `edit_guide_content`) dispatch straight through MCP like any other allowlisted tool — the agentic loop's own comment header notes data-chat-mini's `'context_pause'` finish reason "no longer exists" here, since nothing pauses for a browser round-trip.
 6. If the thread is a Slack AI-assistant container, the sink also calls `assistant.threads.setStatus` with the current tool verb (e.g. "running query…") — best-effort, and silently disabled the first time it's unsupported (plain channels/DMs never call it).
 7. On finish, the sink paints its final render, the updated message array is saved back to Postgres, the controllog session for the turn is flushed to `logs/controllog/*.jsonl`, and the :eyes: reaction swaps to :white_check_mark: or :warning:.
 
@@ -181,36 +181,43 @@ context interception as "swappable to the real MotherDuck context layer later
 by simply not intercepting." It turns out no `query_context_layer` /
 `update_context_layer` tools exist on the live MCP server — those shapes were
 data-chat-mini's invention. What the server does expose is **guides** (durable
-markdown documents with list/get/create/update CRUD), and quackbot's memory
-layer is built on them directly: "remember that…" becomes a `create_guide`
-under the bot's personal `users/<bot user>/quackbot/` folder (one atomic
-convention per guide), Step 0 of every data turn is a `list_guides` read, and
-a convention saved from one Slack thread is durable and visible to every other
-conversation. A code-level path guard (`GUIDE_WRITE_PATH` in
-`src/core/mcp-client.ts`) confines the two allowlisted guide writes to that
-folder, and `create_guide` is collision-safe server-side — a duplicate path
-errors instead of overwriting.
+markdown documents, uuid-selected, grouped by `topic`, private-by-default via
+`access: 'user'`), and quackbot's memory layer is built on them directly:
+"remember that…" becomes a `create_guide` with `topic: 'quackbot/<area>'` (one
+atomic convention per guide, catalog `references` attached so it auto-surfaces
+next to the tables it describes), Step 0 of every data turn is a
+`get_query_guide` read (org guidance + topic map in one call), and a convention
+saved from one Slack thread is durable and visible to every other conversation.
+A code-level guard (`guideWriteViolation` in `src/core/mcp-client.ts`) confines
+the three allowlisted guide writes to the `quackbot/` topic namespace and
+rejects any attempt to set non-private `access`; the server independently
+rejects cross-user uuid writes and gates org-visible creates. One sharp edge:
+`create_guide` is no longer collision-safe — a duplicate title+topic silently
+forks a second guide — so the system prompt mandates `list_guides({topic})`
+before every create, updating an existing guide by uuid instead.
 
 **Memorializing discoveries as Dives.** When a user explicitly asks to save a
 finding ("save that as a dive"), the model fetches the dive-authoring guide
-via `get_guide("dives.md")`, composes a Dive from the thread's validated SQL, and
-calls `save_dive` — create-only, so it can never clobber an existing dive
-(`edit_dive_content` / `update_dive` / `delete_dive` / `share_dive_data` stay
-blocked; see Out of scope). Two pieces ported from the internal `mdw-turbo`
-implementation: on Gemini model profiles the agentic loop intercepts the
-dive-guide read (`get_guide` with path `dives.md` — the server retired the
-older `get_dive_guide` tool) and serves a Gemini-tuned guide
+via `get_dive_guide` (the dispatcher pins `client: 'other'`), composes a Dive
+from the thread's validated SQL, and calls `save_dive` — create-only, so it can
+never clobber an existing dive (`edit_dive_content` / `update_dive` /
+`delete_dive` / `share_dive_data` stay blocked; see Out of scope). Two pieces
+ported from the internal `mdw-turbo` implementation: on Gemini model profiles
+the agentic loop intercepts `get_dive_guide` and serves a Gemini-tuned guide
 (`src/core/gemini-dive-guide.ts` — the stock guide produced
-a 30–42% dive-write failure rate on Gemini), and every saved dive's source
+a 30–42% dive-write failure rate on Gemini; the current stock guide has since
+absorbed most of its content, and `MCP_MIGRATION_PLAN.md` Phase 3 will
+benchmark whether the override can be trimmed), and every saved dive's source
 gets an advisory react-hooks lint (`src/core/dive-linter.ts`) folded into the
 tool result so the model can self-correct without blocking the save.
 
-**Token caveat.** `create_guide`, `update_guide`, and `save_dive` are writes.
-A MotherDuck read-scaling token (the kind data-chat-mini uses, read-only by
-design) may reject them — use a standard write-capable PAT for
-`MOTHERDUCK_TOKEN`. With a non-admin PAT the server confines guide writes to
-the bot user's personal namespace (`users/<bot user>/…`), which is exactly
-where quackbot's own path guard points them anyway.
+**Token caveat.** `create_guide`, `update_guide`, `edit_guide_content`, and
+`save_dive` are writes. A MotherDuck read-scaling token (the kind
+data-chat-mini uses, read-only by design) may reject them — use a standard
+write-capable PAT for `MOTHERDUCK_TOKEN`. With a non-admin PAT the server
+confines guide writes to guides the bot owns (cross-user uuid writes are
+rejected, org-visible creates and `set_guide_access` are permission-gated),
+which is exactly the boundary quackbot's own guard assumes.
 
 ## Telemetry (controllog)
 
@@ -237,10 +244,11 @@ in a channel shares it; the token's grants are the tenancy boundary, see
 `update_dive`, `delete_dive`, `share_dive_data` are classified but never
 allowlisted — creation can't clobber an existing dive, edits to a
 caller-supplied id can, and there's no confirmation UI to gate that), guide
-mutation outside the bot's own folder (`edit_guide_content`,
-`update_guide_metadata`, `set_guide_access`, `delete_guide` are classified but
-never allowlisted, and the allowlisted guide writes are path-guarded to
-`users/<bot user>/quackbot/`), canvas, `query_rw` (classified but never
+re-scoping and deletion (`update_guide_metadata`, `set_guide_access`,
+`delete_guide` are classified but never allowlisted, and the allowlisted guide
+writes are confined to the `quackbot/` topic namespace with `access` forced
+private — the server independently rejects cross-user uuid writes and gates
+org-visible creates), canvas, `query_rw` (classified but never
 allowlisted), and DM-vs-channel permission separation (a DM and a channel
 mention are handled the same way once the message reaches the loop). Slack
 Enterprise Grid specifics (org-wide app install, Grid-level tokens) are

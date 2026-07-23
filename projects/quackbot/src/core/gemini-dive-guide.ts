@@ -2,11 +2,10 @@
  * Gemini-tuned dive guide.
  *
  * The dive-authoring guide is served by the MotherDuck MCP as
- * `get_guide("dives.md")` (mdw-turbo's era exposed it as a dedicated
- * `get_dive_guide` tool with `chatgpt` / `claude` / `claude_code` / `other`
- * variants — no `gemini` variant). Because mdw-turbo runs on Gemini 3 Flash,
- * fetching the default guide and passing it through produced a persistent
- * 30-42% failure rate on
+ * `get_dive_guide({client})`, with `chatgpt` / `claude` / `claude_code` /
+ * `other` variants — no `gemini` variant. Because mdw-turbo runs on Gemini 3
+ * Flash, fetching the default guide (quackbot pins `client: 'other'`) and
+ * passing it through produced a persistent 30-42% failure rate on
  * `save_dive` / `update_dive` / `edit_dive_content` (see issue #149). Two
  * concrete causes from the failure analysis:
  *   1. Wrong hook + wrong package — the model writes `useQuery` from
@@ -22,9 +21,11 @@
  * by workflow phases, then reference material. The MCP guide content is
  * preserved in substance — only the ordering and emphasis change.
  *
- * The agentic loop intercepts `get_guide("dives.md")` on Gemini profiles and
+ * The agentic loop intercepts `get_dive_guide` on Gemini profiles and
  * returns this string instead of dispatching to MCP (see
- * src/core/agentic-loop.ts).
+ * src/core/agentic-loop.ts). Phase 0 of MCP_MIGRATION_PLAN.md (2026-07-23)
+ * found the stock `client:'other'` guide now covers most of this override's
+ * content; Phase 3 will benchmark and likely trim the override.
  */
 
 import galacticCoffee from './dive-examples/galactic-coffee.json';

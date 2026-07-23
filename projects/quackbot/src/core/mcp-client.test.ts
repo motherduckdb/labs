@@ -13,14 +13,29 @@ import {
 } from './mcp-client';
 
 describe('quackbot tool allowlist', () => {
-  it('allowlists the guide tools that back durable memory (the key change from data-chat-mini)', () => {
-    for (const t of ['list_guides', 'get_guide', 'create_guide', 'update_guide']) {
+  it('allowlists the guide tools that back durable memory (reads, writes, surgical edits)', () => {
+    for (const t of [
+      'list_guides',
+      'get_guide',
+      'get_query_guide',
+      'get_dive_guide',
+      'create_guide',
+      'update_guide',
+      'edit_guide_content',
+    ]) {
       expect(ALLOWED_TOOLS.has(t)).toBe(true);
     }
     // The invented context-layer shapes are gone — they never existed on the
     // live MCP server.
     expect(ALLOWED_TOOLS.has('query_context_layer')).toBe(false);
     expect(ALLOWED_TOOLS.has('update_context_layer')).toBe(false);
+  });
+
+  it('allowlists the new read-only discovery/docs tools', () => {
+    for (const t of ['list_views', 'list_macros', 'list_shares', 'ask_docs_question']) {
+      expect(ALLOWED_TOOLS.has(t)).toBe(true);
+      expect(READONLY_TOOLS.has(t)).toBe(true);
+    }
   });
 
   it('keeps query_rw and the deletes classified but NOT allowlisted', () => {
@@ -32,22 +47,25 @@ describe('quackbot tool allowlist', () => {
     expect(ALLOWED_TOOLS.has('delete_guide')).toBe(false);
   });
 
-  it('classifies guide reads as read-only and guide writes as mutating', () => {
-    expect(READONLY_TOOLS.has('list_guides')).toBe(true);
-    expect(READONLY_TOOLS.has('get_guide')).toBe(true);
+  it('classifies guide reads as read-only and the whole-guide/metadata writes as mutating', () => {
+    for (const t of ['list_guides', 'get_guide', 'get_query_guide', 'get_dive_guide']) {
+      expect(READONLY_TOOLS.has(t)).toBe(true);
+    }
     for (const t of ['create_guide', 'update_guide', 'edit_guide_content', 'update_guide_metadata', 'set_guide_access']) {
       expect(READONLY_TOOLS.has(t)).toBe(false);
       expect(MUTATING_TOOLS.has(t)).toBe(true);
     }
   });
 
-  it('allowlists the Dive reads', () => {
+  it('allowlists the Dive reads and the (now restored) dive guide tool', () => {
     for (const t of ['list_dives', 'read_dive']) {
       expect(ALLOWED_TOOLS.has(t)).toBe(true);
       expect(READONLY_TOOLS.has(t)).toBe(true);
     }
-    // get_dive_guide is retired server-side; the dive guide is get_guide("dives.md").
-    expect(ALLOWED_TOOLS.has('get_dive_guide')).toBe(false);
+    // The dive guide is back as its own tool (was worked around as
+    // get_guide("dives.md") while the server had it retired).
+    expect(ALLOWED_TOOLS.has('get_dive_guide')).toBe(true);
+    expect(READONLY_TOOLS.has('get_dive_guide')).toBe(true);
   });
 
   it('allowlists save_dive but ONLY save_dive among the Dive writes', () => {
@@ -61,68 +79,164 @@ describe('quackbot tool allowlist', () => {
     }
   });
 
-  it('allowlists guide writes but keeps the metadata/access edits blocked', () => {
-    for (const t of ['edit_guide_content', 'update_guide_metadata', 'set_guide_access']) {
+  it('keeps the metadata/access edits blocked (namespace + org-publish escapes)', () => {
+    for (const t of ['update_guide_metadata', 'set_guide_access']) {
+      expect(ALLOWED_TOOLS.has(t)).toBe(false);
+    }
+  });
+
+  it('classifies read-only-but-not-allowlisted tools for completeness', () => {
+    // Classified READONLY (never gated) yet intentionally absent from the
+    // allowlist — the model never sees them, but the classification is complete.
+    for (const t of ['get_flight_guide', 'view_dive', 'dive_query']) {
+      expect(READONLY_TOOLS.has(t)).toBe(true);
       expect(ALLOWED_TOOLS.has(t)).toBe(false);
     }
   });
 });
 
-describe('guideWriteViolation (path guard on the allowlisted guide writes)', () => {
-  it('accepts writes under users/<username>/quackbot/', () => {
-    expect(guideWriteViolation('create_guide', { path: 'users/jm_quackbot/quackbot/taxi-data.md' })).toBeNull();
-    expect(guideWriteViolation('update_guide', { path: 'users/someone_else/quackbot/x.md' })).toBeNull();
+describe('guideWriteViolation — create_guide (topic + access + references guard)', () => {
+  it('accepts a well-formed private create under a quackbot topic', () => {
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot', title: 't', content: 'c' })).toBeNull();
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/taxi', title: 't', content: 'c' })).toBeNull();
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/finance/metrics', title: 't', content: 'c' })).toBeNull();
+    // Explicit access:'user' is allowed; dots within a segment stay legal.
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/v1.2-notes', access: 'user', content: 'c' })).toBeNull();
   });
 
-  it('rejects writes outside the quackbot folder', () => {
-    expect(guideWriteViolation('create_guide', { path: 'revenue-billing/mrr.md' })).toMatch(/quackbot/);
-    expect(guideWriteViolation('update_guide', { path: 'users/jm_quackbot/personal-notes.md' })).toMatch(/quackbot/);
-    expect(guideWriteViolation('create_guide', { path: 'users/jm_quackbot/quackbot/' })).toMatch(/quackbot/);
+  it('rejects a missing, empty, or non-string topic', () => {
+    expect(guideWriteViolation('create_guide', { title: 't', content: 'c' })).toMatch(/topic/);
+    expect(guideWriteViolation('create_guide', { topic: '', content: 'c' })).toMatch(/topic/);
+    expect(guideWriteViolation('create_guide', { topic: 123, content: 'c' })).toMatch(/topic/);
+    expect(guideWriteViolation('create_guide', undefined)).toMatch(/topic/);
   });
 
-  it('rejects id-only selection so the path check cannot be bypassed', () => {
-    expect(guideWriteViolation('update_guide', { id: 'some-uuid', content: 'x' })).toMatch(/path/);
-    expect(guideWriteViolation('create_guide', undefined)).toMatch(/path/);
+  it('rejects a topic outside the quackbot namespace', () => {
+    expect(guideWriteViolation('create_guide', { topic: 'dbt/main', content: 'c' })).toMatch(/quackbot/);
+    expect(guideWriteViolation('create_guide', { topic: 'revenue-billing', content: 'c' })).toMatch(/quackbot/);
+    // A topic that merely starts with the letters isn't inside the namespace.
+    expect(guideWriteViolation('create_guide', { topic: 'quackbotx/y', content: 'c' })).toMatch(/quackbot/);
   });
 
-  it('rejects an id passed ALONGSIDE a valid path (server-side selection could prefer it)', () => {
+  it('rejects uppercase and whitespace in topic segments', () => {
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/Taxi', content: 'c' })).toMatch(/quackbot/);
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/a b', content: 'c' })).toMatch(/quackbot/);
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/café', content: 'c' })).toMatch(/quackbot/);
+  });
+
+  it('rejects traversal-ish dot-only segments in topic', () => {
+    for (const topic of ['quackbot/../x', 'quackbot/./x', 'quackbot/..']) {
+      expect(guideWriteViolation('create_guide', { topic, content: 'c' })).toBeTruthy();
+    }
+  });
+
+  it('forces private scope: rejects a non-user access on create', () => {
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/x', access: 'organization', content: 'c' })).toMatch(/access/);
+    expect(guideWriteViolation('create_guide', { topic: 'quackbot/x', access: 'public', content: 'c' })).toMatch(/access/);
+  });
+
+  it('restricts references to catalog entries', () => {
     expect(
-      guideWriteViolation('update_guide', {
-        id: 'some-org-guide-uuid',
-        path: 'users/jm_quackbot/quackbot/ok.md',
-        content: 'x',
+      guideWriteViolation('create_guide', {
+        topic: 'quackbot/x',
+        content: 'c',
+        references: [{ type: 'catalog', name: 'taxi.trips' }],
       }),
-    ).toMatch(/path.*only|do not pass/);
-  });
-
-  it('rejects dot-segment traversal and malformed segments inside the quackbot folder', () => {
-    for (const path of [
-      'users/jm_quackbot/quackbot/../../core-metrics/nrr.md',
-      'users/jm_quackbot/quackbot/./x.md',
-      'users/jm_quackbot/quackbot//x.md',
-      'users/jm_quackbot/quackbot/..\\x.md',
-    ]) {
-      expect(guideWriteViolation('create_guide', { path })).toBeTruthy();
+    ).toBeNull();
+    for (const type of ['guide', 'dive', 'flight']) {
+      expect(
+        guideWriteViolation('create_guide', {
+          topic: 'quackbot/x',
+          content: 'c',
+          references: [{ type, id: 'whatever' }],
+        }),
+      ).toMatch(/catalog/);
     }
-    // Dots WITHIN a filename stay legal.
-    expect(guideWriteViolation('create_guide', { path: 'users/jm_quackbot/quackbot/v1.2-notes.md' })).toBeNull();
+    // Non-array references shape is rejected too.
+    expect(
+      guideWriteViolation('create_guide', { topic: 'quackbot/x', content: 'c', references: { type: 'catalog' } }),
+    ).toMatch(/array/);
+  });
+});
+
+describe('guideWriteViolation — update_guide (uuid + access + references guard)', () => {
+  it('accepts an update selected by a non-empty uuid', () => {
+    expect(guideWriteViolation('update_guide', { uuid: 'b00542d5-abcd', content: 'x' })).toBeNull();
+    // Ownership is the server's job — a uuid the bot may not own still passes
+    // the client guard (server ACL rejects it, no client pre-check needed).
+    expect(guideWriteViolation('update_guide', { uuid: 'some-org-guide-uuid', content: 'x' })).toBeNull();
   });
 
-  it('rejects percent-encoded and Unicode look-alike traversal', () => {
-    for (const path of [
-      'users/jm_quackbot/quackbot/%2e%2e/%2e%2e/victim.md', // percent-encoded ..
-      'users/jm_quackbot/quackbot/a%2f%2e%2e%2fvictim.md', // encoded slash+..
-      'users/jm_quackbot/quackbot/．．/x.md', // fullwidth ．．
-      'users/jm_quackbot/quackbot/x y.md', // whitespace
-      'users/jm_quackbot/quackbot/café.md', // non-ASCII
-    ]) {
-      expect(guideWriteViolation('create_guide', { path })).toBeTruthy();
-    }
+  it('rejects a missing or empty uuid', () => {
+    expect(guideWriteViolation('update_guide', { content: 'x' })).toMatch(/uuid/);
+    expect(guideWriteViolation('update_guide', { uuid: '', content: 'x' })).toMatch(/uuid/);
+    expect(guideWriteViolation('update_guide', undefined)).toMatch(/uuid/);
   });
 
-  it('never fires for reads or non-guide tools', () => {
-    expect(guideWriteViolation('get_guide', { path: 'dives.md' })).toBeNull();
+  it('rejects a non-user access if one is passed', () => {
+    expect(guideWriteViolation('update_guide', { uuid: 'u', access: 'organization' })).toMatch(/access/);
+  });
+
+  it('restricts references to catalog entries', () => {
+    expect(
+      guideWriteViolation('update_guide', { uuid: 'u', references: [{ type: 'dive', id: 'd' }] }),
+    ).toMatch(/catalog/);
+    expect(
+      guideWriteViolation('update_guide', { uuid: 'u', references: [{ type: 'catalog', name: 't' }] }),
+    ).toBeNull();
+  });
+});
+
+describe('guideWriteViolation — edit_guide_content (uuid + edits[] shape)', () => {
+  it('accepts a well-formed edits array', () => {
+    expect(
+      guideWriteViolation('edit_guide_content', {
+        uuid: 'u',
+        edits: [{ old_string: 'a', new_string: 'b' }],
+      }),
+    ).toBeNull();
+    expect(
+      guideWriteViolation('edit_guide_content', {
+        uuid: 'u',
+        edits: [{ old_string: 'a', new_string: 'b', replace_all: true }],
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects a missing or empty uuid', () => {
+    expect(
+      guideWriteViolation('edit_guide_content', { edits: [{ old_string: 'a', new_string: 'b' }] }),
+    ).toMatch(/uuid/);
+    expect(
+      guideWriteViolation('edit_guide_content', { uuid: '', edits: [{ old_string: 'a', new_string: 'b' }] }),
+    ).toMatch(/uuid/);
+  });
+
+  it('rejects the flat old_string/new_string shape (must be an edits array)', () => {
+    expect(
+      guideWriteViolation('edit_guide_content', { uuid: 'u', old_string: 'a', new_string: 'b' }),
+    ).toMatch(/array/);
+  });
+
+  it('rejects an empty edits array', () => {
+    expect(guideWriteViolation('edit_guide_content', { uuid: 'u', edits: [] })).toMatch(/array/);
+  });
+
+  it('rejects edits entries missing string old_string/new_string', () => {
+    expect(
+      guideWriteViolation('edit_guide_content', { uuid: 'u', edits: [{ old_string: 'a' }] }),
+    ).toMatch(/old_string.*new_string|new_string/);
+    expect(
+      guideWriteViolation('edit_guide_content', { uuid: 'u', edits: ['not-an-object'] }),
+    ).toBeTruthy();
+  });
+});
+
+describe('guideWriteViolation — never fires for reads or non-guide tools', () => {
+  it('returns null for guide reads and unrelated tools', () => {
+    expect(guideWriteViolation('get_guide', { uuid: 'u' })).toBeNull();
     expect(guideWriteViolation('list_guides', undefined)).toBeNull();
+    expect(guideWriteViolation('get_query_guide', undefined)).toBeNull();
     expect(guideWriteViolation('query', { sql: 'SELECT 1' })).toBeNull();
   });
 });
@@ -155,12 +269,10 @@ describe('databaseAllowViolation (optional QUACKBOT_DATABASES hard cap)', () => 
 });
 
 describe('requiresConfirmation (Slack Approve/Deny handshake gates durable writes)', () => {
-  it('confirms the allowlisted guide writes', () => {
-    expect(requiresConfirmation('create_guide', { path: 'users/x/quackbot/y.md' })).toBe(true);
-    expect(requiresConfirmation('update_guide', { path: 'users/x/quackbot/y.md' })).toBe(true);
-  });
-
-  it('confirms save_dive', () => {
+  it('confirms all four allowlisted writes', () => {
+    expect(requiresConfirmation('create_guide', { topic: 'quackbot/y', content: 'c' })).toBe(true);
+    expect(requiresConfirmation('update_guide', { uuid: 'u', content: 'c' })).toBe(true);
+    expect(requiresConfirmation('edit_guide_content', { uuid: 'u', edits: [] })).toBe(true);
     expect(requiresConfirmation('save_dive', undefined)).toBe(true);
   });
 
@@ -171,13 +283,14 @@ describe('requiresConfirmation (Slack Approve/Deny handshake gates durable write
     expect(requiresConfirmation('edit_dive_content', undefined)).toBe(true);
     expect(requiresConfirmation('update_dive', undefined)).toBe(true);
     expect(requiresConfirmation('share_dive_data', undefined)).toBe(true);
-    expect(requiresConfirmation('edit_guide_content', undefined)).toBe(true);
     expect(requiresConfirmation('update_guide_metadata', undefined)).toBe(true);
     expect(requiresConfirmation('set_guide_access', undefined)).toBe(true);
   });
 
   it('does not confirm plain reads', () => {
     expect(requiresConfirmation('query', undefined)).toBe(false);
+    expect(requiresConfirmation('get_query_guide', undefined)).toBe(false);
+    expect(requiresConfirmation('ask_docs_question', undefined)).toBe(false);
   });
 });
 
@@ -197,16 +310,33 @@ describe('executeToolWithStatus allowlist enforcement (no bypass)', () => {
     ).rejects.toThrow(/not in the allowed/);
   });
 
-  it('returns a tool error (not a dispatch) for a guide write outside the quackbot folder', async () => {
+  it('keeps set_guide_access blocked (the org-wide publish switch)', async () => {
+    await expect(
+      executeToolWithStatus(dummyClient, 'set_guide_access', { uuid: 'u', access: 'organization' }),
+    ).rejects.toThrow(/not in the allowed/);
+  });
+
+  it('returns a tool error (not a dispatch) for a guide write outside the quackbot topic', async () => {
     // The guard fires before the client is touched, so the bare stub proves
     // no MCP call happens.
     const result = await executeToolWithStatus(dummyClient, 'create_guide', {
-      path: 'revenue-billing/mrr.md',
+      topic: 'dbt/main',
       title: 't',
       content: 'c',
     });
     expect(result.isError).toBe(true);
-    expect(result.text).toMatch(/users\/<username>\/quackbot\//);
+    expect(result.text).toMatch(/quackbot/);
+  });
+
+  it('returns a tool error for a prompt-injected org-scoped create', async () => {
+    const result = await executeToolWithStatus(dummyClient, 'create_guide', {
+      topic: 'quackbot/x',
+      access: 'organization',
+      title: 't',
+      content: 'c',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/access/);
   });
 
   it('cannot be bypassed by a stray extra positional argument', async () => {

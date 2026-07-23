@@ -1,9 +1,15 @@
 # Migration plan: new MotherDuck MCP tool surface
 
-**Status: Phase 0 COMPLETE (2026-07-23) — Phases 1+ not yet implemented.** Written
-2026-07-23 against the live prod MCP (`api.motherduck.com/mcp`); staging exposes the
-same tool list. quackbot currently targets the *previous* guide API (path-selected
-guides) and will break against the new server the moment a guide tool is called.
+**Status: Phases 0–1 COMPLETE (2026-07-23) — Phases 2–5 pending.** Written 2026-07-23
+against the live prod MCP (`api.motherduck.com/mcp`); staging exposes the same tool
+list. Phase 1 landed: uuid+topic guide guard (`guideWriteViolation` rewrite), new
+read tools + `edit_guide_content` allowlisted, arg sanitizers/defaults for the new
+schemas (forced `client:'other'` / `access:'user'`), system-prompt rewrite
+(`get_query_guide` Step 0, dupe-fork discipline, `get_dive_guide`), Gemini
+interception moved to `get_dive_guide`, README updated. 191/191 tests green.
+Remaining: Phase 2 fast-follows (eager get_query_guide injection), Phase 3 Gemini
+benchmark + override trim, Phase 4 re-home the 3 old memories, Phase 5 parser cleanup.
+NOT yet live-smoked against prod through Slack (see §3 checklist).
 
 ## Phase 0 results (live run, prod, jm_quackbot PAT — `scripts/smoke-mcp.ts`)
 
