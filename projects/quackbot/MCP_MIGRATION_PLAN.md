@@ -21,6 +21,18 @@ timeout, `use db` intercept, injection probe refused with zero tool calls.
   prompt clarification (mviz fences ≠ dives) would save the round-trip.
 - Deploy: the Fly machine still runs pre-migration code (it was parked and restored
   during the smoke); redeploy from this branch to go live.
+
+**Codex review of PR #81 (2026-07-23):** pass 1 (migration diff) — 10 findings, 8
+fixed (Gemini fetch error threading; pre-confirmation target resolve + namespace
+check for uuid guide writes; Slack approval now names the target guide; untrusted-
+data fencing of the injected guidance; script hygiene ×4), 2 accepted-as-designed
+(15-min cache staleness; bench arm-C aliasing). Pass 2 (Slack/store layer) — 4
+findings: fixed `sslmode=disable` honored for non-localhost (now startup error) and
+mrkdwn injection via table cells (`&<>` escaping); deferred-by-design two handler
+items documented since v1 — mid-turn messages get an hourglass rather than queuing,
+and event dedup/mutex are in-memory per-process (single-machine deploy is a stated
+constraint; cross-restart replay window ~60s exists — revisit if the bot ever runs
+multi-instance or writes stop being confirmation-gated).
 Phase 2 landed: eager `get_query_guide` injection (`src/core/query-guide.ts`,
 15-min TTL cache for prompt-cache stability, failure → prompt falls back to the
 "call it first" mandate); the other Phase-2 prompt items (relatedGuides flow,

@@ -5,8 +5,12 @@ let pool: Pool | null = null;
 
 /**
  * Derive a strict `PoolConfig` from a DATABASE_URL. TLS verification is ALWAYS
- * on unless `sslmode=disable` is explicitly present — no code path connects
- * with an unverified certificate, which would be MITM-able.
+ * on unless `sslmode=disable` is explicitly present AND the host is loopback
+ * (localhost / 127.0.0.1 / ::1) — no code path connects with an unverified
+ * certificate, which would be MITM-able. `sslmode=disable` against a
+ * non-loopback host, or in a connection string whose host can't be
+ * determined (not URL-shaped), throws at startup rather than silently
+ * transmitting credentials in plaintext.
  *
  * pg parses ssl* query params itself and treats `sslrootcert=system` (as in
  * PlanetScale connection strings) as a literal cert-file path — ENOENT. TLS is
@@ -33,21 +37,34 @@ const POOL_TIMEOUTS = {
   query_timeout: 30_000,
 } as const;
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
 export function resolvePoolConfig(raw: string): PoolConfig {
-  const sslDisabled = /(?:^|[?&])sslmode=disable(?:&|$)/i.test(raw);
+  // Matches both query-string (`?`/`&`-delimited) and libpq key=value
+  // (space-delimited) connection-string forms.
+  const sslDisabled = /(?:^|[?&\s])sslmode=disable(?:[&\s]|$)/i.test(raw);
   const TLS_PARAMS = ['ssl', 'sslmode', 'sslrootcert', 'sslcert', 'sslkey'];
 
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    // Not URL-shaped (e.g. libpq key=value form) — can't safely strip params,
-    // so pass through with explicit strict TLS still applied.
+    // Not URL-shaped (e.g. libpq key=value form) — the host can't be
+    // determined, so `sslmode=disable` can't be verified as loopback-only.
+    // Refuse to guess: fail fast rather than risking a plaintext connection
+    // to a production host.
+    if (sslDisabled) {
+      throw new Error('sslmode=disable is only permitted for localhost — remove it or use TLS');
+    }
     return {
       connectionString: raw,
       ...POOL_TIMEOUTS,
-      ssl: sslDisabled ? false : { rejectUnauthorized: true },
+      ssl: { rejectUnauthorized: true },
     };
+  }
+
+  if (sslDisabled && !LOOPBACK_HOSTS.has(url.hostname)) {
+    throw new Error('sslmode=disable is only permitted for localhost — remove it or use TLS');
   }
 
   const rootcert = url.searchParams.get('sslrootcert');

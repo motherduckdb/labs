@@ -302,7 +302,19 @@ async function runOne(
     ...(ARMS[arm].resolve ? { resolveGeminiDiveGuide: ARMS[arm].resolve } : {}),
   });
 
+  // Generous, explicit per-run timeout: real dive-authoring runs make several
+  // sequential tool calls (list_tables, query, save_dive, ...), so 5 minutes
+  // gives real slow runs room without letting one hang the whole bench.
   const TIMEOUT_MS = 300_000;
+  // NOTE: runAgenticLoop has no AbortController thread-through (a full
+  // cancellation path through the agentic loop is out of scope for this bench
+  // script), so racing it against a timeout does NOT stop it — a timed-out
+  // run keeps making live model/MCP calls (with confirmTool auto-approving
+  // writes) in the background after we give up waiting on it below. To keep
+  // that background work from overlapping the *next* run — and to give it a
+  // chance to actually finish so its save_dive lands in createdDiveIds for
+  // cleanup — we block here on the abandoned runPromise until it settles, up
+  // to a hard secondary cap of 2x the timeout, before returning from runOne.
   try {
     const result = await Promise.race([
       runPromise,
@@ -312,6 +324,21 @@ async function runOne(
   } catch (err) {
     m.error = err instanceof Error ? err.message : String(err);
     m.finishReason = 'error';
+
+    if (m.error.includes('run timeout')) {
+      const HARD_CAP_MS = TIMEOUT_MS * 2;
+      const settled = await Promise.race([
+        runPromise.then(() => true).catch(() => true),
+        new Promise<false>((res) => setTimeout(() => res(false), HARD_CAP_MS)),
+      ]);
+      if (!settled) {
+        console.warn(
+          `[bench] WARNING: ${arm}/${task.key}#${iteration} still running after the ` +
+          `${HARD_CAP_MS}ms secondary cap — abandoning it for good; it may keep making ` +
+          `live model/MCP calls in the background.`,
+        );
+      }
+    }
   }
 
   m.sourceLeaked = detectLeak(chatText);
@@ -425,6 +452,10 @@ async function cleanup(client: Client, createdDiveIds: Set<string>): Promise<str
   const notes: string[] = [];
   let deleted = 0;
   let failed = 0;
+  // Delete ONLY the dives this run actually created (tracked by id from
+  // save_dive responses). We never delete-by-keyword — a 'bench-p3' title
+  // match could belong to a different run or a human, so the keyword sweep
+  // below is report-only.
   for (const id of createdDiveIds) {
     try {
       const r = await rawCall(client, 'delete_dive', { id });
@@ -435,31 +466,26 @@ async function cleanup(client: Client, createdDiveIds: Set<string>): Promise<str
       notes.push(`  delete THREW ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  // Sweep for stragglers matching our prefix (titles we asked for, plus any the
-  // model titled off-script but that we still tracked by id above).
+  // Report-only sweep for stragglers matching our title prefix. These are NOT
+  // deleted here — a keyword match isn't proof this run created them (another
+  // run or a human could own a same-titled dive), so anything found that
+  // isn't in createdDiveIds is logged for manual review, never removed.
   let straggler = 'sweep skipped';
   try {
     const r = await rawCall(client, 'list_dives', { keywords: TITLE_PREFIX, limit: 100 });
     const j = JSON.parse(r.text);
     const dives: Array<{ id?: string; title?: string }> = j?.dives ?? j?.results ?? [];
     const remaining = dives.filter((d) => (d.title ?? '').toLowerCase().includes(TITLE_PREFIX));
+    const untracked = remaining.filter((d) => !d.id || !createdDiveIds.has(d.id));
     if (remaining.length === 0) {
       straggler = `list_dives(keywords:'${TITLE_PREFIX}') → 0 remaining`;
+    } else if (untracked.length === 0) {
+      straggler = `list_dives(keywords:'${TITLE_PREFIX}') → ${remaining.length} remaining, all already deleted above (stale index?)`;
     } else {
-      straggler = `list_dives(keywords:'${TITLE_PREFIX}') → ${remaining.length} remaining, deleting`;
-      for (const d of remaining) {
-        if (!d.id) continue;
-        try {
-          const dr = await rawCall(client, 'delete_dive', { id: d.id });
-          if (!dr.isError) deleted++; else failed++;
-        } catch { failed++; }
-      }
-      // re-verify
-      const r2 = await rawCall(client, 'list_dives', { keywords: TITLE_PREFIX, limit: 100 });
-      const j2 = JSON.parse(r2.text);
-      const dives2: Array<{ title?: string }> = j2?.dives ?? j2?.results ?? [];
-      const rem2 = dives2.filter((d) => (d.title ?? '').toLowerCase().includes(TITLE_PREFIX));
-      straggler += `; after sweep ${rem2.length} remaining`;
+      straggler =
+        `list_dives(keywords:'${TITLE_PREFIX}') → ${untracked.length} leftover(s) NOT created by this run ` +
+        `(needs manual review, NOT auto-deleted): ` +
+        untracked.map((d) => `${d.id ?? '(no id)'}:${d.title ?? ''}`).join(', ');
     }
   } catch (err) {
     straggler = `sweep error: ${err instanceof Error ? err.message : String(err)}`;

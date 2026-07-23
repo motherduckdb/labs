@@ -18,6 +18,7 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { detectPayloadFailure } from '../src/core/tool-invocation';
 
 const LEGACY_TOPIC = 'users/jm_quackbot/quackbot';
 
@@ -140,6 +141,7 @@ async function main() {
     uuid: string; label: string; beforeTopic: string; afterTopic: string;
     metaUpdate: string; refAttached: string;
   }> = [];
+  let anyFailure = false;
 
   try {
     // ---- List databases up front (for catalog reference url values) ----------
@@ -160,14 +162,17 @@ async function main() {
       const got = await tryCall(client, 'get_guide', { uuid });
       if (got.isError) {
         log(`  get_guide FAILED: ${got.text.slice(0, 300)}`);
+        anyFailure = true;
         report.push({
           uuid, label: target.label, beforeTopic: 'ERROR', afterTopic: 'SKIPPED',
           metaUpdate: `get_guide failed: ${got.text.slice(0, 150)}`, refAttached: 'skipped',
         });
         continue;
       }
-      log(`  --- guide text (${got.text.length} chars) ---`);
-      log(got.text);
+      log(`  --- guide text (${got.text.length} chars, truncated) ---`);
+      log(got.text.length > 200
+        ? `${got.text.slice(0, 200)} (truncated, ${got.text.length} chars total)`
+        : got.text);
       log('  --- end guide text ---');
 
       // Parse current topic out of the rendered text header if present.
@@ -178,10 +183,17 @@ async function main() {
       const metaRes = await guardedMutate(client, 'update_guide_metadata', {
         uuid, topic: target.newTopic,
       });
-      const metaUpdate = metaRes.isError
-        ? `FAILED: ${metaRes.text.slice(0, 200)}`
-        : `topic -> ${target.newTopic}`;
-      log(`  update_guide_metadata -> isError=${metaRes.isError}: ${metaRes.text.slice(0, 300)}`);
+      const metaPayloadFailure = detectPayloadFailure('update_guide_metadata', metaRes.text);
+      let metaUpdate: string;
+      if (metaRes.isError) {
+        metaUpdate = `FAILED: ${metaRes.text.slice(0, 200)}`;
+      } else if (metaPayloadFailure.failed) {
+        metaUpdate = `FAILED (payload success:false): ${metaPayloadFailure.message ?? 'unknown error'}`;
+        anyFailure = true;
+      } else {
+        metaUpdate = `topic -> ${target.newTopic}`;
+      }
+      log(`  update_guide_metadata -> isError=${metaRes.isError} payloadFailed=${metaPayloadFailure.failed}: ${metaRes.text.slice(0, 300)}`);
 
       // 4. Attach a catalog reference if an obvious, confirmable table is named.
       let refAttached = 'skipped (no confirmable table found)';
@@ -218,13 +230,17 @@ async function main() {
           uuid,
           references: [{ type: 'catalog', url: confirmedDb.url, name: confirmedTable }],
         });
+        const refPayloadFailure = detectPayloadFailure('update_guide', refRes.text);
         if (refRes.isError) {
           refAttached = `FAILED: ${refRes.text.slice(0, 200)}`;
+        } else if (refPayloadFailure.failed) {
+          refAttached = `FAILED (payload success:false): ${refPayloadFailure.message ?? 'unknown error'}`;
+          anyFailure = true;
         } else {
           const rj = refRes.json as Record<string, unknown> | null;
           const versionText = JSON.stringify(rj).slice(0, 200);
           refAttached = `attached catalog ref -> ${confirmedTable} (${confirmedDb.url})`;
-          log(`  update_guide(references) -> isError=false: ${versionText}`);
+          log(`  update_guide(references) -> isError=false payloadFailed=false: ${versionText}`);
           // Verify content wasn't blanked by re-fetching.
           const verify = await tryCall(client, 'get_guide', { uuid });
           const blanked = verify.text.trim().length < got.text.trim().length * 0.5;
@@ -274,6 +290,11 @@ async function main() {
 
   } finally {
     try { await client.close(); } catch { /* ignore */ }
+  }
+
+  if (anyFailure) {
+    log('\n  *** one or more guide writes FAILED — see FAILED entries above ***');
+    process.exitCode = 1;
   }
 }
 

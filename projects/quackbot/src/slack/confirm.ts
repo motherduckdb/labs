@@ -2,6 +2,7 @@ import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { uuid7 } from '../core/uuid7';
 import { redactError } from '../core/redact';
+import type { GuideWriteTarget } from '../core/agentic-loop';
 
 /**
  * Slack confirmation handshake for durable writes.
@@ -29,6 +30,14 @@ export interface ConfirmCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  /**
+   * For uuid-selected guide writes (`update_guide`/`edit_guide_content`), the
+   * target guide resolved before this prompt (see the agentic loop's
+   * pre-confirmation resolve). Lets the prompt name the guide being overwritten
+   * instead of an opaque uuid. Absent for create_guide (its title/topic are in
+   * `args`) and non-guide writes.
+   */
+  target?: GuideWriteTarget;
 }
 
 interface Pending {
@@ -49,14 +58,48 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+const EDIT_SNIPPET_MAX = 80;
+
+/** `*Title* `topic` (`uuid`)` for a resolved guide target — whichever parts exist. */
+function describeTarget(target?: GuideWriteTarget): string {
+  if (!target) return '';
+  const parts: string[] = [];
+  const title = str(target.title);
+  const topic = str(target.topic);
+  const uuid = str(target.uuid);
+  if (title) parts.push(`*${title}*`);
+  if (topic) parts.push(`\`${topic}\``);
+  if (uuid) parts.push(`(\`${uuid}\`)`);
+  return parts.length ? ` ${parts.join(' ')}` : '';
+}
+
+/** Summarize an `edit_guide_content` change: edit count + first old_string snippet. */
+function describeEdits(edits: unknown): string {
+  if (!Array.isArray(edits) || edits.length === 0) return '';
+  const n = edits.length;
+  const first = edits[0] as { old_string?: unknown } | null;
+  const snippet = typeof first?.old_string === 'string' ? first.old_string : '';
+  const oneLine = snippet.replace(/\s+/g, ' ').trim();
+  const clipped = oneLine.length > EDIT_SNIPPET_MAX ? `${oneLine.slice(0, EDIT_SNIPPET_MAX)}…` : oneLine;
+  const count = `${n} edit${n === 1 ? '' : 's'}`;
+  return clipped ? ` — ${count}, first replaces \`${clipped}\`` : ` — ${count}`;
+}
+
 /** Human-readable summary of what the write will do. */
 export function describeWrite(call: ConfirmCall): string {
-  const path = str(call.args?.path);
   switch (call.name) {
-    case 'create_guide':
-      return `save a new guide${path ? ` \`${path}\`` : ''}`;
+    case 'create_guide': {
+      const title = str(call.args?.title);
+      const topic = str(call.args?.topic);
+      return (
+        `save a new guide${title ? ` *${title}*` : ''}` +
+        `${topic ? ` under \`${topic}\`` : ''}`
+      );
+    }
     case 'update_guide':
-      return `overwrite the guide${path ? ` \`${path}\`` : ''}`;
+      return `overwrite the guide${describeTarget(call.target)}`;
+    case 'edit_guide_content':
+      return `edit the guide${describeTarget(call.target)}${describeEdits(call.args?.edits)}`;
     case 'save_dive':
       return `save a new Dive${str(call.args?.title) ? ` — *${str(call.args?.title)}*` : ''}`;
     default:

@@ -10,6 +10,9 @@ import {
   guideWriteViolation,
   databaseAllowViolation,
   configuredDatabaseAllowlist,
+  parseGuideHeader,
+  isNamespacedGuideTopic,
+  UUID_SELECTED_GUIDE_WRITES,
 } from './mcp-client';
 
 describe('quackbot tool allowlist', () => {
@@ -238,6 +241,63 @@ describe('guideWriteViolation — never fires for reads or non-guide tools', () 
     expect(guideWriteViolation('list_guides', undefined)).toBeNull();
     expect(guideWriteViolation('get_query_guide', undefined)).toBeNull();
     expect(guideWriteViolation('query', { sql: 'SELECT 1' })).toBeNull();
+  });
+});
+
+describe('parseGuideHeader (get_guide returns {text}; metadata is a rendered header)', () => {
+  it('extracts title, topic, and uuid from the live-observed header format', () => {
+    const text = [
+      'Taxi data table',
+      'uuid: ddff9b9d-1234 · topic: quackbot/taxi · v3 · user',
+      'The yellow-taxi trips table.',
+      '',
+      'Body of the guide.',
+    ].join('\n');
+    expect(parseGuideHeader(text)).toEqual({
+      title: 'Taxi data table',
+      topic: 'quackbot/taxi',
+      uuid: 'ddff9b9d-1234',
+    });
+  });
+
+  it('strips a markdown heading marker on the title line', () => {
+    const text = '# NBA scoring\nuuid: 1d02 · topic: quackbot/nba · v1 · user\ndesc';
+    expect(parseGuideHeader(text)).toMatchObject({ title: 'NBA scoring', topic: 'quackbot/nba' });
+  });
+
+  it('tolerates a pipe-separated header', () => {
+    const text = 'Title\nuuid: abc | topic: quackbot | v1 | user\ndesc';
+    expect(parseGuideHeader(text)).toMatchObject({ title: 'Title', topic: 'quackbot', uuid: 'abc' });
+  });
+
+  it('fails closed (null) when there is no recognizable metadata line', () => {
+    expect(parseGuideHeader('just prose, no header')).toBeNull();
+    expect(parseGuideHeader('')).toBeNull();
+    expect(parseGuideHeader(undefined)).toBeNull();
+    expect(parseGuideHeader(123 as unknown)).toBeNull();
+    // A line with uuid but no topic is not enough to identify the target.
+    expect(parseGuideHeader('Title\nuuid: abc only\nbody')).toBeNull();
+  });
+});
+
+describe('isNamespacedGuideTopic (quackbot namespace confinement for uuid writes)', () => {
+  it('accepts the literal topic and anything under quackbot/', () => {
+    expect(isNamespacedGuideTopic('quackbot')).toBe(true);
+    expect(isNamespacedGuideTopic('quackbot/taxi')).toBe(true);
+    expect(isNamespacedGuideTopic('quackbot/finance/metrics')).toBe(true);
+  });
+
+  it('rejects foreign topics and near-miss prefixes', () => {
+    expect(isNamespacedGuideTopic('finance/metrics')).toBe(false);
+    expect(isNamespacedGuideTopic('quackbotx/y')).toBe(false);
+    expect(isNamespacedGuideTopic('')).toBe(false);
+    expect(isNamespacedGuideTopic(undefined)).toBe(false);
+    expect(isNamespacedGuideTopic(123)).toBe(false);
+  });
+
+  it('lists exactly the two uuid-selected guide writes', () => {
+    expect([...UUID_SELECTED_GUIDE_WRITES].sort()).toEqual(['edit_guide_content', 'update_guide']);
+    expect(UUID_SELECTED_GUIDE_WRITES.has('create_guide')).toBe(false);
   });
 });
 

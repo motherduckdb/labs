@@ -269,19 +269,26 @@ describe('runAgenticLoop with TurnSink', () => {
 
   it('skips a durable write and returns an error tool_result when confirmTool denies it', async () => {
     const confirmTool = vi.fn(async () => false);
-    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
-      content: 'guide saved', isError: false,
-    }));
+    // update_guide now resolves its target via a read-only get_guide before the
+    // gate; that read succeeds (quackbot-topic header) but the WRITE never runs.
+    const dispatchToolImpl = vi.fn(async (o: { client: Client; name: string; args: Record<string, unknown> }) => {
+      if (o.name === 'get_guide') {
+        return { content: 'Taxi data table\nuuid: b0-1 · topic: quackbot/taxi · v3 · user\nA table.\n\nBody.', isError: false };
+      }
+      return { content: 'guide saved', isError: false };
+    });
     const { result, events } = await runLoop({
       streams: [
-        () => toolCallStream([{ id: 'w1', name: 'update_guide', args: { path: 'users/u/quackbot/a.md', content: 'x' } }]),
+        () => toolCallStream([{ id: 'w1', name: 'update_guide', args: { uuid: 'b0-1', content: 'x' } }]),
         () => textStream('Okay, not saving.'),
       ],
       dispatchToolImpl,
       confirmTool,
     });
-    // The write never reached MCP...
-    expect(dispatchToolImpl).not.toHaveBeenCalled();
+    // The resolve read ran, but the update_guide WRITE never reached MCP.
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'get_guide', args: { uuid: 'b0-1' } });
+    expect(confirmTool).toHaveBeenCalledTimes(1);
     // ...but the round stayed paired: a tool_result (is_error) was recorded and
     // surfaced to the sink, and the loop continued to a final answer.
     const toolEnd = events.find((e) => e.type === 'tool_end');
@@ -290,6 +297,122 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(toolMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'w1', is_error: true });
     expect(String(toolMsg.content[0].content)).toMatch(/declined/i);
     expect(result.finishReason).toBe('done');
+  });
+
+  it('resolves the target guide before confirming an update_guide and threads {title, topic, uuid} into confirmTool', async () => {
+    const confirmTool = vi.fn(async (_c: { id: string; name: string; args: Record<string, unknown>; target?: unknown }) => true);
+    const dispatchToolImpl = vi.fn(async (o: { client: Client; name: string; args: Record<string, unknown> }) => {
+      if (o.name === 'get_guide') {
+        return { content: 'NBA scoring estimates\nuuid: 1d02-77 · topic: quackbot/nba · v2 · user\nEstimates.\n\nBody text.', isError: false };
+      }
+      return { content: 'guide updated', isError: false };
+    });
+    const { result } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'w1', name: 'update_guide', args: { uuid: '1d02-77', content: 'new body' } }]),
+        () => textStream('Updated.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    // One resolve read + one write dispatch, in that order.
+    expect(dispatchToolImpl.mock.calls.map((c) => c[0].name)).toEqual(['get_guide', 'update_guide']);
+    // The confirmation was handed the resolved target.
+    expect(confirmTool).toHaveBeenCalledTimes(1);
+    expect(confirmTool.mock.calls[0][0]).toMatchObject({
+      name: 'update_guide',
+      target: { title: 'NBA scoring estimates', topic: 'quackbot/nba', uuid: '1d02-77' },
+    });
+    expect(result.finishReason).toBe('done');
+  });
+
+  it('does NOT add a resolve round-trip for create_guide (topic is in its own args)', async () => {
+    const confirmTool = vi.fn(async (_c: { id: string; name: string; args: Record<string, unknown>; target?: unknown }) => true);
+    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'guide created', isError: false,
+    }));
+    await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'c1', name: 'create_guide', args: { topic: 'quackbot/x', title: 't', content: 'c' } }]),
+        () => textStream('Created.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    // Exactly one dispatch — the create itself, no preceding get_guide.
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'create_guide' });
+    expect(confirmTool.mock.calls[0][0].target).toBeUndefined();
+  });
+
+  it('rejects an uuid guide write whose target lives outside the quackbot namespace — never confirms, never writes', async () => {
+    const confirmTool = vi.fn(async () => true);
+    const dispatchToolImpl = vi.fn(async (o: { client: Client; name: string; args: Record<string, unknown> }) => {
+      if (o.name === 'get_guide') {
+        return { content: 'Org revenue guide\nuuid: org-9 · topic: finance/metrics · v5 · organization\nDesc.\n\nBody.', isError: false };
+      }
+      return { content: 'should never run', isError: false };
+    });
+    const { result, events } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'w1', name: 'edit_guide_content', args: { uuid: 'org-9', edits: [{ old_string: 'a', new_string: 'b' }] } }]),
+        () => textStream('Understood, cannot edit that guide.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    // Resolve read ran; the write was refused before confirmation.
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'get_guide' });
+    expect(confirmTool).not.toHaveBeenCalled();
+    const toolEnd = events.find((e) => e.type === 'tool_end');
+    expect(toolEnd).toMatchObject({ call: { name: 'edit_guide_content', error: true } });
+    const toolMsg = result.newTurnMessages.find((m) => m.role === 'user') as { content: Array<Record<string, unknown>> };
+    expect(toolMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'w1', is_error: true });
+    expect(String(toolMsg.content[0].content)).toMatch(/quackbot/i);
+    expect(result.finishReason).toBe('done');
+  });
+
+  it('fails closed when the target guide cannot be read (lookup error) — refuses, does not confirm', async () => {
+    const confirmTool = vi.fn(async () => true);
+    const dispatchToolImpl = vi.fn(async (o: { client: Client; name: string; args: Record<string, unknown> }) => {
+      if (o.name === 'get_guide') return { content: 'Could not find guide or not authorized', isError: true, errorMessage: 'not found' };
+      return { content: 'should never run', isError: false };
+    });
+    const { result } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'w1', name: 'update_guide', args: { uuid: 'ghost', content: 'x' } }]),
+        () => textStream('Cannot find that guide.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    expect(confirmTool).not.toHaveBeenCalled();
+    const toolMsg = result.newTurnMessages.find((m) => m.role === 'user') as { content: Array<Record<string, unknown>> };
+    expect(toolMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'w1', is_error: true });
+    expect(String(toolMsg.content[0].content)).toMatch(/could not read/i);
+  });
+
+  it('fails closed when the target guide header cannot be parsed — refuses, does not confirm', async () => {
+    const confirmTool = vi.fn(async () => true);
+    const dispatchToolImpl = vi.fn(async (o: { client: Client; name: string; args: Record<string, unknown> }) => {
+      // A body with no recognizable `uuid: … · topic: …` metadata line.
+      if (o.name === 'get_guide') return { content: 'just some prose with no metadata header at all', isError: false };
+      return { content: 'should never run', isError: false };
+    });
+    const { result } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'w1', name: 'update_guide', args: { uuid: 'weird', content: 'x' } }]),
+        () => textStream('Cannot verify that guide.'),
+      ],
+      dispatchToolImpl,
+      confirmTool,
+    });
+    expect(confirmTool).not.toHaveBeenCalled();
+    const toolMsg = result.newTurnMessages.find((m) => m.role === 'user') as { content: Array<Record<string, unknown>> };
+    expect(toolMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'w1', is_error: true });
+    expect(String(toolMsg.content[0].content)).toMatch(/could not parse/i);
   });
 
   it('does NOT confirm a plain read even when confirmTool is supplied', async () => {
@@ -460,6 +583,32 @@ describe('runAgenticLoop with TurnSink', () => {
       tool_use_id: 'guide_1',
       content: 'STOCK DIVE GUIDE\n\nGEMINI SUPPLEMENT',
     });
+  });
+
+  it('keeps a FAILED stock get_dive_guide fetch an error on Gemini — no supplement, is_error tool_result', async () => {
+    vi.mocked(buildGeminiDiveSupplement).mockClear();
+    const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'Tool returned an error:\n\nMCP transport failed', isError: true, errorMessage: 'mcp_error',
+    }));
+    const { result, events } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'guide_err', name: 'get_dive_guide', args: { client: 'other' } }]),
+        () => textStream('The dive guide could not be fetched.'),
+      ],
+      dispatchToolImpl,
+      profileId: 'google/gemini-3-flash-preview',
+    });
+
+    // The supplement is NOT appended to an error, and the failure is preserved.
+    expect(buildGeminiDiveSupplement).not.toHaveBeenCalled();
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    const toolEnd = events.find((e) => e.type === 'tool_end');
+    expect(toolEnd).toMatchObject({ call: { id: 'guide_err', name: 'get_dive_guide', error: true } });
+    const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
+    expect(toolResult).toMatchObject({ type: 'tool_result', tool_use_id: 'guide_err', is_error: true });
+    expect(String(toolResult.content)).not.toContain('GEMINI SUPPLEMENT');
+    expect(String(toolResult.content)).toContain('MCP transport failed');
+    expect(result.finishReason).toBe('done');
   });
 
   it('appends the supplement on Gemini regardless of the client arg passed', async () => {

@@ -140,6 +140,81 @@ function uuidViolation(toolName: string, args: Record<string, unknown> | undefin
   return null;
 }
 
+/**
+ * The two uuid-selected guide writes. Unlike `create_guide` (topic-selected, so
+ * its namespace is checked from its own args), these select an EXISTING guide by
+ * uuid and carry no topic in their args — the target's topic can only be learned
+ * by reading the guide. `resolveGuideWriteTarget` (agentic-loop) does that read
+ * before the confirmation gate, both to name the target in the Slack prompt and
+ * to apply the `quackbot/` namespace check that `guideWriteViolation` can only do
+ * for create_guide.
+ */
+export const UUID_SELECTED_GUIDE_WRITES = new Set(['update_guide', 'edit_guide_content']);
+
+export interface GuideHeader {
+  title?: string;
+  topic?: string;
+  uuid?: string;
+}
+
+/**
+ * Parse the rendered header of a `get_guide({uuid})` response. Phase 0 pinned
+ * that `get_guide` returns `{text}` only — its metadata is a RENDERED text
+ * header, not structured fields. Observed live format:
+ *
+ *   <title line>
+ *   uuid: <uuid> · topic: <topic> · v<N> · <access>
+ *   <description>
+ *   <blank>
+ *   <body…>
+ *
+ * Parse defensively and FAIL CLOSED (return null) when the metadata line can't
+ * be found or a topic can't be extracted — the caller treats null as "cannot
+ * verify this target" and refuses the write.
+ */
+export function parseGuideHeader(text: unknown): GuideHeader | null {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  const lines = text.split('\n');
+
+  let metaIdx = -1;
+  let uuid: string | undefined;
+  let topic: string | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/\buuid:/i.test(line) && /\btopic:/i.test(line)) {
+      // Fields are separated by the middle-dot (·) or a pipe; stop at either.
+      uuid = line.match(/\buuid:\s*([^\s·|]+)/i)?.[1]?.trim();
+      topic = line.match(/\btopic:\s*([^·|]+)/i)?.[1]?.trim();
+      metaIdx = i;
+      break;
+    }
+  }
+  if (metaIdx === -1 || !topic) return null;
+
+  // Title = first non-empty line above the metadata line (strip markdown heading
+  // markers if the renderer emitted them).
+  let title: string | undefined;
+  for (let i = 0; i < metaIdx; i++) {
+    const t = lines[i].replace(/^#+\s*/, '').trim();
+    if (t) {
+      title = t;
+      break;
+    }
+  }
+  return { title, topic, uuid };
+}
+
+/**
+ * The quackbot namespace convention: the literal topic `quackbot`, or anything
+ * under `quackbot/`. Used to keep uuid-selected writes confined to the bot's own
+ * guides (defense-in-depth — the server ACL is the real wall). Deliberately
+ * stricter than a bare `startsWith('quackbot')`, so `quackbotx/…` is NOT treated
+ * as in-namespace, matching the `create_guide` topic guard.
+ */
+export function isNamespacedGuideTopic(topic: unknown): boolean {
+  return typeof topic === 'string' && (topic === 'quackbot' || topic.startsWith('quackbot/'));
+}
+
 export function guideWriteViolation(
   toolName: string,
   args: Record<string, unknown> | undefined,
@@ -154,9 +229,11 @@ export function guideWriteViolation(
   }
 
   if (toolName === 'update_guide') {
-    // uuid-selected. No ownership pre-check: the server ACL rejects writes to
-    // guides this PAT doesn't own, and get_guide returns unstructured {text}
-    // anyway, so a client-side resolve would buy nothing.
+    // uuid-selected. This arg-shape guard only checks uuid/access/references;
+    // the `quackbot/` namespace check for uuid writes can't happen here (args
+    // carry no topic) so it lives in the pre-confirmation resolve step
+    // (`resolveGuideWriteTarget` in agentic-loop, which reads the target guide's
+    // topic). Ownership stays the server ACL's job.
     return uuidViolation(toolName, args)
       ?? accessViolation(toolName, args)
       ?? referencesViolation(toolName, args);

@@ -130,7 +130,16 @@ function cellToString(value: unknown): string {
 }
 
 function renderMarkdownTable(header: string[], rows: string[][]): string {
-  const escape = (cell: string) => cell.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  // Escape Slack mrkdwn entities first (order matters: & before < / >) so
+  // data-derived cell content can't smuggle <@U…>/<#C…>/<!here> mentions or
+  // <url|text> links/unfurls, then apply the existing table-cell escaping.
+  const escape = (cell: string) =>
+    cell
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, ' ');
   const visibleRows = rows.slice(0, MAX_TABLE_ROWS);
 
   const lines = [

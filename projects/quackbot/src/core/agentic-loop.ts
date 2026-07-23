@@ -1,7 +1,12 @@
 import { streamChatCompletion as defaultStreamChatCompletion } from './llm-client';
 import type { ModelProfile } from './llm-client';
 import { dispatchTool as defaultDispatchTool } from './tool-dispatch';
-import { requiresConfirmation } from './mcp-client';
+import {
+  requiresConfirmation,
+  parseGuideHeader,
+  isNamespacedGuideTopic,
+  UUID_SELECTED_GUIDE_WRITES,
+} from './mcp-client';
 import { buildGeminiDiveSupplement } from './gemini-dive-guide';
 import {
   stepMvizFence,
@@ -17,6 +22,18 @@ import type { TurnSink, AgenticLoopFinishReason } from './turn-sink';
 export type ThinkingLevel = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 export type { AgenticLoopFinishReason } from './turn-sink';
+
+/**
+ * The resolved identity of the guide an `update_guide` / `edit_guide_content`
+ * write targets, learned by reading the guide before the confirmation gate.
+ * Threaded into `confirmTool` so the Slack Approve/Deny prompt can NAME the
+ * guide a human is about to let the bot overwrite.
+ */
+export interface GuideWriteTarget {
+  title?: string;
+  topic?: string;
+  uuid?: string;
+}
 
 /**
  * The agentic loop — calls the LLM, dispatches MCP tool calls, and repeats
@@ -63,7 +80,12 @@ export interface RunAgenticLoopOpts {
    * and writes proceed — the Slack layer always supplies one; test/other
    * callers opt in explicitly.
    */
-  confirmTool?: (call: { id: string; name: string; args: Record<string, unknown> }) => Promise<boolean>;
+  confirmTool?: (call: {
+    id: string;
+    name: string;
+    args: Record<string, unknown>;
+    target?: GuideWriteTarget;
+  }) => Promise<boolean>;
 }
 
 export interface RunAgenticLoopResult {
@@ -322,15 +344,58 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
           /gemini/i.test(profile.id)
         ) {
           const tStart = Date.now();
-          const fetchStock = async (): Promise<string> => {
-            const dispatchTool = opts.dispatchToolImpl ?? defaultDispatchTool;
-            const dispatch = await dispatchTool({ client: opts.client, name: toolName, args: toolInput });
-            return dispatch.content;
-          };
-          const resolve =
-            opts.resolveGeminiDiveGuide ??
-            (async (fetch) => `${await fetch()}\n\n${buildGeminiDiveSupplement()}`);
-          const content = await resolve(fetchStock);
+          const dispatchTool = opts.dispatchToolImpl ?? defaultDispatchTool;
+
+          // Benchmark/override seam: when a `resolveGeminiDiveGuide` is supplied
+          // (only scripts/bench-dive-guide.ts does) it fully owns resolution via
+          // the `fetchStock` thunk — the stock-alone and full-override arms drive
+          // through here. Left untouched so the benchmark stays reproducible.
+          if (opts.resolveGeminiDiveGuide) {
+            const content = await opts.resolveGeminiDiveGuide(async () => {
+              const d = await dispatchTool({ client: opts.client, name: toolName, args: toolInput });
+              return d.content;
+            });
+            toolResults.push({ type: 'tool_result', tool_use_id: toolId, content });
+            opts.sink.onToolEnd({ id: toolId, name: toolName, result: content.slice(0, 500) });
+            try {
+              cl.toolEnd({
+                taskId: opts.taskId, runId: opts.runId,
+                toolName, toolUseId: toolId, ok: true,
+                durationMs: Date.now() - tStart, resultBytes: content.length,
+                iteration: iterations,
+                payload: { gemini_supplement: true },
+              });
+            } catch (logErr) {
+              console.error('[Controllog] toolEnd error:', logErr);
+            }
+            continue;
+          }
+
+          // Default (production) path: fetch the REAL stock guide and append the
+          // supplement ONLY when the fetch succeeded. A failed MCP fetch must
+          // stay a tool ERROR — appending the supplement to the error text would
+          // launder a failure into a successful tool_result whose "guide" is an
+          // error message. Thread `isError` through exactly like the general
+          // dispatch path below.
+          const dispatch = await dispatchTool({ client: opts.client, name: toolName, args: toolInput });
+          if (dispatch.isError) {
+            toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: dispatch.content, is_error: true });
+            opts.sink.onToolEnd({ id: toolId, name: toolName, result: dispatch.content.slice(0, 500), error: true });
+            try {
+              cl.toolEnd({
+                taskId: opts.taskId, runId: opts.runId,
+                toolName, toolUseId: toolId, ok: false,
+                durationMs: Date.now() - tStart, resultBytes: dispatch.content.length,
+                errorMessage: dispatch.errorMessage,
+                iteration: iterations,
+                payload: { gemini_supplement: false },
+              });
+            } catch (logErr) {
+              console.error('[Controllog] toolEnd error:', logErr);
+            }
+            continue;
+          }
+          const content = `${dispatch.content}\n\n${buildGeminiDiveSupplement()}`;
           toolResults.push({ type: 'tool_result', tool_use_id: toolId, content });
           opts.sink.onToolEnd({ id: toolId, name: toolName, result: content.slice(0, 500) });
           try {
@@ -352,7 +417,61 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
         // prompt-injected write from committing unattended. On deny/timeout the
         // tool is skipped with an error tool_result so the round stays paired.
         if (opts.confirmTool && requiresConfirmation(toolName, toolInput)) {
-          const approved = await opts.confirmTool({ id: toolId, name: toolName, args: toolInput });
+          // For a uuid-selected guide write (`update_guide`/`edit_guide_content`),
+          // resolve the target guide FIRST — a single read-only `get_guide(uuid)`
+          // round-trip, added only for these two tools (never create_guide or a
+          // non-guide write). Two jobs: (1) name the target in the Slack prompt so
+          // the human can verify WHAT they're approving; (2) apply the `quackbot/`
+          // namespace check that the arg-shape guard can't do for uuid writes
+          // (their args carry no topic). Fail CLOSED — if the guide can't be read,
+          // its header can't be parsed, or its topic is outside the namespace,
+          // refuse the write as a model-visible tool error (self-correctable) and
+          // never reach the confirmation gate.
+          let guideTarget: GuideWriteTarget | undefined;
+          if (UUID_SELECTED_GUIDE_WRITES.has(toolName)) {
+            const uuid = typeof toolInput.uuid === 'string' ? toolInput.uuid : '';
+            const dispatchTool = opts.dispatchToolImpl ?? defaultDispatchTool;
+            let header: ReturnType<typeof parseGuideHeader> = null;
+            let lookupErr: string | undefined;
+            try {
+              const read = await dispatchTool({ client: opts.client, name: 'get_guide', args: { uuid } });
+              if (read.isError) lookupErr = read.content;
+              else header = parseGuideHeader(read.content);
+            } catch (err) {
+              lookupErr = err instanceof Error ? err.message : 'unknown error';
+            }
+
+            if (lookupErr || !header || !isNamespacedGuideTopic(header.topic)) {
+              const reason = lookupErr
+                ? `could not read the target guide (${lookupErr})`
+                : !header
+                  ? 'could not parse the target guide’s metadata'
+                  : `the target guide’s topic '${header.topic}' is outside quackbot’s namespace`;
+              const refusal =
+                `Refusing ${toolName}: ${reason}. Only guides under the 'quackbot' topic ` +
+                `can be edited from here. Use list_guides({topic:'quackbot/…'}) to pick a ` +
+                `guide the bot owns, or create a new one with create_guide.`;
+              toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: refusal, is_error: true });
+              opts.sink.onToolEnd({ id: toolId, name: toolName, result: refusal, error: true });
+              try {
+                cl.toolEnd({
+                  taskId: opts.taskId, runId: opts.runId,
+                  toolName, toolUseId: toolId, ok: false,
+                  durationMs: 0, iteration: iterations,
+                  payload: { guide_target_refused: true, ...(lookupErr && { lookup_error: true }) },
+                });
+              } catch (logErr) {
+                console.error('[Controllog] toolEnd error:', logErr);
+              }
+              continue;
+            }
+            guideTarget = { title: header.title, topic: header.topic, uuid: uuid || header.uuid };
+          }
+
+          const approved = await opts.confirmTool({
+            id: toolId, name: toolName, args: toolInput,
+            ...(guideTarget && { target: guideTarget }),
+          });
           if (!approved) {
             const declined = `The user declined to run ${toolName}. Do not retry it — continue without this write.`;
             toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: declined, is_error: true });

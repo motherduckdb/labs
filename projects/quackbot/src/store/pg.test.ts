@@ -30,9 +30,41 @@ describe('resolvePoolConfig — TLS is always verified unless explicitly disable
     ).toThrow();
   });
 
-  it('honors an explicit sslmode=disable (documented plaintext escape hatch)', () => {
-    const cfg = resolvePoolConfig('postgres://u:p@host/db?sslmode=disable');
+  it('honors sslmode=disable for a loopback host (localhost)', () => {
+    const cfg = resolvePoolConfig('postgres://u:p@localhost/db?sslmode=disable');
     expect(cfg.ssl).toBe(false);
+  });
+
+  it('honors sslmode=disable for a loopback host (127.0.0.1)', () => {
+    const cfg = resolvePoolConfig('postgres://u:p@127.0.0.1:5432/db?sslmode=disable');
+    expect(cfg.ssl).toBe(false);
+  });
+
+  it('honors sslmode=disable for a loopback host (::1)', () => {
+    const cfg = resolvePoolConfig('postgres://u:p@[::1]:5432/db?sslmode=disable');
+    expect(cfg.ssl).toBe(false);
+  });
+
+  it('throws when sslmode=disable targets a non-loopback host', () => {
+    // A misconfigured production URL must never silently fall back to a
+    // plaintext connection — fail fast at startup instead.
+    expect(() => resolvePoolConfig('postgres://u:p@prod-db.example.com/db?sslmode=disable')).toThrow(
+      /sslmode=disable is only permitted for localhost/,
+    );
+  });
+
+  it('throws when sslmode=disable appears in a non-URL-shaped (libpq key=value) string', () => {
+    // The host can't be determined for this shape, so it can't be verified
+    // as loopback-only — refuse to guess and fail fast instead.
+    expect(() => resolvePoolConfig('host=prod-db.example.com user=u password=p sslmode=disable')).toThrow(
+      /sslmode=disable is only permitted for localhost/,
+    );
+  });
+
+  it('still applies strict TLS for a non-URL-shaped string without sslmode=disable', () => {
+    const cfg = resolvePoolConfig('host=prod-db.example.com user=u password=p');
+    expect(cfg.ssl).toEqual({ rejectUnauthorized: true });
+    expect(cfg.connectionString).toBe('host=prod-db.example.com user=u password=p');
   });
 
   it('sets a client-side query_timeout but NOT server-side statement_timeout', () => {
@@ -41,7 +73,7 @@ describe('resolvePoolConfig — TLS is always verified unless explicitly disable
     for (const url of [
       'postgres://u:p@host/db',
       'postgres://u:p@host/db?sslrootcert=system',
-      'postgres://u:p@host/db?sslmode=disable',
+      'postgres://u:p@localhost/db?sslmode=disable',
     ]) {
       const cfg = resolvePoolConfig(url) as Record<string, unknown>;
       expect(cfg.query_timeout).toBe(30_000);

@@ -22,11 +22,60 @@ function fakeApp() {
 }
 
 describe('describeWrite', () => {
-  it('summarizes each write type with its path/title', () => {
-    expect(describeWrite({ id: '1', name: 'create_guide', args: { path: 'users/x/quackbot/a.md' } })).toContain(
+  it('names a create_guide by its title and topic (post-migration fields, not the dead `path`)', () => {
+    const s = describeWrite({
+      id: '1',
+      name: 'create_guide',
+      args: { title: 'Revenue definition', topic: 'quackbot/metrics', content: 'x' },
+    });
+    expect(s).toContain('Revenue definition');
+    expect(s).toContain('quackbot/metrics');
+    // The pre-migration `path` field must no longer leak through.
+    expect(describeWrite({ id: '1', name: 'create_guide', args: { path: 'users/x/quackbot/a.md' } })).not.toContain(
       'users/x/quackbot/a.md',
     );
-    expect(describeWrite({ id: '1', name: 'update_guide', args: {} })).toContain('overwrite');
+  });
+
+  it('names an update_guide by its RESOLVED target (title + topic + uuid), not a bare uuid', () => {
+    const s = describeWrite({
+      id: '1',
+      name: 'update_guide',
+      args: { uuid: 'b00542d5-abcd', content: 'x' },
+      target: { title: 'Taxi data table', topic: 'quackbot/taxi', uuid: 'b00542d5-abcd' },
+    });
+    expect(s).toContain('overwrite');
+    expect(s).toContain('Taxi data table');
+    expect(s).toContain('quackbot/taxi');
+    expect(s).toContain('b00542d5-abcd');
+  });
+
+  it('summarizes an edit_guide_content change: target + edit count + first old_string snippet', () => {
+    const s = describeWrite({
+      id: '1',
+      name: 'edit_guide_content',
+      args: { uuid: 'u', edits: [{ old_string: 'joins customers.user_id', new_string: 'joins customers.id' }, { old_string: 'a', new_string: 'b' }] },
+      target: { title: 'Join keys', topic: 'quackbot/joins', uuid: 'u' },
+    });
+    expect(s).toContain('Join keys');
+    expect(s).toContain('quackbot/joins');
+    expect(s).toContain('2 edits');
+    expect(s).toContain('joins customers.user_id');
+  });
+
+  it('truncates a long first old_string snippet to ~80 chars', () => {
+    const long = 'x'.repeat(200);
+    const s = describeWrite({
+      id: '1',
+      name: 'edit_guide_content',
+      args: { uuid: 'u', edits: [{ old_string: long, new_string: 'y' }] },
+      target: { title: 'T', topic: 'quackbot/x', uuid: 'u' },
+    });
+    expect(s).toContain('1 edit');
+    expect(s).toContain('…');
+    expect(s).not.toContain(long);
+  });
+
+  it('summarizes save_dive by its title', () => {
     expect(describeWrite({ id: '1', name: 'save_dive', args: { title: 'Q3' } })).toContain('Q3');
   });
 });

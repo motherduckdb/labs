@@ -99,4 +99,91 @@ describe('tableBlockToMarkdown', () => {
     const noColumns = '```table\n{"type":"table"}\n```';
     expect(tableBlockToMarkdown(noColumns)).toBeNull();
   });
+
+  it('escapes Slack mrkdwn mention/link injection in body cells so they render inert', () => {
+    const source = [
+      '```table',
+      JSON.stringify({
+        type: 'table',
+        columns: [{ id: 'note', title: 'Note' }],
+        data: [
+          { note: '<@U12345> please review' },
+          { note: '<#C67890|general> channel' },
+          { note: '<!here> urgent' },
+          { note: '<!channel> all' },
+          { note: '<https://evil.example|Click me>' },
+        ],
+      }),
+      '```',
+    ].join('\n');
+    const md = tableBlockToMarkdown(source);
+    expect(md).not.toBeNull();
+    expect(md).not.toContain('<@U12345>');
+    expect(md).not.toContain('<#C67890|general>');
+    expect(md).not.toContain('<!here>');
+    expect(md).not.toContain('<!channel>');
+    expect(md).not.toContain('<https://evil.example|Click me>');
+    expect(md).toContain('&lt;@U12345&gt;');
+    // The pipe inside the mention is also a table-cell delimiter, so it gets
+    // the existing backslash-escape treatment on top of entity-escaping.
+    expect(md).toContain('&lt;#C67890\\|general&gt;');
+    expect(md).toContain('&lt;!here&gt;');
+    expect(md).toContain('&lt;!channel&gt;');
+    expect(md).toContain('&lt;https://evil.example\\|Click me&gt;');
+  });
+
+  it('escapes ampersands and brackets in header cells too', () => {
+    const source = [
+      '```table',
+      JSON.stringify({
+        type: 'table',
+        columns: [{ id: 'a', title: '<@U1> & <#C2>' }],
+        data: [{ a: 'x' }],
+      }),
+      '```',
+    ].join('\n');
+    const md = tableBlockToMarkdown(source);
+    expect(md).not.toBeNull();
+    expect(md?.split('\n')[0]).toBe('| &lt;@U1&gt; &amp; &lt;#C2&gt; |');
+  });
+
+  it('escapes bare & before < / > so entities are not double-escaped', () => {
+    const source = [
+      '```table',
+      JSON.stringify({
+        type: 'table',
+        columns: [{ id: 'a', title: 'A' }],
+        data: [{ a: 'Tom & Jerry <script>' }],
+      }),
+      '```',
+    ].join('\n');
+    const md = tableBlockToMarkdown(source);
+    expect(md).toContain('Tom &amp; Jerry &lt;script&gt;');
+  });
+
+  it('still escapes pipes and newlines alongside mrkdwn entities', () => {
+    const source = [
+      '```table',
+      JSON.stringify({
+        type: 'table',
+        columns: [{ id: 'a', title: 'A' }],
+        data: [{ a: 'a|b\nc <@U1>' }],
+      }),
+      '```',
+    ].join('\n');
+    const md = tableBlockToMarkdown(source);
+    expect(md).toContain('a\\|b c &lt;@U1&gt;');
+  });
+
+  it('leaves plain cell content unchanged', () => {
+    const md = tableBlockToMarkdown(tableSource);
+    expect(md).toBe(
+      [
+        '| Product | Sales |',
+        '| --- | --- |',
+        '| Widget | 125000 |',
+        '| Gadget | 98000 |',
+      ].join('\n')
+    );
+  });
 });
