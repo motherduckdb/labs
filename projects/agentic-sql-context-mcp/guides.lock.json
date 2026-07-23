@@ -1,0 +1,167 @@
+{
+  "generated_for_prefix": "dabstep",
+  "guides": {
+    "bucketing-capture-delay": {
+      "access": "user",
+      "title": "bucketing-capture-delay",
+      "topic": "dabstep/bucketing",
+      "uuid": "e356211c-c6cf-46a2-bb94-4cae18b9eb58"
+    },
+    "bucketing-month": {
+      "access": "user",
+      "title": "bucketing-month",
+      "topic": "dabstep/bucketing",
+      "uuid": "97787718-3c12-45d9-aa48-60aa45a2289a"
+    },
+    "bucketing-monthly": {
+      "access": "user",
+      "title": "bucketing-monthly",
+      "topic": "dabstep/bucketing",
+      "uuid": "315638d0-a882-4a0e-b52e-53f3e73bc0c3"
+    },
+    "fees-aci-special": {
+      "access": "user",
+      "title": "fees-aci-special",
+      "topic": "dabstep/fees",
+      "uuid": "fbd441ec-7637-4b91-8b0e-4529c09d6cfb"
+    },
+    "fees-directionality": {
+      "access": "user",
+      "title": "fees-directionality",
+      "topic": "dabstep/fees",
+      "uuid": "db4291fc-6122-4203-832b-d003a36694e0"
+    },
+    "fees-formula": {
+      "access": "user",
+      "title": "fees-formula",
+      "topic": "dabstep/fees",
+      "uuid": "bcea1bea-0fc6-4528-be7b-f3586b134e43"
+    },
+    "fees-matching-9dim": {
+      "access": "user",
+      "title": "fees-matching-9dim",
+      "topic": "dabstep/fees",
+      "uuid": "4583475c-a24c-4bc7-bb79-eeaa07c80efc"
+    },
+    "format-lists-kv": {
+      "access": "user",
+      "title": "format-lists-kv",
+      "topic": "dabstep/answer_format",
+      "uuid": "0a2030d6-8710-444a-a40f-b51bdde43f60"
+    },
+    "format-na-empty": {
+      "access": "user",
+      "title": "format-na-empty",
+      "topic": "dabstep/answer_format",
+      "uuid": "ce2f7b09-7045-4408-8781-8127c259b42f"
+    },
+    "format-rules": {
+      "access": "user",
+      "title": "format-rules",
+      "topic": "dabstep/answer_format",
+      "uuid": "7aafe467-d2ca-4935-bf52-c2cc6e920194"
+    },
+    "schema-fees": {
+      "access": "user",
+      "title": "schema-fees",
+      "topic": "dabstep/schema",
+      "uuid": "2617ce31-76d8-4a92-aea8-c41ca9d33e27"
+    },
+    "schema-merchants-lookups": {
+      "access": "user",
+      "title": "schema-merchants-lookups",
+      "topic": "dabstep/schema",
+      "uuid": "efbab2d0-0326-4752-9fa5-a6d7cabefb1d"
+    },
+    "schema-payments": {
+      "access": "user",
+      "title": "schema-payments",
+      "topic": "dabstep/schema",
+      "uuid": "a92d1d65-1a12-46a2-b926-a3cc339cecee"
+    },
+    "schema-scope": {
+      "access": "user",
+      "title": "schema-scope",
+      "topic": "dabstep/schema",
+      "uuid": "f4d7cd4a-451b-4167-8fdc-d541b2e9cab1"
+    },
+    "sql-aci-fraud-steering": {
+      "access": "user",
+      "title": "sql-aci-fraud-steering",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "bacb6d86-8f5c-4257-944e-e2c138795e0d"
+    },
+    "sql-applicable-fee-ids": {
+      "access": "user",
+      "title": "sql-applicable-fee-ids",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "d662a2f0-a6f5-44e5-b778-d26779b54729"
+    },
+    "sql-avg-fee": {
+      "access": "user",
+      "title": "sql-avg-fee",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "a8cb3c7e-3dec-49c8-9b8b-7277a8b27ebb"
+    },
+    "sql-fee-id-applicability": {
+      "access": "user",
+      "title": "sql-fee-id-applicability",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "c6a93bac-33df-4e3c-bd8a-f7dd59026f72"
+    },
+    "sql-fee-rate-change-delta": {
+      "access": "user",
+      "title": "sql-fee-rate-change-delta",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "0b8cefca-46dc-4670-8776-c3372b67fbe0"
+    },
+    "sql-hypothetical-mcc-delta": {
+      "access": "user",
+      "title": "sql-hypothetical-mcc-delta",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "80b9b762-96bc-48b6-9836-f0fead7d25df"
+    },
+    "sql-most-expensive-aci-scheme": {
+      "access": "user",
+      "title": "sql-most-expensive-aci-scheme",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "81ad3f02-37ed-4964-83da-c0e595410ec1"
+    },
+    "sql-most-expensive-mcc": {
+      "access": "user",
+      "title": "sql-most-expensive-mcc",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "4b38213e-f4ab-4500-b025-d819d908b22b"
+    },
+    "sql-simple-aggregation": {
+      "access": "user",
+      "title": "sql-simple-aggregation",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "35fc6fcf-252e-4f0d-85d0-480c38895adb"
+    },
+    "sql-steering-card-scheme": {
+      "access": "user",
+      "title": "sql-steering-card-scheme",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "6d7a84a8-a955-4c7b-81d8-c6efeb38aa26"
+    },
+    "sql-total-fees-merchant": {
+      "access": "user",
+      "title": "sql-total-fees-merchant",
+      "topic": "dabstep/sql_patterns",
+      "uuid": "f76378b7-2332-43b1-bef3-5f067fd7a0b9"
+    },
+    "terminology-codes": {
+      "access": "user",
+      "title": "terminology-codes",
+      "topic": "dabstep/terminology",
+      "uuid": "49b4ece0-dee5-4c37-a125-be533f96a6f7"
+    },
+    "terminology-term-mapping": {
+      "access": "user",
+      "title": "terminology-term-mapping",
+      "topic": "dabstep/terminology",
+      "uuid": "53a74a20-067f-4424-ab74-bb63af5eaeb1"
+    }
+  }
+}
