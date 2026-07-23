@@ -10,14 +10,14 @@ vi.mock('./controllog', () => ({
   streamError: vi.fn(),
 }));
 
-// The real guide is ~40K tokens of static text; a marker string keeps
-// assertions cheap and proves the loop used THIS builder, not MCP.
+// A marker string keeps assertions cheap and proves the loop appended THIS
+// supplement to whatever the real get_dive_guide dispatch returned.
 vi.mock('./gemini-dive-guide', () => ({
-  buildGeminiDiveGuide: vi.fn(() => 'GEMINI-TUNED DIVE GUIDE'),
+  buildGeminiDiveSupplement: vi.fn(() => 'GEMINI SUPPLEMENT'),
 }));
 
 import { runAgenticLoop, type RunAgenticLoopOpts } from './agentic-loop';
-import { buildGeminiDiveGuide } from './gemini-dive-guide';
+import { buildGeminiDiveSupplement } from './gemini-dive-guide';
 import type { MvizBlockEvent, ToolEndCall, ToolStartCall, TurnSink } from './turn-sink';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
@@ -404,8 +404,8 @@ describe('runAgenticLoop with TurnSink', () => {
     });
   });
 
-  it('does NOT intercept get_guide(uuid) on Gemini profiles — uuid reads always pass through', async () => {
-    vi.mocked(buildGeminiDiveGuide).mockClear();
+  it('does NOT augment get_guide(uuid) on Gemini profiles — uuid reads always pass through untouched', async () => {
+    vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: 'a saved convention',
       isError: false,
@@ -418,14 +418,14 @@ describe('runAgenticLoop with TurnSink', () => {
       dispatchToolImpl,
       profileId: 'google/gemini-3-flash-preview',
     });
-    expect(buildGeminiDiveGuide).not.toHaveBeenCalled();
+    expect(buildGeminiDiveSupplement).not.toHaveBeenCalled();
     expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('intercepts get_dive_guide on Gemini profiles with the local guide, never dispatching to MCP', async () => {
-    vi.mocked(buildGeminiDiveGuide).mockClear();
+  it('augments get_dive_guide on Gemini profiles: dispatches the real stock guide and appends the supplement', async () => {
+    vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
-      content: 'mcp guide (should not be used)',
+      content: 'STOCK DIVE GUIDE',
       isError: false,
     }));
     const { result, events } = await runLoop({
@@ -437,8 +437,10 @@ describe('runAgenticLoop with TurnSink', () => {
       profileId: 'google/gemini-3-flash-preview',
     });
 
-    expect(buildGeminiDiveGuide).toHaveBeenCalledTimes(1);
-    expect(dispatchToolImpl).not.toHaveBeenCalled();
+    // The real stock guide IS fetched via MCP, and the supplement is appended.
+    expect(buildGeminiDiveSupplement).toHaveBeenCalledTimes(1);
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'get_dive_guide', args: { client: 'other' } });
 
     // Same tool_start/tool_end event pair as a dispatched tool.
     const startIndex = events.findIndex((e) => e.type === 'tool_start');
@@ -446,27 +448,27 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(startIndex).toBeGreaterThanOrEqual(0);
     expect(endIndex).toBeGreaterThan(startIndex);
     expect(events[endIndex]).toMatchObject({
-      call: { id: 'guide_1', name: 'get_dive_guide', result: 'GEMINI-TUNED DIVE GUIDE' },
+      call: { id: 'guide_1', name: 'get_dive_guide', result: 'STOCK DIVE GUIDE\n\nGEMINI SUPPLEMENT' },
     });
 
-    // The synthesized tool_result feeds the next LLM call like a real dispatch.
+    // The composed tool_result (stock + supplement) feeds the next LLM call.
     expect(result.finishReason).toBe('done');
     expect(result.turnToolNames).toEqual(new Set(['get_dive_guide']));
     const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
     expect(toolResult).toEqual({
       type: 'tool_result',
       tool_use_id: 'guide_1',
-      content: 'GEMINI-TUNED DIVE GUIDE',
+      content: 'STOCK DIVE GUIDE\n\nGEMINI SUPPLEMENT',
     });
   });
 
-  it('intercepts get_dive_guide on Gemini profiles regardless of the client arg passed', async () => {
-    vi.mocked(buildGeminiDiveGuide).mockClear();
+  it('appends the supplement on Gemini regardless of the client arg passed', async () => {
+    vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
-      content: 'mcp guide (should not be used)',
+      content: 'STOCK DIVE GUIDE',
       isError: false,
     }));
-    await runLoop({
+    const { result } = await runLoop({
       streams: [
         () => toolCallStream([{ id: 'guide_1b', name: 'get_dive_guide', args: { client: 'claude' } }]),
         () => textStream('Guide read.'),
@@ -474,12 +476,14 @@ describe('runAgenticLoop with TurnSink', () => {
       dispatchToolImpl,
       profileId: 'google/gemini-3-flash-preview',
     });
-    expect(buildGeminiDiveGuide).toHaveBeenCalledTimes(1);
-    expect(dispatchToolImpl).not.toHaveBeenCalled();
+    expect(buildGeminiDiveSupplement).toHaveBeenCalledTimes(1);
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
+    expect(toolResult).toMatchObject({ content: 'STOCK DIVE GUIDE\n\nGEMINI SUPPLEMENT' });
   });
 
-  it('passes get_dive_guide through to dispatchTool on non-Gemini profiles', async () => {
-    vi.mocked(buildGeminiDiveGuide).mockClear();
+  it('passes get_dive_guide through to dispatchTool WITHOUT the supplement on non-Gemini profiles', async () => {
+    vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: 'mcp claude guide content',
       isError: false,
@@ -493,7 +497,7 @@ describe('runAgenticLoop with TurnSink', () => {
       profileId: 'anthropic/claude-sonnet-5',
     });
 
-    expect(buildGeminiDiveGuide).not.toHaveBeenCalled();
+    expect(buildGeminiDiveSupplement).not.toHaveBeenCalled();
     expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
     expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'get_dive_guide', args: { client: 'other' } });
     const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
@@ -501,11 +505,13 @@ describe('runAgenticLoop with TurnSink', () => {
   });
 
   it('leaves no unpaired tool_use when auth expires mid-way through a multi-tool round', async () => {
-    vi.mocked(buildGeminiDiveGuide).mockClear();
-    // Round of three: the dive guide read is Gemini-intercepted and succeeds,
-    // query throws an auth error, list_tables never runs.
+    vi.mocked(buildGeminiDiveSupplement).mockClear();
+    // Round of three: the dive guide read dispatches the stock guide (then gets
+    // the supplement appended) and succeeds, query throws an auth error,
+    // list_tables never runs.
     const dispatchToolImpl = vi.fn(async (opts: { client: Client; name: string; args: Record<string, unknown> }) => {
       if (opts.name === 'query') throw new Error('401 Unauthorized');
+      if (opts.name === 'get_dive_guide') return { content: 'STOCK DIVE GUIDE', isError: false };
       return { content: 'ok', isError: false };
     });
     const { result, events } = await runLoop({
@@ -522,8 +528,10 @@ describe('runAgenticLoop with TurnSink', () => {
 
     expect(result.finishReason).toBe('auth_expired');
     expect(events.some((e) => e.type === 'auth_expired')).toBe(true);
-    // The loop broke at the auth failure — list_tables was never dispatched.
-    expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
+    // Two dispatches ran: the dive-guide fetch and query (which threw);
+    // list_tables was never dispatched.
+    expect(dispatchToolImpl).toHaveBeenCalledTimes(2);
+    expect(buildGeminiDiveSupplement).toHaveBeenCalledTimes(1);
 
     // Persisted round is well-formed: every tool_use has a matching tool_result.
     expect(result.newTurnMessages).toHaveLength(2);
@@ -536,7 +544,7 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(toolResults.map((r) => r.tool_use_id)).toEqual(toolUseIds);
 
     // The ran/failed/skipped results each carry the right content.
-    expect(toolResults[0]).toEqual({ type: 'tool_result', tool_use_id: 'guide_1', content: 'GEMINI-TUNED DIVE GUIDE' });
+    expect(toolResults[0]).toEqual({ type: 'tool_result', tool_use_id: 'guide_1', content: 'STOCK DIVE GUIDE\n\nGEMINI SUPPLEMENT' });
     expect(toolResults[1]).toMatchObject({ tool_use_id: 'query_1', content: 'Error: 401 Unauthorized', is_error: true });
     expect(toolResults[2]).toMatchObject({
       tool_use_id: 'tables_1',

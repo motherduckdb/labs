@@ -1,10 +1,26 @@
 # Migration plan: new MotherDuck MCP tool surface
 
-**Status: Phases 0, 1, 2, 4, 5 COMPLETE (2026-07-23) — remaining: Phase 3
-(Gemini dive benchmark → trim override) and the live Slack smoke (§3).**
+**Status: ALL PHASES (0–5) COMPLETE + LIVE SLACK SMOKE PASSED 6/6 (2026-07-23).**
+Phase 3: benchmarked 3 arms × 9 runs on `google/gemini-3-flash-preview` through the
+real agentic loop (`scripts/bench-dive-guide.ts`): stock guide alone dropped
+REQUIRED_DATABASES in 44% of runs; stock+supplement won on first-attempt saves
+(78% vs stock 67% vs full override 44%) at ~2.4× lower cost than the override →
+`gemini-dive-guide.ts` trimmed 661→145 lines to `buildGeminiDiveSupplement()`
+(appended to the real stock guide at interception; `dive-examples/` deleted).
 Phase 4: 3 memories re-homed to quackbot/air-quality, quackbot/nba, quackbot/taxi
 (catalog refs attached to the two that name real tables; `scripts/rehome-memories.ts`).
 Phase 5: `src/core/mcp-parsers.ts` deleted (all exports verified dead).
+Live smoke (§3): all 6 items PASS — eager injection confirmed (no get_query_guide
+tool call), re-homed memory recalled, chart PNG, gated write fails closed on
+timeout, `use db` intercept, injection probe refused with zero tool calls.
+
+**Post-migration follow-ups (observed in the smoke, not regressions):**
+- The injected query-guidance block is heavy at MDW-org scale (~108K-token recall
+  turn) — consider injecting a trimmed topic map instead of the full block.
+- gpt-5.6-luna called the 31KB `get_dive_guide` on a chart-only request — a one-line
+  prompt clarification (mviz fences ≠ dives) would save the round-trip.
+- Deploy: the Fly machine still runs pre-migration code (it was parked and restored
+  during the smoke); redeploy from this branch to go live.
 Phase 2 landed: eager `get_query_guide` injection (`src/core/query-guide.ts`,
 15-min TTL cache for prompt-cache stability, failure → prompt falls back to the
 "call it first" mandate); the other Phase-2 prompt items (relatedGuides flow,

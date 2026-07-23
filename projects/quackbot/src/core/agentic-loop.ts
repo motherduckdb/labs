@@ -2,7 +2,7 @@ import { streamChatCompletion as defaultStreamChatCompletion } from './llm-clien
 import type { ModelProfile } from './llm-client';
 import { dispatchTool as defaultDispatchTool } from './tool-dispatch';
 import { requiresConfirmation } from './mcp-client';
-import { buildGeminiDiveGuide } from './gemini-dive-guide';
+import { buildGeminiDiveSupplement } from './gemini-dive-guide';
 import {
   stepMvizFence,
   flushMvizFence,
@@ -48,6 +48,15 @@ export interface RunAgenticLoopOpts {
   historyLength: number;
   streamChatCompletion?: typeof defaultStreamChatCompletion;
   dispatchToolImpl?: typeof defaultDispatchTool;
+  /**
+   * How the dive-authoring guide (`get_dive_guide`) is resolved on Gemini
+   * profiles. `fetchStock` dispatches the REAL server guide via MCP and returns
+   * its text. Default: the real stock guide with `buildGeminiDiveSupplement()`
+   * appended — the Phase-3 winner (see gemini-dive-guide.ts). Overridable so the
+   * Phase-3 benchmark (scripts/bench-dive-guide.ts) can drive the stock-alone
+   * and full-override arms through the identical loop.
+   */
+  resolveGeminiDiveGuide?: (fetchStock: () => Promise<string>) => Promise<string>;
   /**
    * Gate for tools that `requiresConfirmation` flags (durable writes). Resolves
    * true to proceed, false to skip. When omitted, no confirmation is requested
@@ -297,22 +306,31 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
 
         opts.sink.onToolStart({ id: toolId, name: toolName, args: toolInput });
 
-        // The dive-authoring guide (`get_dive_guide`) is intercepted on
-        // Gemini profiles — we never call MCP. The stock guide produced a
-        // persistent 30-42% dive-write failure rate on Gemini in mdw-turbo
-        // (their issue #149). We return a Gemini-tuned guide built locally,
-        // regardless of the `client` arg the model passed; other model
-        // families get the real server guide, which works. See
-        // gemini-dive-guide.ts. Phase 0 (2026-07-23, MCP_MIGRATION_PLAN.md)
-        // found the stock `client:'other'` guide now covers most of this
-        // override's content — Phase 3 will benchmark and likely trim the
-        // override, but behavior stays identical until then.
+        // The dive-authoring guide (`get_dive_guide`) gets a Gemini-specific
+        // augmentation: fetch the REAL stock server guide, then append
+        // `buildGeminiDiveSupplement()` — the guardrails the stock guide still
+        // lacks (never-print-source, REQUIRED_DATABASES parser edge cases, the
+        // wrong-hook negative examples, the read_dive-same-turn rule, …). The
+        // stock guide alone let Gemini drop REQUIRED_DATABASES ~half the time
+        // (mdw-turbo #149); the full ~40K-token local override that used to sit
+        // here fixed that but cost ~2.6× the tokens and scored WORSE on
+        // first-attempt saves. Phase 3 (MCP_MIGRATION_PLAN.md,
+        // scripts/bench-dive-guide.ts) benchmarked all three and stock+supplement
+        // won. Other model families get the plain stock guide via dispatchTool.
         if (
           toolName === 'get_dive_guide' &&
           /gemini/i.test(profile.id)
         ) {
           const tStart = Date.now();
-          const content = buildGeminiDiveGuide();
+          const fetchStock = async (): Promise<string> => {
+            const dispatchTool = opts.dispatchToolImpl ?? defaultDispatchTool;
+            const dispatch = await dispatchTool({ client: opts.client, name: toolName, args: toolInput });
+            return dispatch.content;
+          };
+          const resolve =
+            opts.resolveGeminiDiveGuide ??
+            (async (fetch) => `${await fetch()}\n\n${buildGeminiDiveSupplement()}`);
+          const content = await resolve(fetchStock);
           toolResults.push({ type: 'tool_result', tool_use_id: toolId, content });
           opts.sink.onToolEnd({ id: toolId, name: toolName, result: content.slice(0, 500) });
           try {
@@ -321,7 +339,7 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
               toolName, toolUseId: toolId, ok: true,
               durationMs: Date.now() - tStart, resultBytes: content.length,
               iteration: iterations,
-              payload: { gemini_override: true },
+              payload: { gemini_supplement: true },
             });
           } catch (logErr) {
             console.error('[Controllog] toolEnd error:', logErr);
