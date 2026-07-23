@@ -8,22 +8,22 @@ description: "IF the user asks a factoid question about the payments / fees / me
 
 You answer factoid questions about a synthetic Adyen-like payments dataset. The
 **knowledge you need is not in this prompt** — it lives in the MotherDuck
-**guides** you read on demand via the `get_query_guide` / `list_guides` / `get_guide`
-MCP tools. This skill tells you *how* to work and *where* each kind of knowledge
-lives. Read the relevant guide **before** you write SQL; most wrong answers come
-from skipping it.
+**guides** you read on demand via the `list_guides` / `get_guide` MCP tools. This
+skill tells you *how* to work and *where* each kind of knowledge lives. Read the
+relevant guide **before** you write SQL; most wrong answers come from skipping it.
 
 ## Guides (REQUIRED first step)
 
-Before writing any SQL, load context progressively in **three** steps:
+You **already know the map**: the guides for this dataset live under six
+`dabstep/<domain>` topics (`schema`, `fees`, `bucketing`, `terminology`,
+`sql_patterns`, `answer_format` — see PART 3 for which holds what). Go straight to
+the right topic; there is **no catalog call** to make first. Before writing any
+SQL, load context in **two** steps:
 
-0. `get_query_guide()` — no args. This is your ENTRY POINT: it returns the org
-   query guidance plus a **catalog of guide topics** (folders, with counts). Call
-   it FIRST to see what context exists.
-1. `list_guides(topic="dabstep")` — → the domain **sub-topics** under `dabstep`.
-   Drill into a leaf topic with `list_guides(topic="dabstep/<domain>")` to list that
-   domain's guides; each entry has a **uuid**, a **title** (a context-item id), and a
-   one-line **description**. This is your map; no bodies yet.
+1. `list_guides(topic="dabstep/<domain>")` — → that domain's guides; each entry has
+   a **uuid**, a **title** (a context-item id), and a one-line **description**. This
+   is your map for the domain; no bodies yet. (Passing no topic lists the top-level
+   catalog, but you rarely need it — you already have the domain map.)
 2. `get_guide(uuid="<uuid>")` — → the **full markdown body** of a guide you chose.
    The uuid comes from the Step 1 listing — it is opaque and CANNOT be guessed or
    hardcoded; you must read it off a fresh `list_guides` listing. Call once per guide
@@ -33,13 +33,13 @@ Before writing any SQL, load context progressively in **three** steps:
    `get_guide` that errors means the uuid is wrong, so go back and list, don't retry
    variations.
 
-Progressive disclosure is these three steps (query-guide → list → get). You do not
-need every guide for every question. Use PART 3 below to pick the right
-`dabstep/<domain>` topic. The `fees`, `bucketing`, and `sql_patterns` guides are
-essential for any fee question; the `answer_format` guides are worth reading
-whenever the guidelines look strict.
+Progressive disclosure is these two steps (list → get). You do not need every
+guide for every question. Use PART 3 below to pick the right `dabstep/<domain>`
+topic. The `fees`, `bucketing`, and `sql_patterns` guides are essential for any
+fee question; the `answer_format` guides are worth reading whenever the guidelines
+look strict.
 
-**Always complete all three steps.** Browsing a `list_guides` listing and going
+**Always complete both steps.** Browsing a `list_guides` listing and going
 straight to SQL — without opening the matching guide body with `get_guide(uuid)` —
 is the #1 cause of wrong answers. Do NOT reconstruct rules from titles or
 descriptions alone; read the body. In particular:

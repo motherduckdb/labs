@@ -1,7 +1,6 @@
 """SQL agent whose tools proxy the MotherDuck context MCP server.
 
-Seven tools, one loop:
-  - `get_query_guide` — entry point: org query guidance + the guide topic catalog
+Six tools, one loop:
   - `list_guides`     — browse the semantic layer by topic (guides carry uuids)
   - `get_guide`       — read one guide's full markdown by its uuid
   - `list_tables`     — list tables/views in the target database
@@ -11,9 +10,12 @@ Seven tools, one loop:
 
 The agent always has a compact SKILL (procedure + where-knowledge-lives) in its
 system prompt; the heavy domain knowledge is fetched on demand via the guides
-(get_query_guide/list_guides/get_guide), which ARE the semantic layer — the MCP
-server exposes no `context_layer` tool. Guides are addressed by server-minted
-uuid (discovered at runtime via list_guides), never by path. All data + schema
+(list_guides/get_guide), which ARE the semantic layer — the MCP server exposes
+no `context_layer` tool. The six `dabstep/<domain>` topics are pre-seeded in the
+system prompt (no `get_query_guide` catalog call — it injected a large org-wide
+catalog into every task), so the agent goes straight to `list_guides(topic)`.
+Guides are addressed by server-minted uuid (discovered at runtime via
+list_guides), never by path. All data + schema
 access goes through the MCP session
 (an `MCPSession` from src.mcp_client), so nothing runs in-process; the queries
 execute server-side against `md:<db>`.
@@ -225,9 +227,16 @@ Use fully-qualified names when helpful: `{database}.main.table_name`.
 
 Knowledge about this dataset (fee rules, bucketing, terminology, SQL patterns, answer formatting) is NOT in this prompt; it lives in guides you fetch on demand. Guides are grouped under topics and addressed by an opaque `uuid` you discover at runtime (you cannot guess it).
 
-You have seven tools:
-- `get_query_guide` — call this FIRST. Returns the org query guidance plus the catalog of guide topics. Orient here before writing SQL.
-- `list_guides` — drill into a topic. No argument lists the top-level catalog. Our guides live under `dabstep/<domain>`: list `dabstep` to see the domains, then list a leaf topic (e.g. `dabstep/fees`) to get each guide's `uuid` and one-line `description`.
+The guides for this dataset live under six `dabstep/<domain>` topics — you already know the map, so go straight to the right one (no catalog call needed):
+- `dabstep/schema` — columns, tables, what "the dataset" means, type mismatches
+- `dabstep/fees` — the 9 fee-rule dimensions, NULL-wildcard matching, the fee formula (read for ANY fee question)
+- `dabstep/bucketing` — capture_delay / monthly_volume / monthly_fraud_level buckets, month from day_of_year
+- `dabstep/terminology` — account_type / ACI / MCC meanings, glossary, loose-wording → field mapping
+- `dabstep/sql_patterns` — verified DuckDB templates for the hard question families (read the matching one before writing fee SQL)
+- `dabstep/answer_format` — KV spacing, bracket-list shapes, `""` vs `Not Applicable`
+
+You have six tools:
+- `list_guides` — list the guides in a leaf topic (e.g. `list_guides("dabstep/fees")`), each with a `uuid` and one-line `description`. Start here for whichever domain(s) the question needs. (No argument lists the top-level catalog, but you rarely need it — you already have the domain map above.)
 - `get_guide` — read one guide's full markdown by the `uuid` from a `list_guides` listing.
 - `list_tables` — list tables/views.
 - `list_columns` — describe one table's columns.
@@ -427,27 +436,6 @@ def _format_query_display(result: MCPResult, row_cap: int = _QUERY_DISPLAY_ROW_C
 
 def _make_tools(state: RunState) -> list:
     @function_tool
-    async def get_query_guide() -> str:
-        """Entry point to the semantic layer. Call this FIRST, before writing SQL.
-
-        Returns the org query guidance plus the catalog of guide topics (the
-        knowledge folders for this dataset). Once oriented, drill into a topic
-        with `list_guides(topic=...)`, then read a specific guide with
-        `get_guide(uuid=...)`.
-        """
-        start_time, start_perf = _tool_timing_start()
-        try:
-            result = await state.mcp.call_tool("get_query_guide", {})
-        except Exception as e:
-            state.record(_with_tool_timing({"tool": "get_query_guide", "error": str(e)}, start_time, start_perf))
-            return f"ERROR: {e}" + _budget_suffix(state)
-        if result.is_error:
-            state.record(_with_tool_timing({"tool": "get_query_guide", "error": result.text}, start_time, start_perf))
-            return f"ERROR: {result.text}" + _budget_suffix(state)
-        state.record(_with_tool_timing({"tool": "get_query_guide", "result_chars": len(result.text)}, start_time, start_perf))
-        return result.text + _budget_suffix(state)
-
-    @function_tool
     async def list_guides(topic: str | None = None) -> str:
         """Browse the guide catalog by topic (this dataset's knowledge).
 
@@ -571,7 +559,7 @@ def _make_tools(state: RunState) -> list:
         state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "rows": len(rows)}, start_time, start_perf))
         return f"Submitted. {len(rows)} rows."
 
-    return [get_query_guide, list_guides, get_guide, list_tables, list_columns, query, submit_answer]
+    return [list_guides, get_guide, list_tables, list_columns, query, submit_answer]
 
 
 @dataclass
