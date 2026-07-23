@@ -551,7 +551,19 @@ def _make_tools(state: RunState) -> list:
                 "again with a corrected query." + _budget_suffix(state)
             )
         # result.rows is positional (list of arrays); score.py wants list[tuple].
-        rows = [tuple(r) for r in (result.rows or [])]
+        # A None here means the server returned no structuredContent.rows at all
+        # (unparseable), which we CANNOT distinguish from an answer — treat it as
+        # a submission failure so a genuine empty result (rows == []) is the only
+        # thing that latches as "". Don't end the run; let the model resubmit.
+        if result.rows is None:
+            state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": "no rows in result payload"}, start_time, start_perf))
+            return (
+                "Your submitted SQL ran but returned no parseable result rows "
+                "(no structuredContent.rows). The answer was NOT recorded. Make "
+                "sure the query SELECTs the answer value(s) and call submit_answer "
+                "again." + _budget_suffix(state)
+            )
+        rows = [tuple(r) for r in result.rows]
         with state.lock:
             state.submitted = True
             state.final_sql = sql

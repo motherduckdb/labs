@@ -190,7 +190,10 @@ def guides_load_cmd(dry_run: bool, prefix: str | None) -> None:
 
     label = "planning" if dry_run else "publishing"
     console.print(f"[bold]{label}[/bold] context items → MotherDuck guides …")
-    results = guides_load.publish_all_sync(prefix=prefix, dry_run=dry_run)
+    try:
+        results = guides_load.publish_all_sync(prefix=prefix, dry_run=dry_run)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     table = Table(show_header=True, box=None, padding=(0, 2))
     table.add_column("id", style="cyan")
@@ -206,6 +209,8 @@ def guides_load_cmd(dry_run: bool, prefix: str | None) -> None:
         row_action = f"[{style}]{action}[/{style}]"
         if r.get("error"):
             row_action += f"  [red]{str(r['error'])[:80]}[/red]"
+        elif r.get("warning"):
+            row_action += f"  [yellow]{str(r['warning'])[:80]}[/yellow]"
         table.add_row(
             str(r.get("id")),
             str(r.get("topic")),
@@ -338,22 +343,10 @@ def _render_tool_call(call: dict, task_id: str | None = None) -> None:
             t.append(extra)
         return t
 
-    if tool == "semantic_lookup":
-        domains = call.get("domains")
-        ids = call.get("ids")
-        if ids:
-            tail = f"  (ids: {', '.join(ids) if isinstance(ids, list) else ids})"
-        elif domains:
-            tail = f"  (domains: {', '.join(domains) if isinstance(domains, list) else domains})"
-        else:
-            tail = "  (list domains)"
-        console.print(Padding(header(tail), (0, 0, 0, 6)))
-        return
-
     if tool == "list_guides":
-        path = call.get("path")
+        topic = call.get("topic")
         tail = Text("(")
-        tail.append(str(path) if path else "tree", style="cyan")
+        tail.append(str(topic) if topic else "catalog", style="cyan")
         if err:
             tail.append(") ", style="default")
             tail.append("ERR ", style="bold red")
@@ -365,7 +358,7 @@ def _render_tool_call(call: dict, task_id: str | None = None) -> None:
 
     if tool == "get_guide":
         tail = Text("(")
-        tail.append(str(call.get("path") or ""), style="cyan")
+        tail.append(str(call.get("uuid") or ""), style="cyan")
         if err:
             tail.append(") ", style="default")
             tail.append("ERR ", style="bold red")
@@ -485,7 +478,7 @@ async def _evaluate_loop(
             # server-side against md:<db> through this read-only session.
             t0 = time.time()
             try:
-                async with create_mcp_session(session_hint=tid) as mcp:
+                async with create_mcp_session(session_hint=tid, database=database) as mcp:
                     run = await run_agent(
                         mcp=mcp, database=database,
                         question=q["question"], guidelines=q.get("guidelines"),

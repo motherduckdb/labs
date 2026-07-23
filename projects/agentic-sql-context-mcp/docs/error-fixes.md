@@ -1,5 +1,12 @@
 # DABStep Error Analysis & Fix Plan
 
+> **Note (topic/uuid migration):** this is inherited triage history from the baseline
+> `agentic-sql-claude-edition`, when the semantic layer was the in-process
+> `semantic_lookup(domains/ids)` tool over local markdown. In this fork that layer is
+> **MotherDuck guides** reached via `list_guides(topic)` → `get_guide(uuid)`; mentions of
+> `semantic_lookup` and guide *paths* below describe the fix as it was made then. The
+> *content* fixes (the context items) carried over verbatim and were re-published as guides.
+
 Source run: `results/test424.jsonl` (split=test, gemini-3-flash, reasoning=medium).
 **Final: 407/424 = 96.0% · 17 misses = 12 fixable (context/skill) + 5 known-bad golds.**
 Projected after fixes: ~419/424 ≈ 98.8% (gold-noise is the ceiling).

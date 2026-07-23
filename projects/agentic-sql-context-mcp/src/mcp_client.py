@@ -27,29 +27,38 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
+from urllib.parse import quote
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 DEFAULT_BASE_URL = "https://api.motherduck.com"
 
-# Read-only exploration + guide reads: everything the AGENT may call.
+# Read-only exploration + guide reads: exactly what the AGENT may call. This set
+# mirrors `agent._make_tools` one-for-one — keep them in sync.
 #
 # Guide navigation is the topic/uuid model (post-2026-07-23 platform deploy):
-#   get_query_guide()          -> entry point; org query guidance + topic catalog
 #   list_guides(topic=...)     -> guides at that topic, each carrying its uuid
 #   get_guide(uuid=...)        -> the full guide body
 # The old path-addressed model (list_guides(partial_path/keyword), get_guide(path))
-# is gone; guides are identified solely by the server-minted uuid.
+# is gone; guides are identified solely by the server-minted uuid. The catalog
+# entry point `get_query_guide` is NOT an agent tool — the six dabstep/<domain>
+# topics are pre-seeded in the system prompt, so the agent starts at
+# `list_guides(topic)` (see agent._BASE_SYSTEM_PROMPT). It lives in PROBE_TOOLS
+# below so the smoketest / manual probes can still reach it.
 AGENT_TOOLS = {
     "query",
     "list_tables",
     "list_columns",
-    "search_catalog",
-    "get_query_guide",
     "list_guides",
     "get_guide",
 }
+
+# Read-only tools that are allowlisted for the smoketest / manual probes but are
+# deliberately NOT on the agent's tool list (the agent never calls them):
+#   get_query_guide -> org catalog entry point (pre-seeded into the prompt instead)
+#   search_catalog  -> catalog full-text search (not needed for this benchmark)
+PROBE_TOOLS = {"get_query_guide", "search_catalog"}
 
 # Guide WRITES — used ONLY by the guides migration (via allow_write=True /
 # call_tool_write), never exposed on the agent path.
@@ -59,7 +68,7 @@ AGENT_TOOLS = {
 GUIDE_WRITE_TOOLS = {"create_guide", "update_guide", "update_guide_metadata"}
 
 # The full set any call may name. Anything outside this is rejected at dispatch.
-ALLOWED_TOOLS = AGENT_TOOLS | GUIDE_WRITE_TOOLS
+ALLOWED_TOOLS = AGENT_TOOLS | GUIDE_WRITE_TOOLS | PROBE_TOOLS
 
 # Tools whose HTTP-200 response can still carry `{"success": false}` at the
 # payload level (the MCP envelope's isError stays false). We parse the content
@@ -75,6 +84,59 @@ SUCCESS_FIELD_TOOLS = {"create_guide", "update_guide", "update_guide_metadata"}
 # guides are addressed by uuid — so this is last-mile confinement on where a
 # write lands, not a path traversal concern.
 _GUIDE_TOPIC_CHARSET = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+# A valid MotherDuck database identifier for default-injection. The agent never
+# names a database (it is injected), so this only needs to accept the plain slug
+# identifiers we pin; anything else is a config error worth failing loudly on.
+_DB_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Defense-in-depth read-only guard for the `query` tool. The real protection is a
+# read-scoped MotherDuck token; this is a belt-and-suspenders reject of any
+# statement that leads with a mutating/among keyword so a prompt-injected
+# question can't ride the agent's session into a write. Denylist (not allowlist)
+# so unusual-but-harmless leaders still pass — the benchmark only ever SELECTs.
+_MUTATING_SQL_LEADERS = frozenset({
+    "insert", "update", "delete", "merge", "upsert", "replace",
+    "create", "drop", "alter", "truncate", "rename",
+    "attach", "detach", "copy", "export", "import",
+    "install", "load", "set", "reset", "use",
+    "grant", "revoke", "vacuum", "checkpoint",
+    "begin", "start", "commit", "rollback", "call", "pragma",
+})
+
+# Strip -- line comments and /* */ block comments before inspecting statements.
+_SQL_LINE_COMMENT = re.compile(r"--[^\n]*")
+_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _read_only_violation(sql: str) -> str | None:
+    """Return an error string if `sql` contains a non-read-only statement.
+
+    Splits on `;`, strips comments, and rejects any statement whose first token
+    is a known mutating keyword. Returns None when every statement looks read-only
+    (SELECT/WITH/FROM/DESCRIBE/SHOW/EXPLAIN/VALUES/TABLE/…). Best-effort — the
+    authoritative guard is a read-scoped token; this only stops the obvious.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        return None
+    cleaned = _SQL_BLOCK_COMMENT.sub(" ", sql)
+    cleaned = _SQL_LINE_COMMENT.sub(" ", cleaned)
+    for statement in cleaned.split(";"):
+        statement = statement.strip()
+        if not statement:
+            continue
+        # First bare word (strip a leading '(' from "(SELECT …)").
+        first = statement.lstrip("(").split(None, 1)
+        if not first:
+            continue
+        leader = first[0].lower()
+        if leader in _MUTATING_SQL_LEADERS:
+            return (
+                f"Refused: this path is read-only, but the SQL leads with "
+                f"'{first[0]}'. Only read queries (SELECT / WITH / DESCRIBE / …) "
+                f"are permitted."
+            )
+    return None
 
 
 def mcp_url() -> str:
@@ -138,8 +200,11 @@ def _guide_write_violation(name: str, args: dict) -> str | None:
     if topic is not None:
         if not isinstance(topic, str) or not topic:
             return f"{name} `topic` must be a non-empty string when provided."
-        if any(seg in (".", "..") for seg in topic.split("/")):
-            return f"{name} topic may not contain '.' or '..' segments (got '{topic}')."
+        if any(seg in ("", ".", "..") for seg in topic.split("/")):
+            return (
+                f"{name} topic may not contain empty, '.' or '..' segments — no "
+                f"leading, trailing, or repeated '/' (got '{topic}')."
+            )
         if not _GUIDE_TOPIC_CHARSET.match(topic):
             return (
                 f"{name} topic must be plain [A-Za-z0-9._/-] characters — no "
@@ -202,8 +267,19 @@ class MCPSession:
     applies in `executeToolWithStatus` + `dispatchTool`.
     """
 
-    def __init__(self, session: ClientSession) -> None:
+    def __init__(self, session: ClientSession, database: str | None = None) -> None:
         self._session = session
+        # The database injected into query/list_tables/list_columns calls. Pinned
+        # per session so `--database` actually reaches the server (falls back to
+        # $MD_DATABASE, then the project default) rather than being read from the
+        # environment at call time.
+        db = database or os.environ.get("MD_DATABASE") or "agentic_sql_claude"
+        if not _DB_IDENTIFIER.match(db):
+            raise ValueError(
+                f"Invalid database identifier {db!r}: expected a plain "
+                f"[A-Za-z_][A-Za-z0-9_]* slug."
+            )
+        self._database = db
 
     async def call_tool(
         self,
@@ -238,20 +314,27 @@ class MCPSession:
             )
 
         # 3. Argument defaults / sanitization. The MCP query/list_tables/
-        #    list_columns tools all REQUIRE a `database` arg — inject the pinned
-        #    default so the model never has to name it. (search_catalog takes no
-        #    database; the guide tools are sanitized instead.)
+        #    list_columns tools all REQUIRE a `database` arg — inject the
+        #    session-pinned database so the model never has to name it.
+        #    (search_catalog takes no database; the guide tools are sanitized
+        #    instead.)
         call_args = dict(args)
         if name in ("query", "list_tables", "list_columns"):
-            call_args.setdefault(
-                "database", os.environ.get("MD_DATABASE", "agentic_sql_claude")
-            )
+            call_args.setdefault("database", self._database)
         elif name in ("get_query_guide", "list_guides", "get_guide"):
             # get_query_guide takes no args; list_guides takes an optional topic;
             # get_guide takes a uuid. All tolerate the empty-padding strip.
             call_args = _sanitize_guide_args(call_args)
 
-        # 4. Guide-write guard (topic + required fields).
+        # 4a. Read-only guard for `query` (defense-in-depth over a read-scoped
+        #     token). submit_answer runs its SQL through this same tool, so this
+        #     covers both exploration and submission.
+        if name == "query":
+            violation = _read_only_violation(call_args.get("sql", ""))
+            if violation is not None:
+                return MCPResult(text=violation, is_error=True, rows=None)
+
+        # 4b. Guide-write guard (topic + required fields).
         if name in GUIDE_WRITE_TOOLS:
             violation = _guide_write_violation(name, call_args)
             if violation is not None:
@@ -305,13 +388,16 @@ def _join_content_text(content: Any) -> str:
 @asynccontextmanager
 async def create_mcp_session(
     session_hint: str | None = None,
+    database: str | None = None,
 ) -> AsyncIterator[MCPSession]:
     """Open an authenticated MCP session as an async context manager.
 
     Streams over the streamable-HTTP transport to `mcp_url()`, authenticating
     with the MOTHERDUCK_TOKEN bearer. `session_hint`, when given, is passed as a
     `session_name` query param for read-scaling replica affinity — honored if
-    the MCP server forwards it, harmless if not.
+    the MCP server forwards it, harmless if not. `database`, when given, is pinned
+    on the session and injected into query/list_tables/list_columns calls (so
+    `--database` actually reaches the server); it falls back to $MD_DATABASE.
 
     Raises:
         RuntimeError: if MOTHERDUCK_TOKEN is unset.
@@ -326,13 +412,13 @@ async def create_mcp_session(
     url = mcp_url()
     if session_hint:
         sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}session_name={session_hint}"
+        url = f"{url}{sep}session_name={quote(str(session_hint), safe='')}"
 
     headers = {"Authorization": f"Bearer {token}"}
     async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, _):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
-            yield MCPSession(session)
+            yield MCPSession(session, database=database)
 
 
 async def call_tool_write(session: MCPSession, name: str, args: dict) -> MCPResult:

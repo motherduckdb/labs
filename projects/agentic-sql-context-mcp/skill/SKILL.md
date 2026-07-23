@@ -121,8 +121,7 @@ descriptions alone; read the body. In particular:
 
 1. **Fetch the guide** for the question type (see PART 3).
 2. **Inspect the schema** with the MCP tools: `list_tables`, then `list_columns`
-   on the tables you will touch (use `search_catalog` to discover where something
-   lives when you're unsure). Trust the actual column names over your assumptions.
+   on the tables you will touch. Trust the actual column names over your assumptions.
 3. **Write and RUN** your SQL with `query`. Verify on small results first
    (counts, a few rows) before computing the final aggregate.
 4. **If a query errors**, read the error and fix it; don't give up after one try.
