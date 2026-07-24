@@ -81,6 +81,10 @@ export function SchemaExplorerSidebar({
   const [popover, setPopover] = useState<{ kind: 'guide'; guide: GuideSummary } | { kind: 'create' } | null>(null);
   const [selectedTable, setSelectedTable] = useState<SelectedTable | null>(null);
   const [scope, setScope] = useState<'database' | 'all'>('database');
+  // Bumped by refreshGuides so sidebar-driven guide mutations (create/edit/
+  // delete in the popover) also re-pull relatedGuides — otherwise a deleted
+  // guide's related card would linger until a database switch.
+  const [schemaReloadKey, setSchemaReloadKey] = useState(0);
 
   useEffect(() => {
     if (demoReplay) return;
@@ -101,7 +105,7 @@ export function SchemaExplorerSidebar({
       }
     })();
     return () => { cancelled = true; };
-  }, [database, demoReplay, contextReloadKey]);
+  }, [database, demoReplay, contextReloadKey, schemaReloadKey]);
 
   const refreshGuides = useCallback(() => {
     if (demoReplay) return;
@@ -111,6 +115,7 @@ export function SchemaExplorerSidebar({
     // with counts); per-topic guides load lazily on expansion. A refresh
     // collapses open topics so nothing shows stale content.
     setOpenTopics({});
+    setSchemaReloadKey((k) => k + 1);
     fetch('/api/guides', { headers: { 'x-session-id': getSessionId() } })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -197,6 +202,16 @@ export function SchemaExplorerSidebar({
     }
     return merged;
   }, [scope, relatedGuides, visibleGuides]);
+
+  // Header total. Related guides carry real topics, so a guide can appear as
+  // a root card AND inside a visible topic's guide_count — subtract that
+  // overlap (exact topic match) so it isn't counted twice.
+  const guideCount = useMemo(() => {
+    const topicSet = new Set(visibleTopics.map((t) => t.topic));
+    const overlap = displayGuides.filter((g) => g.topic && topicSet.has(g.topic)).length;
+    const topicTotal = visibleTopics.reduce((n, t) => n + t.guide_count, 0);
+    return displayGuides.length + Math.max(0, topicTotal - overlap);
+  }, [displayGuides, visibleTopics]);
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
@@ -318,7 +333,7 @@ export function SchemaExplorerSidebar({
           <div className="flex items-center justify-between mb-2">
             <div className="sidebar-heading compact">
               <span>Guides</span>
-              <code>{displayGuides.length + visibleTopics.reduce((n, t) => n + t.guide_count, 0)}</code>
+              <code>{guideCount}</code>
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -366,7 +381,8 @@ export function SchemaExplorerSidebar({
           {!demoReplay && !guidesError && guidesLoading && guides.length === 0 && (
             <div className="text-xs text-[var(--muted)]">Loading guides…</div>
           )}
-          {!demoReplay && !guidesError && !guidesLoading && guides.length === 0 && topics.length === 0 && (
+          {!demoReplay && !guidesError && !guidesLoading && guides.length === 0 && topics.length === 0
+            && displayGuides.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
               No guides yet. Create one, or the assistant saves durable rules it learns as private guides.
             </div>

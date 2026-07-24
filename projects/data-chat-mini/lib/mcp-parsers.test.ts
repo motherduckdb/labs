@@ -59,6 +59,22 @@ describe('parseRelatedGuides', () => {
       { uuid: 'abc-123', topic: '', title: '', description: '', access: '' },
     ]);
   });
+
+  it('preserves a root-level private guide (empty topic, access user)', () => {
+    const raw = JSON.stringify({
+      relatedGuides: [
+        { uuid: 'def-456', topic: '', title: 'My private notes', description: '', access: 'user' },
+      ],
+    });
+    expect(parseRelatedGuides(raw)).toEqual([
+      { uuid: 'def-456', topic: '', title: 'My private notes', description: '', access: 'user' },
+    ]);
+  });
+
+  it('returns [] when relatedGuides is present but not an array', () => {
+    expect(parseRelatedGuides(JSON.stringify({ relatedGuides: 'oops' }))).toEqual([]);
+    expect(parseRelatedGuides(JSON.stringify({ relatedGuides: { uuid: 'x' } }))).toEqual([]);
+  });
 });
 
 describe('parseTables (shared fixture)', () => {
