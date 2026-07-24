@@ -16,7 +16,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@slack/bolt": "^4",
-    "echarts": "^5.5.0",
+    "echarts": "^6.1.0",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.1.1",
     "mviz": "^1.7.0",
