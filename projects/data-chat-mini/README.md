@@ -113,6 +113,11 @@ The guided rail covers:
   with `list_guides({topic})` → `get_guide({uuid})`, and persists durable
   learnings as small private guides under the `data-chat-mini/…` topic. The
   guide manager uses `/api/guides` for viewing, editing, history, and deletion.
+  The schema sidebar's database scope also surfaces **reference-attested
+  guides**: `list_tables(database)` returns `relatedGuides` computed from
+  structured catalog references, so a guide about a database appears there even
+  if its title/topic never names it (`/api/schema` passes the field through;
+  union + dedupe with text matches in `lib/guide-view.ts`).
   The old IndexedDB context-tool round trip remains only to support the
   recorded demo until it is re-recorded.
 - **mviz inline.** The model emits ` ```table ` / ` ```bar ` / ` ```line ` /

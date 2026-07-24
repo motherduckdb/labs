@@ -9,21 +9,27 @@ tools swapped from local hand-built ones to the **MotherDuck context MCP**:
    itself.
 2. **A semantic layer via MotherDuck guides** — domain knowledge (fee matching,
    bucketing, terminology, SQL patterns, answer formatting) lives as guides on
-   the MotherDuck MCP server and is fetched progressively: `list_guides()` →
-   folder listing with descriptions → `get_guide(path)` for one item's full
-   body. The agent loads only what each question needs, and data access
-   (`list_tables`, `list_columns`, `search_catalog`, `query`) runs against the
-   same MCP server instead of an in-process DuckDB connection.
+   the MotherDuck MCP server, grouped under six `dabstep/<domain>` topics that
+   are pre-seeded in the skill, and is fetched progressively:
+   `list_guides(topic)` → the topic's guides with uuids and one-line
+   descriptions → `get_guide(uuid)` for one item's full body. The agent loads
+   only what each question needs, and data access (`list_tables`,
+   `list_columns`, `query`) runs against the same MCP server instead of an
+   in-process DuckDB connection.
 
 Target: **100% on the 26 template-representative questions** (one per DABStep
 template T01–T26; `train_ids` in `data/split.json`).
 
 ## Results
 
-The baseline this fork aims to match (from `agentic-sql-claude-edition`, the
+This fork: **417/419 (99.5%)** on the cleaned full test set, with
+`gemini-3-flash` at `--reasoning low`, for **~$8.57** per run
+(~$0.020/question).
+
+The baseline it aims to match (from `agentic-sql-claude-edition`, the
 hand-built local-tools version this project was copied from):
-**419/419 (100%)** on the cleaned full test set, with `gemini-3-flash` at
-`--reasoning low`, for **~$7.91** per run (~$0.019/question).
+**419/419 (100%)** on the same set and model, for **~$7.91** per run
+(~$0.019/question).
 
 - **Set:** all 450 DABStep questions minus the 26 template reps (= 424 held-out)
   minus **5 provably-wrong `hf_consensus` golds** set aside in `data/bad_golds.json`
@@ -53,9 +59,9 @@ answer flow and the log-driven improvement loop.
 
 ```
 system prompt + SKILL + question
-  → list_guides(partial_path="dabstep/")       # folder of guides + descriptions
-  → get_guide("dabstep/fees-matching-9dim.md") # full guide body, as needed
-  → list_tables / list_columns / search_catalog  # explore schema (MCP)
+  → list_guides(topic="dabstep/fees")   # a domain topic's guides: uuid + description
+  → get_guide(uuid)                     # full guide body, as needed
+  → list_tables / list_columns          # explore schema (MCP)
   → query (verify SQL, via MCP)
   → submit_answer                              # the SQL whose result IS the answer
 ```
@@ -71,9 +77,9 @@ system prompt + SKILL + question
   `medium` accuracy on this skill at roughly half the cost; `medium`/`high` are
   available for harder models/tasks.
 - Data + semantic layer: the **MotherDuck context MCP server** (`src/mcp_client.py`).
-  Data access (`list_tables`, `list_columns`, `search_catalog`, `query`) and the
-  semantic layer (`list_guides`, `get_guide`) are both MCP tools at agent
-  runtime — no in-process DuckDB connection, no local `semantic_lookup` store.
+  Data access (`list_tables`, `list_columns`, `query`) and the semantic layer
+  (`list_guides`, `get_guide`) are both MCP tools at agent runtime — no
+  in-process DuckDB connection, no local `semantic_lookup` store.
 - Logging: `controllog` double-entry events/postings; inspect with `controllog-viz`.
 - Scoring: the strict DABStep scorer (`src/score.py`, verbatim port).
 

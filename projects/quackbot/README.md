@@ -152,9 +152,10 @@ carry injected instructions). The boundaries that matter:
   (`src/slack/confirm.ts` + `requiresConfirmation`) — so prompt-injected content
   can *propose* a write but can't commit one unattended. Deny, timeout (2 min),
   or a failed prompt-post all fail closed (no write). Behind that, the writes
-  stay confined: guide paths are guarded to the bot's own
-  `users/<bot>/quackbot/` folder (the guard rejects `..`, percent-encoded, and
-  Unicode traversal) and `save_dive` is create-only with a fresh id.
+  stay confined: guide writes are guarded to the bot's own `quackbot/` topic
+  namespace with `access` forced private (the guard rejects `.`/`..` segments
+  so a topic can never mimic path traversal) and `save_dive` is create-only
+  with a fresh id.
 - **Chart rendering is network-isolated.** Chart specs are attacker-influenced,
   so the headless-Chromium screenshot path denies all egress except the Google
   Fonts the self-contained embed needs, and the spec sanitizer strips raw-JS
