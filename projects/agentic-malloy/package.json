@@ -27,5 +27,11 @@
     "tsx": "^4.19.0",
     "typescript": "^5",
     "vitest": "^4.1.4"
+  },
+  "overrides": {
+    "fast-uri": "^3.1.4",
+    "hono": "^4.12.27",
+    "@hono/node-server": "^2.0.5",
+    "uuid": "^11.1.1"
   }
 }
