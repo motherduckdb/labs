@@ -267,8 +267,18 @@ class MCPSession:
     applies in `executeToolWithStatus` + `dispatchTool`.
     """
 
-    def __init__(self, session: ClientSession, database: str | None = None) -> None:
+    def __init__(
+        self,
+        session: ClientSession,
+        database: str | None = None,
+        no_guides: bool = False,
+    ) -> None:
         self._session = session
+        # Ablation baseline: when set, every guide-read tool short-circuits to
+        # "No guides exist." without hitting the server, so a run measures the
+        # agent WITHOUT the semantic layer while every other moving part (skill,
+        # prompts, data tools, scoring) stays byte-identical.
+        self._no_guides = no_guides
         # The database injected into query/list_tables/list_columns calls. Pinned
         # per session so `--database` actually reaches the server (falls back to
         # $MD_DATABASE, then the project default) rather than being read from the
@@ -305,6 +315,13 @@ class MCPSession:
         #    tool can never reach MotherDuck.
         if name not in ALLOWED_TOOLS:
             raise ValueError(f'Tool "{name}" is not in the allowed tool set')
+
+        # 1b. No-guides ablation: guide reads never reach the server. A flat,
+        #     non-error "No guides exist." keeps the agent loop shape identical
+        #     (the model reads the result and moves on, rather than retrying an
+        #     error) while removing all guide content from the run.
+        if self._no_guides and name in ("list_guides", "get_guide", "get_query_guide"):
+            return MCPResult(text="No guides exist.", is_error=False, rows=None)
 
         # 2. Write gate. Guide writes are barred on the agent path.
         if name in GUIDE_WRITE_TOOLS and not allow_write:
@@ -389,6 +406,7 @@ def _join_content_text(content: Any) -> str:
 async def create_mcp_session(
     session_hint: str | None = None,
     database: str | None = None,
+    no_guides: bool = False,
 ) -> AsyncIterator[MCPSession]:
     """Open an authenticated MCP session as an async context manager.
 
@@ -418,7 +436,7 @@ async def create_mcp_session(
     async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, _):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
-            yield MCPSession(session, database=database)
+            yield MCPSession(session, database=database, no_guides=no_guides)
 
 
 async def call_tool_write(session: MCPSession, name: str, args: dict) -> MCPResult:
