@@ -11,16 +11,19 @@ Each experiment lives in its own directory under [`projects/`](./projects/). Bro
 <!-- BEGIN PROJECT LIST -->
 | Project | What it is |
 |---|---|
+| [`agentic-malloy`](./projects/agentic-malloy/) | Experiment: is a Malloy semantic layer a better LLM substrate than markdown + SQL context on DABStep? Concluded — hypothesis not supported (91.2% vs the 99.8% baseline at ~2.5× prompt tokens); full findings in its `RESULTS.md` and a data-backed MotherDuck Dive. |
 | [`agentic-sql-claude-edition`](./projects/agentic-sql-claude-edition/) | Single-setup agentic-SQL system for the DABStep benchmark — a compact skill plus a `fetch_context` semantic layer that discloses domain knowledge progressively. Hits 419/419 on the cleaned test set. |
+| [`agentic-sql-context-mcp`](./projects/agentic-sql-context-mcp/) | Fork of `agentic-sql-claude-edition` with the hand-built local tools swapped for the MotherDuck context MCP — domain knowledge lives as MotherDuck guides fetched progressively, and data access runs over the same MCP server. 417/419 on the cleaned test set. |
 | [`agentic-sql-mini`](./projects/agentic-sql-mini/) | Minimal A/B harness for the catalog-context-for-agents experiment — can descriptive column names alone replace prose docs as an agent's information source? |
 | [`bird-bench`](./projects/bird-bench/) | Text-to-SQL evaluation framework using the BIRD Mini-Dev benchmark with MotherDuck as the execution backend. |
 | [`connections-eval-mini`](./projects/connections-eval-mini/) | Evaluate AI models on NYT Connections puzzles. Built for the Seattle Startup Summit evals workshop. |
 | [`controllog`](./projects/controllog/) | Controllable logging library for AI/agentic systems — events + balanced postings, JSONL transport, optional MotherDuck upload. Shared dep of `agentic-sql-claude-edition`, `agentic-sql-mini`, `bird-bench`, and `connections-eval-mini`. |
 | [`controllog-viz`](./projects/controllog-viz/) | Static HTML views for `controllog` datasets (JSONL or MotherDuck via one DuckDB layer) — a per-run review with a chain-of-thought conversation explorer and a cross-run dashboard with a run × question progression/regression matrix. |
-| [`data-chat-mini`](./projects/data-chat-mini/) | Minimal "chat with your data" Next.js app — read-only agentic SQL over the MotherDuck MCP, inline `mviz` charts, IndexedDB history + local context layer, and `controllog` telemetry. Runs a fleet on one read scaling token. |
+| [`data-chat-mini`](./projects/data-chat-mini/) | Minimal "chat with your data" Next.js app — read-only agentic SQL over the MotherDuck MCP, inline `mviz` charts, IndexedDB history, durable context in MotherDuck guides, and `controllog` telemetry. Runs a fleet on one read scaling token. |
 | [`metadata_generator`](./projects/metadata_generator/) | Generate rich metadata for MotherDuck databases — profile statistics, LLM-generated descriptions, and SQL `COMMENT` statements. Used as a dep by `bird-bench`. |
 | [`motherduck-dive-viewer`](./projects/motherduck-dive-viewer/) | Generic BI-style Next.js app — sign in with MotherDuck (OAuth 2.1 + PKCE), browse/search your Dives, and view them rendered inline via a server-side query proxy so no MotherDuck token ever reaches the browser. |
 | [`postgres-vs-motherduck`](./projects/postgres-vs-motherduck/) | Same query, same `pg` driver, two engines side by side — a Next.js page fires one heavy aggregate at managed Postgres and at MotherDuck at once and charts each as it answers, with server-measured latency. Includes a Python pipeline to load Postgres → MotherDuck. Deploys to Vercel. |
+| [`quackbot`](./projects/quackbot/) | Slack bot port of `data-chat-mini`'s chat-with-your-data agent — read-only MotherDuck SQL over MCP in Slack threads, `mviz` charts as PNGs, native Slack tables, MotherDuck guides as the context layer, Postgres-backed conversation state, and `controllog` telemetry. |
 | [`react-components`](./projects/react-components/) | Open-source React components extracted from MotherDuck's website and docs — embed a public Dive, embed a private Dive, and an in-browser MotherDuck SQL editor. |
 <!-- END PROJECT LIST -->
 
