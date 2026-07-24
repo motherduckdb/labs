@@ -77,6 +77,12 @@ export function SchemaExplorerSidebar({
   // Skip the bump on refreshGuides' initial mount call — the schema effect's
   // own first run already fetches.
   const firstGuidesRefresh = useRef(true);
+  // Re-arm on entering replay: leaving replay re-runs the schema effect via
+  // its demoReplay dep, so the first post-replay refreshGuides must skip the
+  // bump too or replay-exit would double-fetch /api/schema.
+  useEffect(() => {
+    if (demoReplay) firstGuidesRefresh.current = true;
+  }, [demoReplay]);
   // Generation guard: refreshGuides responses arriving out of order must not
   // let a stale response overwrite newer state (e.g. resurrect a just-deleted
   // guide). Only the latest generation applies.
