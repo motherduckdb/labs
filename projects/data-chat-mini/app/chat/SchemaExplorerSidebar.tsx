@@ -65,6 +65,10 @@ export function SchemaExplorerSidebar({
 }) {
   const [tables, setTables] = useState<SchemaTable[] | null>(null);
   const [tablesError, setTablesError] = useState<string | null>(null);
+  // Guides the server attests are about this database via structured catalog
+  // references (reference-driven, includes private guides) — authoritative,
+  // unioned into the database-scope list ahead of the text match.
+  const [relatedGuides, setRelatedGuides] = useState<GuideSummary[]>([]);
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [openColumns, setOpenColumns] = useState<Record<string, boolean>>({});
   const [guides, setGuides] = useState<GuideSummary[]>([]);
@@ -88,13 +92,16 @@ export function SchemaExplorerSidebar({
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!cancelled) setTables(data.tables || []);
+        if (!cancelled) {
+          setTables(data.tables || []);
+          setRelatedGuides(Array.isArray(data.relatedGuides) ? data.relatedGuides : []);
+        }
       } catch (err) {
         if (!cancelled) setTablesError(err instanceof Error ? err.message : 'Failed to load tables');
       }
     })();
     return () => { cancelled = true; };
-  }, [database, demoReplay]);
+  }, [database, demoReplay, contextReloadKey]);
 
   const refreshGuides = useCallback(() => {
     if (demoReplay) return;
@@ -174,6 +181,22 @@ export function SchemaExplorerSidebar({
     const dbNorm = norm(database);
     return topics.filter((t) => norm(t.topic).includes(dbNorm));
   }, [topics, scope, database]);
+
+  // Guide cards to render in the root list. In 'all' scope this is just the
+  // text-matched (full) list. In 'database' scope it's the union of the
+  // server-attested relatedGuides (first) and the text match, deduped by uuid
+  // with relatedGuides winning.
+  const displayGuides = useMemo(() => {
+    if (scope === 'all') return visibleGuides;
+    const seen = new Set<string>();
+    const merged: GuideSummary[] = [];
+    for (const g of [...relatedGuides, ...visibleGuides]) {
+      if (seen.has(g.uuid)) continue;
+      seen.add(g.uuid);
+      merged.push(g);
+    }
+    return merged;
+  }, [scope, relatedGuides, visibleGuides]);
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
@@ -295,7 +318,7 @@ export function SchemaExplorerSidebar({
           <div className="flex items-center justify-between mb-2">
             <div className="sidebar-heading compact">
               <span>Guides</span>
-              <code>{visibleGuides.length + visibleTopics.reduce((n, t) => n + t.guide_count, 0)}</code>
+              <code>{displayGuides.length + visibleTopics.reduce((n, t) => n + t.guide_count, 0)}</code>
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -349,9 +372,10 @@ export function SchemaExplorerSidebar({
             </div>
           )}
           {!demoReplay && !guidesError && (guides.length > 0 || topics.length > 0)
-            && visibleGuides.length === 0 && visibleTopics.length === 0 && (
+            && displayGuides.length === 0 && visibleTopics.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
-              No guides mention <code>{database}</code>.{' '}
+              No guides reference <code>{database}</code> yet. Guides appear here when they attach a
+              catalog reference to this database or mention it in their topic, title, or description.{' '}
               <button onClick={() => setScope('all')} className="text-[var(--accent)] hover:underline">
                 Show all
               </button>
@@ -359,7 +383,7 @@ export function SchemaExplorerSidebar({
           )}
 
           <ul className="text-sm flex flex-col gap-2">
-            {visibleGuides.map((g) => (
+            {displayGuides.map((g) => (
               <li key={g.uuid}>
                 <GuideCard guide={g} onOpen={() => setPopover({ kind: 'guide', guide: g })} />
               </li>
