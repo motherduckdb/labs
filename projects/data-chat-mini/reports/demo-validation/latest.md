@@ -1,9 +1,9 @@
 # Demo Validation Report
 
-- Run: 2026-06-01T17-25-37-055Z-mock
+- Run: 2026-07-24T04-42-10-506Z-mock
 - Mode: mock
 - Dataset: nba_box_scores_v2
-- Completed: 2026-06-01T17:25:37.259Z
+- Completed: 2026-07-24T04:42:10.660Z
 - Assertions: 23/23
 - Unresolved P1/P2: 0
 
@@ -21,7 +21,7 @@ No unresolved issues.
 - PASS [P1] database selection lists canonical dataset: available databases: nba_box_scores_v2, weather_demo
 - PASS [P1] schema browser lists canonical tables: tables: main.schedule, main.box_scores
 - PASS [P1] schema browser exposes join and metric columns: box_scores: game_id, entity_id, player_name, team_abbreviation, period, points; schedule: game_id, game_date, season_year, season_type, home_team_abbreviation, away_team_abbreviation
-- PASS [P2] system prompt includes demo-critical behavior: prompt must name the selected DB, context tools, response-after-tools rule, generic grain/context guardrails, and mviz/no-HTML boundary without dataset-specific rules
+- PASS [P2] system prompt includes demo-critical behavior: prompt must name the selected DB, the read-only boundary, response-after-tools rule, generic grain/guide guardrails, and mviz/no-HTML boundary without dataset-specific rules
 - PASS [P1] tool catalog is read-only plus local context: tools: query, list_databases, list_tables, list_columns, search_catalog, ask_docs_question, query_context_layer, update_context_layer
 - PASS [P2] demo mode covers the NBA presenter flow: steps: 1:pick-database, 2:inspect-schema, 3:adversarial-grain, 4:chart-with-context, 5:unsupported-injuries, 6:reset-workshop
 - PASS [P2] guided prompt insertion uses deterministic NBA prompts: inspect prompt: Use nba_box_scores_v2, inspect the schema, remember the schedule join, and show recent seasons as a table.
@@ -45,7 +45,7 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5
 
 ```table size=[16,5]
 {"title":"2024 Regular Season Team Scoring Leaders","columns":[{"id":"team","title":"Team","bold":true},{"id":"points","title":"Points","fmt":"auto","align":"right"}],"data":[{"team":"BOS","points":10422},{"team":"DEN","points":10051},{"team":"OKC","points":9964},{"team":"MIN","points":9818},{"
-- PASS [P2] second turn applies saved grain before SQL: chart turn should reuse the saved FullGame/team-row grain rule
+- PASS [P2] second turn applies saved grain before SQL: chart turn should reuse the saved FullGame grain rule
 - PASS [P2] mviz chart renders as HTML: assistant text length: 389
 - PASS [P2] adversarial unsupported-field test inspects before refusing: tools: search_catalog
 - PASS [P2] adversarial unsupported-field test refuses to invent injury analysis: The visible schema does not expose injury or player-availability fields, so I cannot attribute scoring drops to injured players from this dataset. I can analyze team scoring drops using `schedule` and `box_scores`, but injury explanations would need an injury/status table or an external roster availability source.
@@ -55,10 +55,10 @@ SELECT team, points FROM team_rows ORDER BY points DESC LIMIT 5
 - PASS [P2] context query/update/delete lifecycle succeeds: context services: query_context_layer:1 context fragment(s):
 
 ### box_scores to schedule join key
-id: 019e8438-36a5-7f15-afd1-7e02fd34671f
+id: 019f926e-4ecf-78b0-a3af-bc8ded6190ee
 references: database:nba_box_scores_v2.main.box_scores, database:nba_box_scores_v2.main.schedule
 
-Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019e8438-36a5-7f15-afd1-7e02fd34671f.
+Join nba_box_scores_v2.main.box_scores to nba_box_scores_v2.main.schedule on game_id. Use box_scores.period = FullGame for full-game player/team stats. | update_context_layer:Updated fragment "box_scores to schedule join key". | update_context_layer:Deleted fragment 019f926e-4ecf-78b0-a3af-bc8ded6190ee.
 - PASS [P2] presenter reset clears local conversations and context: conversations: 0; fragments: 0
 
 ## Tool Calls

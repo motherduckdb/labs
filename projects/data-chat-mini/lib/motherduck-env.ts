@@ -12,7 +12,7 @@ export function getMotherDuckApiUrl(): string {
   const legacyMcp = process.env.MOTHERDUCK_MCP_URL?.trim();
   if (legacyMcp) return legacyMcp.replace(/\/mcp\/?$/, '').replace(/\/$/, '');
 
-  return 'https://api.staging.motherduck.com';
+  return 'https://api.motherduck.com';
 }
 
 export function getMotherDuckMcpUrl(): string {

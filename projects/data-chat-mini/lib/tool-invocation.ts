@@ -20,6 +20,12 @@ const SUCCESS_FIELD_TOOLS = new Set([
   'update_context_layer',
   'share_dive_data',
   'query_rw',
+  // Guide writes return HTTP 200 + { success: false, error } on failure (e.g.
+  // "no authenticated username"). Without these, a failed create/update would
+  // read as a successful tool_end and the model would claim context was saved.
+  'create_guide',
+  'update_guide',
+  'edit_guide_content',
 ]);
 
 export function applyToolArgDefaults(
@@ -28,6 +34,12 @@ export function applyToolArgDefaults(
 ): Record<string, unknown> {
   if (name === 'list_dives' && !('include_org_shares' in args)) {
     return { ...args, include_org_shares: true };
+  }
+  // Model-created guides are always private. The guard also rejects an
+  // explicit access:"organization", but forcing the value here means the
+  // model can't burn a turn on the server's permission error either.
+  if (name === 'create_guide') {
+    return { ...args, access: 'user' };
   }
   return args;
 }

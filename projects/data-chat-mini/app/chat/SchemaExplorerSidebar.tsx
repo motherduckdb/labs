@@ -1,42 +1,59 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getSessionId } from '@/lib/session-id';
-import { listFragments, deleteFragment, type Fragment } from '@/lib/context-store';
-import { parseReference, type ParsedRef } from '@/lib/references';
 import { DEMO_SCHEMA_COLUMNS, DEMO_SCHEMA_TABLES } from '@/lib/demo-mode';
 import type { SchemaTable, SchemaColumn } from '@/lib/mcp-parsers';
 
 /** A schema-qualified table selection — disambiguates same-named tables. */
 interface SelectedTable { schema: string; name: string }
 
-const tkey = (schema: string, name: string) => `${schema}.${name}`.toLowerCase();
-
-/**
- * Does a parsed reference point at this specific table? Matches on table name
- * AND, when the reference names them, database + schema — so `db.main.orders`
- * links only to `main.orders`, not `archive.orders`. A reference that omits the
- * schema falls back to a name match (best effort).
- */
-function refMatchesTable(p: ParsedRef, table: { schema: string; name: string }, database: string): boolean {
-  if (p.isShare || !p.table) return false;
-  if (p.database && p.database.toLowerCase() !== database.toLowerCase()) return false;
-  if (p.table.toLowerCase() !== table.name.toLowerCase()) return false;
-  if (p.schema && p.schema.toLowerCase() !== table.schema.toLowerCase()) return false;
-  return true;
+/** One guide as summarized by list_guides. */
+interface GuideSummary {
+  uuid: string;
+  topic: string;
+  title: string;
+  description: string;
+  access: string;
 }
 
+/** One topic (folder) row as summarized by list_guides. */
+interface TopicSummary {
+  topic: string;
+  guide_count: number;
+}
+
+/** A catalog reference row in the (advanced) references editor. */
+interface RefRow { database: string; schema: string; table: string; description: string }
+
+const PROSE =
+  'prose prose-sm max-w-none text-sm leading-relaxed text-[var(--foreground)] prose-headings:font-semibold prose-h1:text-lg prose-h1:mt-0 prose-h2:text-base prose-h3:text-sm prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5 prose-table:text-xs prose-th:text-left prose-code:text-[12px] prose-pre:text-[12px]';
+
+/** Normalize a name for loose db-matching (nba_box_scores_v2 ≈ nba-box-scores-v2). */
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
 /**
- * Slim schema explorer: a catalog tree (database → tables → columns) the human
- * can browse to understand the data, plus the local context-fragment list (the
- * IndexedDB-backed context layer the model reads/writes via the round-trip).
- *
- * The two halves are linked: each fragment card lists the database objects it
- * references (clickable → expands that table in the tree), and each referenced
- * table shows a badge with how many fragments point at it.
+ * get_guide returns a *rendered* text: "<title>\n<uuid: … · vN · access>\n\n
+ * <description>\n\n<stored markdown>". Recover the stored markdown body by
+ * stripping only the lines that match the known title/meta/description, so
+ * an edit round-trip doesn't fold the preamble back into the body.
  */
+function extractStoredBody(rendered: string, summary: { title?: string; description?: string }): string {
+  const lines = rendered.split('\n');
+  let i = 0;
+  if (summary.title && lines[i]?.trim() === summary.title.trim()) i++;
+  if (/·\s*v\d+\s*·/.test(lines[i] ?? '')) i++;
+  while (i < lines.length && lines[i].trim() === '') i++;
+  if (summary.description && lines[i]?.trim() === summary.description.trim()) {
+    i++;
+    while (i < lines.length && lines[i].trim() === '') i++;
+  }
+  return lines.slice(i).join('\n');
+}
+
 export function SchemaExplorerSidebar({
   database,
   contextReloadKey,
@@ -50,18 +67,17 @@ export function SchemaExplorerSidebar({
   const [tablesError, setTablesError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [openColumns, setOpenColumns] = useState<Record<string, boolean>>({});
-  const [fragments, setFragments] = useState<Fragment[]>([]);
-  const [openFrags, setOpenFrags] = useState<Record<string, boolean>>({});
-  // Schema-qualified table the user has selected; filters the context list below.
+  const [guides, setGuides] = useState<GuideSummary[]>([]);
+  const [topics, setTopics] = useState<TopicSummary[]>([]);
+  // Guides fetched lazily per opened topic ('loading' while in flight).
+  const [openTopics, setOpenTopics] = useState<Record<string, GuideSummary[] | 'loading'>>({});
+  const [guidesError, setGuidesError] = useState<string | null>(null);
+  const [guidesLoading, setGuidesLoading] = useState(false);
+  // Popover target: an existing guide (view/edit) or a blank create form.
+  const [popover, setPopover] = useState<{ kind: 'guide'; guide: GuideSummary } | { kind: 'create' } | null>(null);
   const [selectedTable, setSelectedTable] = useState<SelectedTable | null>(null);
-  // Context scope. Defaults to the active database (the component is keyed by
-  // `database`, so this resets to 'database' on every switch). 'all' shows
-  // context referencing any database.
   const [scope, setScope] = useState<'database' | 'all'>('database');
 
-  // The component is keyed by `database` in ChatShell, so it remounts (and
-  // state resets to the initial null/{}) when the database changes — no
-  // synchronous setState-in-effect resets needed.
   useEffect(() => {
     if (demoReplay) return;
     let cancelled = false;
@@ -80,30 +96,84 @@ export function SchemaExplorerSidebar({
     return () => { cancelled = true; };
   }, [database, demoReplay]);
 
-  const refreshFragments = useCallback(() => {
-    listFragments().then(setFragments).catch(() => setFragments([]));
+  const refreshGuides = useCallback(() => {
+    if (demoReplay) return;
+    setGuidesLoading(true);
+    setGuidesError(null);
+    // The root listing returns root-level guides plus every topic (flattened,
+    // with counts); per-topic guides load lazily on expansion. A refresh
+    // collapses open topics so nothing shows stale content.
+    setOpenTopics({});
+    fetch('/api/guides', { headers: { 'x-session-id': getSessionId() } })
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        setGuides(Array.isArray(data.guides) ? data.guides : []);
+        setTopics(Array.isArray(data.topics) ? data.topics : []);
+      })
+      .catch((err) => setGuidesError(err instanceof Error ? err.message : 'Failed to load guides'))
+      .finally(() => setGuidesLoading(false));
+  }, [demoReplay]);
+
+  const toggleTopic = useCallback((topic: string) => {
+    setOpenTopics((prev) => {
+      if (prev[topic]) {
+        const next = { ...prev };
+        delete next[topic];
+        return next;
+      }
+      return { ...prev, [topic]: 'loading' };
+    });
   }, []);
 
+  // Fetch guides for topics newly marked 'loading'.
   useEffect(() => {
-    refreshFragments();
-  }, [refreshFragments, contextReloadKey]);
+    const pending = Object.entries(openTopics).filter(([, v]) => v === 'loading').map(([t]) => t);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    for (const topic of pending) {
+      fetch(`/api/guides?topic=${encodeURIComponent(topic)}`, { headers: { 'x-session-id': getSessionId() } })
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((data) => {
+          if (cancelled) return;
+          setOpenTopics((prev) =>
+            prev[topic] === 'loading' ? { ...prev, [topic]: Array.isArray(data.guides) ? data.guides : [] } : prev,
+          );
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setOpenTopics((prev) => (prev[topic] === 'loading' ? { ...prev, [topic]: [] } : prev));
+        });
+    }
+    return () => { cancelled = true; };
+  }, [openTopics]);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void refreshGuides();
+    });
+    return () => { cancelled = true; };
+  }, [refreshGuides, contextReloadKey]);
 
   const activeTables = demoReplay ? DEMO_SCHEMA_TABLES : tables;
 
-  // Map a schema-qualified table key (schema.name) → fragments that reference
-  // exactly that table in THIS db. Schema-qualified so same-named tables in
-  // different schemas don't share badges/filters.
-  const fragmentsByTableKey = useMemo(() => {
-    const m = new Map<string, Fragment[]>();
-    if (!activeTables) return m;
-    for (const t of activeTables) {
-      const matched = fragments.filter((f) =>
-        f.references.some((ref) => refMatchesTable(parseReference(ref), t, database)),
-      );
-      if (matched.length) m.set(tkey(t.schema, t.name), matched);
-    }
-    return m;
-  }, [activeTables, fragments, database]);
+  const visibleGuides = useMemo(() => {
+    if (scope === 'all') return guides;
+    const dbNorm = norm(database);
+    return guides.filter((g) => norm(`${g.topic} ${g.title} ${g.description}`).includes(dbNorm));
+  }, [guides, scope, database]);
+
+  const visibleTopics = useMemo(() => {
+    if (scope === 'all') return topics;
+    const dbNorm = norm(database);
+    return topics.filter((t) => norm(t.topic).includes(dbNorm));
+  }, [topics, scope, database]);
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
@@ -132,9 +202,6 @@ export function SchemaExplorerSidebar({
     }
   };
 
-  // Clicking a table row selects it (filtering the context list below to the
-  // fragments that reference it) and expands its columns. Clicking the selected
-  // table again clears the selection and collapses it.
   const isTableSelected = (t: { schema: string; name: string }) =>
     !!selectedTable &&
     selectedTable.schema.toLowerCase() === t.schema.toLowerCase() &&
@@ -150,37 +217,6 @@ export function SchemaExplorerSidebar({
       if (!expanded[key]) toggleTable(t);
     }
   };
-
-  // Clicking a fragment's reference chip selects + reveals that exact table.
-  const revealTable = (p: ParsedRef) => {
-    const t = activeTables?.find((x) => refMatchesTable(p, x, database));
-    if (!t) return;
-    const key = `${t.schema}.${t.name}`;
-    setSelectedTable({ schema: t.schema, name: t.name });
-    if (!expanded[key]) toggleTable(t);
-    document.getElementById(`tbl-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  };
-
-  // Context list, narrowed by scope (current database vs all) and then by the
-  // selected table when one is active.
-  const visibleFragments = useMemo(() => {
-    let base = fragments;
-    if (scope === 'database') {
-      base = base.filter((f) => {
-        const dbRefs = f.references.map(parseReference).filter((p) => p.database && !p.isShare);
-        // Uncategorized fragments (no database-typed reference) stay visible in
-        // any database; otherwise show only those referencing this database.
-        if (dbRefs.length === 0) return true;
-        return dbRefs.some((p) => p.database!.toLowerCase() === database.toLowerCase());
-      });
-    }
-    if (selectedTable) {
-      base = base.filter((f) =>
-        f.references.some((ref) => refMatchesTable(parseReference(ref), selectedTable, database)),
-      );
-    }
-    return base;
-  }, [fragments, scope, selectedTable, database]);
 
   return (
     <div className="schema-sidebar">
@@ -201,7 +237,6 @@ export function SchemaExplorerSidebar({
             {activeTables?.map((t) => {
               const key = `${t.schema}.${t.name}`;
               const cols = expanded[key];
-              const refFrags = fragmentsByTableKey.get(tkey(t.schema, t.name));
               const isSelected = isTableSelected(t);
               return (
                 <li key={key} id={`tbl-${key}`} className="mb-0.5">
@@ -213,14 +248,6 @@ export function SchemaExplorerSidebar({
                     <span className="truncate font-medium">{t.name}</span>
                     {t.type !== 'table' && (
                       <span className="ml-1 text-[10px] text-[var(--muted)]">{t.type}</span>
-                    )}
-                    {refFrags && refFrags.length > 0 && (
-                      <span
-                        className="ml-auto shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 text-[10px] font-medium text-[var(--accent)]"
-                        title={`${refFrags.length} saved context fragment(s):\n` + refFrags.map((f) => `• ${f.title}`).join('\n')}
-                      >
-                        ⬡ {refFrags.length}
-                      </span>
                     )}
                   </button>
                   {cols === 'loading' && (
@@ -263,159 +290,111 @@ export function SchemaExplorerSidebar({
           </ul>
         </div>
 
-        {/* Local context fragments */}
+        {/* Guides — the context layer */}
         <div className="sidebar-section context-section">
           <div className="flex items-center justify-between mb-2">
             <div className="sidebar-heading compact">
-              <span>Context</span>
-              <code>{visibleFragments.length}</code>
+              <span>Guides</span>
+              <code>{visibleGuides.length + visibleTopics.reduce((n, t) => n + t.guide_count, 0)}</code>
             </div>
-            <button
-              onClick={refreshFragments}
-              title="Refresh"
-              className="icon-button"
-            >
-              ↻
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPopover({ kind: 'create' })}
+                title="Create a new personal guide"
+                className="icon-button"
+                disabled={demoReplay}
+              >
+                ＋
+              </button>
+              <button
+                onClick={refreshGuides}
+                title="Refresh guides"
+                className="icon-button"
+                disabled={demoReplay || guidesLoading}
+              >
+                ↻
+              </button>
+            </div>
           </div>
 
-          {/* Scope: default to the active database, or show all. */}
           <div className="segmented-control">
             <button
               onClick={() => setScope('database')}
-              title={`Show context referencing ${database}`}
+              title={`Show guides about ${database}`}
               className={scope === 'database' ? 'active' : ''}
             >
               {database}
             </button>
             <button
               onClick={() => setScope('all')}
-              title="Show context across all databases"
+              title="Show every guide in the org"
               className={scope === 'all' ? 'active' : ''}
             >
               all
             </button>
           </div>
 
-          {selectedTable && (
-            <button
-              onClick={() => setSelectedTable(null)}
-              className="inline-link"
-            >
-              ✕ clear table filter (<code>{selectedTable.schema}.{selectedTable.name}</code>)
-            </button>
+          {demoReplay && (
+            <div className="text-xs text-[var(--muted)]">
+              Guides load from MotherDuck and aren’t available in replay mode.
+            </div>
+          )}
+          {!demoReplay && guidesError && <div className="text-xs text-red-600">{guidesError}</div>}
+          {!demoReplay && !guidesError && guidesLoading && guides.length === 0 && (
+            <div className="text-xs text-[var(--muted)]">Loading guides…</div>
+          )}
+          {!demoReplay && !guidesError && !guidesLoading && guides.length === 0 && topics.length === 0 && (
+            <div className="text-xs text-[var(--muted)]">
+              No guides yet. Create one, or the assistant saves durable rules it learns as private guides.
+            </div>
+          )}
+          {!demoReplay && !guidesError && (guides.length > 0 || topics.length > 0)
+            && visibleGuides.length === 0 && visibleTopics.length === 0 && (
+            <div className="text-xs text-[var(--muted)]">
+              No guides mention <code>{database}</code>.{' '}
+              <button onClick={() => setScope('all')} className="text-[var(--accent)] hover:underline">
+                Show all
+              </button>
+            </div>
           )}
 
-          {fragments.length === 0 && (
-            <div className="text-xs text-[var(--muted)]">
-              No saved context yet. Ask the assistant to “remember” a durable insight.
-            </div>
-          )}
-          {fragments.length > 0 && visibleFragments.length === 0 && (
-            <div className="text-xs text-[var(--muted)]">
-              {selectedTable ? (
-                <>No saved context references <code>{selectedTable.schema}.{selectedTable.name}</code>.</>
-              ) : (
-                <>
-                  No context references <code>{database}</code>.{' '}
-                  <button onClick={() => setScope('all')} className="text-[var(--accent)] hover:underline">
-                    Show all
-                  </button>
-                </>
-              )}
-            </div>
-          )}
           <ul className="text-sm flex flex-col gap-2">
-            {visibleFragments.map((f) => {
-              const open = !!openFrags[f.id];
-              const toggleFragment = () => setOpenFrags((prev) => ({ ...prev, [f.id]: !prev[f.id] }));
+            {visibleGuides.map((g) => (
+              <li key={g.uuid}>
+                <GuideCard guide={g} onOpen={() => setPopover({ kind: 'guide', guide: g })} />
+              </li>
+            ))}
+          </ul>
+
+          {/* Topics (folders) — guides load lazily on expansion. */}
+          <ul className="text-sm mt-2">
+            {visibleTopics.map((t) => {
+              const loaded = openTopics[t.topic];
               return (
-                <li
-                  key={f.id}
-                  className={`context-fragment-card group ${open ? 'open' : ''}`}
-                  role={open ? undefined : 'button'}
-                  tabIndex={open ? undefined : 0}
-                  aria-expanded={open ? undefined : false}
-                  onClick={(event) => {
-                    if (event.target instanceof Element && event.target.closest('button, a, input, textarea, select, summary')) {
-                      return;
-                    }
-                    // Don't collapse mid-selection — let users highlight the
-                    // open card's text without it snapping shut.
-                    if (open) {
-                      const selection = window.getSelection();
-                      if (selection && !selection.isCollapsed) return;
-                    }
-                    toggleFragment();
-                  }}
-                  onKeyDown={(event) => {
-                    if (open || event.target !== event.currentTarget) return;
-                    if (event.key !== 'Enter' && event.key !== ' ') return;
-                    event.preventDefault();
-                    toggleFragment();
-                  }}
-                >
-                  <div className="flex items-start gap-1">
-                    <button
-                      onClick={toggleFragment}
-                      className="flex flex-1 items-start gap-1 text-left"
-                      title={open ? 'Collapse' : 'Expand'}
-                    >
-                      <span className="text-[var(--muted)] text-xs mt-0.5 w-3 shrink-0">{open ? '▾' : '▸'}</span>
-                      <span className="flex-1 font-medium text-[13px] leading-snug">{f.title}</span>
-                    </button>
-                    <button
-                      title="Delete fragment"
-                      className="opacity-0 group-hover:opacity-100 text-xs text-[var(--muted)] hover:text-red-600 shrink-0"
-                      onClick={async (event) => {
-                        event.stopPropagation();
-                        if (!window.confirm(`Delete saved context "${f.title}"? This can't be undone.`)) return;
-                        await deleteFragment(f.id);
-                        refreshFragments();
-                      }}
-                    >
-                      ✕
-                    </button>
-                  </div>
-
-                  {open ? (
-                    <div className="prose prose-sm max-w-none mt-1 text-xs leading-relaxed text-[var(--foreground)] prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-1 prose-headings:text-xs prose-pre:my-1 prose-pre:text-[11px] prose-code:text-[11px]">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{f.content}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-[var(--muted)] mt-1 line-clamp-2 whitespace-pre-wrap">
-                      {f.content}
-                    </p>
+                <li key={t.topic} className="mb-0.5">
+                  <button
+                    onClick={() => toggleTopic(t.topic)}
+                    className="schema-table-button"
+                    title={`${t.guide_count} guide${t.guide_count === 1 ? '' : 's'} in ${t.topic}`}
+                  >
+                    <span className="schema-caret">{loaded ? '▾' : '▸'}</span>
+                    <span className="truncate font-medium">{t.topic}</span>
+                    <span className="ml-1 text-[10px] text-[var(--muted)]">{t.guide_count}</span>
+                  </button>
+                  {loaded === 'loading' && (
+                    <div className="pl-6 py-0.5 text-xs text-[var(--muted)]">loading guides…</div>
                   )}
-
-                  {open && f.references.length > 0 && (
-                    <div className="mt-2 flex flex-col gap-1">
-                      <div className="text-[10px] uppercase tracking-wide text-[var(--muted)]">References</div>
-                      <div className="flex flex-wrap gap-1">
-                        {f.references.map((ref, i) => {
-                          const p = parseReference(ref);
-                          const clickable = !p.isShare && !!p.table;
-                          return (
-                            <button
-                              key={i}
-                              disabled={!clickable}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (clickable) revealTable(p);
-                              }}
-                              title={clickable ? `Show ${p.label} in the schema tree` : ref}
-                              className={`max-w-full break-all text-left leading-tight rounded px-1.5 py-0.5 text-[10px] border border-[var(--border)] ${
-                                clickable
-                                  ? 'bg-[var(--panel)] hover:border-[var(--accent)] hover:text-[var(--accent)] cursor-pointer'
-                                  : 'bg-[var(--panel)] text-[var(--muted)] cursor-default'
-                              }`}
-                            >
-                              {p.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
+                  {Array.isArray(loaded) && (
+                    <ul className="flex flex-col gap-2 pl-4 py-1">
+                      {loaded.map((g) => (
+                        <li key={g.uuid}>
+                          <GuideCard guide={g} onOpen={() => setPopover({ kind: 'guide', guide: g })} />
+                        </li>
+                      ))}
+                      {loaded.length === 0 && (
+                        <li className="py-0.5 text-xs text-[var(--muted)]">no guides at this level</li>
+                      )}
+                    </ul>
                   )}
                 </li>
               );
@@ -423,6 +402,407 @@ export function SchemaExplorerSidebar({
           </ul>
         </div>
       </div>
+
+      {popover && (
+        <GuidePopover
+          initialGuide={popover.kind === 'guide' ? popover.guide : null}
+          activeDatabase={database}
+          onClose={() => setPopover(null)}
+          onListChanged={refreshGuides}
+          onRenamed={(g) => setPopover({ kind: 'guide', guide: g })}
+        />
+      )}
     </div>
+  );
+}
+
+function GuideCard({ guide: g, onOpen }: { guide: GuideSummary; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="context-fragment-card w-full text-left"
+      title="Open guide"
+    >
+      <div className="flex items-start gap-2">
+        <span className="flex-1 font-medium text-[13px] leading-snug">{g.title || '(untitled)'}</span>
+        <span
+          className="shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 text-[10px] font-medium text-[var(--accent)]"
+          title={g.access === 'organization' ? 'Org-wide guide' : g.access === 'user' ? 'Private guide' : `Access: ${g.access}`}
+        >
+          {g.access === 'organization' ? 'org' : g.access === 'user' ? 'private' : g.access}
+        </span>
+      </div>
+      <p className="text-xs text-[var(--muted)] mt-1 line-clamp-2">
+        {g.description || g.topic || '—'}
+      </p>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function GuidePopover({
+  initialGuide,
+  activeDatabase,
+  onClose,
+  onListChanged,
+  onRenamed,
+}: {
+  initialGuide: GuideSummary | null;
+  activeDatabase: string;
+  onClose: () => void;
+  onListChanged: () => void;
+  onRenamed: (g: GuideSummary) => void;
+}) {
+  const creating = initialGuide === null;
+  const [guide, setGuide] = useState<GuideSummary | null>(initialGuide);
+  const [mode, setMode] = useState<'view' | 'edit' | 'history'>(creating ? 'edit' : 'view');
+  const [content, setContent] = useState<string | null>(null);
+  const [version, setVersion] = useState<number | null>(null);
+  const [loading, setLoading] = useState(!creating);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // History browsing.
+  const [historyVersion, setHistoryVersion] = useState<number | null>(null);
+  const [historyContent, setHistoryContent] = useState<string | null>(null);
+
+  // Edit / create form.
+  const [fTitle, setFTitle] = useState(initialGuide?.title ?? '');
+  const [fDesc, setFDesc] = useState(initialGuide?.description ?? '');
+  const [fTopic, setFTopic] = useState(creating ? 'data-chat-mini/' : (initialGuide?.topic ?? ''));
+  const [fBody, setFBody] = useState('');
+  const [fComment, setFComment] = useState('');
+  const [replaceRefs, setReplaceRefs] = useState(false);
+  const [refRows, setRefRows] = useState<RefRow[]>([{ database: activeDatabase, schema: '', table: '', description: '' }]);
+
+  const loadContent = useCallback((uuid: string) => {
+    setLoading(true);
+    fetch(`/api/guides?uuid=${encodeURIComponent(uuid)}`, { headers: { 'x-session-id': getSessionId() } })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(typeof data.error === 'string' ? data.error : `HTTP ${res.status}`);
+        return data;
+      })
+      .then((data) => {
+        setContent(typeof data.content === 'string' ? data.content : '');
+        setVersion(typeof data.version === 'number' ? data.version : null);
+      })
+      .catch((e) => setContent(`Failed to load this guide: ${e instanceof Error ? e.message : 'unknown error'}`))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (creating || !guide) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadContent(guide.uuid);
+    });
+    return () => { cancelled = true; };
+  }, [creating, guide, loadContent]);
+
+  // Escape closes the popover (but not while a text field is focused mid-edit).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (mode !== 'view' && (tag === 'TEXTAREA' || tag === 'INPUT')) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, mode]);
+
+  const storedBody = useMemo(
+    () => (content ? extractStoredBody(content, { title: guide?.title, description: guide?.description }) : ''),
+    [content, guide],
+  );
+
+  const beginEdit = () => {
+    setFTitle(guide?.title ?? '');
+    setFDesc(guide?.description ?? '');
+    setFTopic(guide?.topic ?? '');
+    setFBody(storedBody);
+    setFComment('');
+    setReplaceRefs(false);
+    setError(null);
+    setMode('edit');
+  };
+
+  const buildReferences = () =>
+    refRows
+      .filter((r) => r.database.trim())
+      .map((r) => {
+        const ref: Record<string, unknown> = {
+          type: 'catalog',
+          url: r.database.trim().startsWith('md:') ? r.database.trim() : `md:${r.database.trim()}`,
+        };
+        if (r.schema.trim()) ref.schema = r.schema.trim();
+        if (r.table.trim()) ref.table = r.table.trim();
+        if (r.description.trim()) ref.description = r.description.trim();
+        return ref;
+      });
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (creating) {
+        if (!fTitle.trim() || !fBody.trim()) {
+          setError('Title and content are required.');
+          setBusy(false);
+          return;
+        }
+        const body: Record<string, unknown> = {
+          title: fTitle.trim(), content: fBody, description: fDesc.trim(),
+        };
+        const topic = fTopic.trim().replace(/^\/+|\/+$/g, '');
+        if (topic) body.topic = topic;
+        if (fComment.trim()) body.changeComment = fComment.trim();
+        if (replaceRefs) body.references = buildReferences();
+        const res = await fetch('/api/guides', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-session-id': getSessionId() },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) { setError(data.error || `HTTP ${res.status}`); setBusy(false); return; }
+        onListChanged();
+        onClose();
+        return;
+      }
+
+      // Edit existing: send only what changed.
+      const body: Record<string, unknown> = { uuid: guide!.uuid };
+      const topic = fTopic.trim().replace(/^\/+|\/+$/g, '');
+      if (fTitle.trim() !== guide!.title) body.title = fTitle.trim();
+      if (fDesc.trim() !== guide!.description) body.description = fDesc.trim();
+      if (topic !== guide!.topic) body.topic = topic;
+      if (fBody !== storedBody) body.content = fBody;
+      if (replaceRefs) body.references = buildReferences();
+      if (fComment.trim()) body.changeComment = fComment.trim();
+      const res = await fetch('/api/guides', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-session-id': getSessionId() },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) { setError(data.error || `HTTP ${res.status}`); setBusy(false); return; }
+      const next: GuideSummary = {
+        uuid: guide!.uuid,
+        topic,
+        title: fTitle.trim() || guide!.title,
+        description: fDesc.trim(),
+        access: guide!.access,
+      };
+      onListChanged();
+      setGuide(next);
+      setMode('view');
+      void loadContent(next.uuid);
+      if (next.topic !== guide!.topic) onRenamed(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!guide) return;
+    if (!window.confirm(`Delete guide "${guide.title || guide.uuid}"? It can be recovered from version history by an admin.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/guides?uuid=${encodeURIComponent(guide.uuid)}`, {
+        method: 'DELETE',
+        headers: { 'x-session-id': getSessionId() },
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) { setError(data.error || `HTTP ${res.status}`); setBusy(false); return; }
+      onListChanged();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed');
+      setBusy(false);
+    }
+  };
+
+  const openHistory = () => {
+    if (!version || version <= 1) return;
+    setMode('history');
+    loadHistory(version - 1);
+  };
+
+  const loadHistory = (v: number) => {
+    if (!guide) return;
+    setHistoryVersion(v);
+    setHistoryContent(null);
+    fetch(`/api/guides?uuid=${encodeURIComponent(guide.uuid)}&version=${v}`, { headers: { 'x-session-id': getSessionId() } })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(typeof data.error === 'string' ? data.error : `HTTP ${res.status}`);
+        return data;
+      })
+      .then((data) => setHistoryContent(typeof data.content === 'string' ? data.content : ''))
+      .catch((e) => setHistoryContent(`Failed to load this version: ${e instanceof Error ? e.message : 'unknown error'}`));
+  };
+
+  const title = creating ? 'New guide' : (guide?.title || 'Guide');
+
+  return createPortal(
+    <div
+      className="guide-modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+    >
+      <div className="guide-modal">
+        <div className="guide-modal-header">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="guide-modal-title">{title}</span>
+              {guide && (
+                <span
+                  className="shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]"
+                  title={guide.access === 'organization' ? 'Org-wide guide' : guide.access === 'user' ? 'Private guide' : `Access: ${guide.access}`}
+                >
+                  {guide.access === 'organization' ? 'org' : guide.access === 'user' ? 'private' : guide.access}
+                </span>
+              )}
+            </div>
+            {mode === 'view' && guide?.description && <div className="guide-modal-desc">{guide.description}</div>}
+            {guide && <div className="guide-modal-path">{guide.topic || '(no topic)'}</div>}
+          </div>
+          <button className="icon-button" onClick={onClose} title="Close" aria-label="Close guide" disabled={busy}>✕</button>
+        </div>
+
+        <div className="guide-modal-body">
+          {error && <div className="guide-inline-error mb-3">{error}</div>}
+
+          {/* VIEW */}
+          {mode === 'view' && (
+            loading ? (
+              <p className="text-xs text-[var(--muted)]">loading guide…</p>
+            ) : (
+              <>
+                {version !== null && (
+                  <div className="guide-version-bar">Version {version}{version > 1 ? ' (current)' : ''}</div>
+                )}
+                <div className={PROSE}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{storedBody || '_(empty guide)_'}</ReactMarkdown>
+                </div>
+              </>
+            )
+          )}
+
+          {/* HISTORY */}
+          {mode === 'history' && (
+            <>
+              <div className="guide-version-bar">
+                <button className="icon-button" disabled={!historyVersion || historyVersion <= 1} onClick={() => historyVersion && loadHistory(historyVersion - 1)} title="Older version">◀</button>
+                <span>Version {historyVersion} of {version}</span>
+                <button className="icon-button" disabled={!historyVersion || !version || historyVersion >= version - 1} onClick={() => historyVersion && loadHistory(historyVersion + 1)} title="Newer version">▶</button>
+                <span className="spacer flex-1" />
+                <button className="ghost-button" onClick={() => setMode('view')}>Back to current</button>
+              </div>
+              {historyContent === null ? (
+                <p className="text-xs text-[var(--muted)]">loading version…</p>
+              ) : (
+                <div className={PROSE}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {extractStoredBody(historyContent, { title: guide?.title, description: guide?.description })}
+                  </ReactMarkdown>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* EDIT / CREATE */}
+          {mode === 'edit' && (
+            <>
+              <div className="guide-field">
+                <label className="guide-field-label">Title</label>
+                <input className="guide-input" value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Guide title" />
+              </div>
+              <div className="guide-field">
+                <label className="guide-field-label">Description</label>
+                <input className="guide-input" value={fDesc} onChange={(e) => setFDesc(e.target.value)} placeholder="One-line summary" />
+              </div>
+              <div className="guide-field">
+                <label className="guide-field-label">{creating ? 'Topic' : 'Topic (change to move)'}</label>
+                <input className="guide-input" value={fTopic} onChange={(e) => setFTopic(e.target.value)} placeholder="data-chat-mini/joins" spellCheck={false} />
+                {creating && (
+                  <span className="guide-refs-note">Guides created here are private (<code>access: user</code>). The topic is a slash-separated folder label, e.g. <code>data-chat-mini/nba</code>.</span>
+                )}
+              </div>
+              <div className="guide-field">
+                <label className="guide-field-label">Content (markdown)</label>
+                <textarea className="guide-textarea" value={fBody} onChange={(e) => setFBody(e.target.value)} placeholder="# Heading — rules the model should follow…" spellCheck={false} />
+              </div>
+
+              <div className="guide-field">
+                <label className="guide-field-label" style={{ display: 'flex', alignItems: 'center', gap: 6, textTransform: 'none', letterSpacing: 0 }}>
+                  <input type="checkbox" checked={replaceRefs} onChange={(e) => setReplaceRefs(e.target.checked)} />
+                  Replace references (advanced)
+                </label>
+                {replaceRefs && (
+                  <>
+                    <div className="guide-refs-note">
+                      MotherDuck doesn’t expose a guide’s saved references for reading, so this can’t show existing ones — turning it on <strong>overwrites</strong> the full reference list with the rows below. Leave it off to keep current references. References usually also live in the guide’s markdown body above.
+                    </div>
+                    {refRows.map((r, i) => (
+                      <div className="guide-ref-row" key={i}>
+                        <input className="guide-input" value={r.database} placeholder="database" onChange={(e) => setRefRows((rows) => rows.map((x, j) => j === i ? { ...x, database: e.target.value } : x))} />
+                        <input className="guide-input" value={r.schema} placeholder="schema" onChange={(e) => setRefRows((rows) => rows.map((x, j) => j === i ? { ...x, schema: e.target.value } : x))} />
+                        <input className="guide-input" value={r.table} placeholder="table" onChange={(e) => setRefRows((rows) => rows.map((x, j) => j === i ? { ...x, table: e.target.value } : x))} />
+                        <input className="guide-input" value={r.description} placeholder="why it matters" onChange={(e) => setRefRows((rows) => rows.map((x, j) => j === i ? { ...x, description: e.target.value } : x))} />
+                        <button className="icon-button" title="Remove row" onClick={() => setRefRows((rows) => rows.filter((_, j) => j !== i))}>✕</button>
+                      </div>
+                    ))}
+                    <button className="ghost-button" onClick={() => setRefRows((rows) => [...rows, { database: activeDatabase, schema: '', table: '', description: '' }])}>+ reference</button>
+                  </>
+                )}
+              </div>
+
+              <div className="guide-field">
+                <label className="guide-field-label">Change note (optional)</label>
+                <input className="guide-input" value={fComment} onChange={(e) => setFComment(e.target.value)} placeholder="what changed in this version" />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ACTIONS */}
+        <div className="guide-modal-actions">
+          {mode === 'view' && guide && (
+            <>
+              <button className="solid-button compact" onClick={beginEdit} disabled={busy || loading} title={loading ? 'Loading content…' : 'Edit this guide'}>Edit</button>
+              <button
+                className="ghost-button"
+                disabled
+                title="Changing org-wide visibility needs an authenticated admin/OAuth path — disabled in this app."
+              >
+                {guide.access === 'organization' ? 'Org-wide (admin-managed)' : 'Promote to org-wide'}
+              </button>
+              {version !== null && version > 1 && (
+                <button className="ghost-button" onClick={openHistory} disabled={busy}>History</button>
+              )}
+              <span className="spacer" />
+              <button className="ghost-button" onClick={remove} disabled={busy} style={{ color: 'var(--red)' }}>Delete</button>
+            </>
+          )}
+          {mode === 'edit' && (
+            <>
+              <button className="solid-button compact" onClick={save} disabled={busy}>{busy ? 'Saving…' : (creating ? 'Create guide' : 'Save')}</button>
+              <button className="ghost-button" onClick={() => (creating ? onClose() : setMode('view'))} disabled={busy}>Cancel</button>
+            </>
+          )}
+          {mode === 'history' && <span className="text-xs text-[var(--muted)]">Viewing a past version (read-only).</span>}
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

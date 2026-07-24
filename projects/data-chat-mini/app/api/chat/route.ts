@@ -2,7 +2,7 @@ import { NextRequest, after } from 'next/server';
 import { getModelProfile } from '@/lib/llm-client';
 import { createMCPClient, getFilteredTools, mcpToolsToAnthropicFormat } from '@/lib/mcp-client';
 import { buildSystemPrompt } from '@/lib/system-prompt';
-import { CONTEXT_TOOLS, CONTEXT_PLACEHOLDER } from '@/lib/context-tools';
+import { CONTEXT_PLACEHOLDER } from '@/lib/context-tools';
 import { runAgenticLoop } from '@/lib/agentic-loop';
 import * as cl from '@/lib/controllog';
 import { sseDone, sseError } from '@/lib/sse-encoder';
@@ -41,12 +41,16 @@ export async function POST(request: NextRequest) {
     // session hint so concurrent users fan out across read replicas.
     mcpClient = await createMCPClient(sessionId);
     const mcpTools = await getFilteredTools(mcpClient);
-    // Context-layer tools are advertised with MotherDuck names but handled
-    // locally via the client round-trip — not dispatched to MCP.
-    const tools = [...mcpToolsToAnthropicFormat(mcpTools), ...CONTEXT_TOOLS];
+    // The context layer is now the MCP guide subsystem (get_query_guide +
+    // list_guides/get_guide + private-guide writes), dispatched like any other
+    // MCP tool. The legacy
+    // local CONTEXT_TOOLS round-trip is no longer advertised to the model; its
+    // plumbing survives only for the demo harness pending a re-record (see
+    // docs/context-layer-guide-migration.md).
+    const tools = mcpToolsToAnthropicFormat(mcpTools);
 
     const profile = getModelProfile();
-    const systemPrompt = buildSystemPrompt(databases);
+    const systemPrompt = buildSystemPrompt(databases, mcpTools.map(t => t.name));
 
     const logSession = cl.createSession(sessionId);
     let markStreamFinished: () => void = () => {};

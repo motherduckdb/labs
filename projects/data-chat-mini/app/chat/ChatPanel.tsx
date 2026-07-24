@@ -33,6 +33,9 @@ import type {
 
 const THINKING_LEVELS: ThinkingLevel[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
+/** MCP guide-write tools — the context layer's write side (see mcp-client.ts). */
+const GUIDE_WRITE_TOOL_NAMES = new Set(['create_guide', 'update_guide', 'edit_guide_content']);
+
 export function ChatPanel({
   databases,
   thinkingLevel,
@@ -195,6 +198,9 @@ export function ChatPanel({
                 : s,
             ),
           }));
+          // A successful guide write is the new "save context" — refresh the
+          // guide panel so the human sees it (guides replaced IndexedDB).
+          if (!tc.error && GUIDE_WRITE_TOOL_NAMES.has(tc.name)) onContextChanged();
         } else if (type === 'context_tool') {
           const c = evt.contextCall as { callId: string; name: string; args: Record<string, unknown> };
           contextCalls.push(c);

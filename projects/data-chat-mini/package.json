@@ -14,6 +14,7 @@
     "test": "vitest run",
     "demo:validate": "vitest run demo/demo-validation.test.ts",
     "demo:validate:live": "DEMO_VALIDATE_MODE=live vitest run demo/demo-validation.test.ts",
+    "mcp:validate": "node scripts/validate-prod-mcp.mjs",
     "audit": "npm audit --audit-level=moderate",
     "test:watch": "vitest"
   },
