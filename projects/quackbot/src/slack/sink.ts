@@ -61,11 +61,54 @@ function verbFor(name: string): string {
   return TOOL_VERBS[name] ?? 'working';
 }
 
+/**
+ * Back a split index off by one when it would land between a surrogate pair.
+ *
+ * `slice` cuts on UTF-16 code units, so a cap falling mid-emoji leaves a lone
+ * surrogate at the seam. `@slack/web-api` form-encodes the payload with
+ * `querystring.stringify`, which throws `ERR_INVALID_URI` on an unpaired
+ * surrogate — so the call fails, fails every retry, and the message never
+ * repaints. Cheap to avoid at every cap site; `sanitizeSurrogates` is the
+ * backstop for pairs split anywhere else.
+ */
+function safeSplitIndex(s: string, at: number): number {
+  if (at <= 0 || at >= s.length) return at;
+  const prev = s.charCodeAt(at - 1);
+  const isHighSurrogate = prev >= 0xd800 && prev <= 0xdbff;
+  return isHighSurrogate ? at - 1 : at;
+}
+
+/**
+ * Drop unpaired surrogates from an outgoing payload string.
+ *
+ * The cap sites use `safeSplitIndex`, but a lone surrogate can also reach us
+ * from a streaming delta boundary that split a pair (an interim repaint renders
+ * whatever has accumulated) or from a query result whose text carries one. Any
+ * single one of them makes the whole Slack call throw `ERR_INVALID_URI`, so
+ * strip them at the send chokepoint rather than trusting every producer.
+ */
+export function sanitizeSurrogates(s: string): string {
+  // A high surrogate not followed by a low one, or a low one not preceded by a high.
+  return s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+}
+
+/** Recursively apply `sanitizeSurrogates` to every string in a Slack payload. */
+function sanitizePayload<T>(value: T): T {
+  if (typeof value === 'string') return sanitizeSurrogates(value) as T;
+  if (Array.isArray(value)) return value.map(sanitizePayload) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, sanitizePayload(v)]),
+    ) as T;
+  }
+  return value;
+}
+
 /** Split `s` at or before `cap`, preferring a newline boundary. */
 function findSplit(s: string, cap: number): number {
   const nl = s.lastIndexOf('\n', cap);
   if (nl > cap * 0.5) return nl + 1;
-  return cap;
+  return safeSplitIndex(s, cap);
 }
 
 /** Split a stable final body into chunks each ≤ FINAL_CAP, at newline boundaries. */
@@ -84,7 +127,7 @@ function splitForFinal(body: string): string[] {
 /** Cap the notification-fallback `text` well under Slack's recommended 4k. */
 function truncateFallback(s: string): string {
   if (s.length <= INTERIM_CAP) return s;
-  return `${s.slice(0, INTERIM_CAP - 1)}…`;
+  return `${s.slice(0, safeSplitIndex(s, INTERIM_CAP - 1))}…`;
 }
 
 /**
@@ -97,7 +140,7 @@ function truncateFallback(s: string): string {
 function capForText(s: string): string {
   if (s.length <= SLACK_TEXT_CAP) return s;
   const note = '\n\n_…truncated…_';
-  return `${s.slice(0, SLACK_TEXT_CAP - note.length)}${note}`;
+  return `${s.slice(0, safeSplitIndex(s, SLACK_TEXT_CAP - note.length))}${note}`;
 }
 
 function delay(ms: number): Promise<void> {
@@ -393,7 +436,8 @@ export class SlackTurnSink implements TurnSink {
       // cap so a single chat.update always succeeds; the authoritative full
       // answer (split across messages) lands in finalize. A failed interim is
       // fine to swallow — finalize self-heals.
-      const shown = body.length > INTERIM_CAP ? `${body.slice(0, INTERIM_CAP - 1)}…` : body;
+      const shown =
+        body.length > INTERIM_CAP ? `${body.slice(0, safeSplitIndex(body, INTERIM_CAP - 1))}…` : body;
       // The 3.9k cap is on the MARKDOWN source, but toMrkdwn's ASCII-table
       // padding can expand a small table past Slack's text limit — so re-cap the
       // CONVERTED string (note appended after slicing) or the update is rejected.
@@ -461,7 +505,7 @@ export class SlackTurnSink implements TurnSink {
     blocks?: object[];
   }): Promise<boolean> {
     try {
-      await this.client.chat.update(args);
+      await this.client.chat.update(sanitizePayload(args));
       return true;
     } catch (err) {
       console.warn('[quackbot] chat.update failed:', err);
@@ -474,7 +518,7 @@ export class SlackTurnSink implements TurnSink {
       await this.client.chat.postMessage({
         channel: this.channel,
         ...(this.threadTs ? { thread_ts: this.threadTs } : {}),
-        ...args,
+        ...sanitizePayload(args),
       });
       return true;
     } catch (err) {

@@ -309,6 +309,10 @@ export function processMvizMarkdown(markdown: string, theme = 'light'): string {
   // title row, theme toggle), prunes unused CSS/CDN scripts, and minifies for
   // iframe embedding — the rendering path these tiles live in. Replaces the
   // manual chrome-stripping we used to carry in CUSTOM_CSS_OVERRIDES.
+  // Note: it prunes the CDN scripts it doesn't need, NOT the one it does — the
+  // output still document.writes a <script src> for echarts on every chart
+  // tile. The Slack PNG path serves that from disk; see `resolveVendoredAsset`
+  // in src/slack/screenshot.ts.
   const result = parseMarkdownToDashboard(
     sanitizedMarkdown,
     theme,

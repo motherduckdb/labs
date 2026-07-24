@@ -11,7 +11,7 @@ vi.mock('./screenshot', () => ({
   renderHtmlToPng: vi.fn(),
 }));
 
-import { SlackTurnSink } from './sink';
+import { SlackTurnSink, sanitizeSurrogates } from './sink';
 import { classifyMvizBlock, tableBlockToMarkdown } from './viz';
 import { renderHtmlToPng } from './screenshot';
 
@@ -533,5 +533,78 @@ describe('SlackTurnSink error handling', () => {
     sink.onText('hi');
     // finalize must resolve despite the update rejecting.
     await expect(sink.finalize()).resolves.toBeUndefined();
+  });
+});
+
+describe('SlackTurnSink surrogate safety', () => {
+  // @slack/web-api form-encodes with querystring.stringify, which throws
+  // ERR_INVALID_URI on an unpaired surrogate — and it throws for the WHOLE
+  // payload, so one split emoji anywhere loses the entire message (observed in
+  // production as `chat.update failed: URIError` retried to exhaustion).
+  const hasLoneSurrogate = (s: string): boolean =>
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+
+  /** Every string that would be form-encoded, from a payload of any shape. */
+  const allStrings = (value: unknown): string[] => {
+    if (typeof value === 'string') return [value];
+    if (Array.isArray(value)) return value.flatMap(allStrings);
+    if (value !== null && typeof value === 'object') return Object.values(value).flatMap(allStrings);
+    return [];
+  };
+
+  it('sanitizeSurrogates drops unpaired halves and keeps whole pairs intact', () => {
+    expect(sanitizeSurrogates('a😀b')).toBe('a😀b'); // 😀 survives
+    expect(sanitizeSurrogates('a\uD83Db')).toBe('ab'); // lone high
+    expect(sanitizeSurrogates('a\uDE00b')).toBe('ab'); // lone low
+    expect(sanitizeSurrogates('trailing\uD83D')).toBe('trailing');
+    expect(hasLoneSurrogate(sanitizeSurrogates('\uD83D😀\uDE00'))).toBe(false);
+  });
+
+  it('never sends a lone surrogate when an emoji straddles the interim cap', async () => {
+    const { client, updates } = makeClient();
+    const sink = makeSink(client);
+
+    // Land a 😀 exactly on the 3899-char interim cut, so a naive slice(0, 3899)
+    // keeps only its high half.
+    sink.onText(`${'x'.repeat(3898)}😀${'y'.repeat(200)}`);
+    await sink.finalize();
+
+    expect(updates.length).toBeGreaterThan(0);
+    for (const u of updates) {
+      for (const s of allStrings(u)) expect(hasLoneSurrogate(s)).toBe(false);
+    }
+  });
+
+  it('never sends a lone surrogate when a streaming delta splits a pair', async () => {
+    const { client, updates } = makeClient();
+    const sink = makeSink(client);
+
+    // A model/tool boundary can cut a surrogate pair across two deltas; an
+    // interim repaint in between renders the half-formed accumulation.
+    sink.onText('total: \uD83D');
+    sink.onText('\uDE00 done');
+    await sink.finalize();
+
+    for (const u of updates) {
+      for (const s of allStrings(u)) expect(hasLoneSurrogate(s)).toBe(false);
+    }
+  });
+
+  it('strips a lone surrogate arriving in query-result text', async () => {
+    const { client, updates, posts } = makeClient();
+    const sink = makeSink(client);
+
+    // Row data is not guaranteed to be well-formed UTF-16 once it round-trips
+    // through JSON — a bare \uD800 in a cell must not take down the message.
+    sink.onText('here is the value: \uD800 and the rest of the answer');
+    await sink.finalize();
+
+    for (const payload of [...updates, ...posts]) {
+      for (const s of allStrings(payload)) expect(hasLoneSurrogate(s)).toBe(false);
+    }
+    const joined = updates
+      .flatMap((u) => allStrings(u))
+      .join('\n');
+    expect(joined).toContain('and the rest of the answer');
   });
 });
