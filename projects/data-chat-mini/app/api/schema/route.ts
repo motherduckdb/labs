@@ -2,7 +2,8 @@
  * Schema browser endpoint. Lazy-loads catalog metadata for the schema
  * explorer sidebar — one request per database/table the user expands.
  *
- *  - `?database=foo` (optional `&schema=bar`) → list_tables
+ *  - `?database=foo` (optional `&schema=bar`) → list_tables, plus any
+ *    `relatedGuides` the server attests are about this database
  *  - `?database=foo&table=baz` (optional `&schema=bar`) → list_columns
  *
  * Read scaling: the per-session id arrives in the `x-session-id` header and is
@@ -10,7 +11,7 @@
  */
 import { createMCPClient, executeTool } from '@/lib/mcp-client';
 import { isAuthError, authExpiredResponse, getSessionHint } from '@/lib/api-helpers';
-import { parseTables, parseColumns } from '@/lib/mcp-parsers';
+import { parseTables, parseColumns, parseRelatedGuides } from '@/lib/mcp-parsers';
 import { NextRequest } from 'next/server';
 
 export async function GET(request: NextRequest) {
@@ -35,7 +36,7 @@ export async function GET(request: NextRequest) {
       const args: Record<string, unknown> = { database };
       if (schema) args.schema = schema;
       const raw = await executeTool(client, 'list_tables', args, true);
-      return Response.json({ tables: parseTables(raw) });
+      return Response.json({ tables: parseTables(raw), relatedGuides: parseRelatedGuides(raw) });
     } finally {
       try { await client.close(); } catch { /* ignore */ }
     }

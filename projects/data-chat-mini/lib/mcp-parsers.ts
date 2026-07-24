@@ -192,6 +192,42 @@ export function parseDives(raw: string): DiveSummary[] {
   }
 }
 
+export interface RelatedGuide {
+  uuid: string;
+  topic: string;
+  title: string;
+  description: string;
+  access: string;
+}
+
+/**
+ * Parse the `relatedGuides` field on a `list_tables` MCP response — guides
+ * the server attests are about this database (via structured catalog
+ * references), including the caller's private (`access: "user"`) guides.
+ * Tolerates a missing/absent key. `topic` may legitimately be `''` (a
+ * root-level guide); rows without a string `uuid` are dropped since there's
+ * nothing to link to. Returns an empty list on unparseable input.
+ */
+export function parseRelatedGuides(raw: string): RelatedGuide[] {
+  try {
+    const parsed = JSON.parse(raw);
+    const list: unknown = Array.isArray(parsed?.relatedGuides) ? parsed.relatedGuides : null;
+    if (!list) return [];
+    return (list as Array<Record<string, unknown>>)
+      .filter((row): row is Record<string, unknown> => !!row && typeof row === 'object')
+      .map(row => ({
+        uuid: typeof row.uuid === 'string' ? row.uuid : '',
+        topic: typeof row.topic === 'string' ? row.topic : '',
+        title: typeof row.title === 'string' ? row.title : '',
+        description: typeof row.description === 'string' ? row.description : '',
+        access: typeof row.access === 'string' ? row.access : '',
+      }))
+      .filter(g => g.uuid);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The MCP `context` field is a freeform string like `"3 context fragments"`
  * or `"0 context fragments"`. Pull the leading integer out so we can use it

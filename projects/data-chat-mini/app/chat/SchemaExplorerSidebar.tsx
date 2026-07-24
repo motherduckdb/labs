@@ -1,30 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getSessionId } from '@/lib/session-id';
 import { DEMO_SCHEMA_COLUMNS, DEMO_SCHEMA_TABLES } from '@/lib/demo-mode';
 import type { SchemaTable, SchemaColumn } from '@/lib/mcp-parsers';
+import { mergeRelatedGuides, countSidebarGuides, type GuideSummary, type TopicSummary } from '@/lib/guide-view';
 
 /** A schema-qualified table selection — disambiguates same-named tables. */
 interface SelectedTable { schema: string; name: string }
-
-/** One guide as summarized by list_guides. */
-interface GuideSummary {
-  uuid: string;
-  topic: string;
-  title: string;
-  description: string;
-  access: string;
-}
-
-/** One topic (folder) row as summarized by list_guides. */
-interface TopicSummary {
-  topic: string;
-  guide_count: number;
-}
 
 /** A catalog reference row in the (advanced) references editor. */
 interface RefRow { database: string; schema: string; table: string; description: string }
@@ -65,6 +51,10 @@ export function SchemaExplorerSidebar({
 }) {
   const [tables, setTables] = useState<SchemaTable[] | null>(null);
   const [tablesError, setTablesError] = useState<string | null>(null);
+  // Guides the server attests are about this database via structured catalog
+  // references (reference-driven, includes private guides) — authoritative,
+  // unioned into the database-scope list ahead of the text match.
+  const [relatedGuides, setRelatedGuides] = useState<GuideSummary[]>([]);
   const [expanded, setExpanded] = useState<Record<string, SchemaColumn[] | 'loading'>>({});
   const [openColumns, setOpenColumns] = useState<Record<string, boolean>>({});
   const [guides, setGuides] = useState<GuideSummary[]>([]);
@@ -77,6 +67,26 @@ export function SchemaExplorerSidebar({
   const [popover, setPopover] = useState<{ kind: 'guide'; guide: GuideSummary } | { kind: 'create' } | null>(null);
   const [selectedTable, setSelectedTable] = useState<SelectedTable | null>(null);
   const [scope, setScope] = useState<'database' | 'all'>('database');
+  // Bumped by refreshGuides so sidebar-driven guide mutations (create/edit/
+  // delete in the popover) also re-pull relatedGuides — otherwise a deleted
+  // guide's related card would linger until a database switch. This is the
+  // schema effect's ONLY refresh token besides the database itself: mount and
+  // contextReloadKey changes both funnel through refreshGuides, so each cause
+  // produces exactly one schema fetch (no double-fetch).
+  const [schemaReloadKey, setSchemaReloadKey] = useState(0);
+  // Skip the bump on refreshGuides' initial mount call — the schema effect's
+  // own first run already fetches.
+  const firstGuidesRefresh = useRef(true);
+  // Re-arm on entering replay: leaving replay re-runs the schema effect via
+  // its demoReplay dep, so the first post-replay refreshGuides must skip the
+  // bump too or replay-exit would double-fetch /api/schema.
+  useEffect(() => {
+    if (demoReplay) firstGuidesRefresh.current = true;
+  }, [demoReplay]);
+  // Generation guard: refreshGuides responses arriving out of order must not
+  // let a stale response overwrite newer state (e.g. resurrect a just-deleted
+  // guide). Only the latest generation applies.
+  const guidesFetchGen = useRef(0);
 
   useEffect(() => {
     if (demoReplay) return;
@@ -88,13 +98,18 @@ export function SchemaExplorerSidebar({
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!cancelled) setTables(data.tables || []);
+        if (!cancelled) {
+          setTables(data.tables || []);
+          setRelatedGuides(Array.isArray(data.relatedGuides) ? data.relatedGuides : []);
+        }
       } catch (err) {
+        // Deliberate last-good behavior: tables/relatedGuides keep their prior
+        // values on a failed re-fetch (consistent with the tables list).
         if (!cancelled) setTablesError(err instanceof Error ? err.message : 'Failed to load tables');
       }
     })();
     return () => { cancelled = true; };
-  }, [database, demoReplay]);
+  }, [database, demoReplay, schemaReloadKey]);
 
   const refreshGuides = useCallback(() => {
     if (demoReplay) return;
@@ -104,17 +119,29 @@ export function SchemaExplorerSidebar({
     // with counts); per-topic guides load lazily on expansion. A refresh
     // collapses open topics so nothing shows stale content.
     setOpenTopics({});
+    if (firstGuidesRefresh.current) {
+      firstGuidesRefresh.current = false;
+    } else {
+      setSchemaReloadKey((k) => k + 1);
+    }
+    const gen = ++guidesFetchGen.current;
     fetch('/api/guides', { headers: { 'x-session-id': getSessionId() } })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
       .then((data) => {
+        if (gen !== guidesFetchGen.current) return;
         setGuides(Array.isArray(data.guides) ? data.guides : []);
         setTopics(Array.isArray(data.topics) ? data.topics : []);
       })
-      .catch((err) => setGuidesError(err instanceof Error ? err.message : 'Failed to load guides'))
-      .finally(() => setGuidesLoading(false));
+      .catch((err) => {
+        if (gen !== guidesFetchGen.current) return;
+        setGuidesError(err instanceof Error ? err.message : 'Failed to load guides');
+      })
+      .finally(() => {
+        if (gen === guidesFetchGen.current) setGuidesLoading(false);
+      });
   }, [demoReplay]);
 
   const toggleTopic = useCallback((topic: string) => {
@@ -174,6 +201,20 @@ export function SchemaExplorerSidebar({
     const dbNorm = norm(database);
     return topics.filter((t) => norm(t.topic).includes(dbNorm));
   }, [topics, scope, database]);
+
+  // Guide cards to render in the root list. In 'all' scope this is just the
+  // text-matched (full) list. In 'database' scope it's the union of the
+  // server-attested relatedGuides (first) and the text match, deduped by uuid
+  // with relatedGuides winning. Union + count logic lives in lib/guide-view.
+  const displayGuides = useMemo(
+    () => (scope === 'all' ? visibleGuides : mergeRelatedGuides(relatedGuides, visibleGuides)),
+    [scope, relatedGuides, visibleGuides],
+  );
+
+  const guideCount = useMemo(
+    () => countSidebarGuides(displayGuides, visibleTopics),
+    [displayGuides, visibleTopics],
+  );
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
@@ -295,7 +336,7 @@ export function SchemaExplorerSidebar({
           <div className="flex items-center justify-between mb-2">
             <div className="sidebar-heading compact">
               <span>Guides</span>
-              <code>{visibleGuides.length + visibleTopics.reduce((n, t) => n + t.guide_count, 0)}</code>
+              <code>{guideCount}</code>
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -343,15 +384,17 @@ export function SchemaExplorerSidebar({
           {!demoReplay && !guidesError && guidesLoading && guides.length === 0 && (
             <div className="text-xs text-[var(--muted)]">Loading guides…</div>
           )}
-          {!demoReplay && !guidesError && !guidesLoading && guides.length === 0 && topics.length === 0 && (
+          {!demoReplay && !guidesError && !guidesLoading && guides.length === 0 && topics.length === 0
+            && displayGuides.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
               No guides yet. Create one, or the assistant saves durable rules it learns as private guides.
             </div>
           )}
           {!demoReplay && !guidesError && (guides.length > 0 || topics.length > 0)
-            && visibleGuides.length === 0 && visibleTopics.length === 0 && (
+            && displayGuides.length === 0 && visibleTopics.length === 0 && (
             <div className="text-xs text-[var(--muted)]">
-              No guides mention <code>{database}</code>.{' '}
+              No guides reference <code>{database}</code> yet. Guides appear here when they attach a
+              catalog reference to this database or mention it in their topic, title, or description.{' '}
               <button onClick={() => setScope('all')} className="text-[var(--accent)] hover:underline">
                 Show all
               </button>
@@ -359,7 +402,7 @@ export function SchemaExplorerSidebar({
           )}
 
           <ul className="text-sm flex flex-col gap-2">
-            {visibleGuides.map((g) => (
+            {displayGuides.map((g) => (
               <li key={g.uuid}>
                 <GuideCard guide={g} onOpen={() => setPopover({ kind: 'guide', guide: g })} />
               </li>
