@@ -1,30 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getSessionId } from '@/lib/session-id';
 import { DEMO_SCHEMA_COLUMNS, DEMO_SCHEMA_TABLES } from '@/lib/demo-mode';
 import type { SchemaTable, SchemaColumn } from '@/lib/mcp-parsers';
+import { mergeRelatedGuides, countSidebarGuides, type GuideSummary, type TopicSummary } from '@/lib/guide-view';
 
 /** A schema-qualified table selection — disambiguates same-named tables. */
 interface SelectedTable { schema: string; name: string }
-
-/** One guide as summarized by list_guides. */
-interface GuideSummary {
-  uuid: string;
-  topic: string;
-  title: string;
-  description: string;
-  access: string;
-}
-
-/** One topic (folder) row as summarized by list_guides. */
-interface TopicSummary {
-  topic: string;
-  guide_count: number;
-}
 
 /** A catalog reference row in the (advanced) references editor. */
 interface RefRow { database: string; schema: string; table: string; description: string }
@@ -83,8 +69,18 @@ export function SchemaExplorerSidebar({
   const [scope, setScope] = useState<'database' | 'all'>('database');
   // Bumped by refreshGuides so sidebar-driven guide mutations (create/edit/
   // delete in the popover) also re-pull relatedGuides — otherwise a deleted
-  // guide's related card would linger until a database switch.
+  // guide's related card would linger until a database switch. This is the
+  // schema effect's ONLY refresh token besides the database itself: mount and
+  // contextReloadKey changes both funnel through refreshGuides, so each cause
+  // produces exactly one schema fetch (no double-fetch).
   const [schemaReloadKey, setSchemaReloadKey] = useState(0);
+  // Skip the bump on refreshGuides' initial mount call — the schema effect's
+  // own first run already fetches.
+  const firstGuidesRefresh = useRef(true);
+  // Generation guard: refreshGuides responses arriving out of order must not
+  // let a stale response overwrite newer state (e.g. resurrect a just-deleted
+  // guide). Only the latest generation applies.
+  const guidesFetchGen = useRef(0);
 
   useEffect(() => {
     if (demoReplay) return;
@@ -101,11 +97,13 @@ export function SchemaExplorerSidebar({
           setRelatedGuides(Array.isArray(data.relatedGuides) ? data.relatedGuides : []);
         }
       } catch (err) {
+        // Deliberate last-good behavior: tables/relatedGuides keep their prior
+        // values on a failed re-fetch (consistent with the tables list).
         if (!cancelled) setTablesError(err instanceof Error ? err.message : 'Failed to load tables');
       }
     })();
     return () => { cancelled = true; };
-  }, [database, demoReplay, contextReloadKey, schemaReloadKey]);
+  }, [database, demoReplay, schemaReloadKey]);
 
   const refreshGuides = useCallback(() => {
     if (demoReplay) return;
@@ -115,18 +113,29 @@ export function SchemaExplorerSidebar({
     // with counts); per-topic guides load lazily on expansion. A refresh
     // collapses open topics so nothing shows stale content.
     setOpenTopics({});
-    setSchemaReloadKey((k) => k + 1);
+    if (firstGuidesRefresh.current) {
+      firstGuidesRefresh.current = false;
+    } else {
+      setSchemaReloadKey((k) => k + 1);
+    }
+    const gen = ++guidesFetchGen.current;
     fetch('/api/guides', { headers: { 'x-session-id': getSessionId() } })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
       .then((data) => {
+        if (gen !== guidesFetchGen.current) return;
         setGuides(Array.isArray(data.guides) ? data.guides : []);
         setTopics(Array.isArray(data.topics) ? data.topics : []);
       })
-      .catch((err) => setGuidesError(err instanceof Error ? err.message : 'Failed to load guides'))
-      .finally(() => setGuidesLoading(false));
+      .catch((err) => {
+        if (gen !== guidesFetchGen.current) return;
+        setGuidesError(err instanceof Error ? err.message : 'Failed to load guides');
+      })
+      .finally(() => {
+        if (gen === guidesFetchGen.current) setGuidesLoading(false);
+      });
   }, [demoReplay]);
 
   const toggleTopic = useCallback((topic: string) => {
@@ -190,28 +199,16 @@ export function SchemaExplorerSidebar({
   // Guide cards to render in the root list. In 'all' scope this is just the
   // text-matched (full) list. In 'database' scope it's the union of the
   // server-attested relatedGuides (first) and the text match, deduped by uuid
-  // with relatedGuides winning.
-  const displayGuides = useMemo(() => {
-    if (scope === 'all') return visibleGuides;
-    const seen = new Set<string>();
-    const merged: GuideSummary[] = [];
-    for (const g of [...relatedGuides, ...visibleGuides]) {
-      if (seen.has(g.uuid)) continue;
-      seen.add(g.uuid);
-      merged.push(g);
-    }
-    return merged;
-  }, [scope, relatedGuides, visibleGuides]);
+  // with relatedGuides winning. Union + count logic lives in lib/guide-view.
+  const displayGuides = useMemo(
+    () => (scope === 'all' ? visibleGuides : mergeRelatedGuides(relatedGuides, visibleGuides)),
+    [scope, relatedGuides, visibleGuides],
+  );
 
-  // Header total. Related guides carry real topics, so a guide can appear as
-  // a root card AND inside a visible topic's guide_count — subtract that
-  // overlap (exact topic match) so it isn't counted twice.
-  const guideCount = useMemo(() => {
-    const topicSet = new Set(visibleTopics.map((t) => t.topic));
-    const overlap = displayGuides.filter((g) => g.topic && topicSet.has(g.topic)).length;
-    const topicTotal = visibleTopics.reduce((n, t) => n + t.guide_count, 0);
-    return displayGuides.length + Math.max(0, topicTotal - overlap);
-  }, [displayGuides, visibleTopics]);
+  const guideCount = useMemo(
+    () => countSidebarGuides(displayGuides, visibleTopics),
+    [displayGuides, visibleTopics],
+  );
 
   const toggleTable = async (t: SchemaTable) => {
     const key = `${t.schema}.${t.name}`;
