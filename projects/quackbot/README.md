@@ -158,9 +158,17 @@ carry injected instructions). The boundaries that matter:
   with a fresh id.
 - **Chart rendering is network-isolated.** Chart specs are attacker-influenced,
   so the headless-Chromium screenshot path denies all egress except the Google
-  Fonts the self-contained embed needs, and the spec sanitizer strips raw-JS
+  Fonts the embed needs, and the spec sanitizer strips raw-JS
   option keys and neutralizes `</script>` breakout — no SSRF/exfil even if
   injected markup runs (`src/slack/screenshot.ts`, `src/core/mviz-processor.ts`).
+  The embed is *not* self-contained — mviz `document.write`s a `<script src>` for
+  echarts on every chart tile — so echarts is a pinned dependency of this
+  project and `resolveVendoredAsset` fulfills that one request off disk rather
+  than allowlisting `cdn.jsdelivr.net`, which would hand attacker-influenced
+  page content a live fetch channel to any npm package. Charts render with the
+  network unplugged. Anything else the embed starts requesting fails closed
+  (aborted, chart visibly empty) and trips a test — see the "covers every
+  external script" case in `src/slack/screenshot.test.ts`.
 - **Secrets** never reach logs, prompts, Slack, or rendered output; `.env` is
   git- and docker-ignored and not baked into any image layer. Postgres always
   connects over verified TLS (`resolvePoolConfig` in `src/store/pg.ts`).
