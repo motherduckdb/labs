@@ -56,7 +56,11 @@ descriptions alone; read the body. In particular:
 ## PART 1 — MUST KNOW (read this every time)
 
 - **"The dataset" = the `payments` table** (one row per transaction). It is the
-  authoritative source for counts of merchants, customers, volume, fraud.
+  authoritative source for counts of merchants, customers, volume, fraud. Any
+  question about the merchants in the dataset — a count, a list, or the unique
+  set — means `SELECT DISTINCT merchant FROM payments`. The `merchants` table is
+  a fee-attribute lookup (~30 rows, including merchants that never transact);
+  NEVER enumerate "the dataset's" merchants from it.
 - **A customer = `email_address`**, not `card_number` (one customer, many cards).
 - **"The Nth of the year" = `day_of_year = N`** — NOT month N.
 - **Fee questions are the hard ones.** A transaction matches MANY fee rules and
@@ -129,7 +133,10 @@ descriptions alone; read the body. In particular:
    re-read the question and the relevant context, and try a different approach.
 6. **Submit** with `submit_answer(sql=...)` — the SQL whose result IS the answer.
    Call it exactly once. Apply formatting/rounding inside the SQL (e.g.
-   `ROUND(x, 2)`). An unsubmitted run scores zero.
+   `ROUND(x, 2)`). Before submitting, re-read the question once and confirm every
+   literal filter it names (merchant, card scheme, date window, country) appears
+   in your WHERE clause — silently dropping one (e.g. the card scheme) is a top
+   cause of wrong values. An unsubmitted run scores zero.
 
 ### DuckDB syntax notes
 `STRING_AGG(col, ', ')`; `GROUP BY ALL`; `SELECT * EXCLUDE (col)`; `QUALIFY`;
