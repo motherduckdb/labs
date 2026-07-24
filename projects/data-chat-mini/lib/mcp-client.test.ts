@@ -9,10 +9,14 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 const UUID = '0198f00d-0000-7000-8000-000000000000';
 
 describe('assertGuideWriteAllowed (sync guard)', () => {
-  it('rejects org-wide access on any guide write', () => {
+  it('rejects any explicit access other than "user" on guide writes', () => {
     for (const tool of ['create_guide', 'update_guide', 'edit_guide_content']) {
       expect(() => assertGuideWriteAllowed(tool, { access: 'organization' })).toThrow(/private/i);
     }
+    // Allowlist semantics: an unknown/future access level must not slip
+    // through just because it isn't "organization".
+    expect(() => assertGuideWriteAllowed('update_guide', { uuid: UUID, access: 'team' })).toThrow(/private/i);
+    expect(() => assertGuideWriteAllowed('update_guide', { uuid: UUID, access: 'user' })).not.toThrow();
   });
 
   it('rejects the dead path-selected arg shape with a corrective message', () => {
@@ -74,6 +78,24 @@ describe('assertGuideWriteTargetAllowed (async uuid-target guard)', () => {
   it('allows edits to a private guide', async () => {
     const client = clientReturning(`T\nuuid: ${UUID} · v1 · user\n\nd\n\nbody`);
     await expect(assertGuideWriteTargetAllowed(client, 'update_guide', { uuid: UUID })).resolves.toBeUndefined();
+  });
+
+  it('reads the header from structuredContent (the live get_guide shape)', async () => {
+    const rendered = `T\nuuid: ${UUID} · v2 · user\n\nd\n\nbody`;
+    const client = {
+      callTool: vi.fn().mockResolvedValue({
+        structuredContent: { text: rendered },
+        content: [{ type: 'text', text: JSON.stringify({ text: rendered }) }],
+        isError: false,
+      }),
+    } as unknown as Client;
+    await expect(assertGuideWriteTargetAllowed(client, 'update_guide', { uuid: UUID })).resolves.toBeUndefined();
+  });
+
+  it('unwraps a JSON mirror in the content blocks when structuredContent is absent', async () => {
+    const rendered = `T\nuuid: ${UUID} · v2 · organization\n\nd\n\nbody`;
+    const client = clientReturning(JSON.stringify({ text: rendered }));
+    await expect(assertGuideWriteTargetAllowed(client, 'edit_guide_content', { uuid: UUID })).rejects.toThrow(/organization/i);
   });
 
   it('refuses to touch an org-wide guide even if the token could', async () => {

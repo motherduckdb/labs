@@ -428,9 +428,9 @@ function GuideCard({ guide: g, onOpen }: { guide: GuideSummary; onOpen: () => vo
         <span className="flex-1 font-medium text-[13px] leading-snug">{g.title || '(untitled)'}</span>
         <span
           className="shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 text-[10px] font-medium text-[var(--accent)]"
-          title={g.access === 'organization' ? 'Org-wide guide' : 'Private guide'}
+          title={g.access === 'organization' ? 'Org-wide guide' : g.access === 'user' ? 'Private guide' : `Access: ${g.access}`}
         >
-          {g.access === 'organization' ? 'org' : 'private'}
+          {g.access === 'organization' ? 'org' : g.access === 'user' ? 'private' : g.access}
         </span>
       </div>
       <p className="text-xs text-[var(--muted)] mt-1 line-clamp-2">
@@ -480,12 +480,16 @@ function GuidePopover({
   const loadContent = useCallback((uuid: string) => {
     setLoading(true);
     fetch(`/api/guides?uuid=${encodeURIComponent(uuid)}`, { headers: { 'x-session-id': getSessionId() } })
-      .then((res) => res.json())
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(typeof data.error === 'string' ? data.error : `HTTP ${res.status}`);
+        return data;
+      })
       .then((data) => {
         setContent(typeof data.content === 'string' ? data.content : '');
         setVersion(typeof data.version === 'number' ? data.version : null);
       })
-      .catch(() => setContent('Failed to load this guide.'))
+      .catch((e) => setContent(`Failed to load this guide: ${e instanceof Error ? e.message : 'unknown error'}`))
       .finally(() => setLoading(false));
   }, []);
 
@@ -635,9 +639,13 @@ function GuidePopover({
     setHistoryVersion(v);
     setHistoryContent(null);
     fetch(`/api/guides?uuid=${encodeURIComponent(guide.uuid)}&version=${v}`, { headers: { 'x-session-id': getSessionId() } })
-      .then((res) => res.json())
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(typeof data.error === 'string' ? data.error : `HTTP ${res.status}`);
+        return data;
+      })
       .then((data) => setHistoryContent(typeof data.content === 'string' ? data.content : ''))
-      .catch(() => setHistoryContent('Failed to load this version.'));
+      .catch((e) => setHistoryContent(`Failed to load this version: ${e instanceof Error ? e.message : 'unknown error'}`));
   };
 
   const title = creating ? 'New guide' : (guide?.title || 'Guide');
@@ -658,9 +666,9 @@ function GuidePopover({
               {guide && (
                 <span
                   className="shrink-0 rounded-full bg-[var(--accent)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--accent)]"
-                  title={guide.access === 'organization' ? 'Org-wide guide' : 'Private guide'}
+                  title={guide.access === 'organization' ? 'Org-wide guide' : guide.access === 'user' ? 'Private guide' : `Access: ${guide.access}`}
                 >
-                  {guide.access === 'organization' ? 'org' : 'private'}
+                  {guide.access === 'organization' ? 'org' : guide.access === 'user' ? 'private' : guide.access}
                 </span>
               )}
             </div>

@@ -67,10 +67,13 @@ export function assertGuideWriteAllowed(
   internal?: boolean,
 ): void {
   if (!GUIDE_WRITE_TOOLS.has(name)) return;
+  // Allowlist, not blocklist: anything other than "user" (or unset, which the
+  // server and applyToolArgDefaults both default to "user") is rejected, so a
+  // future access level can't slip through by not being "organization".
   const access = typeof args.access === 'string' ? args.access.toLowerCase() : undefined;
-  if (access === 'organization') {
+  if (access !== undefined && access !== 'user') {
     throw new Error(
-      `${name}: this app may only write private guides — set access:"user" (org-wide guides are admin-only).`,
+      `${name}: this app may only write private guides — set access:"user" (got "${access}"; org-wide guides are admin-only).`,
     );
   }
   // The old surface selected guides by path; reject it loudly so the model
@@ -138,14 +141,28 @@ export async function assertGuideWriteTargetAllowed(
     throw new Error(`${name}: target the guide by the "uuid" returned from list_guides.`);
   }
   const result = await client.callTool({ name: 'get_guide', arguments: { uuid } });
-  const text = Array.isArray(result.content)
-    ? result.content
-        .map((block) => {
-          const b = block as { type: string; text?: string };
-          return b.type === 'text' ? (b.text ?? '') : '';
-        })
-        .join('\n')
-    : '';
+  // get_guide delivers the rendered guide as structuredContent {text} (the
+  // content blocks may carry a JSON mirror of it rather than the raw text) —
+  // unwrap the same way executeToolWithStatus + the guides route do, or the
+  // header regex below misses and legitimate private-guide writes fail closed.
+  const structured = result.structuredContent as { text?: unknown } | undefined;
+  let text =
+    structured && typeof structured.text === 'string'
+      ? structured.text
+      : Array.isArray(result.content)
+        ? result.content
+            .map((block) => {
+              const b = block as { type: string; text?: string };
+              return b.type === 'text' ? (b.text ?? '') : '';
+            })
+            .join('\n')
+        : '';
+  if (text.trimStart().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text) as { text?: unknown };
+      if (parsed && typeof parsed.text === 'string') text = parsed.text;
+    } catch { /* not a JSON mirror — keep the raw text */ }
+  }
   if (result.isError === true) {
     throw new Error(`${name}: could not resolve guide ${uuid} to verify access (${text || 'get_guide failed'}).`);
   }
