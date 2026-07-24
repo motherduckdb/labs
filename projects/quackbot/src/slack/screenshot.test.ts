@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { afterAll, describe, expect, it } from 'vitest';
 import { processMvizMarkdown } from '../core/mviz-processor';
 import {
@@ -8,6 +9,10 @@ import {
   renderHtmlToPng,
   resolveVendoredAsset,
 } from './screenshot';
+
+const installedEchartsVersion = (
+  createRequire(import.meta.url)('echarts/package.json') as { version: string }
+).version;
 
 const BAR_FENCE = [
   '```bar size=[8,8]',
@@ -66,9 +71,33 @@ describe('resolveVendoredAsset', () => {
     expect(existsSync(local as string)).toBe(true);
   });
 
-  it('matches by shape so an mviz echarts version bump keeps rendering', () => {
-    expect(resolveVendoredAsset('https://cdn.jsdelivr.net/npm/echarts@5.6.1/dist/echarts.min.js')).toBeTruthy();
-    expect(resolveVendoredAsset('https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.js')).toBeTruthy();
+  it('serves any minor/patch inside the vendored major, so an mviz bump keeps rendering', () => {
+    const major = installedEchartsVersion.split('.')[0];
+    expect(resolveVendoredAsset(`https://cdn.jsdelivr.net/npm/echarts@${major}.99.99/dist/echarts.min.js`)).toBeTruthy();
+    expect(resolveVendoredAsset(`https://cdn.jsdelivr.net/npm/echarts@${major}.0.0/dist/echarts.js`)).toBeTruthy();
+  });
+
+  it('refuses a different major rather than serving an incompatible bundle', () => {
+    // Answering an echarts-6 embed with the vendored echarts 5 would reproduce
+    // the blank-chart bug silently. Refusing fails closed at the allowlist and
+    // surfaces as the "covers every external script" failure below.
+    const major = Number(installedEchartsVersion.split('.')[0]);
+    expect(resolveVendoredAsset(`https://cdn.jsdelivr.net/npm/echarts@${major + 1}.0.0/dist/echarts.min.js`)).toBeNull();
+    expect(resolveVendoredAsset(`https://cdn.jsdelivr.net/npm/echarts@${major - 1}.0.0/dist/echarts.min.js`)).toBeNull();
+    expect(resolveVendoredAsset('https://cdn.jsdelivr.net/npm/echarts@latest/dist/echarts.min.js')).toBeNull();
+  });
+
+  it('vendors the same echarts MAJOR that mviz actually requests', () => {
+    // The invariant the version guard depends on. If an mviz upgrade moves to a
+    // new echarts major, this fails by name — telling you to bump the vendored
+    // dependency — instead of charts quietly going blank in Slack again.
+    const html = processMvizMarkdown(BAR_FENCE);
+    const requested = /\/npm\/echarts@(\d+)[^/]*\/dist\/echarts(?:\.min)?\.js/.exec(html);
+    expect(requested, 'mviz no longer requests echarts from jsdelivr — revisit resolveVendoredAsset').toBeTruthy();
+    expect(
+      requested?.[1],
+      `mviz requests echarts ${requested?.[1]}.x but package.json vendors ${installedEchartsVersion} — bump the echarts dependency`,
+    ).toBe(installedEchartsVersion.split('.')[0]);
   });
 
   it('refuses to source anything else off disk', () => {

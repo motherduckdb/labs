@@ -74,12 +74,29 @@ const require_ = createRequire(import.meta.url);
 
 /**
  * The chart-library script mviz asks jsdelivr for, e.g.
- * `/npm/echarts@5.5.0/dist/echarts.min.js`. Matched by shape rather than by
- * exact version so an mviz bump to a new echarts patch keeps rendering; the
- * bundle actually served is always the lockfile-pinned local one, and
- * `screenshot.test.ts` fails if mviz's pinned MAJOR ever moves past ours.
+ * `/npm/echarts@5.5.0/dist/echarts.min.js`. Capture group 1 is the major.
  */
-const ECHARTS_CDN_PATH_RE = /^\/npm\/echarts@[^/]+\/dist\/echarts(\.min)?\.js$/;
+const ECHARTS_CDN_PATH_RE = /^\/npm\/echarts@(\d+)[^/]*\/dist\/echarts(\.min)?\.js$/;
+
+/**
+ * Major version of the echarts we vendor. A request for a DIFFERENT major is
+ * refused rather than answered with this bundle: serving echarts 5 to an embed
+ * written against echarts 6 would reintroduce the very bug this vendoring
+ * fixes — a blank chart — but silently, and with the mismatch buried a layer
+ * deeper. Refusing instead fails closed at the allowlist and trips the
+ * "covers every external script" test in `screenshot.test.ts`, which is what
+ * turns an mviz major bump into a build-time failure with a name on it.
+ *
+ * Patch and minor bumps inside the major are served as usual.
+ */
+const VENDORED_ECHARTS_MAJOR = ((): string | null => {
+  try {
+    const { version } = require_('echarts/package.json') as { version: string };
+    return version.split('.')[0] ?? null;
+  } catch {
+    return null;
+  }
+})();
 
 /**
  * Map a CDN request to a local file to serve in its place, or null to let the
@@ -104,7 +121,11 @@ export function resolveVendoredAsset(rawUrl: string): string | null {
   } catch {
     return null;
   }
-  if (url.hostname !== 'cdn.jsdelivr.net' || !ECHARTS_CDN_PATH_RE.test(url.pathname)) return null;
+  if (url.hostname !== 'cdn.jsdelivr.net') return null;
+  const match = ECHARTS_CDN_PATH_RE.exec(url.pathname);
+  if (!match) return null;
+  // Only answer for the major we actually vendor — see VENDORED_ECHARTS_MAJOR.
+  if (VENDORED_ECHARTS_MAJOR === null || match[1] !== VENDORED_ECHARTS_MAJOR) return null;
   try {
     return require_.resolve('echarts/dist/echarts.min.js');
   } catch {
