@@ -254,6 +254,9 @@ def _correctness_mark(c: str) -> str:
               help="Thinking budget. Default 'low' — the cost/accuracy sweet spot for this skill.")
 @click.option("--watch", is_flag=True, default=False, help="Stream tool calls live.")
 @click.option("--concurrency", type=int, default=15, help="Questions to run in parallel.")
+@click.option("--no-guides", "no_guides", is_flag=True, default=False,
+              help="Ablation baseline: list_guides/get_guide always answer 'No guides "
+                   "exist.' — measures the agent without the semantic layer.")
 @click.option("--out", type=click.Path(path_type=Path), default=None)
 def evaluate(
     split: str,
@@ -266,6 +269,7 @@ def evaluate(
     reasoning: str,
     watch: bool,
     concurrency: int,
+    no_guides: bool,
     out: Path | None,
 ) -> None:
     """Run the agent across the eval set and write per-question JSONL."""
@@ -299,12 +303,13 @@ def evaluate(
     console.rule(
         f"[bold]{split}[/bold] · {len(questions)} questions · {model} · "
         f"reasoning={reasoning} · db={database} · concurrency={concurrency}"
+        + (" · [bold red]NO GUIDES[/bold red]" if no_guides else "")
     )
 
     asyncio.run(_evaluate_loop(
         split=split, database=database, model=model, questions=questions,
         max_turns=max_turns, reasoning=reasoning, watch=watch,
-        concurrency=concurrency, out=out,
+        concurrency=concurrency, no_guides=no_guides, out=out,
     ))
 
 
@@ -412,7 +417,8 @@ def _render_tool_call(call: dict, task_id: str | None = None) -> None:
 
 async def _evaluate_loop(
     *, split: str, database: str, model: str, questions: list[dict],
-    max_turns: int, reasoning: str, watch: bool, concurrency: int, out: Path,
+    max_turns: int, reasoning: str, watch: bool, concurrency: int,
+    no_guides: bool = False, out: Path,
 ) -> None:
     correct = 0
     by_cat: dict[str, int] = {}
@@ -444,6 +450,7 @@ async def _evaluate_loop(
         out=out,
         question_count=len(questions),
     )
+    run_provenance["resolved_config"]["no_guides"] = no_guides
     controllog.init(
         project_id=PROJECT_ID,
         log_dir=RESULTS_DIR,
@@ -478,7 +485,9 @@ async def _evaluate_loop(
             # server-side against md:<db> through this read-only session.
             t0 = time.time()
             try:
-                async with create_mcp_session(session_hint=tid, database=database) as mcp:
+                async with create_mcp_session(
+                    session_hint=tid, database=database, no_guides=no_guides,
+                ) as mcp:
                     run = await run_agent(
                         mcp=mcp, database=database,
                         question=q["question"], guidelines=q.get("guidelines"),
@@ -515,6 +524,7 @@ async def _evaluate_loop(
 
             row = {
                 "task_id": tid, "level": q.get("level"), "split": split, "model": model,
+                "no_guides": no_guides,
                 "question": q["question"], "guidelines": q.get("guidelines"),
                 "gold_answer": q.get("answer"), "predicted_answer": result.predicted_answer,
                 "predicted_sql": run.final_sql if run else None,
