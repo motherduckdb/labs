@@ -1,0 +1,4 @@
+[submodule "projects/postgres_cdc/etl"]
+	path = projects/postgres_cdc/etl
+	url = https://github.com/Alex-Monahan/etl
+	branch = motherduck-minimal

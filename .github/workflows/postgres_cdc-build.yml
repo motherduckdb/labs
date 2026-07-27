@@ -1,0 +1,106 @@
+name: postgres_cdc build
+
+# Builds the MotherDuck Postgres-CDC replicator (`etl-replicator`, ducklake
+# feature only) from the `projects/postgres_cdc/etl` submodule (the
+# Alex-Monahan/etl fork @ branch motherduck-minimal) and publishes a standalone
+# Linux x86_64 binary as a LABS GitHub Release. A MotherDuck Flight
+# (`projects/postgres_cdc/flight/flight_postgres_cdc.py`) pulls the latest green
+# build from this release via its `resolve_binary()` resolver.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - postgres_cdc
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Build on an older glibc (Ubuntu 22.04 = glibc 2.35) so the binary runs on
+    # the Flights Debian base image. ubuntu-latest ships a newer glibc that
+    # fails with "GLIBC_2.3x not found" on the Flight.
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout (with submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        # ducklake-only build: no protobuf needed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            clang \
+            lld \
+            make \
+            cmake
+
+      - name: Install Rust toolchain
+        # Honors the submodule's rust-toolchain.toml (channel 1.95.0).
+        working-directory: projects/postgres_cdc/etl
+        run: rustup show
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: projects/postgres_cdc/etl
+
+      - name: Build etl-replicator (ducklake only)
+        working-directory: projects/postgres_cdc/etl
+        run: |
+          cargo build --release -p etl-replicator \
+            --no-default-features --features ducklake
+          strip target/release/etl-replicator
+          cp target/release/etl-replicator "$GITHUB_WORKSPACE/etl-replicator-linux-amd64"
+
+      - name: Package binary and build manifest
+        env:
+          # Recorded into latest.json so the MotherDuck Flight resolver can
+          # verify it is pulling exactly this successful LABS build.
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_RUN_ID: ${{ github.run_id }}
+          BUILD_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p dist
+          cp etl-replicator-linux-amd64 dist/
+          cd dist
+          gzip -9 etl-replicator-linux-amd64
+          # SHA256SUMS is the sha256 of the .gz asset that consumers download.
+          GZ_SHA=$(sha256sum etl-replicator-linux-amd64.gz | awk '{print $1}')
+          sha256sum etl-replicator-linux-amd64.gz > SHA256SUMS
+          # latest.json makes "the latest successful build" explicit + traceable.
+          BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -n \
+            --arg sha "$BUILD_SHA" \
+            --argjson run_id "$BUILD_RUN_ID" \
+            --arg run_url "$BUILD_RUN_URL" \
+            --arg built_at "$BUILT_AT" \
+            --arg asset "etl-replicator-linux-amd64.gz" \
+            --arg sha256 "$GZ_SHA" \
+            '{sha:$sha, run_id:$run_id, run_url:$run_url, built_at:$built_at, asset:$asset, sha256:$sha256}' \
+            > latest.json
+          echo "--- latest.json ---"; cat latest.json
+          echo "--- SHA256SUMS ---"; cat SHA256SUMS
+          ls -la
+
+      - name: Publish release
+        # Runs only on success (default job flow), so whatever lands in the
+        # release is by definition the latest successful build. Recreate the
+        # release so the tag always tracks this build; latest.json records the
+        # exact sha / run for traceable, verifiable pulls.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="postgres_cdc-replicator"
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" \
+            --title "MotherDuck Postgres-CDC replicator (linux/amd64)" \
+            --notes "etl-replicator built with the ducklake feature for native MotherDuck Postgres CDC replication, from the projects/postgres_cdc/etl submodule. Commit ${GITHUB_SHA}." \
+            dist/etl-replicator-linux-amd64.gz \
+            dist/SHA256SUMS \
+            dist/latest.json
