@@ -69,13 +69,12 @@ let projectId = 'quackbot';
 const als = new AsyncLocalStorage<Session>();
 
 /**
- * `logDir` is vestigial — kept so `main.ts`'s existing `cl.init('quackbot',
- * 'logs')` call keeps compiling untouched (call sites outside this module are
- * off-limits for this change). There is no log directory any more: flushes go
- * straight to Postgres. Accepting and ignoring the argument is cheaper than
- * making every caller aware that the parameter died.
+ * The Fly version took a `logDir` second argument. There is no log directory
+ * any more — flushes go straight to Postgres — and with `main.ts` deleted the
+ * only caller is `worker.ts`, which passes the project id alone, so the
+ * parameter is gone rather than left accepted-and-ignored.
  */
-export function init(project: string, _logDir?: string): void {
+export function init(project: string): void {
   projectId = project;
 }
 
