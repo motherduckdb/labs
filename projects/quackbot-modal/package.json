@@ -1,0 +1,38 @@
+{
+  "name": "quackbot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@slack/bolt": "^4",
+    "echarts": "^5.5.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "mviz": "^1.7.0",
+    "pg": "^8",
+    "playwright": "^1.60",
+    "tsx": "^4"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/pg": "^8",
+    "typescript": "^5",
+    "vitest": "^4.1.4"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5",
+    "fast-uri": "^3.1.4",
+    "postcss": "^8.5.18"
+  }
+}
