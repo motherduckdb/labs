@@ -404,11 +404,18 @@ URL:
   replayed across tool calls. The OpenRouter-era loop dropped thinking blocks
   on the floor; this is now wired through in both `llm-client.ts` (serializing
   it back out) and `agentic-loop.ts` (retaining it on the way in).
-- **Thinking can't be turned off.** K3 always reasons — there's no `none`.
-  `QUACKBOT_THINKING_LEVEL`'s old `none|minimal|low|medium|high|xhigh` ladder
-  collapses onto K3's `low|high|max`. Default is `low`; reasoning tokens bill
-  at the full completion rate, so defaulting to K3's own `max` would be
-  expensive.
+- **Thinking passes straight through.** `reasoning_effort` accepts exactly
+  `none|minimal|low|medium|high|xhigh|max` — which is `QUACKBOT_THINKING_LEVEL`'s
+  own ladder verbatim, plus `max` — so `toReasoningEffort` validates rather than
+  remaps. Default when unset or unrecognised is `low`.
+
+  `none` genuinely disables reasoning (8 completion tokens and an empty
+  `reasoning_content`, against 38 tokens and 104 characters at `low`), and is
+  worth reaching for: reasoning bills at the full $15/MTok completion rate. An
+  earlier version of this code folded `none` and `minimal` up into `low` on the
+  belief that K3 always reasons — which billed for thinking on precisely the
+  setting that asks for none. The accepted set isn't guesswork: posting a bad
+  value returns a 400 naming the literal set.
 - **Cost is computed locally**, not read off the response. OpenRouter handed
   back `usage.cost` in dollars; Modal doesn't, so `computeCostUSD` in
   `src/core/llm-client.ts` prices it from a local constant
@@ -422,28 +429,44 @@ URL:
 
 ### Endpoint and auth
 
-Both of these were open questions until the Modal CLI was authenticated; they
-are now settled empirically, and the code carries one path each rather than a
-hedge.
+Both were open questions until the Modal CLI was authenticated, and both are
+now settled empirically — the code carries one path each rather than a hedge.
 
-- **Base URL: `https://api.us-west-2.modal.direct/v1`.** One fixed host for
-  every workspace — not a per-workspace URL — so it's a default in
-  `getChatCompletionsUrl()` rather than a required env var.
-  `MODAL_INFERENCE_BASE_URL` still overrides it, for pointing at a dedicated
-  Auto Endpoint or a test double.
-- **Auth: `Authorization: Bearer $MODAL_INFERENCE_KEY`.** An ordinary
-  OpenAI-style key, minted from the Modal dashboard.
+- **Base URL: the workspace's own endpoint,** e.g.
+  `https://motherduck--ep-kimi-k3-server.us-west.modal.direct/v1`. Find it with
+  `modal endpoint list` or in the dashboard. Set `MODAL_INFERENCE_BASE_URL` —
+  treat it as required despite the fallback, which is Modal's multi-tenant
+  Shared API (`https://api.us-west-2.modal.direct/v1`). That fallback needs a
+  separate entitlement this workspace doesn't have, so a missing variable
+  surfaces as a 401, not as something that quietly works.
+- **Auth: `Authorization: Bearer $MODAL_INFERENCE_KEY`,** where the key is a
+  `modal workspace proxy-tokens create` pair **dot-joined** into one value:
+  `wk-xxxx.ws-yyyy`. Modal's quickstart sends the same pair as separate
+  `Modal-Key` and `Modal-Secret` headers; the endpoint accepts both (verified
+  200 each way), and the joined bearer keeps this to a single env var and a
+  one-line `buildAuthHeaders`. A colon instead of a dot does not work.
 
-  **The Shared API does not take a proxy token.** `modal workspace proxy-tokens
-  create` issues a `Modal-Key`/`Modal-Secret` pair, and Modal's docs describe
-  that pair as *the* endpoint auth scheme — but it authenticates **dedicated**
-  Auto Endpoints only. Sent to the Shared API as headers it returns
-  `401 {"error": "missing or invalid Authorization header"}`, identical to
-  sending no credentials at all; sent as a bearer (either half, or
-  `key:secret`) it returns `401 {"error": "invalid token"}`. That first
-  response is worth knowing about, because it names the wrong problem: it reads
-  as "you forgot to authenticate" when what happened is "you authenticated with
-  a credential for the other product."
+  **Reading Modal's 401s.** Two different bodies come back and they mean
+  different things: `{"error": "missing or invalid Authorization header"}` means
+  the header shape wasn't understood, while `{"error": "invalid token"}` means a
+  bearer parsed fine and the credential was refused. The first is easy to
+  misread as "you forgot to authenticate" when the real cause is a credential
+  for the wrong product — a proxy pair against the Shared API host returns it,
+  as does a CLI `ak-`/`as-` token.
+
+### Which Modal product this is
+
+Worth stating plainly, because the two are easy to mix up and the Kimi K3
+library page funnels toward one button. This endpoint is **token-billed**, not
+GPU-second billed: after the first few test calls, `modal billing summary`
+attributed the spend to `LLM Tokens`, with `Deployed Apps` at `0.00`. So
+`KIMI_K3_RATES_PER_MTOK` is the right cost model and the figure in the usage
+pill is a real estimate of the bill rather than a proxy for it.
+
+The surface *looks* dedicated — it has an `ep-` id in `modal endpoint list`, a
+workspace-prefixed hostname, and proxy-token auth, all of which match Modal's
+Auto Endpoints documentation. Don't infer per-second billing from those signals;
+check `modal billing summary` instead.
 
 ## Telemetry (controllog)
 

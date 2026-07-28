@@ -20,12 +20,13 @@ import { redact } from './redact';
  * Modal's Shared API — the multi-tenant, token-priced inference endpoint, as
  * opposed to a dedicated Auto Endpoint, which gets its own per-endpoint host.
  *
- * This is a default rather than a required env var because the Shared API is a
- * single fixed host for everyone, not a per-workspace URL: overriding it is for
- * pointing at a dedicated endpoint or a test double, not for ordinary setup.
- * Verified live — an unauthenticated GET of `/v1/models` here answers
- * `401 {"error": "missing or invalid Authorization header"}`, which is the
- * endpoint existing and demanding credentials rather than a hostname typo.
+ * Kept as the fallback default because it is a single fixed host for everyone
+ * rather than a per-workspace URL, so it is the only value that can sensibly be
+ * hardcoded. THE DEPLOYED BOT DOES NOT USE IT: production sets
+ * `MODAL_INFERENCE_BASE_URL` to a dedicated Auto Endpoint (see below). Reaching
+ * this default in production means that variable went missing, and the symptom
+ * will be a 401, not a fallback that quietly works — the Shared API needs a
+ * separate entitlement this workspace does not have.
  */
 const SHARED_API_BASE_URL = 'https://api.us-west-2.modal.direct/v1';
 
@@ -36,16 +37,20 @@ export function getChatCompletionsUrl(): string {
 }
 
 /**
- * The Shared API takes an ordinary OpenAI-style bearer key.
+ * One header, one scheme: an OpenAI-style bearer.
  *
- * This used to hedge across two schemes because the docs only ever spelled out
- * the `Modal-Key`/`Modal-Secret` proxy-token pair, and it was unclear whether
- * the Shared API reused it. It does not: a freshly minted proxy token sent as
- * that header pair gets the same `missing or invalid Authorization header` as
- * sending nothing at all, and sent as a bearer (either half, or `key:secret`)
- * gets `invalid token`. The pair authenticates *dedicated* endpoints only. The
- * hedge is gone rather than kept as a fallback — a second scheme that is known
- * not to work is not a safety net, it is a second thing to rule out at 3am.
+ * A dedicated Auto Endpoint documents `Modal-Key`/`Modal-Secret` as a header
+ * PAIR, which looks like it needs its own code path — it does not. The same
+ * endpoint accepts `Authorization: Bearer <key>.<secret>` (dot-joined, not
+ * colon), verified 200 against both forms on the live endpoint. So the pair
+ * goes in `MODAL_INFERENCE_KEY` already joined and this function stays one
+ * line, which also keeps the Shared API working unchanged if we ever move.
+ *
+ * What does NOT work, so nobody re-tests it at 3am: a proxy pair against the
+ * *Shared API* host, in any arrangement, and a CLI `ak-`/`as-` token against
+ * it likewise. Note the two distinct 401 bodies — `missing or invalid
+ * Authorization header` means the header shape wasn't understood, while
+ * `invalid token` means a bearer parsed fine and the credential was refused.
  */
 export function buildAuthHeaders(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   return { Authorization: `Bearer ${(env.MODAL_INFERENCE_KEY || '').trim()}` };
@@ -199,27 +204,37 @@ export function computeCostUSD(u: CostInputs): number {
 // Reasoning effort
 // ---------------------------------------------------------------------------
 
-/** The only values K3 accepts for `reasoning_effort`. */
-export type ReasoningEffort = 'low' | 'high' | 'max';
+/**
+ * The values the endpoint accepts for `reasoning_effort`.
+ *
+ * Not guessed: posting an invalid value returns a 400 that names the literal
+ * set outright — `literal['none','minimal','low','medium','high','xhigh','max']`.
+ */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+const ACCEPTED_EFFORTS: ReadonlySet<string> = new Set<ReasoningEffort>([
+  'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max',
+]);
 
 /**
- * Collapse quackbot's six-rung `QUACKBOT_THINKING_LEVEL` ladder onto K3's three.
+ * Map `QUACKBOT_THINKING_LEVEL` onto `reasoning_effort` — which is a
+ * pass-through, because the accepted set above is quackbot's own six-rung
+ * ladder verbatim, plus `max`.
  *
- * K3 ALWAYS reasons — there is no `none`/off, so `none` and `minimal` can only
- * map to `low`. `low` is also the default (and what the Fly deploy runs today):
- * reasoning tokens bill at the full $15/MTok, so K3's own `max` default would
- * be a real and silent cost increase.
+ * This used to collapse the ladder onto `low|high|max`, folding `none` and
+ * `minimal` up into `low` and `xhigh` into `max`, on the belief that K3 always
+ * reasons and has no off switch. It does have one: `reasoning_effort: 'none'`
+ * returns 8 completion tokens and an empty `reasoning_content`, against 38
+ * tokens and 104 characters of reasoning at `low`. Since reasoning bills at the
+ * full $15/MTok, that fold silently charged for thinking on every turn of a
+ * setting whose entire purpose was to switch it off.
+ *
+ * The default stays `low` — unset should keep reasoning on, and an unrecognised
+ * value is a typo rather than a request for silence.
  */
 export function toReasoningEffort(thinkingLevel?: string): ReasoningEffort {
-  switch ((thinkingLevel || '').trim().toLowerCase()) {
-    case 'xhigh': return 'max';
-    case 'medium':
-    case 'high': return 'high';
-    case 'none':
-    case 'minimal':
-    case 'low':
-    default: return 'low';
-  }
+  const level = (thinkingLevel || '').trim().toLowerCase();
+  return ACCEPTED_EFFORTS.has(level) ? (level as ReasoningEffort) : 'low';
 }
 
 // ---------------------------------------------------------------------------
@@ -390,9 +405,11 @@ export async function streamChatCompletion(params: {
     // Standard OpenAI opt-in for a final usage-only chunk. Replaces
     // OpenRouter's non-standard `usage: {include: true}`.
     stream_options: { include_usage: true },
-    // K3 locks its sampling parameters: temperature / top_p / n /
-    // presence_penalty / frequency_penalty are rejected or silently ignored.
-    // Deliberately absent — do not "restore" the old temperature: 0.3.
+    // No sampling parameters. Not because the server refuses them — it takes
+    // `temperature` and `top_p` with a 200, unlike an unknown `reasoning_effort`
+    // which 400s — but because Moonshot documents K3's sampling as fixed, so
+    // they are accepted-and-ignored. Sending values that look effective and
+    // aren't is worse than sending none, so do not "restore" temperature: 0.3.
     reasoning_effort: toReasoningEffort(thinkingLevel),
   };
 

@@ -28,7 +28,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FLY_ENV = os.path.normpath(os.path.join(HERE, "..", "..", "quackbot", ".env"))
 
 FROM_FLY = ["SLACK_BOT_TOKEN", "MOTHERDUCK_TOKEN", "DATABASE_URL"]
-FROM_NEW = ["SLACK_SIGNING_SECRET", "MODAL_INFERENCE_KEY"]
+# MODAL_INFERENCE_BASE_URL is not a credential, but it lives here anyway: the
+# fallback in llm-client.ts is the Shared API, which this workspace is not
+# entitled to, so omitting it turns every LLM call into a 401.
+FROM_NEW = ["SLACK_SIGNING_SECRET", "MODAL_INFERENCE_KEY", "MODAL_INFERENCE_BASE_URL"]
 
 
 def parse_dotenv(path):

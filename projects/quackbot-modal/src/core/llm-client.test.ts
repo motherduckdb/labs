@@ -164,35 +164,49 @@ describe('request body construction', () => {
 });
 
 describe('reasoning_effort mapping', () => {
-  it('collapses the six-rung thinking ladder onto low|high|max', () => {
-    expect(toReasoningEffort('none')).toBe('low');
-    expect(toReasoningEffort('minimal')).toBe('low');
+  // The endpoint's own 400 names the accepted set:
+  // literal['none','minimal','low','medium','high','xhigh','max'] — which is
+  // quackbot's thinking ladder verbatim, so every rung passes through as-is.
+  it('passes every rung of the thinking ladder through unchanged', () => {
+    expect(toReasoningEffort('none')).toBe('none');
+    expect(toReasoningEffort('minimal')).toBe('minimal');
     expect(toReasoningEffort('low')).toBe('low');
-    expect(toReasoningEffort('medium')).toBe('high');
+    expect(toReasoningEffort('medium')).toBe('medium');
     expect(toReasoningEffort('high')).toBe('high');
-    expect(toReasoningEffort('xhigh')).toBe('max');
+    expect(toReasoningEffort('xhigh')).toBe('xhigh');
+    expect(toReasoningEffort('max')).toBe('max');
   });
 
-  it('defaults to low for undefined, empty, and unknown levels (reasoning bills at $15/MTok)', () => {
+  // `none` is the one rung that must not be folded upward: it is the only way
+  // to stop paying the $15/MTok reasoning rate, so mapping it to `low` would
+  // bill for thinking on exactly the setting asking for none.
+  it('keeps none as none rather than folding it up to low', () => {
+    expect(toReasoningEffort('none')).not.toBe('low');
+    expect(toReasoningEffort('  NONE  ')).toBe('none');
+  });
+
+  it('defaults to low for undefined, empty, and unknown levels', () => {
     expect(toReasoningEffort(undefined)).toBe('low');
     expect(toReasoningEffort('')).toBe('low');
+    // A typo is a typo, not a request for silence — it must not land on `none`.
     expect(toReasoningEffort('turbo')).toBe('low');
   });
 
-  it('puts the mapped value on the request as a TOP-LEVEL reasoning_effort', async () => {
+  it('puts the value on the request as a TOP-LEVEL reasoning_effort', async () => {
     process.env.MODAL_INFERENCE_KEY = 'k';
     const read = captureFetch();
     await callStream({ thinkingLevel: 'xhigh' });
     const { body } = read();
-    expect(body.reasoning_effort).toBe('max');
+    expect(body.reasoning_effort).toBe('xhigh');
+    // OpenRouter took a nested `reasoning` object; this API does not.
     expect(body).not.toHaveProperty('reasoning');
   });
 
-  it('still sends reasoning_effort: low when the caller asks for "none" — K3 cannot turn thinking off', async () => {
+  it('sends reasoning_effort: none all the way through when the caller asks for none', async () => {
     process.env.MODAL_INFERENCE_KEY = 'k';
     const read = captureFetch();
     await callStream({ thinkingLevel: 'none' });
-    expect(read().body.reasoning_effort).toBe('low');
+    expect(read().body.reasoning_effort).toBe('none');
   });
 });
 

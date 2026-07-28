@@ -108,8 +108,8 @@ OpenRouter-specific behaviours. Each needs a decision:
 
 | Today (OpenRouter) | On Modal Kimi K3 |
 |---|---|
-| `https://openrouter.ai/api/v1/chat/completions` | `https://api.us-west-2.modal.direct/v1/chat/completions` — **RESOLVED**, one fixed host for all workspaces, so it is a default rather than a required var |
-| `Authorization: Bearer $OPENROUTER_API_KEY` | `Authorization: Bearer $MODAL_INFERENCE_KEY` — **RESOLVED**. The `Modal-Key`/`Modal-Secret` pair authenticates *dedicated* Auto Endpoints only; the Shared API rejects it with the same `missing or invalid Authorization header` it returns for no credentials at all |
+| `https://openrouter.ai/api/v1/chat/completions` | `https://motherduck--ep-kimi-k3-server.us-west.modal.direct/v1/chat/completions` — **RESOLVED**. Per-workspace, from `modal endpoint list`, so `MODAL_INFERENCE_BASE_URL` is required in practice. The Shared API host (`api.us-west-2.modal.direct/v1`) remains the code default but needs an entitlement this workspace lacks |
+| `Authorization: Bearer $OPENROUTER_API_KEY` | `Authorization: Bearer $MODAL_INFERENCE_KEY` — **RESOLVED**. The key is a `wk-`/`ws-` proxy pair **dot-joined**: `wk-xxxx.ws-yyyy`. The endpoint takes that or the `Modal-Key`/`Modal-Secret` header pair (200 both ways); one bearer keeps it to a single env var |
 | `X-Title`, `HTTP-Referer` headers | Drop — OpenRouter-only conventions |
 | `provider: { order: [...] }` | Drop — no equivalent |
 | `usage: { include: true }` | `stream_options: { include_usage: true }` (standard OpenAI) |
@@ -128,11 +128,15 @@ assistant message, including `reasoning_content`, must be echoed back across too
 is the single most likely source of subtly-degraded agentic behaviour if missed, and it
 touches both `llm-client.ts` (serialize back out) and `agentic-loop.ts` (retain on the way in).
 
-**b) Thinking can't be disabled.** K3 always reasons; there is no `none`. The existing
-`QUACKBOT_THINKING_LEVEL` ladder (`none|minimal|low|medium|high|xhigh`) has to collapse onto
-`low|high|max`. Fly currently runs `low`, so: `none|minimal|low` → `low`, `medium|high` →
-`high`, `xhigh` → `max`. Reasoning tokens bill at the full $15/MTok, so defaulting to `max`
-(K3's own default) would be expensive — we send `low` explicitly.
+**b) Thinking passes through — CORRECTED.** This section originally said K3 always reasons
+and the `QUACKBOT_THINKING_LEVEL` ladder had to collapse onto `low|high|max`. It does not.
+Posting an invalid `reasoning_effort` returns a 400 naming the accepted literals:
+`none|minimal|low|medium|high|xhigh|max` — quackbot's ladder verbatim, plus `max`. So
+`toReasoningEffort` validates and passes through, defaulting to `low` when unset or
+unrecognised. `none` really does disable reasoning (8 completion tokens, empty
+`reasoning_content`, vs 38 tokens and 104 chars at `low`), which matters because reasoning
+bills at the full $15/MTok — the original collapse charged for thinking on the one setting
+that asks for none.
 
 **c) Cost display.** `src/core/usage.ts` renders a dollar figure that only exists because
 OpenRouter hands back `usage.cost`. Modal won't. We compute it from
@@ -259,10 +263,13 @@ tier retains **1 day** of logs — worth knowing before relying on them for a po
 
 ## 7. Open questions
 
-1. **Modal Shared API base URL + auth scheme — STILL UNRESOLVED.** Not published anywhere
-   public; the endpoints page is login-gated. Dedicated Auto Endpoints use
-   `Modal-Key`/`Modal-Secret` proxy-token headers, but whether the *Shared* API reuses that or
-   takes a Bearer key is unverified. Resolved by `modal token new` + reading the dashboard.
+1. **Modal base URL + auth scheme — RESOLVED.** Not published anywhere public; the endpoints
+   page is login-gated, so both were settled by probing the live endpoint. The bot uses the
+   workspace's own Kimi K3 endpoint with a dot-joined proxy pair as a bearer (see §2). It is
+   token-billed, not GPU-second billed: `modal billing summary` attributes the spend to
+   `LLM Tokens` with `Deployed Apps` at `0.00`, so `KIMI_K3_RATES_PER_MTOK` is the right cost
+   model. Don't read billing off the surface — the `ep-` id, workspace-prefixed hostname and
+   proxy-token auth all look like a dedicated Auto Endpoint.
 
    How the code currently hedges, and what to delete once this is answered:
 
@@ -295,7 +302,7 @@ Each step is independently verifiable; the live smoke is deliberately last.
 
 | # | Step | Depends on | Status |
 |---|---|---|---|
-| 0 | `modal token new`, read the Shared API base URL + key format | you | done — workspace `motherduck`; URL + auth resolved, see §7.1 |
+| 0 | `modal token new`, read the endpoint base URL + key format | you | done — workspace `motherduck`; endpoint `ep-KcanMn16XzCeSucfSimxqB`, URL + auth resolved, see §7.1 |
 | 1 | `migrations/002_modal.sql` + `src/store/{locks,events,kv}.ts` + tests | — | done (`1ed3038`) |
 | 2 | `llm-client.ts` hard swap + reasoning echo-back + local cost table | 0 | done (`1e546f5`); base URL + auth closed later |
 | 3 | Postgres-backed mutex, dedupe, confirm, query-guide cache, controllog | 1 | done (`1e546f5`) |
