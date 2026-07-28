@@ -170,6 +170,14 @@ modal deploy modal_app.py
   which is exactly why it's a separate scheduled job instead of something on
   the request path.
 
+`test_modal_app.py` checks the Slack signature verifier — the endpoint's front
+door — against Slack's own published test vector, plus the replay-window and
+malformed-header rejections. It needs no credentials, no container and no
+Slack workspace, so run it before deploying, not after. It's a standalone
+script that exits nonzero; `python3 test_modal_app.py`, or point at the
+interpreter the Modal CLI installed itself into if `modal` isn't importable
+from your default python.
+
 Logs: `modal app logs quackbot-modal -f`. **The Starter tier only retains one
 day of logs** — worth knowing before relying on them for a postmortem days
 later.
