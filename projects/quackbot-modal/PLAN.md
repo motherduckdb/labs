@@ -303,23 +303,33 @@ Each step is independently verifiable; the live smoke is deliberately last.
 | # | Step | Depends on | Status |
 |---|---|---|---|
 | 0 | `modal token new`, read the endpoint base URL + key format | you | done — workspace `motherduck`; endpoint `ep-KcanMn16XzCeSucfSimxqB`, URL + auth resolved, see §7.1 |
-| 1 | `migrations/002_modal.sql` + `src/store/{locks,events,kv}.ts` + tests | — | done (`1ed3038`) |
+| 1 | `migrations/002_modal.sql` + `src/store/{locks,events,kv}.ts` + tests | — | done (`1ed3038`) — but *writing* the SQL was not *applying* it; see step 9 |
 | 2 | `llm-client.ts` hard swap + reasoning echo-back + local cost table | 0 | done (`1e546f5`); base URL + auth closed later |
 | 3 | Postgres-backed mutex, dedupe, confirm, query-guide cache, controllog | 1 | done (`1e546f5`) |
 | 4 | `src/worker.ts` entrypoint; drop Bolt for `@slack/web-api` | 3 | done (`9c50af6`) |
 | 5 | `modal_app.py` + image | 4 | done (`1e546f5`) |
-| 6 | Port the test suite green (243 tests today), typecheck | 2,3,4 | done — 381 tests, tsc clean |
-| 7 | `modal deploy`, hit the endpoint with a synthetic signed event | 5,6 | blocked — needs the `quackbot-modal` Modal secret |
-| 8 | Flip the Slack manifest, live smoke in Slack | 7 | blocked on 7 |
+| 6 | Port the test suite green (243 tests today), typecheck | 2,3,4 | done — 383 tests + 25 Python checks, tsc clean |
+| 7 | `modal deploy`, hit the endpoint with a synthetic signed event | 5,6 | done — secret built by `scripts/make-modal-secret.py`; signed challenge 200, bad/stale/unsigned 401 |
+| 8 | Flip the Slack manifest, live smoke in Slack | 7 | done — manifest applied, Socket Mode off; bot answers in Slack |
+| 9 | Apply the migrations (`modal run modal_app.py::migrate`) | 7 | done (`ee40d1d`) — **this step did not exist and should have.** The first live message hit a database with no `kv_cache` and no `slack_events`, and the bot replied "check the logs". Step 1 read as done because the SQL and the code against it were done; running it was nobody's step |
+| 10 | Edge filter so streaming edits don't each spawn a container | 8 | done (`157ac7a`) — 21 of the first 28 events spawned a container only to exit; see §9 |
 
 Steps 1–2 are parallel. Step 6 is the real gate: the existing suite covers the SSE wire
 format and the mutex/dedupe semantics, so it should catch most of what §3 and §4 can break —
 with the notable exception of anything requiring a real K3 response, which only step 7 exercises.
 
-**Step 2 is now closed.** The base URL is `https://api.us-west-2.modal.direct/v1` and auth is
-a plain bearer; both were verified against the live endpoint rather than read off a doc page,
-because the docs only describe the dedicated-endpoint scheme. The two-scheme hedge in
-`buildAuthHeaders()` is deleted — a fallback known not to work is not a safety net.
+**Step 2 is now closed.** The base URL is the workspace's own Kimi K3 endpoint and auth is a
+dot-joined proxy pair sent as a bearer; both were verified against the live endpoint rather
+than read off a doc page, because the docs only describe the header-pair scheme. The
+two-scheme hedge in `buildAuthHeaders()` is deleted — one scheme verified 200 beats two
+half-believed ones.
+
+**Retrospective on that gate.** What follows was written before the deploy and is left
+standing because it was right, and not conservative enough. 383 passing tests and a clean
+typecheck said the code was self-consistent; the two things that actually broke in production
+were an unapplied migration and a per-turn cost profile — neither of which any unit test could
+have caught, because both live in the gap between "the code is correct" and "the system is
+deployed". The original text:
 
 **Everything through step 6 is unverified against a live system.** 381 passing tests and a
 clean typecheck say the code is self-consistent, not that Modal accepts the image, that the
