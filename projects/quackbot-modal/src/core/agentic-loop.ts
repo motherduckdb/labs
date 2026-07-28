@@ -214,8 +214,16 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
           usage.completionTokens = chunk.usage.completion_tokens || 0;
           const ptd = chunk.usage.prompt_tokens_details;
           if (ptd && typeof ptd.cached_tokens === 'number') usage.cachedPromptTokens = ptd.cached_tokens;
+          // Reasoning tokens arrive in one of two places. OpenAI (and the shape
+          // this code was written against) nests them under
+          // `completion_tokens_details`; the live Kimi K3 endpoint emits them at
+          // the top level of `usage` and sends `prompt_tokens_details: null`.
+          // Read both — reading only the nested one silently zeroed the
+          // reasoning share of every cost figure, which is invisible precisely
+          // because a missing subset still adds up to a plausible total.
           const ctd = chunk.usage.completion_tokens_details;
           if (ctd && typeof ctd.reasoning_tokens === 'number') usage.reasoningTokens = ctd.reasoning_tokens;
+          else if (typeof chunk.usage.reasoning_tokens === 'number') usage.reasoningTokens = chunk.usage.reasoning_tokens;
           // OpenRouter reported a dollar `usage.cost` per call; Modal reports
           // tokens only, so cost is derived from the rate table in llm-client.
           usage.cost = computeCostUSD({

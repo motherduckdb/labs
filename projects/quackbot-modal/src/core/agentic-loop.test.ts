@@ -230,6 +230,40 @@ describe('runAgenticLoop with TurnSink', () => {
     ]);
   });
 
+  // Captured verbatim from the live Kimi K3 endpoint on 2026-07-28: reasoning
+  // tokens at the top level of `usage`, and `prompt_tokens_details: null`
+  // rather than absent. The OpenAI-nested shape is covered by the test above;
+  // this one exists because the deployed server does not use it.
+  it('reads reasoning_tokens from the top level of usage, as the live endpoint emits it', async () => {
+    const liveShape = () => sseStream([
+      { choices: [{ delta: { content: 'quackbot online' } }] },
+      {
+        choices: [{ delta: {}, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 30,
+          total_tokens: 150,
+          prompt_tokens_details: null,
+          reasoning_tokens: 10,
+        },
+      },
+    ]);
+    const { events } = await runLoop({ streams: [liveShape] });
+
+    const usageEvents = events.filter((e) => e.type === 'usage');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0].usage).toMatchObject({
+      promptTokens: 120, completionTokens: 30, reasoningTokens: 10,
+    });
+    // A null `prompt_tokens_details` must leave the field unset, not crash and
+    // not read as zero cached tokens billed at the cached rate.
+    expect(usageEvents[0].usage.cachedPromptTokens).toBeUndefined();
+    expect(Number(usageEvents[0].usage.cost)).toBeCloseTo(
+      computeCostUSD({ promptTokens: 120, completionTokens: 30, reasoningTokens: 10 }),
+      12,
+    );
+  });
+
   it('routes reasoning deltas to onThinking and fires onThinkingDone after the stream', async () => {
     const { result, events } = await runLoop({
       streams: [() => textStream('Final answer.', { reasoning: 'Let me reason about the schema first.' })],
