@@ -96,7 +96,7 @@ is the only *tested* statement of the contract `modal_app.py`'s UPDATE implement
 | `src/core/query-guide.ts` | Module-level TTL cache → `kv_cache` |
 | `src/core/controllog.ts` | JSONL on local disk → Postgres |
 | `manifest.json` | `socket_mode_enabled: false`, add request URLs |
-| `package.json` | Drop `@slack/bolt` for `@slack/web-api`; scripts point at Modal |
+| `package.json` | Drop `@slack/bolt` for `@slack/web-api`; scripts point at Modal. Not a pure swap — `@slack/web-api` was only ever transitive via Bolt, so it has to become an explicit dependency or `npm ci --omit=dev` ships an image with no `WebClient` |
 | `README.md`, `.env.example` | Rewrite for Modal |
 
 ---
