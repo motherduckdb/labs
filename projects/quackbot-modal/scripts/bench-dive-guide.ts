@@ -12,8 +12,16 @@
  *   C. override    — current full local override (baseline)
  *
  * The arm is selected purely by the `resolveGeminiDiveGuide` seam on
- * runAgenticLoop; everything else (system prompt, tools, MCP client, model,
- * temperature) is identical to production.
+ * runAgenticLoop; everything else (system prompt, tools, MCP client, model) is
+ * identical to production. Supplying that seam also opts every arm into the
+ * supplement branch regardless of `QUACKBOT_DIVE_SUPPLEMENT`, which is what
+ * keeps arms A and B comparable now that the flag defaults off.
+ *
+ * NOTE (Modal migration): the LLM transport is now Modal's Kimi K3 Shared API,
+ * which serves ONE model — the historical "force Gemini" behaviour below is no
+ * longer reachable through it. Re-running these arms on Gemini needs a
+ * MODAL_INFERENCE_BASE_URL that actually serves Gemini; re-running them on K3
+ * is the un-done follow-up work called out in PLAN.md §9.
  *
  * Task set × N runs (default 3 prompts × 3 runs = 9 runs/arm, 27 total).
  * Every dive the model saves is tracked and deleted before exit (delete_dive
@@ -25,7 +33,7 @@
  *   npx tsx scripts/bench-dive-guide.ts
  *
  * Env knobs: BENCH_N (runs per prompt, default 3), BENCH_THINKING
- * (default 'low'), BENCH_MODEL (default google/gemini-3-flash-preview),
+ * (default 'low'), BENCH_MODEL (default: MODAL_INFERENCE_MODEL, i.e. Kimi K3),
  * BENCH_ARMS (comma list of A,B,C — default all).
  *
  * Never logs secrets.
@@ -46,7 +54,7 @@ import type { TurnSink } from '../src/core/turn-sink';
 // Env — parse only the keys we need out of the bot .env, into process.env.
 // ---------------------------------------------------------------------------
 
-const ENV_PATH = process.env.BENCH_ENV_PATH ?? '/Users/jacobmatson/code/labs/projects/quackbot/.env';
+const ENV_PATH = process.env.BENCH_ENV_PATH ?? '/Users/jacobmatson/code/labs/projects/quackbot-modal/.env';
 
 function loadEnvKeys(path: string, keys: string[]): void {
   let raw: string;
@@ -500,24 +508,31 @@ async function cleanup(client: Client, createdDiveIds: Set<string>): Promise<str
 // ---------------------------------------------------------------------------
 
 async function main() {
-  loadEnvKeys(ENV_PATH, ['MOTHERDUCK_TOKEN', 'MOTHERDUCK_API_URL', 'OPENROUTER_API_KEY', 'OPENROUTER_MODEL']);
+  loadEnvKeys(ENV_PATH, [
+    'MOTHERDUCK_TOKEN', 'MOTHERDUCK_API_URL',
+    'MODAL_INFERENCE_BASE_URL', 'MODAL_INFERENCE_MODEL',
+    'MODAL_KEY', 'MODAL_SECRET', 'MODAL_INFERENCE_KEY',
+  ]);
   if (!process.env.MOTHERDUCK_TOKEN) throw new Error('MOTHERDUCK_TOKEN missing from .env');
-  if (!process.env.OPENROUTER_API_KEY) throw new Error('OPENROUTER_API_KEY missing from .env');
+  // Either auth scheme is acceptable — see buildAuthHeaders in llm-client.ts.
+  const hasProxyToken = Boolean(process.env.MODAL_KEY && process.env.MODAL_SECRET);
+  if (!hasProxyToken && !process.env.MODAL_INFERENCE_KEY) {
+    throw new Error('Modal credentials missing from .env — set MODAL_KEY + MODAL_SECRET, or MODAL_INFERENCE_KEY');
+  }
 
-  const model = (process.env.BENCH_MODEL || 'google/gemini-3-flash-preview').trim();
+  const model = (process.env.BENCH_MODEL || process.env.MODAL_INFERENCE_MODEL || 'moonshotai/Kimi-K3').trim();
   const thinkingLevel = ((process.env.BENCH_THINKING || 'low').trim() as ThinkingLevel);
   const N = Number(process.env.BENCH_N || '3');
   const armIds = ((process.env.BENCH_ARMS || 'A,B,C').split(',').map((s) => s.trim()) as ArmId[])
     .filter((id) => id in ARMS);
 
   console.log(`[bench] model=${model} thinking=${thinkingLevel} N=${N} arms=${armIds.join(',')}`);
-  console.log(`[bench] deployed OPENROUTER_MODEL was '${process.env.OPENROUTER_MODEL}' — forcing Gemini for the bench`);
+  console.log(`[bench] deployed MODAL_INFERENCE_MODEL is '${process.env.MODAL_INFERENCE_MODEL ?? '(default)'}'`);
 
   const profile: ModelProfile = {
     id: model,
     maxTokens: 16384,
     supportsReasoning: true,
-    provider: undefined,
     contextWindow: 1_000_000,
   };
 
@@ -565,10 +580,10 @@ async function main() {
     const md = [
       '# Phase 3 — Gemini dive-guide benchmark results',
       '',
-      `- Model (forced): \`${model}\``,
-      `- Thinking level: \`${thinkingLevel}\`  ·  temperature: 0.3 (loop default)`,
+      `- Model: \`${model}\``,
+      `- Thinking level: \`${thinkingLevel}\`  ·  sampling params: locked by the model (none sent)`,
       `- Runs per prompt: ${N}  ·  arms: ${armIds.join(', ')}`,
-      `- Deployed OPENROUTER_MODEL (not used here): \`${process.env.OPENROUTER_MODEL}\``,
+      `- Deployed MODAL_INFERENCE_MODEL: \`${process.env.MODAL_INFERENCE_MODEL ?? '(default)'}\``,
       `- MCP endpoint: \`${(process.env.MOTHERDUCK_API_URL || '').replace(/\/$/, '')}/mcp\` (prod, jm_quackbot PAT)`,
       `- Query guide prefetched into system prompt: ${allRows.length ? 'yes' : 'n/a'}`,
       '',

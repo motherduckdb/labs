@@ -1,11 +1,61 @@
-// LLM transport: OpenRouter's OpenAI-compatible endpoint via direct `fetch`
-// (see streamChatCompletion). The `reasoning` (thinking) param only works on
-// that endpoint, and we hand-convert Anthropic-style messages to OpenAI format.
+// LLM transport: Modal's Kimi K3 Shared API — an OpenAI-compatible
+// /chat/completions endpoint hit via direct `fetch` (see streamChatCompletion).
+// We hand-convert our Anthropic-style message blocks to OpenAI format on the
+// way out, including the `reasoning_content` echo-back K3 requires (see
+// `toOpenAIMessages`).
+//
+// This file was a hard swap from OpenRouter: no fallback provider, no
+// multi-provider abstraction. Everything OpenRouter-specific (X-Title /
+// HTTP-Referer headers, `provider: {order}`, `usage: {include}`, dollar cost on
+// the usage chunk) is gone; the pieces OpenRouter used to give us for free —
+// most notably cost — are computed locally below.
 
 import { redact } from './redact';
 
 // ---------------------------------------------------------------------------
-// Single-model profile (default: Gemini 3 Flash; swap via OPENROUTER_MODEL).
+// Endpoint + auth
+// ---------------------------------------------------------------------------
+
+/**
+ * Full chat-completions URL, tolerant of a trailing slash on the base.
+ *
+ * There is deliberately NO default. The Modal Shared API base URL has not been
+ * confirmed yet — the endpoints dashboard is login-gated and nobody has authed
+ * (PLAN.md §7.1) — and a plausible-looking guess like `https://api.modal.com/v1`
+ * is the worst thing to put here: it would resolve, fail at request time with
+ * some opaque 404/401, and send whoever debugs it hunting for a credential
+ * problem that doesn't exist. Throwing names the actual missing thing.
+ */
+export function getChatCompletionsUrl(): string {
+  const raw = (process.env.MODAL_INFERENCE_BASE_URL || '').trim();
+  if (!raw) {
+    throw new Error(
+      'MODAL_INFERENCE_BASE_URL is not set. There is no default: the Modal Shared API ' +
+        'base URL must be read off the Modal dashboard and set explicitly ' +
+        '(e.g. MODAL_INFERENCE_BASE_URL=https://<...>/v1).',
+    );
+  }
+  return `${raw.replace(/\/+$/, '')}/chat/completions`;
+}
+
+/**
+ * TEMPORARY HEDGE (PLAN.md §7.1). We know Modal's *dedicated* Auto Endpoints
+ * authenticate with a `Modal-Key`/`Modal-Secret` proxy-token pair, but whether
+ * the *Shared* API reuses that or takes a plain Bearer key is unverified. Rather
+ * than guess wrong and have the swap fail at the first live call, support both
+ * and pick on which env vars are actually set. Collapse this to the one true
+ * scheme — and drop the unused env var from .env.example — the moment the
+ * dashboard confirms it.
+ */
+export function buildAuthHeaders(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const key = (env.MODAL_KEY || '').trim();
+  const secret = (env.MODAL_SECRET || '').trim();
+  if (key && secret) return { 'Modal-Key': key, 'Modal-Secret': secret };
+  return { Authorization: `Bearer ${(env.MODAL_INFERENCE_KEY || '').trim()}` };
+}
+
+// ---------------------------------------------------------------------------
+// Single-model profile (default: Kimi K3; swap via MODAL_INFERENCE_MODEL).
 // ---------------------------------------------------------------------------
 
 export interface ModelProfile {
@@ -13,31 +63,24 @@ export interface ModelProfile {
   maxTokens: number;
   supportsReasoning: boolean;
   /**
-   * Preferred OpenRouter upstream provider (e.g. `"Google AI Studio"`,
-   * `"Anthropic"`). When set, passed as `provider.order` so OpenRouter
-   * prefers this provider — pins prompt-cache state to one backend instead
-   * of silently rotating between providers and cold-starting the cache.
-   * Fallbacks remain enabled by default so a provider outage still routes.
-   */
-  provider?: string;
-  /**
    * Approximate prompt-token capacity. Used by the client to render a
    * "% context full" indicator. Resolved by `getContextWindow` from the
-   * model id; the values are deliberately rough — OpenRouter routes the
-   * same id to upstreams with subtly different real limits, so what we
-   * really want is "is the user getting close" not exact accounting.
+   * model id; the values are deliberately rough — what we really want is
+   * "is the user getting close", not exact accounting.
    */
   contextWindow: number;
 }
 
 /**
- * Best-effort context-window lookup keyed off the OpenRouter model id.
- * Add specific cases for families you know about and fall through to a
- * conservative default. Only used for the UI pill — consequence of being
- * off is a slightly wrong percentage, not a routing decision.
+ * Best-effort context-window lookup keyed off the model id. Add specific cases
+ * for families you know about and fall through to a conservative default. Only
+ * used for the UI pill — consequence of being off is a slightly wrong
+ * percentage, not a routing decision.
  */
 export function getContextWindow(modelId: string): number {
   const id = modelId.toLowerCase();
+  // Kimi K3 (the production model on Modal) — 1M context.
+  if (/kimi|moonshot/.test(id)) return 1_000_000;
   // Anthropic 1M-context variants (explicit suffix in the id).
   if (/(opus|sonnet)[-_]?4[-_.]?7[-_.]?(1m|extended)/i.test(id) || /(:1m|@1m|-1m)/.test(id)) {
     return 1_000_000;
@@ -54,15 +97,14 @@ export function getContextWindow(modelId: string): number {
   return 200_000;
 }
 
-const DEFAULT_MODEL = 'google/gemini-3-flash-preview';
+const DEFAULT_MODEL = 'moonshotai/Kimi-K3';
 
 export function getModelProfile(): ModelProfile {
-  const id = (process.env.OPENROUTER_MODEL || DEFAULT_MODEL).trim();
+  const id = (process.env.MODAL_INFERENCE_MODEL || DEFAULT_MODEL).trim();
   return {
     id,
     maxTokens: 16384,
     supportsReasoning: true,
-    provider: (process.env.OPENROUTER_PROVIDER || '').trim() || undefined,
     contextWindow: getContextWindow(id),
   };
 }
@@ -73,21 +115,22 @@ export function getModel(): string {
 }
 
 /**
- * Rough allowlist of vision-capable model families. Used to refuse image
- * uploads early when the active model can't read them. Keep permissive —
- * the consequence of a false positive is the upstream API returning an
- * error, which we'd prefer over rejecting legitimately vision-capable models.
- * Keep this in sync with actual OpenRouter routing: every modern Claude /
- * GPT-4o / Gemini-2+ / Grok-Vision variant is vision-capable.
+ * Rough allowlist of vision-capable model families.
+ *
+ * NOTE: `modelSupportsVision` is exported but never called anywhere in this
+ * repo, and the bot has no Slack file-upload path — the vision branch is dead
+ * code inherited from data-chat-mini. Kimi is added here as correctness
+ * hygiene (K3 is natively multimodal), not as a feature.
  */
 const VISION_MODEL_PATTERNS = [
+  // Kimi K3 is natively vision-capable.
+  /kimi/i,
+  /moonshot/i,
   /claude-(3|4|opus|sonnet|haiku)/i,
   /gpt-4o/i,
   /gpt-4-vision/i,
   /gpt-5/i,
   // Match any modern Gemini (1.5 and later, including 3.x and -flash/-pro variants).
-  // Don't anchor on the major version — OpenRouter ids like `google/gemini-3-flash-preview`
-  // and `google/gemini-3.1-pro-preview` should both pass.
   /gemini-(\d|flash|pro)/i,
   /grok-(2-)?vision/i,
   /llama-(3\.2|4)-.*vision/i,
@@ -99,11 +142,181 @@ export function modelSupportsVision(modelId: string): boolean {
   return VISION_MODEL_PATTERNS.some(re => re.test(modelId));
 }
 
+// ---------------------------------------------------------------------------
+// Cost
+// ---------------------------------------------------------------------------
+
 /**
- * Call OpenRouter's OpenAI-compatible endpoint directly.
- * This is needed because the reasoning/thinking parameter only works
- * on the /v1/chat/completions endpoint, not the Anthropic-compatible one.
+ * Kimi K3 list rates, dollars per million tokens.
+ *
+ * OpenRouter used to hand back `usage.cost` per request; Modal does not, so the
+ * dollar figure in the usage pill is now computed here. Rates drift — check
+ * https://modal.com/library/moonshot/kimi-k3 before trusting an old number.
  */
+export const KIMI_K3_RATES_PER_MTOK = {
+  prompt: 3.0,
+  cachedPrompt: 0.3,
+  completion: 15.0,
+  /**
+   * Reasoning bills at the full completion rate — K3 always reasons and there
+   * is no discount for it, which is why `reasoning_effort` defaults to `low`
+   * (see `toReasoningEffort`).
+   */
+  reasoning: 15.0,
+} as const;
+
+export interface CostInputs {
+  promptTokens: number;
+  completionTokens: number;
+  /** Subset of `promptTokens` served from the prompt cache. */
+  cachedPromptTokens?: number;
+  /** Subset of `completionTokens` spent on reasoning. */
+  reasoningTokens?: number;
+}
+
+/**
+ * Dollar cost for one model call.
+ *
+ * Both token-detail fields are SUBSETS of their parent count in the
+ * OpenAI-compatible usage shape, so each is subtracted out before its parent is
+ * billed — cached prompt tokens are not also charged at the full prompt rate,
+ * and reasoning tokens are not charged twice. Reasoning currently costs exactly
+ * the same as ordinary completion, so splitting it out changes nothing today;
+ * it is written explicitly so the arithmetic stays right if the rates diverge.
+ */
+export function computeCostUSD(u: CostInputs): number {
+  const M = 1_000_000;
+  const cached = Math.min(Math.max(u.cachedPromptTokens ?? 0, 0), Math.max(u.promptTokens, 0));
+  const uncached = Math.max(u.promptTokens - cached, 0);
+  const reasoning = Math.min(Math.max(u.reasoningTokens ?? 0, 0), Math.max(u.completionTokens, 0));
+  const plainCompletion = Math.max(u.completionTokens - reasoning, 0);
+  return (
+    (uncached * KIMI_K3_RATES_PER_MTOK.prompt) / M +
+    (cached * KIMI_K3_RATES_PER_MTOK.cachedPrompt) / M +
+    (plainCompletion * KIMI_K3_RATES_PER_MTOK.completion) / M +
+    (reasoning * KIMI_K3_RATES_PER_MTOK.reasoning) / M
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning effort
+// ---------------------------------------------------------------------------
+
+/** The only values K3 accepts for `reasoning_effort`. */
+export type ReasoningEffort = 'low' | 'high' | 'max';
+
+/**
+ * Collapse quackbot's six-rung `QUACKBOT_THINKING_LEVEL` ladder onto K3's three.
+ *
+ * K3 ALWAYS reasons — there is no `none`/off, so `none` and `minimal` can only
+ * map to `low`. `low` is also the default (and what the Fly deploy runs today):
+ * reasoning tokens bill at the full $15/MTok, so K3's own `max` default would
+ * be a real and silent cost increase.
+ */
+export function toReasoningEffort(thinkingLevel?: string): ReasoningEffort {
+  switch ((thinkingLevel || '').trim().toLowerCase()) {
+    case 'xhigh': return 'max';
+    case 'medium':
+    case 'high': return 'high';
+    case 'none':
+    case 'minimal':
+    case 'low':
+    default: return 'low';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Message conversion
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert our Anthropic-style message blocks into OpenAI chat messages.
+ *
+ * The load-bearing part is the assistant branch's `reasoning_content`.
+ * Moonshot's docs are explicit that the ENTIRE untouched assistant message —
+ * reasoning included — has to be echoed back on subsequent turns of a tool
+ * loop ("do not keep only `content`"). The OpenRouter-era code had a
+ * `thinking` branch that claimed to preserve blocks and was in fact a no-op,
+ * which would have quietly degraded every multi-tool turn on K3.
+ *
+ * The loop stores reasoning as `{type:'thinking', thinking}` blocks built by
+ * concatenating the raw `delta.reasoning_content` chunks, so joining them back
+ * together reproduces the model's own text verbatim.
+ */
+export function toOpenAIMessages(
+  systemPrompt: string,
+  messages: Array<{ role: string; content: unknown }>,
+): Array<Record<string, unknown>> {
+  const openaiMessages: Array<Record<string, unknown>> = [
+    { role: 'system', content: systemPrompt },
+  ];
+
+  for (const msg of messages) {
+    if (typeof msg.content === 'string') {
+      openaiMessages.push({ role: msg.role, content: msg.content });
+    } else if (Array.isArray(msg.content)) {
+      // Handle tool_result blocks (user role) and multi-block assistant messages
+      const blocks = msg.content as Array<Record<string, unknown>>;
+
+      if (msg.role === 'user' && blocks.some(b => b.type === 'tool_result')) {
+        // Convert tool results to OpenAI format
+        for (const block of blocks) {
+          if (block.type === 'tool_result') {
+            openaiMessages.push({
+              role: 'tool',
+              tool_call_id: block.tool_use_id,
+              content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
+            });
+          }
+        }
+      } else if (msg.role === 'user') {
+        // Multimodal user content (text + image_url parts). OpenAI-compatible
+        // servers accept this array shape unchanged — pass through.
+        openaiMessages.push({ role: 'user', content: blocks });
+      } else if (msg.role === 'assistant') {
+        // Convert assistant content blocks to OpenAI format
+        const textParts: string[] = [];
+        const reasoningParts: string[] = [];
+        const toolCalls: Array<Record<string, unknown>> = [];
+
+        for (const block of blocks) {
+          if (block.type === 'text') {
+            textParts.push(block.text as string);
+          } else if (block.type === 'thinking') {
+            // The echo-back that K3 requires — see the doc comment above.
+            if (typeof block.thinking === 'string') reasoningParts.push(block.thinking);
+          } else if (block.type === 'tool_use') {
+            toolCalls.push({
+              id: block.id,
+              type: 'function',
+              function: {
+                name: block.name,
+                // A tool call whose arguments failed to parse was stored with
+                // `input: {}` and never dispatched (see agentic-loop.ts); we
+                // echo the valid-JSON `{}` rather than the malformed original
+                // so the retry prompt isn't itself unparseable.
+                arguments: JSON.stringify(block.input),
+              },
+            });
+          }
+        }
+
+        const assistantMsg: Record<string, unknown> = { role: 'assistant' };
+        if (textParts.length > 0) assistantMsg.content = textParts.join('\n');
+        if (reasoningParts.length > 0) assistantMsg.reasoning_content = reasoningParts.join('');
+        if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
+        openaiMessages.push(assistantMsg);
+      }
+    }
+  }
+
+  return openaiMessages;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming call
+// ---------------------------------------------------------------------------
+
 /**
  * Delay before the 1-shot retry on a failed initial fetch (#124). Short — the
  * retry is for fetch-level transients (DNS hiccup, ECONNRESET); a real outage
@@ -143,11 +356,8 @@ export async function streamChatCompletion(params: {
   messages: Array<{ role: string; content: unknown }>;
   tools?: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
   systemPrompt: string;
-  temperature?: number;
   maxTokens?: number;
   thinkingLevel?: string;
-  /** Preferred OpenRouter upstream provider to pin caching to a single backend. */
-  provider?: string;
   /**
    * Called when the initial fetch threw a TypeError and we're about to retry
    * once. Lets the route emit a `stream_error` controllog event with
@@ -157,64 +367,9 @@ export async function streamChatCompletion(params: {
    */
   onFetchRetry?: (originalErrorMessage: string) => void;
 }): Promise<ReadableStream<Uint8Array>> {
-  const { model, messages, tools, systemPrompt, temperature = 0.3, maxTokens = 16384, thinkingLevel, provider, onFetchRetry } = params;
+  const { model, messages, tools, systemPrompt, maxTokens = 16384, thinkingLevel, onFetchRetry } = params;
 
-  // Convert Anthropic-style messages to OpenAI format
-  const openaiMessages: Array<Record<string, unknown>> = [
-    { role: 'system', content: systemPrompt },
-  ];
-
-  for (const msg of messages) {
-    if (typeof msg.content === 'string') {
-      openaiMessages.push({ role: msg.role, content: msg.content });
-    } else if (Array.isArray(msg.content)) {
-      // Handle tool_result blocks (user role) and multi-block assistant messages
-      const blocks = msg.content as Array<Record<string, unknown>>;
-
-      if (msg.role === 'user' && blocks.some(b => b.type === 'tool_result')) {
-        // Convert tool results to OpenAI format
-        for (const block of blocks) {
-          if (block.type === 'tool_result') {
-            openaiMessages.push({
-              role: 'tool',
-              tool_call_id: block.tool_use_id,
-              content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-            });
-          }
-        }
-      } else if (msg.role === 'user') {
-        // Multimodal user content (text + image_url parts). OpenAI/OpenRouter
-        // accept this array shape unchanged — pass through.
-        openaiMessages.push({ role: 'user', content: blocks });
-      } else if (msg.role === 'assistant') {
-        // Convert assistant content blocks to OpenAI format
-        const textParts: string[] = [];
-        const toolCalls: Array<Record<string, unknown>> = [];
-
-        for (const block of blocks) {
-          if (block.type === 'text') {
-            textParts.push(block.text as string);
-          } else if (block.type === 'thinking') {
-            // Preserve thinking blocks for echo-back
-          } else if (block.type === 'tool_use') {
-            toolCalls.push({
-              id: block.id,
-              type: 'function',
-              function: {
-                name: block.name,
-                arguments: JSON.stringify(block.input),
-              },
-            });
-          }
-        }
-
-        const assistantMsg: Record<string, unknown> = { role: 'assistant' };
-        if (textParts.length > 0) assistantMsg.content = textParts.join('\n');
-        if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
-        openaiMessages.push(assistantMsg);
-      }
-    }
-  }
+  const openaiMessages = toOpenAIMessages(systemPrompt, messages);
 
   // Convert Anthropic tools to OpenAI format
   const openaiTools = tools?.map(t => ({
@@ -229,40 +384,32 @@ export async function streamChatCompletion(params: {
   const body: Record<string, unknown> = {
     model,
     messages: openaiMessages,
-    max_tokens: maxTokens,
-    temperature,
+    // `max_tokens` is deprecated on K3 in favour of `max_completion_tokens`
+    // (whose own default is 131072, max 1048576). We keep quackbot's 16384 cap:
+    // Slack messages are the output surface, and the loop already treats
+    // `finish_reason: 'length'` as a user-visible error.
+    max_completion_tokens: maxTokens,
     stream: true,
-    // Ask OpenRouter to include `usage` on the final chunk (token counts +
-    // dollar cost when the upstream reports it). The server-side reader was
-    // already parsing this when present; this just makes it guaranteed.
-    usage: { include: true },
+    // Standard OpenAI opt-in for a final usage-only chunk. Replaces
+    // OpenRouter's non-standard `usage: {include: true}`.
+    stream_options: { include_usage: true },
+    // K3 locks its sampling parameters: temperature / top_p / n /
+    // presence_penalty / frequency_penalty are rejected or silently ignored.
+    // Deliberately absent — do not "restore" the old temperature: 0.3.
+    reasoning_effort: toReasoningEffort(thinkingLevel),
   };
 
   if (openaiTools && openaiTools.length > 0) {
     body.tools = openaiTools;
   }
 
-  if (thinkingLevel && thinkingLevel !== 'none') {
-    body.reasoning = { effort: thinkingLevel };
-  }
-
-  // Pin provider preference when configured. OpenRouter defaults
-  // `allow_fallbacks: true`, so if the preferred provider is down we still
-  // route — just with a cold cache on that request. Caching stays hot in
-  // steady state when the preferred provider is healthy.
-  if (provider) {
-    body.provider = { order: [provider] };
-  }
-
   const response = await fetchWithOneRetry(
-    'https://openrouter.ai/api/v1/chat/completions',
+    getChatCompletionsUrl(),
     {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'X-Title': 'quackbot',
-        'HTTP-Referer': 'https://github.com/motherduckdb/labs',
+        ...buildAuthHeaders(),
       },
       body: JSON.stringify(body),
     },
@@ -273,7 +420,7 @@ export async function streamChatCompletion(params: {
     const text = await response.text();
     // Redact: the response body is echoed into a thrown error that is logged
     // (and could surface upstream request detail); scrub token-shaped content.
-    throw new Error(`OpenRouter error ${response.status}: ${redact(text)}`);
+    throw new Error(`Modal inference error ${response.status}: ${redact(text)}`);
   }
 
   return response.body!;

@@ -1,21 +1,33 @@
 /**
- * Slim controllog emitter — writes spec-compatible JSONL that the labs
+ * Slim controllog emitter — writes spec-compatible rows that the labs
  * `controllog` Python package can upload to MotherDuck and `controllog-viz`
  * can render. This is intentionally NOT the heavy mdw-turbo port: it only
- * emits, it does not upload. Hand off to the Python tooling for that:
- *
- *   pip install "controllog[duckdb] @ git+https://github.com/motherduckdb/labs#subdirectory=projects/controllog"
- *   python -c "from controllog import motherduck; from pathlib import Path; motherduck.upload(motherduck_db='data_chat_mini', log_dir=Path('logs'))"
+ * emits, it does not upload.
  *
  * Schema follows docs/spec-v1.1.md exactly — including the `truth.money` /
  * `truth.time` account names (the mdw-turbo port diverged to `resource.*`,
  * which breaks controllog-viz cost/latency rollups; we do NOT repeat that).
  *
- * Layout: logs/controllog/{events,postings}.jsonl (flat, no date partition).
+ * Storage: Postgres (`controllog_events` / `controllog_postings`,
+ * migrations/002_modal.sql), not JSONL on local disk. On Fly, one always-on
+ * process appended lines to `logs/controllog/{events,postings}.jsonl` and line
+ * order carried a turn's grouping implicitly. On Modal there is no durable
+ * local disk — Modal Volumes resolve two containers appending to the same file
+ * concurrently as last-write-wins, silently dropping whichever turn's flush
+ * lost — so appends became inserts, and the grouping that line-adjacency used
+ * to give for free is now explicit: every row carries `session_id` (already
+ * generated per turn as `Session.id`, but never persisted before) and an
+ * `ordinal` (this row's position within the session's own event/posting list,
+ * assigned at flush time). The row shapes are otherwise unchanged field-for-
+ * field from the old JSONL records, and in turn from the DuckDB DDL in the
+ * labs `controllog` package (src/controllog/motherduck.py::_ensure_schema) —
+ * that alignment is what lets the existing Python uploader and
+ * controllog-viz keep working off a plain `select`, so don't rename columns
+ * here without updating those too.
  */
-import { appendFile, mkdir } from 'node:fs/promises';
-import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Pool } from 'pg';
+import { getPool } from '../store/pg';
 import { uuid7 } from './uuid7';
 import { isLoggingDisabled } from './logging-flag';
 
@@ -54,12 +66,17 @@ export interface Session {
 }
 
 let projectId = 'quackbot';
-let baseLogDir = 'logs';
 const als = new AsyncLocalStorage<Session>();
 
-export function init(project: string, logDir: string): void {
+/**
+ * `logDir` is vestigial — kept so `main.ts`'s existing `cl.init('quackbot',
+ * 'logs')` call keeps compiling untouched (call sites outside this module are
+ * off-limits for this change). There is no log directory any more: flushes go
+ * straight to Postgres. Accepting and ignoring the argument is cheaper than
+ * making every caller aware that the parameter died.
+ */
+export function init(project: string, _logDir?: string): void {
   projectId = project;
-  baseLogDir = logDir;
 }
 
 export function newId(): string {
@@ -216,21 +233,104 @@ export function streamError(args: {
   });
 }
 
+/**
+ * Build a parameterized multi-row `INSERT … ON CONFLICT DO NOTHING`.
+ *
+ * `table`/`columns`/`conflictColumn` are compile-time constants owned by this
+ * module, never request data, so interpolating them directly into the SQL
+ * string is fine — only the row values travel as bound `$n` parameters.
+ * One round-trip per table per flush, however many rows a turn produced,
+ * rather than a query per row.
+ */
+function buildBatchInsert(
+  table: string,
+  columns: string[],
+  rows: unknown[][],
+  conflictColumn: string,
+): { sql: string; params: unknown[] } {
+  const params: unknown[] = [];
+  const valueGroups = rows.map(row => {
+    const placeholders = row.map(value => {
+      params.push(value);
+      return `$${params.length}`;
+    });
+    return `(${placeholders.join(', ')})`;
+  });
+  const sql = `insert into ${table} (${columns.join(', ')}) values ${valueGroups.join(', ')} on conflict (${conflictColumn}) do nothing`;
+  return { sql, params };
+}
+
+const EVENT_COLUMNS = [
+  'event_id', 'session_id', 'ordinal', 'event_time', 'ingest_time', 'kind',
+  'actor_agent_id', 'actor_task_id', 'project_id', 'run_id', 'source',
+  'idempotency_key', 'payload_json',
+];
+
+const POSTING_COLUMNS = [
+  'posting_id', 'event_id', 'session_id', 'ordinal', 'account_type',
+  'account_id', 'unit', 'delta_numeric', 'dims_json',
+];
+
+/**
+ * `ordinal` is this row's index within `session.events` / `session.postings`
+ * at flush time — i.e. emission order, the same order line-adjacency used to
+ * carry implicitly in the old JSONL. Assigning it here rather than tracking a
+ * counter on `Session` keeps `emit()` unaware that Postgres exists at all.
+ */
+async function insertEvents(pool: Pool, session: Session): Promise<void> {
+  const rows = session.events.map((e, ordinal) => [
+    e.event_id, session.id, ordinal, e.event_time, e.ingest_time, e.kind,
+    e.actor_agent_id, e.actor_task_id, e.project_id, e.run_id, e.source,
+    e.idempotency_key, JSON.stringify(e.payload_json),
+  ]);
+  const { sql, params } = buildBatchInsert('controllog_events', EVENT_COLUMNS, rows, 'event_id');
+  await pool.query(sql, params);
+}
+
+async function insertPostings(pool: Pool, session: Session): Promise<void> {
+  const rows = session.postings.map((p, ordinal) => [
+    p.posting_id, p.event_id, session.id, ordinal, p.account_type,
+    p.account_id, p.unit, p.delta_numeric, JSON.stringify(p.dims_json),
+  ]);
+  const { sql, params } = buildBatchInsert('controllog_postings', POSTING_COLUMNS, rows, 'posting_id');
+  await pool.query(sql, params);
+}
+
+/**
+ * Flush one turn's buffered events/postings to Postgres.
+ *
+ * Telemetry must never be able to fail a user's turn. On Fly, a write failure
+ * threw out of `flushSession`, and it was the *caller's* job (handlers.ts
+ * wraps this call in its own try/catch) to keep that from losing the turn.
+ * That call-site safety net still exists, but it shouldn't be the only one —
+ * a future caller that omits it (e.g. `src/worker.ts`, not written yet) would
+ * otherwise crash a turn on nothing more than a controllog outage. So the
+ * swallow now lives here too: every DB error is caught and logged, never
+ * thrown. Belt AND suspenders, deliberately.
+ *
+ * Events and postings are two independent inserts with independent
+ * try/catches, not one transaction, so a failure in one cannot take the other
+ * down with it — matching the "no FK, on purpose" note on
+ * `controllog_postings` in migrations/002_modal.sql: a posting that outlives a
+ * failed event insert is a logging artefact worth keeping, not a reason to
+ * lose the rest of the session's rows.
+ */
 export async function flushSession(session: Session): Promise<void> {
   if (isLoggingDisabled()) return;
   if (session.events.length === 0 && session.postings.length === 0) return;
-  const dir = path.join(baseLogDir, 'controllog');
-  await mkdir(dir, { recursive: true });
+  const pool = getPool();
   if (session.events.length) {
-    await appendFile(
-      path.join(dir, 'events.jsonl'),
-      session.events.map(e => JSON.stringify(e)).join('\n') + '\n',
-    );
+    try {
+      await insertEvents(pool, session);
+    } catch (err) {
+      console.warn('[quackbot] controllog events flush failed:', err);
+    }
   }
   if (session.postings.length) {
-    await appendFile(
-      path.join(dir, 'postings.jsonl'),
-      session.postings.map(p => JSON.stringify(p)).join('\n') + '\n',
-    );
+    try {
+      await insertPostings(pool, session);
+    } catch (err) {
+      console.warn('[quackbot] controllog postings flush failed:', err);
+    }
   }
 }

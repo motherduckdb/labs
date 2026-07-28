@@ -1,6 +1,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { executeToolWithStatus } from './mcp-client';
+import { kvDelete, kvGet, kvSet } from '../store/kv';
 
 /**
  * Eager fetch of the org query guidance (`get_query_guide`) so it can be
@@ -16,29 +17,32 @@ import { executeToolWithStatus } from './mcp-client';
  */
 
 /**
- * Module-level TTL cache. This is primarily for LLM prompt-cache STABILITY, not
- * latency: the guide block sits near the top of the system prompt, so if its
- * text changed on every turn it would bust Anthropic's prompt cache for the
- * whole prefix. A ~15-minute TTL keeps the same string across the many turns of
- * a busy thread, so the cached prefix stays warm; the tradeoff is that a
- * freshly-saved guide can take up to the TTL to appear in the pre-fetched block
- * (the model can always call `get_query_guide` directly for an immediate view).
+ * TTL cache, backed by `kv_cache` in Postgres (src/store/kv.ts). This is
+ * primarily for LLM prompt-cache STABILITY, not latency: the guide block sits
+ * near the top of the system prompt, so if its text changed on every turn it
+ * would bust Anthropic's prompt cache for the whole prefix. A ~15-minute TTL
+ * keeps the same string across the many turns of a busy thread, so the cached
+ * prefix stays warm; the tradeoff is that a freshly-saved guide can take up to
+ * the TTL to appear in the pre-fetched block (the model can always call
+ * `get_query_guide` directly for an immediate view).
  *
- * Only SUCCESSFUL results are cached. A failure (tool error, throw, empty body)
- * is never cached, so the next turn retries the fetch.
+ * This used to be a module-level `{value, expiresAt}` — correct only because
+ * one Fly process outlived the TTL. On Modal a container is per-turn, so an
+ * in-memory cache would miss every single time. Moving it to `kv_cache` makes
+ * it genuinely shared: one container's fetch warms every other container's
+ * turn for the next 15 minutes, rather than every turn paying the round-trip.
+ *
+ * Only SUCCESSFUL results are cached — never write a failure to the shared
+ * key. That mattered for a single process; it matters *more* now, because a
+ * cached failure would go blind for every container reading the shared key,
+ * not just the one that saw it.
  */
 const TTL_MS = 15 * 60 * 1000;
+const CACHE_KEY = 'query-guide';
 
-interface CacheEntry {
-  value: string;
-  expiresAt: number;
-}
-
-let cache: CacheEntry | null = null;
-
-/** Reset the module cache. Test-only seam. */
-export function clearQueryGuideCache(): void {
-  cache = null;
+/** Drop the cached guide. Test-only seam; also the invalidation hook for "a guide was just saved, don't serve the stale one for 15 more minutes." */
+export async function clearQueryGuideCache(): Promise<void> {
+  await kvDelete(CACHE_KEY);
 }
 
 /**
@@ -73,18 +77,17 @@ function extractGuideText(raw: string): string | null {
  * Returns the guide text, or `null` on ANY failure. Successful results are
  * cached for `TTL_MS`; failures are not.
  *
- * `opts.now` injects a clock for tests; production uses `Date.now`.
+ * Expiry is enforced by `kvGet` against the *database's* clock (see kv.ts),
+ * not a clock passed in here — there is no longer a `now` injection seam,
+ * because the thing being timed out is a Postgres row, not a JS variable.
+ * Tests fake the TTL behaviour by mocking `kvGet`/`kvSet` directly.
  */
 export async function fetchQueryGuideBlock(
   client: Client,
-  opts: { now?: () => number; requestOptions?: RequestOptions } = {},
+  opts: { requestOptions?: RequestOptions } = {},
 ): Promise<string | null> {
-  const now = opts.now ?? Date.now;
-  const t = now();
-
-  if (cache && t < cache.expiresAt) {
-    return cache.value;
-  }
+  const cached = await kvGet<string>(CACHE_KEY);
+  if (cached !== null) return cached;
 
   try {
     const { text, isError } = await executeToolWithStatus(
@@ -97,7 +100,7 @@ export async function fetchQueryGuideBlock(
     if (isError) return null;
     const block = extractGuideText(text);
     if (!block) return null;
-    cache = { value: block, expiresAt: t + TTL_MS };
+    await kvSet(CACHE_KEY, block, TTL_MS);
     return block;
   } catch {
     // Transport/throw — never propagate; a missing block must not break a turn.

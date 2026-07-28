@@ -14,6 +14,41 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
+/**
+ * In-memory stand-ins for src/store/{events,locks}. These are fakes, not mocks:
+ * they reproduce the two properties the handler actually depends on — the
+ * dedupe claim is atomic (check-and-insert in one step) and the lock is
+ * non-blocking (a second acquire of a held key fails immediately rather than
+ * queueing). Both check-and-set synchronously before their first await, which
+ * is what makes the racing-events test below meaningful. No database anywhere.
+ */
+function makeStoreFakes() {
+  const seenEvents = new Set<string>();
+  const heldLocks = new Set<string>();
+  const dedupeKeys: string[] = [];
+  const lockKeys: string[] = [];
+
+  const markEventSeen = vi.fn(async (eventId: string) => {
+    dedupeKeys.push(eventId);
+    if (seenEvents.has(eventId)) return false;
+    seenEvents.add(eventId);
+    return true;
+  });
+
+  const withThreadLock = vi.fn(async <T,>(key: string, fn: () => Promise<T>) => {
+    lockKeys.push(key);
+    if (heldLocks.has(key)) return { acquired: false as const };
+    heldLocks.add(key);
+    try {
+      return { acquired: true as const, result: await fn() };
+    } finally {
+      heldLocks.delete(key);
+    }
+  });
+
+  return { markEventSeen, withThreadLock, dedupeKeys, lockKeys };
+}
+
 function makeDeps(overrides: Partial<TurnRunnerDeps> = {}): {
   deps: TurnRunnerDeps;
   calls: {
@@ -22,15 +57,20 @@ function makeDeps(overrides: Partial<TurnRunnerDeps> = {}): {
     setChannelDatabases: Array<{ channel: string; dbs: string[] }>;
     saved: Array<{ channel: string; threadTs: string }>;
     getConvKeys: string[];
+    dedupeKeys: string[];
+    lockKeys: string[];
     loopStarts: number;
   };
 } {
+  const store = makeStoreFakes();
   const calls = {
     posts: [] as Array<{ channel: string; thread_ts?: string; text?: string }>,
     reactions: [] as Array<{ name: string; ts: string }>,
     setChannelDatabases: [] as Array<{ channel: string; dbs: string[] }>,
     saved: [] as Array<{ channel: string; threadTs: string }>,
     getConvKeys: [] as string[],
+    dedupeKeys: store.dedupeKeys,
+    lockKeys: store.lockKeys,
     loopStarts: 0,
   };
 
@@ -109,6 +149,8 @@ function makeDeps(overrides: Partial<TurnRunnerDeps> = {}): {
     },
     createSink: vi.fn(() => sink) as never,
     makeConfirmRequester: vi.fn(() => async () => true) as never,
+    markEventSeen: store.markEventSeen as never,
+    withThreadLock: store.withThreadLock as never,
     botUserId: 'BOT',
     thinkingLevel: 'medium',
     ...overrides,
@@ -163,6 +205,47 @@ describe('buildTurnRunner dedupe', () => {
     await runner.handle(msg); // duplicate delivery
     expect(calls.loopStarts).toBe(1);
   });
+
+  it('claims on (channel, ts) — NOT Slack event_id — so a DM @-mention fires once', async () => {
+    // A DM @-mention arrives twice: once as `message.im`, once as
+    // `app_mention`, carrying two DIFFERENT Slack event_ids for one human
+    // utterance. Only (channel, ts) is stable across the pair, so that is what
+    // the dedupe row keys on. Deduping on the real event_id would let both
+    // through and the bot would answer itself twice.
+    const { deps, calls } = makeDeps();
+    const runner = buildTurnRunner(deps);
+
+    // Ev0AAA — delivered as message.im
+    await runner.handle({ channel: 'D9', user: 'U1', text: '<@BOT> hello', ts: '99.1', channelType: 'im' });
+    // Ev0BBB — the same utterance, delivered again as app_mention
+    await runner.handle({ channel: 'D9', user: 'U1', text: '<@BOT> hello', ts: '99.1' });
+
+    expect(calls.loopStarts).toBe(1);
+    expect(calls.dedupeKeys).toEqual(['D9:99.1', 'D9:99.1']);
+    expect(calls.dedupeKeys.every((k) => !/^Ev/.test(k))).toBe(true);
+  });
+
+  it('checks dedupe BEFORE taking the lock, so a redelivery never consumes an acquire', async () => {
+    const { deps, calls } = makeDeps();
+    const runner = buildTurnRunner(deps);
+    const msg = { channel: 'C1', user: 'U1', text: '<@BOT> hello', ts: '98.1' };
+    await runner.handle(msg);
+    await runner.handle(msg);
+
+    expect(calls.dedupeKeys).toHaveLength(2); // both deliveries checked
+    expect(calls.lockKeys).toEqual(['C1:98.1']); // only the first reached the lock
+  });
+
+  it('proceeds when the dedupe claim itself fails (fail open, not silence)', async () => {
+    const { deps, calls } = makeDeps({
+      markEventSeen: vi.fn(async () => {
+        throw new Error('pg down');
+      }) as never,
+    });
+    const runner = buildTurnRunner(deps);
+    await runner.handle({ channel: 'C1', user: 'U1', text: '<@BOT> hello', ts: '97.1' });
+    expect(calls.loopStarts).toBe(1);
+  });
 });
 
 describe('buildTurnRunner per-thread mutex', () => {
@@ -203,6 +286,42 @@ describe('buildTurnRunner per-thread mutex', () => {
     gate.resolve();
     await first;
     expect(calls.loopStarts).toBe(1);
+  });
+
+  it('posts the busy reply when another WORKER holds the lock (no promise to queue behind)', async () => {
+    // The cross-container case: the lock is held by a process this one shares
+    // nothing with, so all we get back is `{acquired: false}`. Exactly one
+    // human-readable reply, and no retry.
+    const { deps, calls } = makeDeps({
+      withThreadLock: vi.fn(async () => ({ acquired: false })) as never,
+    });
+    const runner = buildTurnRunner(deps);
+    await runner.handle({ channel: 'C1', user: 'U1', text: '<@BOT> hi', ts: '6.1', threadTs: 'TT' });
+
+    expect(calls.loopStarts).toBe(0);
+    expect(calls.reactions.filter((r) => r.name === 'hourglass_flowing_sand')).toHaveLength(1);
+    expect(calls.posts.filter((p) => p.text?.includes('still working'))).toHaveLength(1);
+  });
+
+  it('locks on (channel, conversation key) — an unthreaded DM uses the stable dm-root key', async () => {
+    const { deps, calls } = makeDeps();
+    const runner = buildTurnRunner(deps);
+    await runner.handle({ channel: 'D9', user: 'U1', text: 'hi', ts: '7.1', channelType: 'im' });
+    await runner.handle({ channel: 'C1', user: 'U1', text: '<@BOT> hi', ts: '7.2', threadTs: 'TT' });
+    expect(calls.lockKeys).toEqual(['D9:dm-root', 'C1:TT']);
+  });
+
+  it('reports a lock failure to the user instead of throwing into the listener', async () => {
+    const { deps, calls } = makeDeps({
+      withThreadLock: vi.fn(async () => {
+        throw new Error('pg down');
+      }) as never,
+    });
+    const runner = buildTurnRunner(deps);
+    await expect(
+      runner.handle({ channel: 'C1', user: 'U1', text: '<@BOT> hi', ts: '8.1' }),
+    ).resolves.toBeUndefined();
+    expect(calls.posts.some((p) => p.text?.includes('went wrong'))).toBe(true);
   });
 });
 

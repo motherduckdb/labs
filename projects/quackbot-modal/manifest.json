@@ -33,6 +33,7 @@
   },
   "settings": {
     "event_subscriptions": {
+      "request_url": "https://WORKSPACE--quackbot-modal-web.modal.run/slack/events",
       "bot_events": [
         "app_mention",
         "message.im",
@@ -41,10 +42,11 @@
       ]
     },
     "interactivity": {
-      "is_enabled": true
+      "is_enabled": true,
+      "request_url": "https://WORKSPACE--quackbot-modal-web.modal.run/slack/interactive"
     },
     "org_deploy_enabled": false,
-    "socket_mode_enabled": true,
+    "socket_mode_enabled": false,
     "token_rotation_enabled": false
   }
 }

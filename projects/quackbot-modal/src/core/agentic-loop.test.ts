@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Controllog is a no-op spy set — the loop must survive without a session and
 // we don't want JSONL side effects from tests.
@@ -17,12 +17,18 @@ vi.mock('./gemini-dive-guide', () => ({
 }));
 
 import { runAgenticLoop, type RunAgenticLoopOpts } from './agentic-loop';
+import { computeCostUSD } from './llm-client';
 import { buildGeminiDiveSupplement } from './gemini-dive-guide';
 import type { MvizBlockEvent, ToolEndCall, ToolStartCall, TurnSink } from './turn-sink';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 // ---------------------------------------------------------------------------
-// Synthetic OpenRouter SSE streams (same shape as demo-validation.test.ts).
+// Synthetic Kimi K3 SSE streams.
+//
+// The wire format is standard OpenAI streaming: reasoning arrives as
+// `delta.reasoning_content`, and the final chunk (from
+// `stream_options.include_usage`) carries token counts ONLY — no dollar cost,
+// which the loop now derives locally via computeCostUSD.
 // ---------------------------------------------------------------------------
 
 function sseStream(payloads: Array<Record<string, unknown>>): ReadableStream<Uint8Array> {
@@ -44,11 +50,22 @@ function splitEvery(text: string, size: number): string[] {
   return chunks;
 }
 
+/** Usage payload of the terminal chunk in `textStream`. */
+const TEXT_USAGE = {
+  prompt_tokens: 120,
+  completion_tokens: 30,
+  prompt_tokens_details: { cached_tokens: 20 },
+  completion_tokens_details: { reasoning_tokens: 10 },
+};
+
+/** Usage payload of the terminal chunk in `toolCallStream` (no detail fields). */
+const TOOL_USAGE = { prompt_tokens: 100, completion_tokens: 10 };
+
 function textStream(text: string, opts?: { chunkSize?: number; reasoning?: string }): ReadableStream<Uint8Array> {
   const payloads: Array<Record<string, unknown>> = [];
   if (opts?.reasoning) {
     for (const chunk of splitEvery(opts.reasoning, 16)) {
-      payloads.push({ choices: [{ delta: { reasoning: chunk } }] });
+      payloads.push({ choices: [{ delta: { reasoning_content: chunk } }] });
     }
   }
   for (const chunk of splitEvery(text, opts?.chunkSize ?? 16)) {
@@ -56,13 +73,19 @@ function textStream(text: string, opts?: { chunkSize?: number; reasoning?: strin
   }
   payloads.push({
     choices: [{ delta: {}, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 120, completion_tokens: 30, cost: 0.001 },
+    usage: TEXT_USAGE,
   });
   return sseStream(payloads);
 }
 
-function toolCallStream(calls: Array<{ id: string; name: string; args: Record<string, unknown> }>): ReadableStream<Uint8Array> {
+function toolCallStream(
+  calls: Array<{ id: string; name: string; args: Record<string, unknown> | string }>,
+  opts?: { reasoning?: string },
+): ReadableStream<Uint8Array> {
   return sseStream([
+    ...(opts?.reasoning
+      ? splitEvery(opts.reasoning, 16).map((chunk) => ({ choices: [{ delta: { reasoning_content: chunk } }] }))
+      : []),
     {
       choices: [{
         delta: {
@@ -70,14 +93,19 @@ function toolCallStream(calls: Array<{ id: string; name: string; args: Record<st
             index,
             id: call.id,
             type: 'function',
-            function: { name: call.name, arguments: JSON.stringify(call.args) },
+            function: {
+              name: call.name,
+              // A raw string lets a test emit the malformed-arguments shape K3
+              // occasionally produces; objects are stringified as usual.
+              arguments: typeof call.args === 'string' ? call.args : JSON.stringify(call.args),
+            },
           })),
         },
       }],
     },
     {
       choices: [{ delta: {}, finish_reason: 'tool_calls' }],
-      usage: { prompt_tokens: 100, completion_tokens: 10, cost: 0.0005 },
+      usage: TOOL_USAGE,
     },
   ]);
 }
@@ -160,6 +188,15 @@ async function runLoop(opts: {
 // ---------------------------------------------------------------------------
 
 describe('runAgenticLoop with TurnSink', () => {
+  // The dive-guide supplement is now an explicit env opt-in (default OFF on
+  // K3), so every test starts from "off" and the supplement tests turn it on.
+  const savedSupplementFlag = process.env.QUACKBOT_DIVE_SUPPLEMENT;
+  beforeEach(() => { delete process.env.QUACKBOT_DIVE_SUPPLEMENT; });
+  afterEach(() => {
+    if (savedSupplementFlag === undefined) delete process.env.QUACKBOT_DIVE_SUPPLEMENT;
+    else process.env.QUACKBOT_DIVE_SUPPLEMENT = savedSupplementFlag;
+  });
+
   it('streams text deltas as onText in order and finishes done', async () => {
     const answer = 'Hello! This is a plain streamed answer with no fences in it at all.';
     const { result, events } = await runLoop({ streams: [() => textStream(answer)] });
@@ -170,9 +207,19 @@ describe('runAgenticLoop with TurnSink', () => {
     const usageEvents = events.filter((e) => e.type === 'usage');
     expect(usageEvents).toHaveLength(1);
     expect(usageEvents[0].usage).toMatchObject({
-      promptTokens: 120, completionTokens: 30, cost: 0.001,
+      promptTokens: 120, completionTokens: 30,
+      cachedPromptTokens: 20, reasoningTokens: 10,
       model: 'test-model', contextWindow: 200_000,
     });
+    // Cost is no longer supplied by the provider — it is derived from the
+    // token counts and the K3 rate table.
+    expect(Number(usageEvents[0].usage.cost)).toBeCloseTo(
+      computeCostUSD({ promptTokens: 120, completionTokens: 30, cachedPromptTokens: 20, reasoningTokens: 10 }),
+      12,
+    );
+    // Pinned literal so a rate-table edit has to be deliberate:
+    // 100 uncached prompt @ $3 + 20 cached @ $0.30 + 30 completion @ $15 per MTok.
+    expect(Number(usageEvents[0].usage.cost)).toBeCloseTo(0.000756, 9);
 
     // turn_complete is the terminal event of the turn.
     expect(events[events.length - 1]).toEqual({ type: 'turn_complete', finishReason: 'done' });
@@ -493,6 +540,81 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(result.finishReason).toBe('done');
   });
 
+  it('retains reasoning_content on the assistant message of a TOOL round (the K3 echo-back requirement)', async () => {
+    // Moonshot requires the entire untouched assistant message — reasoning
+    // included — to be echoed back across tool calls. That starts here: the
+    // thinking block must survive onto the message the loop appends to
+    // history, ahead of the tool_use blocks. llm-client then serializes it
+    // back out as `reasoning_content` (see llm-client.test.ts).
+    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'rows', isError: false,
+    }));
+    const { result } = await runLoop({
+      streams: [
+        () => toolCallStream(
+          [{ id: 'call_1', name: 'query', args: { sql: 'select 1' } }],
+          { reasoning: 'I should check the schema before querying.' },
+        ),
+        () => textStream('Done.'),
+      ],
+      dispatchToolImpl,
+    });
+
+    expect(result.newTurnMessages[0]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'I should check the schema before querying.' },
+        { type: 'tool_use', id: 'call_1', name: 'query', input: { sql: 'select 1' } },
+      ],
+    });
+  });
+
+  it('surfaces a malformed tool-call argument blob as an error tool_result instead of dispatching or throwing', async () => {
+    // K3's tool-call emitter occasionally produces arguments its own parser
+    // can't read. The turn must survive: no dispatch, a paired is_error
+    // tool_result the model can act on, and a normal second iteration.
+    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'should never run', isError: false,
+    }));
+    const { result, events } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'bad_1', name: 'query', args: '{"sql": "select 1"' }]),
+        () => textStream('Let me try that again.'),
+      ],
+      dispatchToolImpl,
+      profileId: 'moonshotai/Kimi-K3',
+    });
+
+    expect(dispatchToolImpl).not.toHaveBeenCalled();
+    const toolEnd = events.find((e) => e.type === 'tool_end');
+    expect(toolEnd).toMatchObject({ call: { id: 'bad_1', name: 'query', error: true } });
+
+    const toolMsg = result.newTurnMessages.find((m) => m.role === 'user') as { content: Array<Record<string, unknown>> };
+    expect(toolMsg.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'bad_1', is_error: true });
+    expect(String(toolMsg.content[0].content)).toMatch(/not valid JSON/i);
+    // The malformed text is echoed back (truncated) so the model can see what it sent.
+    expect(String(toolMsg.content[0].content)).toContain('{"sql": "select 1"');
+    // The loop kept going and answered.
+    expect(result.finishReason).toBe('done');
+    expect(joinedText(events)).toBe('Let me try that again.');
+  });
+
+  it('treats a valid-JSON-but-non-object argument blob as malformed', async () => {
+    const dispatchToolImpl = vi.fn(async (_o: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'should never run', isError: false,
+    }));
+    const { result } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'bad_2', name: 'query', args: '"select 1"' }]),
+        () => textStream('Retrying.'),
+      ],
+      dispatchToolImpl,
+    });
+    expect(dispatchToolImpl).not.toHaveBeenCalled();
+    const toolMsg = result.newTurnMessages.find((m) => m.role === 'user') as { content: Array<Record<string, unknown>> };
+    expect(toolMsg.content[0]).toMatchObject({ tool_use_id: 'bad_2', is_error: true });
+  });
+
   it('does NOT intercept ordinary guide reads — list_guides flows through dispatchTool, even on Gemini', async () => {
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: JSON.stringify({ guides: [] }),
@@ -545,19 +667,21 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
   });
 
-  it('augments get_dive_guide on Gemini profiles: dispatches the real stock guide and appends the supplement', async () => {
+  it('augments get_dive_guide when QUACKBOT_DIVE_SUPPLEMENT is on: dispatches the real stock guide and appends the supplement', async () => {
+    process.env.QUACKBOT_DIVE_SUPPLEMENT = '1';
     vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: 'STOCK DIVE GUIDE',
       isError: false,
     }));
+    // Model id is deliberately Kimi: the gate is the flag now, not /gemini/.
     const { result, events } = await runLoop({
       streams: [
         () => toolCallStream([{ id: 'guide_1', name: 'get_dive_guide', args: { client: 'other' } }]),
         () => textStream('Guide read, building the dive.'),
       ],
       dispatchToolImpl,
-      profileId: 'google/gemini-3-flash-preview',
+      profileId: 'moonshotai/Kimi-K3',
     });
 
     // The real stock guide IS fetched via MCP, and the supplement is appended.
@@ -585,7 +709,8 @@ describe('runAgenticLoop with TurnSink', () => {
     });
   });
 
-  it('keeps a FAILED stock get_dive_guide fetch an error on Gemini — no supplement, is_error tool_result', async () => {
+  it('keeps a FAILED stock get_dive_guide fetch an error — no supplement, is_error tool_result', async () => {
+    process.env.QUACKBOT_DIVE_SUPPLEMENT = '1';
     vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: 'Tool returned an error:\n\nMCP transport failed', isError: true, errorMessage: 'mcp_error',
@@ -611,7 +736,8 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(result.finishReason).toBe('done');
   });
 
-  it('appends the supplement on Gemini regardless of the client arg passed', async () => {
+  it('appends the supplement regardless of the client arg passed', async () => {
+    process.env.QUACKBOT_DIVE_SUPPLEMENT = '1';
     vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
       content: 'STOCK DIVE GUIDE',
@@ -631,10 +757,10 @@ describe('runAgenticLoop with TurnSink', () => {
     expect(toolResult).toMatchObject({ content: 'STOCK DIVE GUIDE\n\nGEMINI SUPPLEMENT' });
   });
 
-  it('passes get_dive_guide through to dispatchTool WITHOUT the supplement on non-Gemini profiles', async () => {
+  it('passes get_dive_guide through to dispatchTool WITHOUT the supplement when the flag is unset (the K3 default)', async () => {
     vi.mocked(buildGeminiDiveSupplement).mockClear();
     const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
-      content: 'mcp claude guide content',
+      content: 'mcp stock guide content',
       isError: false,
     }));
     const { result } = await runLoop({
@@ -643,17 +769,39 @@ describe('runAgenticLoop with TurnSink', () => {
         () => textStream('Guide read.'),
       ],
       dispatchToolImpl,
-      profileId: 'anthropic/claude-sonnet-5',
+      profileId: 'moonshotai/Kimi-K3',
     });
 
     expect(buildGeminiDiveSupplement).not.toHaveBeenCalled();
     expect(dispatchToolImpl).toHaveBeenCalledTimes(1);
     expect(dispatchToolImpl.mock.calls[0][0]).toMatchObject({ name: 'get_dive_guide', args: { client: 'other' } });
     const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
-    expect(toolResult).toMatchObject({ content: 'mcp claude guide content' });
+    expect(toolResult).toMatchObject({ content: 'mcp stock guide content' });
+  });
+
+  it('does NOT apply the supplement on a Gemini id either — the model id no longer gates it', async () => {
+    // Regression guard for the migration: the old gate was /gemini/i on the
+    // model id. It is gone; only QUACKBOT_DIVE_SUPPLEMENT decides.
+    vi.mocked(buildGeminiDiveSupplement).mockClear();
+    const dispatchToolImpl = vi.fn(async (_opts: { client: Client; name: string; args: Record<string, unknown> }) => ({
+      content: 'STOCK DIVE GUIDE',
+      isError: false,
+    }));
+    const { result } = await runLoop({
+      streams: [
+        () => toolCallStream([{ id: 'guide_3', name: 'get_dive_guide', args: { client: 'other' } }]),
+        () => textStream('Guide read.'),
+      ],
+      dispatchToolImpl,
+      profileId: 'google/gemini-3-flash-preview',
+    });
+    expect(buildGeminiDiveSupplement).not.toHaveBeenCalled();
+    const toolResult = (result.newTurnMessages[1].content as Array<Record<string, unknown>>)[0];
+    expect(toolResult).toMatchObject({ content: 'STOCK DIVE GUIDE' });
   });
 
   it('leaves no unpaired tool_use when auth expires mid-way through a multi-tool round', async () => {
+    process.env.QUACKBOT_DIVE_SUPPLEMENT = '1';
     vi.mocked(buildGeminiDiveSupplement).mockClear();
     // Round of three: the dive guide read dispatches the stock guide (then gets
     // the supplement appended) and succeeds, query throws an auth error,

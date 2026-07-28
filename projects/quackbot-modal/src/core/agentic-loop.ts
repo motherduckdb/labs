@@ -1,4 +1,4 @@
-import { streamChatCompletion as defaultStreamChatCompletion } from './llm-client';
+import { streamChatCompletion as defaultStreamChatCompletion, computeCostUSD } from './llm-client';
 import type { ModelProfile } from './llm-client';
 import { dispatchTool as defaultDispatchTool } from './tool-dispatch';
 import {
@@ -66,12 +66,15 @@ export interface RunAgenticLoopOpts {
   streamChatCompletion?: typeof defaultStreamChatCompletion;
   dispatchToolImpl?: typeof defaultDispatchTool;
   /**
-   * How the dive-authoring guide (`get_dive_guide`) is resolved on Gemini
-   * profiles. `fetchStock` dispatches the REAL server guide via MCP and returns
-   * its text. Default: the real stock guide with `buildGeminiDiveSupplement()`
-   * appended — the Phase-3 winner (see gemini-dive-guide.ts). Overridable so the
-   * Phase-3 benchmark (scripts/bench-dive-guide.ts) can drive the stock-alone
-   * and full-override arms through the identical loop.
+   * How the dive-authoring guide (`get_dive_guide`) is resolved. `fetchStock`
+   * dispatches the REAL server guide via MCP and returns its text.
+   *
+   * Supplying this is itself an opt-in to the supplement seam: it overrides
+   * `QUACKBOT_DIVE_SUPPLEMENT` so the Phase-3 benchmark
+   * (scripts/bench-dive-guide.ts) can drive the stock-alone and
+   * stock+supplement arms through the identical loop. When it is omitted, the
+   * flag decides — and it defaults OFF (see `diveSupplementEnabled`), so the
+   * plain stock guide flows through dispatchTool like any other tool.
    */
   resolveGeminiDiveGuide?: (fetchStock: () => Promise<string>) => Promise<string>;
   /**
@@ -97,6 +100,26 @@ export interface RunAgenticLoopResult {
 
 const MAX_ITERATIONS = 40;
 const MAX_EMPTY_STOP_RETRIES = 1;
+
+/**
+ * Whether to append `buildGeminiDiveSupplement()` to the stock `get_dive_guide`
+ * result.
+ *
+ * This used to be gated on `/gemini/i.test(profile.id)`. On Kimi K3 that
+ * predicate is simply never true, so the supplement would have gone dormant
+ * silently — the worst kind of change. It is now an EXPLICIT opt-in, default
+ * OFF, because the supplement was benchmarked for Gemini specifically (PR #81
+ * Phase 3, scripts/bench-dive-guide.ts) and is completely unmeasured on K3.
+ * The seam and gemini-dive-guide.ts are kept intact so re-benchmarking on K3 is
+ * a flag flip, not an archaeology exercise.
+ *
+ * Read per-call rather than at module load so tests (and the bench script) can
+ * toggle it without module-cache games.
+ */
+function diveSupplementEnabled(): boolean {
+  const v = (process.env.QUACKBOT_DIVE_SUPPLEMENT || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
 
 const EMPTY_STOP_NUDGE =
   'You ran tool calls in the previous step but stopped without responding to me. ' +
@@ -130,10 +153,9 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
       messages: messagesForCall,
       tools: opts.tools,
       systemPrompt: opts.systemPrompt,
-      temperature: 0.3,
+      // No `temperature` — K3 locks sampling params (see llm-client.ts).
       maxTokens: profile.maxTokens,
       thinkingLevel: opts.thinkingLevel,
-      provider: profile.provider,
       onFetchRetry: (originalMessage) => {
         cl.streamError({
           taskId: opts.taskId, runId: opts.runId,
@@ -156,6 +178,16 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
     } = { promptTokens: 0, completionTokens: 0 };
     let finishReason: string | undefined;
     const pendingToolCalls = new Map<number, { id: string; name: string; args: string }>();
+    /**
+     * tool_use id → the raw `arguments` string we could not parse. The vLLM
+     * recipe for K3 warns it "occasionally emits a tool-call format its own
+     * parser doesn't expect", so a malformed argument blob is an expected —
+     * if rare — event rather than a bug. These calls are never dispatched;
+     * they get a model-visible error tool_result so the model can reissue the
+     * call, which is strictly better than dispatching with silently-empty args
+     * (the old behaviour) or throwing away the whole turn.
+     */
+    const malformedToolArgs = new Map<string, string>();
     let currentThinking = '';
 
     const reader = llmStream.getReader();
@@ -180,15 +212,18 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
         if (chunk.usage) {
           usage.promptTokens = chunk.usage.prompt_tokens || 0;
           usage.completionTokens = chunk.usage.completion_tokens || 0;
-          if (typeof chunk.usage.cost === 'number') {
-            usage.cost = chunk.usage.cost;
-          } else if (chunk.usage.cost_details && typeof chunk.usage.cost_details.upstream_inference_cost === 'number') {
-            usage.cost = chunk.usage.cost_details.upstream_inference_cost;
-          }
           const ptd = chunk.usage.prompt_tokens_details;
           if (ptd && typeof ptd.cached_tokens === 'number') usage.cachedPromptTokens = ptd.cached_tokens;
           const ctd = chunk.usage.completion_tokens_details;
           if (ctd && typeof ctd.reasoning_tokens === 'number') usage.reasoningTokens = ctd.reasoning_tokens;
+          // OpenRouter reported a dollar `usage.cost` per call; Modal reports
+          // tokens only, so cost is derived from the rate table in llm-client.
+          usage.cost = computeCostUSD({
+            promptTokens: usage.promptTokens,
+            completionTokens: usage.completionTokens,
+            ...(usage.cachedPromptTokens !== undefined && { cachedPromptTokens: usage.cachedPromptTokens }),
+            ...(usage.reasoningTokens !== undefined && { reasoningTokens: usage.reasoningTokens }),
+          });
         }
 
         const choice = chunk.choices?.[0];
@@ -275,7 +310,19 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
     }
     for (const [, tc] of pendingToolCalls) {
       let parsedArgs: Record<string, unknown> = {};
-      try { parsedArgs = JSON.parse(tc.args || '{}'); } catch { /* */ }
+      const raw = tc.args || '{}';
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        // A bare scalar or array is as unusable as a syntax error — every tool
+        // in this system takes a keyword-argument object.
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsedArgs = parsed as Record<string, unknown>;
+        } else {
+          malformedToolArgs.set(tc.id, raw);
+        }
+      } catch {
+        malformedToolArgs.set(tc.id, raw);
+      }
       assistantContentBlocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: parsedArgs });
     }
 
@@ -283,7 +330,7 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
     const toolCallSummary = Array.from(pendingToolCalls.values()).map(tc => ({ id: tc.id, name: tc.name, args: tc.args }));
     try {
       cl.modelPrompt({
-        taskId: opts.taskId, runId: opts.runId, provider: 'openrouter',
+        taskId: opts.taskId, runId: opts.runId, provider: 'modal',
         model: profile.id, promptTokens: usage.promptTokens, exchangeId,
         requestText: opts.requestText,
         payload: {
@@ -292,7 +339,7 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
         },
       });
       cl.modelCompletion({
-        taskId: opts.taskId, runId: opts.runId, provider: 'openrouter',
+        taskId: opts.taskId, runId: opts.runId, provider: 'modal',
         model: profile.id, completionTokens: usage.completionTokens, wallMs, exchangeId,
         responseText: fullResponseText, costMoney: usage.cost,
         payload: {
@@ -328,6 +375,32 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
 
         opts.sink.onToolStart({ id: toolId, name: toolName, args: toolInput });
 
+        // Fail SOFT on a tool call whose arguments never parsed: hand the model
+        // an error tool_result naming the problem so it can reissue the call.
+        // The round stays paired (every tool_use gets a tool_result) and one
+        // bad emission costs an iteration instead of the whole turn.
+        if (malformedToolArgs.has(toolId)) {
+          const raw = malformedToolArgs.get(toolId) ?? '';
+          const errMsg =
+            `Error: the arguments for ${toolName} were not valid JSON object syntax, so the tool was not run. ` +
+            `Re-issue the call with a single well-formed JSON object of arguments. ` +
+            `Received: ${raw.slice(0, 200)}`;
+          toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: errMsg, is_error: true });
+          opts.sink.onToolEnd({ id: toolId, name: toolName, result: errMsg, error: true });
+          try {
+            cl.toolEnd({
+              taskId: opts.taskId, runId: opts.runId,
+              toolName, toolUseId: toolId, ok: false,
+              durationMs: 0, iteration: iterations,
+              errorMessage: 'malformed_tool_arguments',
+              payload: { malformed_tool_arguments: true, raw_args_bytes: raw.length },
+            });
+          } catch (logErr) {
+            console.error('[Controllog] toolEnd error:', logErr);
+          }
+          continue;
+        }
+
         // The dive-authoring guide (`get_dive_guide`) gets a Gemini-specific
         // augmentation: fetch the REAL stock server guide, then append
         // `buildGeminiDiveSupplement()` — the guardrails the stock guide still
@@ -338,10 +411,14 @@ export async function runAgenticLoop(opts: RunAgenticLoopOpts): Promise<RunAgent
         // here fixed that but cost ~2.6× the tokens and scored WORSE on
         // first-attempt saves. Phase 3 (MCP_MIGRATION_PLAN.md,
         // scripts/bench-dive-guide.ts) benchmarked all three and stock+supplement
-        // won. Other model families get the plain stock guide via dispatchTool.
+        // won. With the supplement flag off (the default on Kimi K3 — see
+        // `diveSupplementEnabled`), get_dive_guide falls through to the plain
+        // dispatch path below like any other tool — unless a caller supplied
+        // `resolveGeminiDiveGuide`, which is an explicit request to own guide
+        // resolution and must therefore keep working regardless of the flag.
         if (
           toolName === 'get_dive_guide' &&
-          /gemini/i.test(profile.id)
+          (diveSupplementEnabled() || opts.resolveGeminiDiveGuide)
         ) {
           const tStart = Date.now();
           const dispatchTool = opts.dispatchToolImpl ?? defaultDispatchTool;

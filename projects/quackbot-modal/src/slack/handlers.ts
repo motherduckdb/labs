@@ -15,6 +15,8 @@ import { runAgenticLoop, type ThinkingLevel } from '../core/agentic-loop';
 import * as controllog from '../core/controllog';
 import { getConversation, saveConversation } from '../store/conversations';
 import { resolveDatabases, setChannelDatabases } from '../store/settings';
+import { markEventSeen } from '../store/events';
+import { threadLockKey, withThreadLock } from '../store/locks';
 import type { TurnSink } from '../core/turn-sink';
 import { redactError } from '../core/redact';
 import { SlackTurnSink, type SlackTurnSinkOpts } from './sink';
@@ -34,9 +36,14 @@ import {
  * data-chat-mini's app/api/chat/route.ts: createMCPClient → getFilteredTools →
  * mcpToolsToAnthropicFormat → buildSystemPrompt → runAgenticLoop, wrapped in a
  * controllog session that is flushed afterward.
+ *
+ * Dedupe and the per-thread mutex used to be a module-level `Set` and `Map`,
+ * which was correct only because Fly ran exactly one process. Modal runs one
+ * container per turn, so the two duplicate deliveries of a DM @-mention are
+ * usually two *processes*; both now live in Postgres (src/store/events.ts,
+ * src/store/locks.ts). Everything else in this file is unchanged.
  */
 
-const DEDUPE_TTL_MS = 60_000;
 const DEFAULT_THINKING: ThinkingLevel = 'medium';
 const VALID_THINKING = new Set<ThinkingLevel>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
@@ -79,6 +86,10 @@ export interface TurnRunnerDeps {
   controllog: Pick<typeof controllog, 'createSession' | 'runInSession' | 'flushSession'>;
   createSink: (opts: SlackTurnSinkOpts) => FinalizableSink;
   makeConfirmRequester: (opts: ConfirmRequesterOpts) => (call: ConfirmCall) => Promise<boolean>;
+  /** Postgres-backed event dedupe; true means this container owns the turn. */
+  markEventSeen: typeof markEventSeen;
+  /** Postgres-backed per-thread mutex. Non-blocking — see the note in handle(). */
+  withThreadLock: typeof withThreadLock;
   botUserId?: string;
   thinkingLevel?: ThinkingLevel;
 }
@@ -104,6 +115,8 @@ function defaultDeps(client: WebClient, botUserId?: string): TurnRunnerDeps {
     controllog,
     createSink: (opts) => new SlackTurnSink(opts),
     makeConfirmRequester,
+    markEventSeen,
+    withThreadLock,
     botUserId,
     thinkingLevel: resolveThinkingLevel(),
   };
@@ -149,12 +162,9 @@ function conversationKeyFor(msg: IncomingMessage): string {
 }
 
 export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
-  // Event dedupe: Slack redelivers events on retry, and a DM @-mention can fire
-  // both message.im and app_mention. Key on (channel, ts) with a short TTL.
-  const seen = new Set<string>();
-  // Per-thread mutex: at most one turn in flight per (channel, threadTs).
-  const inflight = new Map<string, Promise<void>>();
-  // users.info cache for mention labeling.
+  // users.info cache for mention labeling. Still in memory on purpose: it is a
+  // read-through cache of immutable-ish data scoped to a single turn's text, so
+  // a per-container copy costs at most one extra users.info call.
   const userNames = new Map<string, string>();
   const thinkingLevel = deps.thinkingLevel ?? DEFAULT_THINKING;
 
@@ -333,10 +343,37 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   }
 
   async function handle(msg: IncomingMessage): Promise<void> {
+    // Dedupe key: the Slack MESSAGE timestamp, NOT Slack's `event_id`. A DM
+    // @-mention is delivered twice — once as `message.im`, once as
+    // `app_mention` — with two *different* event_ids for one human utterance,
+    // so deduping on the real event_id would let the double-fire through and
+    // the bot would answer itself twice. (channel, ts) is the identity of the
+    // utterance. Do not "fix" this to use event_id.
     const dedupeKey = `${msg.channel}:${msg.ts}`;
-    if (seen.has(dedupeKey)) return;
-    seen.add(dedupeKey);
-    setTimeout(() => seen.delete(dedupeKey), DEDUPE_TTL_MS).unref?.();
+
+    // AT-MOST-ONCE, chosen deliberately. The claim is written before any work,
+    // so a worker that dies mid-turn leaves the event marked seen and nothing
+    // ever retries it: the user sees a half-finished thread and has to ask
+    // again. The alternative — claim on completion — would be at-least-once,
+    // and a crash after the LLM spend but before the mark would re-run the
+    // whole turn, re-billing it and possibly re-executing durable writes that
+    // were already approved and committed. Slack itself already retries
+    // deliveries, so "mark late" turns one crash into an unbounded retry loop.
+    // Given a visible failure is cheaper than a duplicated one, we mark first.
+    // Nothing here is a retry system, and none is planned.
+    let first = true;
+    try {
+      first = await deps.markEventSeen(dedupeKey);
+    } catch (err) {
+      // Fail OPEN. If Postgres is unreachable, dropping the message means total
+      // silence; proceeding means the turn will probably fail loudly a moment
+      // later (it needs the same database for history) and the user finds out.
+      // The duplicate risk this reopens is bounded by the thread lock below,
+      // which is also in Postgres — if that is up, a double-delivery loses the
+      // race and gets the busy reply rather than a second answer.
+      console.warn('[quackbot] dedupe check failed, proceeding:', err);
+    }
+    if (!first) return;
 
     const threadTs = conversationKeyFor(msg);
     const replyTs = replyThreadTs(msg.channel, threadTs, {
@@ -399,26 +436,37 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       return;
     }
 
-    const mutexKey = `${msg.channel}:${threadTs}`;
-    if (inflight.has(mutexKey)) {
-      await addReaction(msg.channel, msg.ts, 'hourglass_flowing_sand');
-      await post(msg.channel, replyTs, '_still working on the previous message…_');
+    // Per-thread mutex. Everything that touches the thread's stored history —
+    // the mention lookup included, since it sits before the turn's first await
+    // — runs inside the lock, so two same-thread events cannot interleave their
+    // Postgres saves.
+    //
+    // BEHAVIOUR CHANGE from the in-memory version: `pg_try_advisory_lock` is
+    // non-blocking, so a lost race is reported rather than queued. The old Map
+    // queued the second turn behind the first; on Modal that would mean a
+    // container billing for minutes doing nothing but waiting, and the loser
+    // may not even be the same process. Losing fast and telling the human is
+    // both cheaper and more honest. One reply, no retry loop.
+    //
+    // `runTurn` handles its own failures, so the only way this throws is the
+    // lock machinery itself — i.e. Postgres is unreachable. Say so rather than
+    // letting the rejection escape into bolt's logs where the user never sees it.
+    let outcome: { acquired: boolean };
+    try {
+      outcome = await deps.withThreadLock(threadLockKey(msg.channel, threadTs), async () => {
+        const userText = await labelMentions(stripped);
+        await runTurn(msg, threadTs, replyTs, userText);
+      });
+    } catch (err) {
+      console.error('[quackbot] could not take the thread lock:', redactError(err));
+      await post(msg.channel, replyTs, ':warning: Something went wrong handling that — check the logs.');
       return;
     }
 
-    // Reserve the thread synchronously — BEFORE the labelMentions await —
-    // so two same-thread events racing through can't both pass the check
-    // above and run concurrent turns (which would race Postgres saves). The
-    // mention lookup and the turn itself run inside the reserved promise.
-    const p = (async () => {
-      const userText = await labelMentions(stripped);
-      await runTurn(msg, threadTs, replyTs, userText);
-    })().finally(() => {
-      // Only clear our own reservation — never a successor's.
-      if (inflight.get(mutexKey) === p) inflight.delete(mutexKey);
-    });
-    inflight.set(mutexKey, p);
-    await p;
+    if (!outcome.acquired) {
+      await addReaction(msg.channel, msg.ts, 'hourglass_flowing_sand');
+      await post(msg.channel, replyTs, '_still working on your last message — one sec…_');
+    }
   }
 
   return { handle };
