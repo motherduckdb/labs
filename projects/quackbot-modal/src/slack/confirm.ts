@@ -1,4 +1,3 @@
-import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import { uuid7 } from '../core/uuid7';
 import { redactError } from '../core/redact';
@@ -217,6 +216,35 @@ export const pgConfirmStore: ConfirmStore = {
     );
   },
 };
+
+/** Confirmations older than this are past any worker that could still be polling. */
+const CONFIRM_PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Delete decided and abandoned confirmations older than `olderThanMs`.
+ *
+ * Two kinds of row accumulate here. Decided ones are simply spent. Abandoned
+ * ones are rows left 'pending' because the worker that was polling them died —
+ * the timeout is enforced by the worker, not by the row, so nothing else ever
+ * closes them.
+ *
+ * Retention is a week rather than the 120 seconds correctness would allow,
+ * because these rows are the only record of who approved which durable write:
+ * the Slack message shows the decision but not reliably who made it, and
+ * controllog does not capture the confirmation at all. A week is enough to
+ * answer "who approved this?" after a weekend.
+ *
+ * Deleting a still-pending row that a live worker is polling is safe by
+ * construction — a vanished row makes the poll fail closed (see the requester
+ * loop) — but the age bound means it cannot happen anyway.
+ */
+export async function pruneOldConfirmations(olderThanMs: number = CONFIRM_PRUNE_AGE_MS): Promise<number> {
+  const result = await getPool().query(
+    'delete from confirmations where created_at < now() - make_interval(secs => $1)',
+    [olderThanMs / 1000],
+  );
+  return result.rowCount ?? 0;
+}
 
 const EDIT_SNIPPET_MAX = 80;
 
@@ -465,19 +493,38 @@ export function makeConfirmRequester(opts: ConfirmRequesterOpts): (call: Confirm
 }
 
 /**
- * Register the Approve/Deny button handlers on a bolt app.
+ * The sliver of bolt's `App` this function touches.
  *
- * On Modal this path is dead — the click reaches the Python edge, which runs
- * the UPDATE documented at the top of this file. It is kept because bolt is
- * still how this fork receives events until `src/worker.ts` lands (step 4), and
- * because it is the executable statement of the contract: if the TypeScript and
- * the Python ever disagree, this is the side with tests.
- *
- * Note what it no longer does: it does not resolve a promise (there isn't one
- * in this process any more) and it does not touch the Slack message. It records
- * the decision and acks; the waiting worker renders the outcome.
+ * Declared structurally rather than imported from `@slack/bolt` because bolt is
+ * no longer a dependency — Socket Mode died with the move to Modal, and dragging
+ * a websocket framework into the image for one type would be a strange reason to
+ * ship it. Any object with a compatible `action` method satisfies this, which is
+ * also exactly what the tests pass.
  */
-export function registerConfirmationActions(app: App, store: ConfirmStore = pgConfirmStore): void {
+export interface ActionRegistrar {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  action(actionId: string, handler: (args: any) => Promise<void>): void;
+}
+
+/**
+ * Register the Approve/Deny button handlers on a bolt-shaped app.
+ *
+ * NOTHING IN PRODUCTION CALLS THIS. On Modal the click reaches the Python edge
+ * (`modal_app.py::/slack/interactive`), which runs the UPDATE documented at the
+ * top of this file. It is kept deliberately, as the executable statement of that
+ * contract: the Python has no unit tests and cannot easily get them, so if the
+ * two sides ever disagree, this is the side with tests to disagree *with*. Its
+ * `store.decide` and the edge's UPDATE must stay semantically identical — same
+ * `status = 'pending'` guard, same `initiating_user` authorization.
+ *
+ * Note what it no longer does: it does not resolve a promise (there isn't one in
+ * this process any more) and it does not touch the Slack message. It records the
+ * decision and acks; the waiting worker renders the outcome.
+ */
+export function registerConfirmationActions(
+  app: ActionRegistrar,
+  store: ConfirmStore = pgConfirmStore,
+): void {
   const makeHandler = (approved: boolean) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async ({ ack, body, action, client }: any): Promise<void> => {

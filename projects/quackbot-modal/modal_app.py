@@ -130,6 +130,38 @@ def run_turn(event: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# housekeeping — daily table maintenance
+# ---------------------------------------------------------------------------
+# `slack_events`, `kv_cache` and `confirmations` all accumulate rows that
+# nothing in the request path has any reason to delete: dedupe, the cache and
+# the confirmation handshake are each correct whether or not old rows are
+# cleaned up. That is precisely why this needs to be its own scheduled job —
+# unbounded growth here will never be anybody's bug until the database is full.
+#
+# Modal's scheduler guarantees at-least-once, so this can double-run; every
+# prune is an idempotent age-bounded DELETE, so that is harmless.
+@app.function(
+    image=image,
+    secrets=[secret, modal.Secret.from_dict(CONFIG)],
+    schedule=modal.Period(days=1),
+    timeout=300,
+)
+def housekeeping() -> None:
+    proc = subprocess.run(
+        ["npx", "tsx", "src/housekeeping.ts"],
+        capture_output=True,
+        text=True,
+        cwd="/app",
+    )
+    if proc.stdout:
+        print(proc.stdout, end="")
+    if proc.stderr:
+        print(proc.stderr, end="")
+    if proc.returncode != 0:
+        raise RuntimeError(f"housekeeping exited {proc.returncode}")
+
+
+# ---------------------------------------------------------------------------
 # web — the Slack-facing edge
 # ---------------------------------------------------------------------------
 def _verify_slack_signature(signing_secret: str, headers, raw_body: bytes) -> bool:

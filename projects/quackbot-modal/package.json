@@ -7,15 +7,16 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
+    "dev": "modal serve modal_app.py",
+    "start": "modal deploy modal_app.py",
+    "worker": "tsx src/worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@slack/bolt": "^4",
+    "@slack/web-api": "^7.19.0",
     "echarts": "^5.5.0",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.1.1",

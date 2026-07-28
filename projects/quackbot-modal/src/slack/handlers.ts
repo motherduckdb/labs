@@ -1,4 +1,3 @@
-import type { App } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
@@ -120,6 +119,19 @@ function defaultDeps(client: WebClient, botUserId?: string): TurnRunnerDeps {
     botUserId,
     thinkingLevel: resolveThinkingLevel(),
   };
+}
+
+/**
+ * The production dependency set, for callers that drive a turn without bolt.
+ *
+ * `src/worker.ts` is the one caller: it has already resolved the bot user id
+ * (a one-shot worker cannot fill it in asynchronously the way `registerHandlers`
+ * does) and needs exactly these defaults otherwise. Exported as a named wrapper
+ * rather than exporting `defaultDeps` itself so the "pass a client and a bot id,
+ * get the real wiring" contract is explicit at the call site.
+ */
+export function makeWorkerDeps(client: WebClient, botUserId?: string): TurnRunnerDeps {
+  return defaultDeps(client, botUserId);
 }
 
 /** Strip every `<@BOT>` token from `text`. */
@@ -470,88 +482,4 @@ export function buildTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   }
 
   return { handle };
-}
-
-/**
- * Wire the bolt app to a turn runner. Thin: normalizes bolt events into
- * `IncomingMessage` and delegates to `buildTurnRunner`.
- */
-export function registerHandlers(app: App): void {
-  let botUserId: string | undefined;
-  // Keep deps mutable so the bot user id can be filled in once auth.test
-  // resolves — the runner closure reads `deps.botUserId` on each turn.
-  const deps = defaultDeps(app.client, undefined);
-  const runner = buildTurnRunner(deps);
-
-  // Approve/Deny buttons for durable-write confirmations (src/slack/confirm.ts).
-  registerConfirmationActions(app);
-
-  void app.client.auth
-    .test()
-    .then((res) => {
-      botUserId = (res as { user_id?: string }).user_id;
-      deps.botUserId = botUserId;
-    })
-    .catch((err) => console.warn('[quackbot] auth.test failed:', err));
-
-  // Assistant containers: remember which channels are assistant threads so the
-  // sink can use native status affordances.
-  const assistantChannels = new Set<string>();
-
-  app.event('app_mention', async ({ event }) => {
-    const e = event as {
-      channel: string;
-      user?: string;
-      text?: string;
-      ts: string;
-      thread_ts?: string;
-      channel_type?: string;
-    };
-    await runner.handle({
-      channel: e.channel,
-      user: e.user,
-      text: e.text ?? '',
-      ts: e.ts,
-      threadTs: e.thread_ts,
-      channelType: e.channel_type,
-      isAssistant: assistantChannels.has(e.channel),
-    });
-  });
-
-  app.message(async ({ message }) => {
-    const m = message as {
-      subtype?: string;
-      bot_id?: string;
-      channel: string;
-      channel_type?: string;
-      user?: string;
-      text?: string;
-      ts: string;
-      thread_ts?: string;
-    };
-    // Ignore edits/deletes/joins/etc, bot messages, and non-DM channels
-    // (channel messages arrive via app_mention).
-    if (m.subtype) return;
-    if (m.bot_id) return;
-    if (m.user && m.user === botUserId) return;
-    if (m.channel_type !== 'im') return;
-    await runner.handle({
-      channel: m.channel,
-      user: m.user,
-      text: m.text ?? '',
-      ts: m.ts,
-      threadTs: m.thread_ts,
-      channelType: m.channel_type,
-      isAssistant: assistantChannels.has(m.channel),
-    });
-  });
-
-  app.event('assistant_thread_started', async ({ event }) => {
-    const t = (event as { assistant_thread?: { channel_id?: string } }).assistant_thread;
-    if (t?.channel_id) assistantChannels.add(t.channel_id);
-  });
-
-  app.event('assistant_thread_context_changed', async () => {
-    /* ack only — bolt auto-acknowledges */
-  });
 }
