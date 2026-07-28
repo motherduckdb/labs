@@ -52,22 +52,25 @@ import { redactError } from './core/redact';
  * whoever hits the error to distrust the list. `OPENROUTER_API_KEY` is gone with
  * the provider swap.
  *
- * `MODAL_INFERENCE_BASE_URL` IS here, because `llm-client.ts` deliberately has
- * no default for it (PLAN.md §7.1) and would otherwise throw halfway through a
- * turn — after the placeholder is posted and the eyes reaction is on. Failing
- * before any of that names the missing variable instead.
+ * `MODAL_INFERENCE_KEY` is here now that the auth scheme is settled — the Shared
+ * API takes one bearer key and nothing else, so its absence is a plain missing
+ * variable that this list can name. It used to be absent precisely because it
+ * could not be: while two schemes were in play, "exactly one of these sets is
+ * present" was not expressible as a list of required names.
  *
- * The inference *credentials* are absent on purpose: `llm-client.ts` supports
- * two auth schemes pending confirmation of which one Modal's Shared API wants
- * (`Modal-Key`/`Modal-Secret` or a bearer key), so "exactly one of these sets is
- * present" is not a check this list can express — it fails at the first call
- * instead. Collapse it in here once §7.1 resolves.
+ * `MODAL_INFERENCE_BASE_URL` is NOT here, for the opposite reason. It gained a
+ * default — the Shared API is a single fixed host — so an unset one is the
+ * normal case rather than a broken container.
+ *
+ * Failing here rather than at the first model call matters: mid-turn is after
+ * the placeholder is posted and the eyes reaction is on, so the user watches a
+ * turn start and then die. This runs before any of that.
  */
 const REQUIRED_ENV = [
   'SLACK_BOT_TOKEN',
   'MOTHERDUCK_TOKEN',
   'DATABASE_URL',
-  'MODAL_INFERENCE_BASE_URL',
+  'MODAL_INFERENCE_KEY',
 ] as const;
 
 /** Which of `REQUIRED_ENV` is absent. Takes the environment so tests need not mutate the real one. */

@@ -108,8 +108,8 @@ OpenRouter-specific behaviours. Each needs a decision:
 
 | Today (OpenRouter) | On Modal Kimi K3 |
 |---|---|
-| `https://openrouter.ai/api/v1/chat/completions` | Modal Shared API base URL — **UNCONFIRMED, see §7** |
-| `Authorization: Bearer $OPENROUTER_API_KEY` | `Modal-Key` / `Modal-Secret` proxy-token pair, or Bearer — **UNCONFIRMED** |
+| `https://openrouter.ai/api/v1/chat/completions` | `https://api.us-west-2.modal.direct/v1/chat/completions` — **RESOLVED**, one fixed host for all workspaces, so it is a default rather than a required var |
+| `Authorization: Bearer $OPENROUTER_API_KEY` | `Authorization: Bearer $MODAL_INFERENCE_KEY` — **RESOLVED**. The `Modal-Key`/`Modal-Secret` pair authenticates *dedicated* Auto Endpoints only; the Shared API rejects it with the same `missing or invalid Authorization header` it returns for no credentials at all |
 | `X-Title`, `HTTP-Referer` headers | Drop — OpenRouter-only conventions |
 | `provider: { order: [...] }` | Drop — no equivalent |
 | `usage: { include: true }` | `stream_options: { include_usage: true }` (standard OpenAI) |
@@ -295,25 +295,26 @@ Each step is independently verifiable; the live smoke is deliberately last.
 
 | # | Step | Depends on | Status |
 |---|---|---|---|
-| 0 | `modal token new`, read the Shared API base URL + key format | you | **BLOCKED** — not authed |
+| 0 | `modal token new`, read the Shared API base URL + key format | you | done — workspace `motherduck`; URL + auth resolved, see §7.1 |
 | 1 | `migrations/002_modal.sql` + `src/store/{locks,events,kv}.ts` + tests | — | done (`1ed3038`) |
-| 2 | `llm-client.ts` hard swap + reasoning echo-back + local cost table | 0 | done (`1e546f5`), less the base URL |
+| 2 | `llm-client.ts` hard swap + reasoning echo-back + local cost table | 0 | done (`1e546f5`); base URL + auth closed later |
 | 3 | Postgres-backed mutex, dedupe, confirm, query-guide cache, controllog | 1 | done (`1e546f5`) |
 | 4 | `src/worker.ts` entrypoint; drop Bolt for `@slack/web-api` | 3 | done (`9c50af6`) |
 | 5 | `modal_app.py` + image | 4 | done (`1e546f5`) |
-| 6 | Port the test suite green (243 tests today), typecheck | 2,3,4 | done — 380 tests, tsc clean |
-| 7 | `modal deploy`, hit the endpoint with a synthetic signed event | 5,6 | blocked on 0 |
+| 6 | Port the test suite green (243 tests today), typecheck | 2,3,4 | done — 381 tests, tsc clean |
+| 7 | `modal deploy`, hit the endpoint with a synthetic signed event | 5,6 | blocked — needs the `quackbot-modal` Modal secret |
 | 8 | Flip the Slack manifest, live smoke in Slack | 7 | blocked on 7 |
 
 Steps 1–2 are parallel. Step 6 is the real gate: the existing suite covers the SSE wire
 format and the mutex/dedupe semantics, so it should catch most of what §3 and §4 can break —
 with the notable exception of anything requiring a real K3 response, which only step 7 exercises.
 
-**Step 2 did not fully close.** The hard swap landed, but the base URL and the auth scheme
-both depend on step 0 and are still open — see §7.1. `getChatCompletionsUrl()` throws rather
-than defaulting, so this cannot be forgotten: nothing runs until the URL is supplied.
+**Step 2 is now closed.** The base URL is `https://api.us-west-2.modal.direct/v1` and auth is
+a plain bearer; both were verified against the live endpoint rather than read off a doc page,
+because the docs only describe the dedicated-endpoint scheme. The two-scheme hedge in
+`buildAuthHeaders()` is deleted — a fallback known not to work is not a safety net.
 
-**Everything through step 6 is unverified against a live system.** 380 passing tests and a
+**Everything through step 6 is unverified against a live system.** 381 passing tests and a
 clean typecheck say the code is self-consistent, not that Modal accepts the image, that the
 Shared API speaks the dialect `llm-client.ts` writes, or that Slack likes the signature
 verification. Steps 7–8 are where any of that is learned.

@@ -53,14 +53,15 @@ Same required elements as data-chat-mini, mapped onto Slack:
 1. **Create the Slack app.** Go to [api.slack.com/apps](https://api.slack.com/apps)
    → **Create New App** → **From an app manifest**, pick your workspace.
 
-   **Before pasting in [`manifest.json`](./manifest.json), replace the
-   `WORKSPACE` placeholder in both `request_url` fields** with your actual
-   Modal workspace name — the manifest ships with
-   `https://WORKSPACE--quackbot-modal-web.modal.run/slack/events` and
-   `.../slack/interactive` as literal placeholders, because JSON can't carry a
-   comment to mark them. Find your workspace name in the Modal dashboard, or
-   run `modal deploy modal_app.py` first and read it off the printed endpoint
-   URL. **Slack will not accept a manifest with an unreachable URL, so deploy
+   **Check the two `request_url` fields in [`manifest.json`](./manifest.json)
+   before pasting it in.** They're hard-coded to the `motherduck` Modal
+   workspace:
+   `https://motherduck--quackbot-modal-web.modal.run/slack/events` and
+   `.../slack/interactive`. Modal derives that host from
+   `<workspace>--<app>-<function>`, so deploying to any other workspace means
+   editing both — and JSON can't carry a comment saying so, which is why it's
+   called out here. `modal profile list` prints your workspace name.
+   **Slack will not accept a manifest whose URL doesn't resolve, so deploy
    before applying the manifest** (see [Deploy](#deploy-modal)).
 
    The manifest is pre-configured for the HTTP Events API (no Socket Mode) with
@@ -80,14 +81,12 @@ Same required elements as data-chat-mini, mapped onto Slack:
      `modal_app.py`'s `_verify_slack_signature`). `SLACK_APP_TOKEN` (`xapp-...`)
      is gone; there's no outbound websocket to authenticate any more.
 3. **Copy `.env.example` to `.env`** and fill in each value — every var has a
-   comment explaining it. Two are still open questions rather than settled
-   values (see [Unresolved](#unresolved) below):
-   - `MODAL_INFERENCE_BASE_URL` has no default and the code throws without it.
-     The real Modal Shared API base URL hasn't been confirmed — the endpoints
-     dashboard is login-gated and nobody has authenticated yet. Read it off
-     the Modal dashboard once you have.
-   - The auth scheme (`MODAL_KEY`/`MODAL_SECRET` vs. `MODAL_INFERENCE_KEY`) is
-     also unconfirmed; set whichever pair your dashboard tells you to use.
+   comment explaining it. The one that isn't self-explanatory is
+   **`MODAL_INFERENCE_KEY`**: mint it from the Modal dashboard, and note that a
+   `modal workspace proxy-tokens create` pair will *not* work here — see
+   [Endpoint and auth](#endpoint-and-auth) for why the failure it produces is
+   misleading. `MODAL_INFERENCE_BASE_URL` has a working default and can stay
+   unset.
 4. **Provision Postgres and apply both migrations.** quackbot-modal expects a
    connection string in `DATABASE_URL` (built against PlanetScale Postgres,
    TLS required); anything `pg`/`psycopg` can reach over TLS should work.
@@ -147,8 +146,7 @@ modal secret create quackbot-modal \
   SLACK_SIGNING_SECRET=... \
   MOTHERDUCK_TOKEN=... \
   DATABASE_URL=postgres://... \
-  MODAL_INFERENCE_BASE_URL=... \
-  MODAL_KEY=... MODAL_SECRET=...    # or MODAL_INFERENCE_KEY=..., see Setup
+  MODAL_INFERENCE_KEY=...
 modal deploy modal_app.py
 ```
 
@@ -185,9 +183,9 @@ a **second Slack app** (its own manifest, its own bot token) pointed at either
 a shared or separate Postgres — decide that before cutting over.
 
 None of this has been deployed or smoke-tested against a live Slack workspace
-yet. The deploy is currently blocked on authenticating the Modal CLI
-(`modal token new`) and confirming the Shared API base URL and auth scheme —
-see [Unresolved](#unresolved).
+yet. The Modal CLI is authenticated and the endpoint and auth questions are
+settled; what remains is creating the `quackbot-modal` secret, which needs
+credentials nobody has put in front of the deploy yet.
 
 ## Security & data boundaries
 
@@ -414,29 +412,30 @@ URL:
   `getContextWindow`/`VISION_MODEL_PATTERNS` matching Kimi/Moonshot ids, ported
   from the OpenRouter regexes.
 
-### Unresolved
+### Endpoint and auth
 
-Two things in this area are genuinely unconfirmed, not just unfinished — don't
-read the code as though they're settled:
+Both of these were open questions until the Modal CLI was authenticated; they
+are now settled empirically, and the code carries one path each rather than a
+hedge.
 
-- **The Shared API base URL.** `getChatCompletionsUrl()` in
-  `src/core/llm-client.ts` has no default and throws immediately if
-  `MODAL_INFERENCE_BASE_URL` is unset, on purpose — a plausible-looking guessed
-  default would resolve, fail at request time with an opaque 404, and send
-  whoever's debugging hunting for a credential problem that doesn't exist. The
-  real value hasn't been confirmed because the Modal endpoints dashboard is
-  login-gated and nobody has authenticated yet (`modal token new` is step 0 of
-  actually deploying this). **TODO:** once authenticated, read the base URL
-  off the dashboard and consider whether it's stable enough to become a
-  fallback default.
-- **The auth scheme.** `buildAuthHeaders()` in the same file supports two
-  possible schemes and picks based on which env vars are set: a
-  `Modal-Key`/`Modal-Secret` proxy-token pair (confirmed to be what Modal's
-  *dedicated* Auto Endpoints use) when both are present, else a plain
-  `Authorization: Bearer $MODAL_INFERENCE_KEY`. Which one the *Shared* API
-  actually wants is unverified — this is a deliberate temporary hedge, not a
-  feature. **TODO:** once confirmed, delete the losing branch, collapse
-  `.env.example` to one set of vars, and update this section.
+- **Base URL: `https://api.us-west-2.modal.direct/v1`.** One fixed host for
+  every workspace — not a per-workspace URL — so it's a default in
+  `getChatCompletionsUrl()` rather than a required env var.
+  `MODAL_INFERENCE_BASE_URL` still overrides it, for pointing at a dedicated
+  Auto Endpoint or a test double.
+- **Auth: `Authorization: Bearer $MODAL_INFERENCE_KEY`.** An ordinary
+  OpenAI-style key, minted from the Modal dashboard.
+
+  **The Shared API does not take a proxy token.** `modal workspace proxy-tokens
+  create` issues a `Modal-Key`/`Modal-Secret` pair, and Modal's docs describe
+  that pair as *the* endpoint auth scheme — but it authenticates **dedicated**
+  Auto Endpoints only. Sent to the Shared API as headers it returns
+  `401 {"error": "missing or invalid Authorization header"}`, identical to
+  sending no credentials at all; sent as a bearer (either half, or
+  `key:secret`) it returns `401 {"error": "invalid token"}`. That first
+  response is worth knowing about, because it names the wrong problem: it reads
+  as "you forgot to authenticate" when what happened is "you authenticated with
+  a credential for the other product."
 
 ## Telemetry (controllog)
 

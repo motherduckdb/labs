@@ -33,7 +33,7 @@
   },
   "settings": {
     "event_subscriptions": {
-      "request_url": "https://WORKSPACE--quackbot-modal-web.modal.run/slack/events",
+      "request_url": "https://motherduck--quackbot-modal-web.modal.run/slack/events",
       "bot_events": [
         "app_mention",
         "message.im",
@@ -43,7 +43,7 @@
     },
     "interactivity": {
       "is_enabled": true,
-      "request_url": "https://WORKSPACE--quackbot-modal-web.modal.run/slack/interactive"
+      "request_url": "https://motherduck--quackbot-modal-web.modal.run/slack/interactive"
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": false,

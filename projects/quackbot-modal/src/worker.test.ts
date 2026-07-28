@@ -137,7 +137,7 @@ describe('missingEnv', () => {
     SLACK_BOT_TOKEN: 'x',
     MOTHERDUCK_TOKEN: 'x',
     DATABASE_URL: 'x',
-    MODAL_INFERENCE_BASE_URL: 'x',
+    MODAL_INFERENCE_KEY: 'x',
   };
 
   it('passes a complete environment', () => {
@@ -148,7 +148,7 @@ describe('missingEnv', () => {
     expect(missingEnv({ SLACK_BOT_TOKEN: 'x' })).toEqual([
       'MOTHERDUCK_TOKEN',
       'DATABASE_URL',
-      'MODAL_INFERENCE_BASE_URL',
+      'MODAL_INFERENCE_KEY',
     ]);
   });
 
@@ -165,6 +165,13 @@ describe('missingEnv', () => {
 
   it('does not require SLACK_SIGNING_SECRET — the Python edge verifies, not the worker', () => {
     expect(missingEnv(ok)).not.toContain('SLACK_SIGNING_SECRET');
+  });
+
+  it('does not require MODAL_INFERENCE_BASE_URL, which has a default', () => {
+    // It was required while llm-client.ts threw without it. It now defaults to
+    // the one fixed Shared API host, so requiring it would refuse to start a
+    // container whose configuration is completely correct.
+    expect(missingEnv(ok)).not.toContain('MODAL_INFERENCE_BASE_URL');
   });
 });
 

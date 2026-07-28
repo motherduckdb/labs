@@ -204,9 +204,18 @@ describe('endpoint + auth', () => {
     expect(getChatCompletionsUrl()).toBe('https://example.modal.run/v1/chat/completions');
   });
 
-  it('throws rather than guessing a base URL when the env var is unset', () => {
+  it('defaults to the Shared API host when the env var is unset', () => {
+    // The Shared API is one fixed host for every workspace, so an unset var is
+    // the ordinary case, not a misconfiguration. Pinned rather than loosely
+    // matched: a silent change to this host is a change of inference provider.
     delete process.env.MODAL_INFERENCE_BASE_URL;
-    expect(() => getChatCompletionsUrl()).toThrow(/MODAL_INFERENCE_BASE_URL is not set/);
+    expect(getChatCompletionsUrl()).toBe('https://api.us-west-2.modal.direct/v1/chat/completions');
+  });
+
+  it('ignores a blank override rather than building a relative URL from it', () => {
+    // An unset key in a Modal secret arrives as an empty string, not as absent.
+    process.env.MODAL_INFERENCE_BASE_URL = '   ';
+    expect(getChatCompletionsUrl()).toBe('https://api.us-west-2.modal.direct/v1/chat/completions');
   });
 
   it('POSTs to the resolved chat-completions URL', async () => {
@@ -217,35 +226,33 @@ describe('endpoint + auth', () => {
     expect(read().url).toBe('https://example.modal.run/v1/chat/completions');
   });
 
-  it('uses the Modal-Key/Modal-Secret proxy-token pair when both are present', () => {
-    expect(buildAuthHeaders({ MODAL_KEY: 'wk-1', MODAL_SECRET: 'ws-1' } as NodeJS.ProcessEnv)).toEqual({
-      'Modal-Key': 'wk-1',
-      'Modal-Secret': 'ws-1',
-    });
-  });
-
-  it('falls back to Bearer when only MODAL_INFERENCE_KEY is set', () => {
+  it('sends MODAL_INFERENCE_KEY as an OpenAI-style bearer', () => {
     expect(buildAuthHeaders({ MODAL_INFERENCE_KEY: 'sk-1' } as NodeJS.ProcessEnv)).toEqual({
       Authorization: 'Bearer sk-1',
     });
   });
 
-  it('falls back to Bearer when the proxy-token pair is only half-set', () => {
-    expect(buildAuthHeaders({ MODAL_KEY: 'wk-1', MODAL_INFERENCE_KEY: 'sk-1' } as NodeJS.ProcessEnv)).toEqual({
-      Authorization: 'Bearer sk-1',
+  it('ignores the Modal-Key/Modal-Secret proxy-token pair entirely', () => {
+    // Regression guard for a hedge that was removed on evidence, not taste: the
+    // proxy-token pair authenticates DEDICATED Auto Endpoints. Sent to the
+    // Shared API it returns "missing or invalid Authorization header" — the
+    // same response as sending no credentials at all. Reintroducing it as a
+    // preferred scheme would make a correctly-configured bot fail to reach the
+    // model while looking, from the env, entirely well set up.
+    expect(buildAuthHeaders({ MODAL_KEY: 'wk-1', MODAL_SECRET: 'ws-1' } as NodeJS.ProcessEnv)).toEqual({
+      Authorization: 'Bearer ',
     });
   });
 
-  it('prefers the proxy-token pair over a Bearer key when both schemes are configured', async () => {
+  it('sends the bearer even when the retired pair is also present', async () => {
     process.env.MODAL_KEY = 'wk-1';
     process.env.MODAL_SECRET = 'ws-1';
     process.env.MODAL_INFERENCE_KEY = 'sk-1';
     const read = captureFetch();
     await callStream();
     const { headers } = read();
-    expect(headers['Modal-Key']).toBe('wk-1');
-    expect(headers['Modal-Secret']).toBe('ws-1');
-    expect(headers).not.toHaveProperty('Authorization');
+    expect(headers.Authorization).toBe('Bearer sk-1');
+    expect(headers).not.toHaveProperty('Modal-Key');
   });
 });
 

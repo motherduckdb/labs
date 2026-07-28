@@ -17,40 +17,37 @@ import { redact } from './redact';
 // ---------------------------------------------------------------------------
 
 /**
- * Full chat-completions URL, tolerant of a trailing slash on the base.
+ * Modal's Shared API — the multi-tenant, token-priced inference endpoint, as
+ * opposed to a dedicated Auto Endpoint, which gets its own per-endpoint host.
  *
- * There is deliberately NO default. The Modal Shared API base URL has not been
- * confirmed yet — the endpoints dashboard is login-gated and nobody has authed
- * (PLAN.md §7.1) — and a plausible-looking guess like `https://api.modal.com/v1`
- * is the worst thing to put here: it would resolve, fail at request time with
- * some opaque 404/401, and send whoever debugs it hunting for a credential
- * problem that doesn't exist. Throwing names the actual missing thing.
+ * This is a default rather than a required env var because the Shared API is a
+ * single fixed host for everyone, not a per-workspace URL: overriding it is for
+ * pointing at a dedicated endpoint or a test double, not for ordinary setup.
+ * Verified live — an unauthenticated GET of `/v1/models` here answers
+ * `401 {"error": "missing or invalid Authorization header"}`, which is the
+ * endpoint existing and demanding credentials rather than a hostname typo.
  */
+const SHARED_API_BASE_URL = 'https://api.us-west-2.modal.direct/v1';
+
+/** Full chat-completions URL, tolerant of a trailing slash on the base. */
 export function getChatCompletionsUrl(): string {
-  const raw = (process.env.MODAL_INFERENCE_BASE_URL || '').trim();
-  if (!raw) {
-    throw new Error(
-      'MODAL_INFERENCE_BASE_URL is not set. There is no default: the Modal Shared API ' +
-        'base URL must be read off the Modal dashboard and set explicitly ' +
-        '(e.g. MODAL_INFERENCE_BASE_URL=https://<...>/v1).',
-    );
-  }
+  const raw = (process.env.MODAL_INFERENCE_BASE_URL || '').trim() || SHARED_API_BASE_URL;
   return `${raw.replace(/\/+$/, '')}/chat/completions`;
 }
 
 /**
- * TEMPORARY HEDGE (PLAN.md §7.1). We know Modal's *dedicated* Auto Endpoints
- * authenticate with a `Modal-Key`/`Modal-Secret` proxy-token pair, but whether
- * the *Shared* API reuses that or takes a plain Bearer key is unverified. Rather
- * than guess wrong and have the swap fail at the first live call, support both
- * and pick on which env vars are actually set. Collapse this to the one true
- * scheme — and drop the unused env var from .env.example — the moment the
- * dashboard confirms it.
+ * The Shared API takes an ordinary OpenAI-style bearer key.
+ *
+ * This used to hedge across two schemes because the docs only ever spelled out
+ * the `Modal-Key`/`Modal-Secret` proxy-token pair, and it was unclear whether
+ * the Shared API reused it. It does not: a freshly minted proxy token sent as
+ * that header pair gets the same `missing or invalid Authorization header` as
+ * sending nothing at all, and sent as a bearer (either half, or `key:secret`)
+ * gets `invalid token`. The pair authenticates *dedicated* endpoints only. The
+ * hedge is gone rather than kept as a fallback — a second scheme that is known
+ * not to work is not a safety net, it is a second thing to rule out at 3am.
  */
 export function buildAuthHeaders(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const key = (env.MODAL_KEY || '').trim();
-  const secret = (env.MODAL_SECRET || '').trim();
-  if (key && secret) return { 'Modal-Key': key, 'Modal-Secret': secret };
   return { Authorization: `Bearer ${(env.MODAL_INFERENCE_KEY || '').trim()}` };
 }
 
