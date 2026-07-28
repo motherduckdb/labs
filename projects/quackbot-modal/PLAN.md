@@ -164,12 +164,21 @@ Modal will run zero-to-many, so each needs a Postgres home.
 | State | Today | Becomes | Notes |
 |---|---|---|---|
 | Per-thread mutex | `Map<key, Promise>` `handlers.ts:154` | `pg_try_advisory_lock(hashtext(key))` | Non-blocking: if held, post "still working on the last one" rather than queueing |
-| Event dedupe | `Set<key>` + TTL `handlers.ts:154,339` | `slack_events(event_id primary key)`, insert-or-skip | Also covers Slack's own retries |
+| Event dedupe | `Set<key>` + TTL `handlers.ts:154,339` | `slack_events(event_id primary key)`, insert-or-skip | ⚠️ The id must stay `${channel}:${ts}`, **not** Slack's `event_id` — see below |
 | Approve/Deny | `Map<confirmId, Pending>` `confirm.ts:43-55` | `confirmations` row; worker polls 1s, 120s timeout; edge writes the decision | **Biggest single change** — see below |
 | Query-guide cache | 15-min module TTL `query-guide.ts:37` | `kv_cache(key, value, expires_at)` | Was per-process; now genuinely shared |
 | controllog | JSONL → `./logs` `controllog.ts:219-236` | Postgres tables | Modal Volumes are last-write-wins on concurrent same-file appends — explicitly wrong for this |
 | Chromium | Module singleton `screenshot.ts:15` | Launch per worker, close on exit | Adds ~1s to chart turns; acceptable |
 | Postgres pool | Singleton, `max:5` | Unchanged, but `max:2` and always close | Many short-lived containers, not one long one |
+
+**Dedupe key correction.** An earlier draft of this plan said to dedupe on Slack's
+`event_id`. That is wrong. The in-memory `Set` keys on `${channel}:${ts}` deliberately,
+because a DM @-mention arrives **twice** — once as `message.im` and once as `app_mention` —
+carrying two *different* Slack event_ids. Deduping on the real event_id would let that
+double-fire straight through and the bot would answer itself twice. The `slack_events`
+column keeps the name `event_id`, but the value written must remain `${channel}:${ts}`.
+(Slack's own HTTP retries are handled separately, by the `X-Slack-Retry-Num` short-circuit
+at the edge.)
 
 **The confirmation handshake** is the part that genuinely changes shape. Today the same
 process that posts the Approve/Deny buttons is the one waiting on them. With an ephemeral
