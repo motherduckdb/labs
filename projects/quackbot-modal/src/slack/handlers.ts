@@ -19,19 +19,18 @@ import { threadLockKey, withThreadLock } from '../store/locks';
 import type { TurnSink } from '../core/turn-sink';
 import { redactError } from '../core/redact';
 import { SlackTurnSink, type SlackTurnSinkOpts } from './sink';
-import {
-  makeConfirmRequester,
-  registerConfirmationActions,
-  type ConfirmRequesterOpts,
-  type ConfirmCall,
-} from './confirm';
+import { makeConfirmRequester, type ConfirmRequesterOpts, type ConfirmCall } from './confirm';
 
 /**
  * Slack event → agentic turn orchestration.
  *
- * `registerHandlers(app)` wires the bolt listeners; the real work lives in the
- * `buildTurnRunner(deps)` seam so the dedupe / mutex / command-intercept logic
- * can be tested with injected fakes and no bolt or Postgres. The flow mirrors
+ * `src/worker.ts` normalizes one raw Slack envelope into an `IncomingMessage`
+ * and calls `handle()`; the real work lives in the `buildTurnRunner(deps)` seam
+ * so the dedupe / mutex / command-intercept logic can be tested with injected
+ * fakes and no Slack or Postgres. (Until step 4 this file also carried a
+ * `registerHandlers(app)` that wired bolt's listeners — bolt is gone with
+ * Socket Mode, and the worker's `toIncomingMessage` is now the only place that
+ * decides which events are eligible.) The flow mirrors
  * data-chat-mini's app/api/chat/route.ts: createMCPClient → getFilteredTools →
  * mcpToolsToAnthropicFormat → buildSystemPrompt → runAgenticLoop, wrapped in a
  * controllog session that is flushed afterward.

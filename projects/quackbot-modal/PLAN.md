@@ -75,11 +75,15 @@ its real work *after* acking. The turn would be killed mid-flight.
 | `src/store/events.ts` | Dedupe via `INSERT … ON CONFLICT DO NOTHING` |
 | `src/store/kv.ts` | TTL key/value cache (backs the query-guide cache) |
 | `migrations/002_modal.sql` | `slack_events`, `confirmations`, `kv_cache`, `controllog_*` |
+| `src/housekeeping.ts` | Daily prune of the three growing tables (not anticipated; see §8) |
 
 ### Deleted
 
 `fly.toml`, `Dockerfile`, `MCP_MIGRATION_PLAN.md` (already removed), and `src/main.ts` /
-`src/slack/app.ts` in their Socket Mode form.
+`src/slack/app.ts` outright — not reduced to a dev harness. `registerHandlers` went with
+them: once events arrive over HTTP, the bolt listener wiring has no caller.
+`registerConfirmationActions` was kept despite also having no production caller, because it
+is the only *tested* statement of the contract `modal_app.py`'s UPDATE implements.
 
 ### Modified
 
@@ -92,7 +96,7 @@ its real work *after* acking. The turn would be killed mid-flight.
 | `src/core/query-guide.ts` | Module-level TTL cache → `kv_cache` |
 | `src/core/controllog.ts` | JSONL on local disk → Postgres |
 | `manifest.json` | `socket_mode_enabled: false`, add request URLs |
-| `package.json` | Drop `@slack/bolt` for `@slack/web-api`; drop the `start` script |
+| `package.json` | Drop `@slack/bolt` for `@slack/web-api`; scripts point at Modal |
 | `README.md`, `.env.example` | Rewrite for Modal |
 
 ---
@@ -255,11 +259,26 @@ tier retains **1 day** of logs — worth knowing before relying on them for a po
 
 ## 7. Open questions
 
-1. **Modal Shared API base URL + auth scheme — UNRESOLVED.** Not published anywhere public;
-   the endpoints page is login-gated. Dedicated Auto Endpoints use `Modal-Key`/`Modal-Secret`
-   proxy-token headers, but whether the *Shared* API reuses that or takes a Bearer key is
-   unverified. **Blocks §3.** Resolved by `modal token new` + reading the dashboard, which is
-   the next action.
+1. **Modal Shared API base URL + auth scheme — STILL UNRESOLVED.** Not published anywhere
+   public; the endpoints page is login-gated. Dedicated Auto Endpoints use
+   `Modal-Key`/`Modal-Secret` proxy-token headers, but whether the *Shared* API reuses that or
+   takes a Bearer key is unverified. Resolved by `modal token new` + reading the dashboard.
+
+   How the code currently hedges, and what to delete once this is answered:
+
+   - `getChatCompletionsUrl()` has **no default** and throws if `MODAL_INFERENCE_BASE_URL` is
+     unset. A plausible-looking guess (`https://api.modal.com/v1`) was written first and then
+     removed on purpose: it resolves, fails at request time as an opaque 404, and sends
+     whoever debugs it hunting for a credential problem that does not exist. Throwing names
+     the actual missing thing.
+   - `buildAuthHeaders()` supports **both** schemes and prefers the proxy-token pair when
+     `MODAL_KEY` and `MODAL_SECRET` are both set, falling back to
+     `Authorization: Bearer $MODAL_INFERENCE_KEY`. Collapse to the winner and drop the dead
+     env vars from `.env.example` once the dashboard settles it.
+   - `src/worker.ts` lists `MODAL_INFERENCE_BASE_URL` in `REQUIRED_ENV` so a container fails
+     at startup rather than mid-turn, after the placeholder is posted. The credentials are
+     deliberately *not* listed, because "exactly one of two sets" is not a check that list can
+     express.
 2. **Chromium's resource floor on Modal** is undocumented. Starting at `cpu=2, memory=2048`
    to match the Fly machine's headroom; tune down once we see real usage.
 3. **`add_python` against the Playwright image** is a documented pattern but untested with
@@ -274,21 +293,38 @@ tier retains **1 day** of logs — worth knowing before relying on them for a po
 
 Each step is independently verifiable; the live smoke is deliberately last.
 
-| # | Step | Depends on |
-|---|---|---|
-| 0 | `modal token new`, read the Shared API base URL + key format | you |
-| 1 | `migrations/002_modal.sql` + `src/store/{locks,events,kv}.ts` + tests | — |
-| 2 | `llm-client.ts` hard swap + reasoning echo-back + local cost table | 0 |
-| 3 | Postgres-backed mutex, dedupe, confirm, query-guide cache, controllog | 1 |
-| 4 | `src/worker.ts` entrypoint; drop Bolt for `@slack/web-api` | 3 |
-| 5 | `modal_app.py` + image | 4 |
-| 6 | Port the test suite green (243 tests today), typecheck | 2,3,4 |
-| 7 | `modal deploy`, hit the endpoint with a synthetic signed event | 5,6 |
-| 8 | Flip the Slack manifest, live smoke in Slack | 7 |
+| # | Step | Depends on | Status |
+|---|---|---|---|
+| 0 | `modal token new`, read the Shared API base URL + key format | you | **BLOCKED** — not authed |
+| 1 | `migrations/002_modal.sql` + `src/store/{locks,events,kv}.ts` + tests | — | done (`1ed3038`) |
+| 2 | `llm-client.ts` hard swap + reasoning echo-back + local cost table | 0 | done (`1e546f5`), less the base URL |
+| 3 | Postgres-backed mutex, dedupe, confirm, query-guide cache, controllog | 1 | done (`1e546f5`) |
+| 4 | `src/worker.ts` entrypoint; drop Bolt for `@slack/web-api` | 3 | done (`9c50af6`) |
+| 5 | `modal_app.py` + image | 4 | done (`1e546f5`) |
+| 6 | Port the test suite green (243 tests today), typecheck | 2,3,4 | done — 380 tests, tsc clean |
+| 7 | `modal deploy`, hit the endpoint with a synthetic signed event | 5,6 | blocked on 0 |
+| 8 | Flip the Slack manifest, live smoke in Slack | 7 | blocked on 7 |
 
 Steps 1–2 are parallel. Step 6 is the real gate: the existing suite covers the SSE wire
 format and the mutex/dedupe semantics, so it should catch most of what §3 and §4 can break —
 with the notable exception of anything requiring a real K3 response, which only step 7 exercises.
+
+**Step 2 did not fully close.** The hard swap landed, but the base URL and the auth scheme
+both depend on step 0 and are still open — see §7.1. `getChatCompletionsUrl()` throws rather
+than defaulting, so this cannot be forgotten: nothing runs until the URL is supplied.
+
+**Everything through step 6 is unverified against a live system.** 380 passing tests and a
+clean typecheck say the code is self-consistent, not that Modal accepts the image, that the
+Shared API speaks the dialect `llm-client.ts` writes, or that Slack likes the signature
+verification. Steps 7–8 are where any of that is learned.
+
+Two things were added that the plan did not anticipate:
+
+- **`src/housekeeping.ts` + a daily Modal schedule.** Three tables (`slack_events`,
+  `kv_cache`, `confirmations`) accumulate rows nothing in the request path deletes. The plan
+  wrote the prune helpers but never gave them a caller.
+- **`pruneOldConfirmations`.** Abandoned `pending` rows outlive the worker that was polling
+  them — the timeout is enforced by the worker, not the row — so nothing ever closed them.
 
 ## 9. What this plan does not do
 

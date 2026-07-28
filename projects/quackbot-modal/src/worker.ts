@@ -349,8 +349,9 @@ async function main(): Promise<void> {
   // otherwise pay for a Postgres round trip to answer a question nobody asks.
   const msg: IncomingMessage = { ...shaped, isAssistant: await isAssistantChannel(shaped.channel) };
 
-  // The bot user id is passed in already resolved, unlike registerHandlers
-  // which backfills it on a promise — a one-shot worker has no "later".
+  // The bot user id goes in already resolved. The bolt wiring this replaced
+  // backfilled it on a promise and let early turns run without it; a one-shot
+  // worker has no "later" — the turn it would have degraded is the only turn.
   const runner: TurnRunner = buildTurnRunner(makeWorkerDeps(client, botUserId));
 
   try {
