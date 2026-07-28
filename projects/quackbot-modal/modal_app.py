@@ -130,6 +130,50 @@ def run_turn(event: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# migrate — apply migrations/*.sql
+# ---------------------------------------------------------------------------
+# Run with: modal run modal_app.py::migrate
+#
+# This exists because its absence broke the first live turn. `migrations/` was
+# baked into the image and `src/store/*.ts` was written against it, but nothing
+# ever executed the SQL, so the first real Slack message reached a database with
+# no `kv_cache` and no `slack_events` and the bot answered "check the logs".
+#
+# It is deliberately a manual `modal run` rather than something the web endpoint
+# or run_turn does on boot. Migrations against a database shared with the live
+# Fly bot are not something a cold container should decide to do by itself,
+# concurrently, several times a minute.
+#
+# Every statement in every file is `create … if not exists`, so this is
+# idempotent and safe to re-run; applying an already-applied file is a no-op.
+# Files run in sorted order, which is why they are numbered.
+@app.function(image=image, secrets=[secret, modal.Secret.from_dict(CONFIG)], timeout=300)
+def migrate() -> None:
+    import pathlib
+    import psycopg
+
+    files = sorted(pathlib.Path("/app/migrations").glob("*.sql"))
+    if not files:
+        raise RuntimeError("no migrations found at /app/migrations")
+
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        for path in files:
+            # One transaction per file: a file that fails leaves the ones
+            # before it applied, which is the behaviour that makes re-running
+            # after a fix the obvious move.
+            with conn.transaction(), conn.cursor() as cur:
+                cur.execute(path.read_text())
+            print(f"applied {path.name}")
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "select table_name from information_schema.tables "
+                "where table_schema = 'public' order by table_name"
+            )
+            print("tables now present: " + ", ".join(r[0] for r in cur.fetchall()))
+
+
+# ---------------------------------------------------------------------------
 # housekeeping — daily table maintenance
 # ---------------------------------------------------------------------------
 # `slack_events`, `kv_cache` and `confirmations` all accumulate rows that
