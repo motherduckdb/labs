@@ -73,7 +73,45 @@ check("rejects a missing timestamp header", m._verify_slack_signature(SECRET, {"
 check("rejects a non-numeric timestamp", m._verify_slack_signature(SECRET, hdr("not-a-number", SIG), BODY), False)
 check("rejects empty headers", m._verify_slack_signature(SECRET, {}, BODY), False)
 
+
+# ---------------------------------------------------------------------------
+# _should_spawn — the pre-spawn filter
+# ---------------------------------------------------------------------------
+# The costly direction is a false NEGATIVE: dropping a real turn loses a user's
+# message silently, where a false positive only wastes a container. So the
+# "must spawn" cases below are the load-bearing ones.
+print()
+
+def env(event, **kw):
+    return {"type": "event_callback", "event": {**event, **kw}}
+
+DM = {"type": "message", "channel": "D123", "ts": "1.2", "channel_type": "im", "user": "U1", "text": "hi"}
+MENTION = {"type": "app_mention", "channel": "C123", "ts": "1.2", "user": "U1", "text": "<@B1> hi"}
+
+# Must spawn.
+check("spawns for a plain DM",              m._should_spawn(env(DM)))
+check("spawns for an app_mention",          m._should_spawn(env(MENTION)))
+check("spawns for assistant_thread_started",
+      m._should_spawn({"type": "event_callback", "event": {"type": "assistant_thread_started"}}))
+check("spawns for assistant_thread_context_changed",
+      m._should_spawn({"type": "event_callback", "event": {"type": "assistant_thread_context_changed"}}))
+# Unknown shapes must fall through to the worker, never be swallowed here.
+check("spawns for an unknown event type",   m._should_spawn(env({"type": "future_event_type"})))
+check("spawns for a non-event_callback",    m._should_spawn({"type": "something_else"}))
+check("spawns when event is missing",       m._should_spawn({"type": "event_callback"}))
+check("spawns when event is not a dict",    m._should_spawn({"type": "event_callback", "event": "nope"}))
+
+# Must not spawn — these are exactly what the worker logs as "is not a turn".
+check("skips message_changed (the streaming-edit echo)",
+      m._should_spawn(env(DM, subtype="message_changed")), False)
+check("skips message_deleted",              m._should_spawn(env(DM, subtype="message_deleted")), False)
+check("skips a bot-authored message",       m._should_spawn(env(DM, bot_id="B999")), False)
+check("skips a bot-authored app_mention",   m._should_spawn(env(MENTION, bot_id="B999")), False)
+check("skips a plain message in a channel", m._should_spawn(env(DM, channel_type="channel")), False)
+check("skips a message with no channel",    m._should_spawn(env(DM, channel=None)), False)
+check("skips a message with no ts",         m._should_spawn(env(DM, ts=None)), False)
+
 print()
 if fails:
     print("FAILURES:"); [print(" ", f) for f in fails]; sys.exit(1)
-print("all signature checks passed")
+print("all signature and spawn-filter checks passed")

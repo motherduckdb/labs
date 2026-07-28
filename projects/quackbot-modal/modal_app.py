@@ -208,6 +208,59 @@ def housekeeping() -> None:
 # ---------------------------------------------------------------------------
 # web — the Slack-facing edge
 # ---------------------------------------------------------------------------
+def _should_spawn(body: dict) -> bool:
+    """Would the worker treat this event as a turn? Cheap, conservative subset.
+
+    Measured on the first live day: 28 events, 21 of which spawned a 2-CPU /
+    2-GiB container that booted Node purely to log "is not a turn" and exit.
+    Fifteen were `message_changed` — the bot's own streaming edits arriving back
+    as events. On Fly this cost nothing, because an always-on process did the
+    same check in memory; here every one of them is a container. It is also
+    self-amplifying, since the more the bot streams the more it spawns.
+
+    This mirrors `toIncomingMessage` in src/worker.ts, and only the parts of it
+    that need no I/O. That function additionally drops events whose author IS
+    the bot user, which requires resolving the bot user id — a Slack call and a
+    kv read — so that check stays in the worker where the id is already needed.
+
+    ASYMMETRIC ON PURPOSE: a false negative silently drops a user's message,
+    a false positive wastes a container. So this returns True whenever it is
+    not certain, and the worker remains the authority. Keep it that way — do
+    not "tighten" this into the real decision.
+    """
+    if body.get("type") != "event_callback":
+        return True  # not an event envelope; let the worker sort it out
+
+    event = body.get("event")
+    if not isinstance(event, dict):
+        return True
+
+    kind = event.get("type")
+
+    # Assistant lifecycle events carry no channel/ts but DO drive kv writes in
+    # the worker, so they must still spawn.
+    if kind in ("assistant_thread_started", "assistant_thread_context_changed"):
+        return True
+
+    if kind in ("app_mention", "message"):
+        # Anything a bot authored, including this bot. Covers `bot_message`.
+        if event.get("bot_id"):
+            return False
+        if not event.get("channel") or not event.get("ts"):
+            return False
+        if kind == "message":
+            # `message_changed`, `message_deleted`, `channel_join`, file shares
+            # — the worker takes plain messages only.
+            if event.get("subtype"):
+                return False
+            # Plain messages are a turn in DMs only; elsewhere it takes a mention.
+            if event.get("channel_type") != "im":
+                return False
+        return True
+
+    return True
+
+
 def _verify_slack_signature(signing_secret: str, headers, raw_body: bytes) -> bool:
     """Slack's v0 request signature.
 
@@ -335,6 +388,17 @@ def web():
         # spending a container to discover that.
         if request.headers.get("x-slack-retry-num"):
             return PlainTextResponse("ok (retry ignored)")
+
+        # Drop the events that provably aren't turns before paying for a
+        # container. The worker still re-checks; this is an optimisation, not
+        # the decision. See `_should_spawn`.
+        if not _should_spawn(body):
+            event = body.get("event") or {}
+            print(
+                f"[edge] not a turn, not spawning: type={event.get('type')} "
+                f"subtype={event.get('subtype') or '-'}"
+            )
+            return PlainTextResponse("ok (not a turn)")
 
         run_turn.spawn(body)
         return PlainTextResponse("ok")
