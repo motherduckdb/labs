@@ -42,7 +42,25 @@ import { makeConfirmRequester, type ConfirmRequesterOpts, type ConfirmCall } fro
  * src/store/locks.ts). Everything else in this file is unchanged.
  */
 
-const DEFAULT_THINKING: ThinkingLevel = 'medium';
+/**
+ * Effort used when `QUACKBOT_THINKING_LEVEL` is unset or unrecognised.
+ *
+ * `low`, not `medium`. This is the value that reaches `reasoning_effort` (see
+ * `toReasoningEffort` in llm-client.ts), and on Kimi K3 reasoning is billed at
+ * the full $15/MTok completion rate AND spent in wall-clock decode time before
+ * the user sees a single character — the dominant term in this bot's latency.
+ * `medium` was inherited from the OpenRouter/Gemini-Flash era, where thinking
+ * was fast and cheap enough that the difference didn't show.
+ *
+ * It was also simply wrong as a default: `toReasoningEffort`, README.md and
+ * .env.example all document the unset default as `low`, and none of them were
+ * reachable, because this constant meant the Slack path always passed a valid
+ * level and `toReasoningEffort`'s own fallback never fired. Production happens
+ * to pin `QUACKBOT_THINKING_LEVEL=low` in modal_app.py's CONFIG, so the live bot
+ * was unaffected — but dropping that one line would have silently upgraded
+ * every turn's reasoning budget.
+ */
+const DEFAULT_THINKING: ThinkingLevel = 'low';
 const VALID_THINKING = new Set<ThinkingLevel>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
 
 const USE_DB_RE = /^use\s+(?:db|database)\s+(.+)$/i;

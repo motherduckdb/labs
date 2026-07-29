@@ -1,7 +1,7 @@
 # quackbot-modal
 
 A fork of [`quackbot`](../quackbot) that runs on **Modal** instead of Fly.io and
-talks to **Modal's Kimi K3 Shared API** instead of OpenRouter. Same product:
+talks to **Kimi K3 on Modal** instead of OpenRouter. Same product:
 a Slack bot that ports [data-chat-mini](../data-chat-mini)'s **chat with your
 data** agent to Slack as the interface — read-only MotherDuck SQL over MCP,
 [mviz](https://www.npmjs.com/package/mviz) charts rendered as PNGs, native
@@ -19,7 +19,7 @@ and controllog telemetry.
 | Hosting | Fly machine, one always-on process | Modal: an always-warm web endpoint + ephemeral per-turn workers |
 | Ingress | Socket Mode (`@slack/bolt`, outbound websocket) | Slack HTTP Events API (`modal_app.py`'s `web`, a FastAPI ASGI app) |
 | Turn execution | In-process, same Node event loop that received the event | `web` verifies the Slack signature, acks, and `run_turn.spawn()`s a subprocess (`node --import tsx src/worker.ts`) that runs exactly one turn and exits |
-| LLM | OpenRouter, multi-provider | Modal's Shared API, hard-coded to `moonshotai/Kimi-K3` (`src/core/llm-client.ts`) |
+| LLM | OpenRouter, multi-provider | The workspace's own Modal endpoint, hard-coded to `moonshotai/Kimi-K3` (`src/core/llm-client.ts`) |
 | Cross-request state | In-process `Map`/`Set`/TTL cache | Postgres (`migrations/002_modal.sql`: `slack_events`, `confirmations`, `kv_cache`, `controllog_events`, `controllog_postings`) |
 | Confirmation handshake | Same process posts the buttons and awaits the click | Split across two containers — see [Security & data boundaries](#security--data-boundaries) and `src/slack/confirm.ts`'s header |
 | Telemetry | JSONL on local disk (`logs/controllog/`) | Postgres tables (`controllog_events` / `controllog_postings`) |
@@ -82,11 +82,12 @@ Same required elements as data-chat-mini, mapped onto Slack:
      is gone; there's no outbound websocket to authenticate any more.
 3. **Copy `.env.example` to `.env`** and fill in each value — every var has a
    comment explaining it. The one that isn't self-explanatory is
-   **`MODAL_INFERENCE_KEY`**: mint it from the Modal dashboard, and note that a
-   `modal workspace proxy-tokens create` pair will *not* work here — see
-   [Endpoint and auth](#endpoint-and-auth) for why the failure it produces is
-   misleading. `MODAL_INFERENCE_BASE_URL` has a working default and can stay
-   unset.
+   **`MODAL_INFERENCE_KEY`**: a `modal workspace proxy-tokens create` pair,
+   **dot-joined** into one value (`wk-xxxx.ws-yyyy`) — see
+   [Endpoint and auth](#endpoint-and-auth), which also decodes the two different
+   401 bodies the endpoint returns. `MODAL_INFERENCE_BASE_URL` is required too
+   and has no default — the endpoint is per-workspace, so get yours from
+   `modal endpoint list`.
 4. **Provision Postgres and apply both migrations.** quackbot-modal expects a
    connection string in `DATABASE_URL` (built against PlanetScale Postgres,
    TLS required); anything `pg`/`psycopg` can reach over TLS should work.
@@ -320,8 +321,8 @@ Turn flow, one Slack event at a time:
    `session_name` hint, for read-scaling replica affinity
    (`src/core/mcp-client.ts`'s `createMCPClient`).
 8. The agentic loop (`src/core/agentic-loop.ts`) runs against that MCP client,
-   the Slack-specific system prompt (`src/core/system-prompt.ts`), and Modal's
-   Kimi K3 Shared API (`src/core/llm-client.ts`) instead of OpenRouter, driving
+   the Slack-specific system prompt (`src/core/system-prompt.ts`), and Kimi K3
+   on Modal (`src/core/llm-client.ts`) instead of OpenRouter, driving
    a `TurnSink` instead of an SSE stream. `src/slack/sink.ts`'s
    `SlackTurnSink` implements it: text/thinking/tool-status deltas repaint the
    placeholder via `chat.update`, throttled to roughly one repaint per 1.5s; a
@@ -392,12 +393,12 @@ confines guide writes to guides the bot owns (cross-user uuid writes are
 rejected, org-visible creates and `set_guide_access` are permission-gated),
 which is exactly the boundary quackbot's own guard assumes.
 
-## LLM: Modal Kimi K3 Shared API
+## LLM: Modal Kimi K3
 
 `src/core/llm-client.ts` was a hard swap from OpenRouter to `moonshotai/Kimi-K3`
-served through Modal's Shared API — no fallback provider, no multi-provider
-abstraction. A few behavior changes came with it, not just a different base
-URL:
+served through the workspace's own Modal endpoint — no fallback provider, no
+multi-provider abstraction. A few behavior changes came with it, not just a
+different base URL:
 
 - **Reasoning is echoed back, not dropped.** Moonshot's docs require the
   entire untouched assistant message — including `reasoning_content` — to be
@@ -407,7 +408,15 @@ URL:
 - **Thinking passes straight through.** `reasoning_effort` accepts exactly
   `none|minimal|low|medium|high|xhigh|max` — which is `QUACKBOT_THINKING_LEVEL`'s
   own ladder verbatim, plus `max` — so `toReasoningEffort` validates rather than
-  remaps. Default when unset or unrecognised is `low`.
+  remaps. Default when unset or unrecognised is `low`, in `toReasoningEffort`
+  and in `DEFAULT_THINKING` (src/slack/handlers.ts) both. Those two disagreed
+  until recently: handlers defaulted to `medium`, inherited from the
+  OpenRouter/Gemini-Flash era, and because it always passed a *valid* level the
+  documented `low` fallback in `toReasoningEffort` was unreachable. Production
+  pinned `QUACKBOT_THINKING_LEVEL=low` in modal_app.py's `CONFIG`, so the live
+  bot never ran at `medium` — but deleting that one line would silently have
+  raised every turn's reasoning budget. See "Latency" below for why that matters
+  more here than it did on OpenRouter.
 
   `none` genuinely disables reasoning (8 completion tokens and an empty
   `reasoning_content`, against 38 tokens and 104 characters at `low`), and is
@@ -422,7 +431,10 @@ URL:
   (`KIMI_K3_RATES_PER_MTOK` — $3.00 prompt / $0.30 cached / $15.00 completion
   per MTok, with `prompt_tokens_details.cached_tokens` read off the response in
   `src/core/agentic-loop.ts`). Reasoning bills at the full completion rate.
-  Rates drift; the constant carries a link to check them.
+  Rates drift; the constant carries a link to check them. **The endpoint sends
+  `prompt_tokens_details: null`**, so the cached-token count is never populated
+  in practice and every prompt token is priced at the uncached rate — an
+  over-estimate if the endpoint is caching. See "Latency" below.
 - **Vision support and 1M context** are recognized by
   `getContextWindow`/`VISION_MODEL_PATTERNS` matching Kimi/Moonshot ids, ported
   from the OpenRouter regexes.
@@ -434,11 +446,18 @@ now settled empirically — the code carries one path each rather than a hedge.
 
 - **Base URL: the workspace's own endpoint,** e.g.
   `https://motherduck--ep-kimi-k3-server.us-west.modal.direct/v1`. Find it with
-  `modal endpoint list` or in the dashboard. Set `MODAL_INFERENCE_BASE_URL` —
-  treat it as required despite the fallback, which is Modal's multi-tenant
-  Shared API (`https://api.us-west-2.modal.direct/v1`). That fallback needs a
-  separate entitlement this workspace doesn't have, so a missing variable
-  surfaces as a 401, not as something that quietly works.
+  `modal endpoint list` or in the dashboard. `MODAL_INFERENCE_BASE_URL` is
+  **required** — it is in the worker's `REQUIRED_ENV`, so a container without it
+  refuses to start, and `getChatCompletionsUrl` throws as a backstop.
+
+  There is no fallback, deliberately. There was one for a while — Modal's
+  multi-tenant Shared API (`https://api.us-west-2.modal.direct/v1`), added
+  because it is one fixed host for every workspace and so the only value that
+  could be hardcoded. It turned out to need a separate entitlement this
+  workspace doesn't have: it 401s. A default that is known not to work is worse
+  than no default, because "you forgot to set a variable" arrives disguised as
+  an auth failure and the reader goes hunting for a credential problem that
+  doesn't exist.
 - **Auth: `Authorization: Bearer $MODAL_INFERENCE_KEY`,** where the key is a
   `modal workspace proxy-tokens create` pair **dot-joined** into one value:
   `wk-xxxx.ws-yyyy`. Modal's quickstart sends the same pair as separate
@@ -453,6 +472,73 @@ now settled empirically — the code carries one path each rather than a hedge.
   misread as "you forgot to authenticate" when the real cause is a credential
   for the wrong product — a proxy pair against the Shared API host returns it,
   as does a CLI `ak-`/`as-` token.
+
+### Latency — the migration's real cost
+
+**Kimi K3 is much slower than what it replaced, and most of that is the model,
+not our code.** Measured from `model_completion.wall_ms` in controllog:
+
+| | model | p50 wall time per model call | sample |
+|---|---|---|---|
+| Before (Fly + OpenRouter) | `google/gemini-3-flash-preview` | **2.4s** | 171 calls |
+| After (Modal + Kimi K3) | `moonshotai/Kimi-K3` | **39.0s** | 6 calls |
+
+Read the sample sizes before quoting the ratio: **6 calls is thin**, easily
+skewed by an endpoint cold start or one long turn, and the p50 could move a lot
+with real traffic. A 16× gap is far too large to be noise, but "16×" is not a
+number to put in a slide yet. Note also that a Slack turn is several model
+calls, so a multi-tool turn multiplies this.
+
+It is not a like-for-like host comparison. The baseline was a *flash-tier
+proprietary* model on Google's serving stack; the replacement is a
+frontier-scale open-weights MoE. Both run at `reasoning_effort: low`, the prompt
+prefix is ~12–14K tokens either way (≈5.4K system prompt + ≈8K pre-fetched guide
+block + tool schemas), and prefill at that size is seconds at most — so the gap
+is dominated by **decode throughput**, where 39s is consistent with roughly
+1–2K reasoning-plus-answer tokens at the sort of tokens/sec a K3-class model
+serves. That is inherent to the model choice and is not fixable from this repo.
+
+What *was* ours, and is fixed:
+
+- **Reasoning default.** `DEFAULT_THINKING` was `medium` against a documented
+  `low` (see above). Latent rather than live, because production pins the env
+  var — but on this model the difference is billed at $15/MTok *and* paid in
+  wall-clock before the user sees a character.
+- **Prompt-prefix stability across turns.** Tool-call arguments are echoed back
+  on every later request, so their exact bytes are part of the cacheable prefix.
+  Conversation history is persisted to a `jsonb` column, and jsonb does not
+  preserve object key order — so a `{database, sql}` tool call came back out of
+  Postgres as `{sql, database}` and `JSON.stringify` reproduced the difference,
+  invalidating the cached prefix from the previous turn's first tool call
+  onward. `stableStringify` (src/core/llm-client.ts) now sorts keys at every
+  depth so in-memory and round-tripped history serialize identically.
+
+What was investigated and found *not* to be a problem:
+
+- **Streaming is not buffered.** The sink paints Slack on the first event of a
+  call, not at the end: `lastUpdateAt` starts at 0, so the first `scheduleUpdate`
+  bypasses the 1.5s throttle entirely. Since K3 emits `reasoning_content` before
+  `content`, the placeholder flips to `_thinking…_` within about a second and
+  prose streams in as it arrives. There is no first-token-to-first-post delay to
+  reclaim. What the user *does* see is a static `_thinking…_` for the whole
+  reasoning phase — honest, but not a progress bar. Making that tick would cost
+  a `chat.update` every 1.5s for ~26 updates per call, which is Slack rate-limit
+  territory; it was left alone deliberately.
+- **Nothing else varies early in the prompt.** The system prompt is a pure
+  function of `(databases, queryGuide)`; the guide block is TTL-cached in
+  Postgres for 15 minutes precisely to hold it still (src/core/query-guide.ts);
+  the tool list preserves MCP server order through `getFilteredTools`; the
+  request body carries no timestamp, session id, or nonce. The jsonb key-order
+  issue above was the only real cache-buster found.
+
+**Caveat on all of the caching work: we cannot currently verify any of it.** The
+endpoint returns `prompt_tokens_details: null` (see the comment in
+`src/core/agentic-loop.ts` where reasoning tokens are read), so it reports no
+cached-token count at all. `computeCostUSD` therefore bills 100% of prompt
+tokens at the uncached $3.00/MTok rate, which makes the cost pill an
+*over*-estimate if caching is in fact working, and there is no signal in our
+telemetry that would show a cache fix landing. Settling that needs a live probe
+of the same prefix twice with the response's `usage` inspected — not done here.
 
 ### Which Modal product this is
 

@@ -58,9 +58,14 @@ import { redactError } from './core/redact';
  * could not be: while two schemes were in play, "exactly one of these sets is
  * present" was not expressible as a list of required names.
  *
- * `MODAL_INFERENCE_BASE_URL` is NOT here, for the opposite reason. It gained a
- * default — the Shared API is a single fixed host — so an unset one is the
- * normal case rather than a broken container.
+ * `MODAL_INFERENCE_BASE_URL` is here too. It briefly wasn't, on the grounds that
+ * it had gained a default (Modal's Shared API, a single fixed host) so an unset
+ * one was the normal case. That default turned out to be an endpoint this
+ * workspace has no entitlement to — it 401s — so an unset variable was never
+ * "normal", it was a broken container that failed later and blamed the
+ * credential. The real endpoint is per-workspace and cannot be defaulted, so it
+ * belongs in the list. `getChatCompletionsUrl` throws as a backstop for callers
+ * that don't run through this check.
  *
  * Failing here rather than at the first model call matters: mid-turn is after
  * the placeholder is posted and the eyes reaction is on, so the user watches a
@@ -71,6 +76,7 @@ const REQUIRED_ENV = [
   'MOTHERDUCK_TOKEN',
   'DATABASE_URL',
   'MODAL_INFERENCE_KEY',
+  'MODAL_INFERENCE_BASE_URL',
 ] as const;
 
 /** Which of `REQUIRED_ENV` is absent. Takes the environment so tests need not mutate the real one. */

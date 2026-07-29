@@ -36,7 +36,7 @@ beforeEach(() => {
   // There is no default base URL — getChatCompletionsUrl throws without one
   // (deliberately; see llm-client.ts). Every test that isn't specifically about
   // URL resolution needs *some* value here, so supply an obviously-fake one.
-  // Tests that care override it; the "throws when unset" test deletes it.
+  // Tests that care override it; the "throws when unset" tests delete it.
   process.env.MODAL_INFERENCE_BASE_URL = 'https://test.invalid/v1';
 });
 
@@ -218,18 +218,31 @@ describe('endpoint + auth', () => {
     expect(getChatCompletionsUrl()).toBe('https://example.modal.run/v1/chat/completions');
   });
 
-  it('defaults to the Shared API host when the env var is unset', () => {
-    // The Shared API is one fixed host for every workspace, so an unset var is
-    // the ordinary case, not a misconfiguration. Pinned rather than loosely
-    // matched: a silent change to this host is a change of inference provider.
+  it('throws naming the missing variable rather than defaulting to a host that 401s', () => {
+    // Regression guard for a default that was removed on evidence. It used to
+    // fall back to Modal's Shared API (api.us-west-2.modal.direct), which this
+    // workspace has no entitlement to — so a missing variable silently selected
+    // a known-broken endpoint and surfaced as an auth error. The error has to
+    // name the variable AND the value to set, because the operator reading it
+    // has no way to guess a per-workspace hostname.
     delete process.env.MODAL_INFERENCE_BASE_URL;
-    expect(getChatCompletionsUrl()).toBe('https://api.us-west-2.modal.direct/v1/chat/completions');
+    expect(() => getChatCompletionsUrl()).toThrow(/MODAL_INFERENCE_BASE_URL/);
+    expect(() => getChatCompletionsUrl()).toThrow(/ep-kimi-k3-server/);
   });
 
-  it('ignores a blank override rather than building a relative URL from it', () => {
+  it('never resolves to the Shared API host', () => {
+    // Pinned separately: reintroducing the old default anywhere in this
+    // function should fail loudly rather than quietly restore the 401.
+    delete process.env.MODAL_INFERENCE_BASE_URL;
+    let url: string | undefined;
+    try { url = getChatCompletionsUrl(); } catch { /* expected */ }
+    expect(url).toBeUndefined();
+  });
+
+  it('treats a blank override as missing rather than building a relative URL', () => {
     // An unset key in a Modal secret arrives as an empty string, not as absent.
     process.env.MODAL_INFERENCE_BASE_URL = '   ';
-    expect(getChatCompletionsUrl()).toBe('https://api.us-west-2.modal.direct/v1/chat/completions');
+    expect(() => getChatCompletionsUrl()).toThrow(/MODAL_INFERENCE_BASE_URL/);
   });
 
   it('POSTs to the resolved chat-completions URL', async () => {
@@ -342,6 +355,41 @@ describe('message conversion + reasoning echo-back', () => {
     });
     const msgs = read().body.messages as Array<Record<string, unknown>>;
     expect(msgs[2]).toMatchObject({ role: 'assistant', reasoning_content: 'because.' });
+  });
+
+  it('serializes tool arguments identically however the key order arrives', () => {
+    // Prompt-cache stability, and the reason this is not cosmetic: conversation
+    // history is persisted to a `jsonb` column, and jsonb canonicalises object
+    // key order. So the SAME tool call is `{database, sql}` in memory during the
+    // turn that produced it and `{sql, database}` on every turn after. Echoed
+    // back verbatim, that difference changes the prompt prefix and invalidates
+    // the cache from the previous turn's first tool call onward.
+    const emitted = { database: 'mdw', sql: 'select 1', opts: { b: 2, a: 1 } };
+    const roundTripped = { opts: { a: 1, b: 2 }, sql: 'select 1', database: 'mdw' };
+
+    const argsFor = (input: Record<string, unknown>) => {
+      const out = toOpenAIMessages('sys', [
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'query', input }] },
+      ]);
+      const calls = (out[1] as { tool_calls: Array<{ function: { arguments: string } }> }).tool_calls;
+      return calls[0].function.arguments;
+    };
+
+    expect(argsFor(emitted)).toBe(argsFor(roundTripped));
+    // Sorted at every depth, not just the top level — jsonb reorders nested
+    // objects too (`references: [{...}]`, `edits: [{old_string, new_string}]`).
+    expect(argsFor(emitted)).toBe('{"database":"mdw","opts":{"a":1,"b":2},"sql":"select 1"}');
+  });
+
+  it('keeps tool arguments semantically intact while canonicalising them', () => {
+    // Sorting must not disturb array order or drop values — the model has to be
+    // able to read back what it asked for.
+    const input = { edits: [{ old_string: 'b', new_string: 'a' }, { old_string: 'd', new_string: 'c' }] };
+    const out = toOpenAIMessages('sys', [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'edit_guide_content', input }] },
+    ]);
+    const calls = (out[1] as { tool_calls: Array<{ function: { arguments: string } }> }).tool_calls;
+    expect(JSON.parse(calls[0].function.arguments)).toEqual(input);
   });
 
   it('passes multimodal user content arrays through untouched', () => {

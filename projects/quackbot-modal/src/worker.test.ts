@@ -138,6 +138,7 @@ describe('missingEnv', () => {
     MOTHERDUCK_TOKEN: 'x',
     DATABASE_URL: 'x',
     MODAL_INFERENCE_KEY: 'x',
+    MODAL_INFERENCE_BASE_URL: 'x',
   };
 
   it('passes a complete environment', () => {
@@ -149,6 +150,7 @@ describe('missingEnv', () => {
       'MOTHERDUCK_TOKEN',
       'DATABASE_URL',
       'MODAL_INFERENCE_KEY',
+      'MODAL_INFERENCE_BASE_URL',
     ]);
   });
 
@@ -167,11 +169,14 @@ describe('missingEnv', () => {
     expect(missingEnv(ok)).not.toContain('SLACK_SIGNING_SECRET');
   });
 
-  it('does not require MODAL_INFERENCE_BASE_URL, which has a default', () => {
-    // It was required while llm-client.ts threw without it. It now defaults to
-    // the one fixed Shared API host, so requiring it would refuse to start a
-    // container whose configuration is completely correct.
-    expect(missingEnv(ok)).not.toContain('MODAL_INFERENCE_BASE_URL');
+  it('requires MODAL_INFERENCE_BASE_URL — the endpoint is per-workspace, not defaultable', () => {
+    // This briefly was NOT required, while llm-client.ts defaulted to Modal's
+    // Shared API. That host needs an entitlement this workspace lacks and 401s,
+    // so an unset variable produced a container that started fine and then
+    // failed mid-turn — after the placeholder was posted — blaming the
+    // credential. Catching it here means the failure names the real cause and
+    // happens before any user-visible work.
+    expect(missingEnv({ ...ok, MODAL_INFERENCE_BASE_URL: '' })).toEqual(['MODAL_INFERENCE_BASE_URL']);
   });
 });
 

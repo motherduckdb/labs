@@ -1,5 +1,8 @@
-// LLM transport: Modal's Kimi K3 Shared API — an OpenAI-compatible
+// LLM transport: Modal's Kimi K3 endpoint — an OpenAI-compatible
 // /chat/completions endpoint hit via direct `fetch` (see streamChatCompletion).
+// The host is the workspace's own dedicated Auto Endpoint, supplied by
+// MODAL_INFERENCE_BASE_URL; NOT Modal's multi-tenant Shared API, which this
+// workspace is not entitled to (see getChatCompletionsUrl).
 // We hand-convert our Anthropic-style message blocks to OpenAI format on the
 // way out, including the `reasoning_content` echo-back K3 requires (see
 // `toOpenAIMessages`).
@@ -17,22 +20,35 @@ import { redact } from './redact';
 // ---------------------------------------------------------------------------
 
 /**
- * Modal's Shared API — the multi-tenant, token-priced inference endpoint, as
- * opposed to a dedicated Auto Endpoint, which gets its own per-endpoint host.
+ * Full chat-completions URL, tolerant of a trailing slash on the base.
  *
- * Kept as the fallback default because it is a single fixed host for everyone
- * rather than a per-workspace URL, so it is the only value that can sensibly be
- * hardcoded. THE DEPLOYED BOT DOES NOT USE IT: production sets
- * `MODAL_INFERENCE_BASE_URL` to a dedicated Auto Endpoint (see below). Reaching
- * this default in production means that variable went missing, and the symptom
- * will be a 401, not a fallback that quietly works — the Shared API needs a
- * separate entitlement this workspace does not have.
+ * There is deliberately NO default, and the history here matters because the
+ * obvious "improvement" is to put one back. This function originally threw;
+ * a default of `https://api.us-west-2.modal.direct/v1` — Modal's multi-tenant
+ * Shared API — was added on the reasoning that it is one fixed host for every
+ * workspace, so requiring the variable would refuse to start a container that
+ * was already correctly configured. That reasoning has since been falsified:
+ * the Shared API needs a separate entitlement this workspace does not have, and
+ * it rejects our credentials with a 401. So the default was not a safe fallback,
+ * it was a known-broken endpoint selected silently — turning "you forgot to set
+ * a variable" into an auth error that sends the reader hunting for a credential
+ * problem that doesn't exist.
+ *
+ * Production runs a DEDICATED Auto Endpoint, whose host is per-workspace and
+ * therefore cannot be hardcoded at all. Name the variable and its value instead.
  */
-const SHARED_API_BASE_URL = 'https://api.us-west-2.modal.direct/v1';
-
-/** Full chat-completions URL, tolerant of a trailing slash on the base. */
 export function getChatCompletionsUrl(): string {
-  const raw = (process.env.MODAL_INFERENCE_BASE_URL || '').trim() || SHARED_API_BASE_URL;
+  const raw = (process.env.MODAL_INFERENCE_BASE_URL || '').trim();
+  if (!raw) {
+    throw new Error(
+      'MODAL_INFERENCE_BASE_URL is not set. There is no default: the inference ' +
+        'endpoint is a per-workspace dedicated Auto Endpoint, and the one host ' +
+        'that could be hardcoded (Modal\'s Shared API) needs an entitlement this ' +
+        'workspace does not have, so it 401s. Set it to ' +
+        'https://motherduck--ep-kimi-k3-server.us-west.modal.direct/v1 ' +
+        '(confirm with `modal endpoint list`).',
+    );
+  }
   return `${raw.replace(/\/+$/, '')}/chat/completions`;
 }
 
@@ -242,6 +258,42 @@ export function toReasoningEffort(thinkingLevel?: string): ReasoningEffort {
 // ---------------------------------------------------------------------------
 
 /**
+ * `JSON.stringify` with object keys emitted in sorted order at every depth.
+ *
+ * This exists for PROMPT-CACHE STABILITY, not tidiness. Tool-call arguments are
+ * echoed back on every subsequent request as `tool_calls[].function.arguments`,
+ * a string — so its exact bytes are part of the prompt prefix, and any change
+ * to them invalidates the cached prefix from that point on.
+ *
+ * The bytes were changing. A turn's messages are persisted by
+ * `src/store/conversations.ts` into `conversations.messages`, which is
+ * `jsonb` (migrations/001_init.sql) — and jsonb does not preserve object key
+ * order; it canonicalises to key-length-then-bytewise. So a `tool_use` block
+ * whose `input` the model emitted as `{database, sql}` comes back out of
+ * Postgres as `{sql, database}`, and `JSON.stringify` faithfully reproduced the
+ * difference. Every turn after the first therefore re-sent its own history with
+ * the tool arguments reshuffled, busting the cache at the position of the
+ * previous turn's first tool call and forcing a re-prefill of everything after
+ * it — which, in a bot whose tool results are query output, is most of the
+ * context.
+ *
+ * Sorting fixes it from either direction: in-memory blocks and
+ * jsonb-round-tripped blocks now serialize identically. The cost is that within
+ * a single turn we no longer echo the model's own key order back verbatim, so
+ * the freshly-generated tool call diverges from its generation-time cache — but
+ * that divergence sits at the very end of the prefix (only the arguments
+ * themselves get re-prefilled, and the tool result after them is new anyway),
+ * where the cross-turn divergence sat near the beginning.
+ */
+export function stableStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => {
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return v;
+    const obj = v as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(obj).sort().map(k => [k, obj[k]]));
+  });
+}
+
+/**
  * Convert our Anthropic-style message blocks into OpenAI chat messages.
  *
  * The load-bearing part is the assistant branch's `reasoning_content`.
@@ -307,7 +359,11 @@ export function toOpenAIMessages(
                 // `input: {}` and never dispatched (see agentic-loop.ts); we
                 // echo the valid-JSON `{}` rather than the malformed original
                 // so the retry prompt isn't itself unparseable.
-                arguments: JSON.stringify(block.input),
+                //
+                // `stableStringify`, not `JSON.stringify`: these bytes are part
+                // of the cached prompt prefix and a jsonb round-trip through
+                // conversation storage reorders the keys. See its doc comment.
+                arguments: stableStringify(block.input),
               },
             });
           }

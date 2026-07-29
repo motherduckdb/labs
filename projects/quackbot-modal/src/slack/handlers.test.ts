@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildTurnRunner, type TurnRunnerDeps } from './handlers';
+import { buildTurnRunner, makeWorkerDeps, type TurnRunnerDeps } from './handlers';
 import type { TurnSink } from '../core/turn-sink';
 
 /**
@@ -459,5 +459,51 @@ describe('buildTurnRunner loop-throws settlement (item B)', () => {
     // Existing behavior preserved: a separate warning message + ⚠️ reaction.
     expect(calls.posts.some((p) => p.text?.includes('went wrong'))).toBe(true);
     expect(calls.reactions.some((r) => r.name === 'warning')).toBe(true);
+  });
+});
+
+describe('reasoning effort default', () => {
+  const KEY = 'QUACKBOT_THINKING_LEVEL';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[KEY];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY];
+    else process.env[KEY] = saved;
+  });
+
+  it('falls back to `low`, not `medium`, when QUACKBOT_THINKING_LEVEL is unset', () => {
+    // This is the value that becomes `reasoning_effort`, which on Kimi K3 costs
+    // both $15/MTok and wall-clock decode before the user sees anything. It was
+    // `medium` — inherited from the OpenRouter/Gemini-Flash era — while
+    // toReasoningEffort, README.md and .env.example all documented `low`. The
+    // documented default was unreachable, because this path always supplied a
+    // valid level and toReasoningEffort's own fallback never fired.
+    delete process.env[KEY];
+    expect(makeWorkerDeps({} as never).thinkingLevel).toBe('low');
+  });
+
+  it('still falls back to `low` for an unrecognised value', () => {
+    process.env[KEY] = 'ultra';
+    expect(makeWorkerDeps({} as never).thinkingLevel).toBe('low');
+  });
+
+  it('passes an explicit level through unchanged', () => {
+    process.env[KEY] = 'xhigh';
+    expect(makeWorkerDeps({} as never).thinkingLevel).toBe('xhigh');
+  });
+
+  it('hands the resolved level to the agentic loop', () => {
+    const { deps } = makeDeps({ thinkingLevel: undefined });
+    const runner = buildTurnRunner(deps);
+    return runner
+      .handle({ channel: 'C1', user: 'U1', text: '<@BOT> hi', ts: '90.1' })
+      .then(() => {
+        const loop = deps.runAgenticLoop as unknown as { mock: { calls: Array<[{ thinkingLevel: string }]> } };
+        expect(loop.mock.calls[0][0].thinkingLevel).toBe('low');
+      });
   });
 });

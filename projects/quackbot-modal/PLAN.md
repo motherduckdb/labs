@@ -1,7 +1,9 @@
 # quackbot-modal — migration plan
 
 A fork of `projects/quackbot` that runs on **Modal** instead of Fly.io and talks to
-**Modal's Kimi K3 Shared API** instead of OpenRouter. The Fly-deployed `projects/quackbot`
+**Kimi K3 on Modal** instead of OpenRouter (the Shared API was the initial assumption; the
+workspace turned out to be entitled only to its own dedicated endpoint). The Fly-deployed
+`projects/quackbot`
 is left untouched and stays live until this one is proven.
 
 Two changes drive everything else:
@@ -108,7 +110,7 @@ OpenRouter-specific behaviours. Each needs a decision:
 
 | Today (OpenRouter) | On Modal Kimi K3 |
 |---|---|
-| `https://openrouter.ai/api/v1/chat/completions` | `https://motherduck--ep-kimi-k3-server.us-west.modal.direct/v1/chat/completions` — **RESOLVED**. Per-workspace, from `modal endpoint list`, so `MODAL_INFERENCE_BASE_URL` is required in practice. The Shared API host (`api.us-west-2.modal.direct/v1`) remains the code default but needs an entitlement this workspace lacks |
+| `https://openrouter.ai/api/v1/chat/completions` | `https://motherduck--ep-kimi-k3-server.us-west.modal.direct/v1/chat/completions` — **RESOLVED**. Per-workspace, from `modal endpoint list`, so `MODAL_INFERENCE_BASE_URL` is required — in `REQUIRED_ENV`, and `getChatCompletionsUrl` throws without it. The Shared API host (`api.us-west-2.modal.direct/v1`) was briefly the code default; it needs an entitlement this workspace lacks, so the default was a silent 401 and is gone |
 | `Authorization: Bearer $OPENROUTER_API_KEY` | `Authorization: Bearer $MODAL_INFERENCE_KEY` — **RESOLVED**. The key is a `wk-`/`ws-` proxy pair **dot-joined**: `wk-xxxx.ws-yyyy`. The endpoint takes that or the `Modal-Key`/`Modal-Secret` header pair (200 both ways); one bearer keeps it to a single env var |
 | `X-Title`, `HTTP-Referer` headers | Drop — OpenRouter-only conventions |
 | `provider: { order: [...] }` | Drop — no equivalent |
@@ -137,6 +139,13 @@ unrecognised. `none` really does disable reasoning (8 completion tokens, empty
 `reasoning_content`, vs 38 tokens and 104 chars at `low`), which matters because reasoning
 bills at the full $15/MTok — the original collapse charged for thinking on the one setting
 that asks for none.
+
+The unset default is `low` in *both* places that decide it. `DEFAULT_THINKING` in
+`src/slack/handlers.ts` was `medium`, a leftover from Gemini 3 Flash where thinking was fast
+and cheap enough not to show; because it always supplied a valid level, `toReasoningEffort`'s
+documented `low` fallback could never fire. Production pinned `QUACKBOT_THINKING_LEVEL=low`
+in `modal_app.py`'s `CONFIG`, so the live bot was never affected — the bug was that deleting
+one line of Python would have raised every turn's reasoning budget with nothing to catch it.
 
 **c) Cost display.** `src/core/usage.ts` renders a dollar figure that only exists because
 OpenRouter hands back `usage.cost`. Modal won't. We compute it from
@@ -278,6 +287,14 @@ tier retains **1 day** of logs — worth knowing before relying on them for a po
      removed on purpose: it resolves, fails at request time as an opaque 404, and sends
      whoever debugs it hunting for a credential problem that does not exist. Throwing names
      the actual missing thing.
+
+     This got re-litigated once and the answer held. After the workspace was authenticated,
+     the Shared API host was briefly installed as a default on the reasoning that it is one
+     fixed host for every workspace, so requiring the variable would refuse to start an
+     already-correct container. Probing then showed the Shared API needs an entitlement this
+     workspace lacks — it 401s. So the default wasn't a fallback, it was a known-broken
+     endpoint chosen silently, which is the *same* failure the original guess was rejected
+     for. Restored to throwing, with the real per-workspace URL named in the message.
    - `buildAuthHeaders()` supports **both** schemes and prefers the proxy-token pair when
      `MODAL_KEY` and `MODAL_SECRET` are both set, falling back to
      `Authorization: Bearer $MODAL_INFERENCE_KEY`. Collapse to the winner and drop the dead
@@ -293,6 +310,28 @@ tier retains **1 day** of logs — worth knowing before relying on them for a po
    webscraper example.
 4. **Cold-start latency for `run_turn`** is unmeasured. The bot posts a placeholder message
    immediately today, so a second or two of extra latency is cosmetic — but worth measuring.
+5. **Model latency is the migration's biggest regression, and it is mostly the model.**
+   `model_completion.wall_ms` p50 went from **2.4s** (Gemini 3 Flash via OpenRouter, 171
+   calls) to **39.0s** (Kimi K3 on Modal, 6 calls). Six calls is a thin sample — one cold
+   endpoint or one long turn moves that p50 a lot — so treat "16×" as an order of magnitude,
+   not a figure. It is also not a host comparison: a flash-tier proprietary model was
+   replaced with a frontier-scale open-weights MoE. Prefill is ~12–14K tokens either way
+   (≈5.4K system prompt + ≈8K guide block + tool schemas) and costs seconds at most, so the
+   gap is decode throughput.
+
+   Two things were genuinely ours and are fixed: the `DEFAULT_THINKING` mismatch above, and
+   prompt-prefix instability across turns — `conversations.messages` is `jsonb`, jsonb does
+   not preserve object key order, and tool-call `arguments` are echoed back into the prefix
+   verbatim, so every turn after the first re-sent its own history reshuffled and invalidated
+   the cache from the prior turn's first tool call onward (`stableStringify` in
+   `llm-client.ts` now canonicalises it). Streaming was checked and is *not* buffered — the
+   sink paints on the first event of a call, bypassing its own throttle.
+
+   **Unresolved and worth a live probe:** the endpoint returns
+   `prompt_tokens_details: null`, so it reports no cached-token count. We cannot confirm the
+   prefix cache is being hit at all, cannot measure the fix above, and `computeCostUSD` bills
+   every prompt token at the uncached $3.00/MTok rate. Settling it means posting the same
+   prefix twice and reading `usage` off the response.
 
 ---
 
