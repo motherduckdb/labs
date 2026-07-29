@@ -3,10 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildAuthHeaders,
   computeCostUSD,
+  CONTEXT_WINDOW,
   getChatCompletionsUrl,
-  getContextWindow,
   getModelProfile,
   KIMI_K3_RATES_PER_MTOK,
+  MODEL_ID,
   modelSupportsVision,
   streamChatCompletion,
   toOpenAIMessages,
@@ -449,27 +450,38 @@ describe('cost computation', () => {
 });
 
 describe('model profile', () => {
-  it('defaults to moonshotai/Kimi-K3 with a 1M context window', () => {
+  it('is the fixed Kimi K3 profile with a 1M context window', () => {
     const p = getModelProfile();
+    expect(p.id).toBe(MODEL_ID);
     expect(p.id).toBe('moonshotai/Kimi-K3');
+    expect(p.contextWindow).toBe(CONTEXT_WINDOW);
     expect(p.contextWindow).toBe(1_000_000);
     expect(p.maxTokens).toBe(16384);
     expect(p.supportsReasoning).toBe(true);
   });
 
-  it('honours MODAL_INFERENCE_MODEL', () => {
-    process.env.MODAL_INFERENCE_MODEL = ' anthropic/claude-sonnet-5 ';
+  it('ignores MODAL_INFERENCE_MODEL — the model is not configurable', () => {
+    // The variable used to be read here. It selected nothing that matters:
+    // the endpoint serves one model, computeCostUSD bills K3 rates with no
+    // model argument, and the request shape is K3's dialect. All it could do
+    // was put another vendor's name on Kimi-priced controllog rows. If this
+    // assertion is ever "fixed" by reading the env again, read MODEL_ID's
+    // doc comment first.
+    process.env.MODAL_INFERENCE_MODEL = 'anthropic/claude-sonnet-5';
     const p = getModelProfile();
-    expect(p.id).toBe('anthropic/claude-sonnet-5');
-    expect(p.contextWindow).toBe(200_000);
+    expect(p.id).toBe('moonshotai/Kimi-K3');
+    expect(p.contextWindow).toBe(1_000_000);
   });
 
-  it('resolves Kimi context windows to 1M and keeps the inherited families working', () => {
-    expect(getContextWindow('moonshotai/Kimi-K3')).toBe(1_000_000);
-    expect(getContextWindow('kimi-k3')).toBe(1_000_000);
-    expect(getContextWindow('google/gemini-3-flash-preview')).toBe(1_000_000);
-    expect(getContextWindow('openai/gpt-4o')).toBe(128_000);
-    expect(getContextWindow('some/unknown-model')).toBe(200_000);
+  it('bills K3 rates for the profile it reports, with no way to desync the two', () => {
+    // The concrete harm the override caused: a controllog row carrying
+    // `model: profile.id` next to a `costMoney` computed from K3's table. With
+    // the id fixed, the pairing is true by construction — assert both halves so
+    // reintroducing an id knob without a rate table trips here.
+    process.env.MODAL_INFERENCE_MODEL = 'anthropic/claude-sonnet-5';
+    expect(getModelProfile().id).toBe('moonshotai/Kimi-K3');
+    expect(computeCostUSD({ promptTokens: 1_000_000, completionTokens: 0 }))
+      .toBeCloseTo(KIMI_K3_RATES_PER_MTOK.prompt, 12);
   });
 
   it('treats Kimi as vision-capable', () => {

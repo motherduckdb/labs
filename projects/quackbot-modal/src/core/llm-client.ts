@@ -73,7 +73,7 @@ export function buildAuthHeaders(env: NodeJS.ProcessEnv = process.env): Record<s
 }
 
 // ---------------------------------------------------------------------------
-// Single-model profile (default: Kimi K3; swap via MODAL_INFERENCE_MODEL).
+// The model. A constant, not a knob.
 // ---------------------------------------------------------------------------
 
 export interface ModelProfile {
@@ -82,54 +82,54 @@ export interface ModelProfile {
   supportsReasoning: boolean;
   /**
    * Approximate prompt-token capacity. Used by the client to render a
-   * "% context full" indicator. Resolved by `getContextWindow` from the
-   * model id; the values are deliberately rough — what we really want is
+   * "% context full" indicator. Deliberately rough — what we really want is
    * "is the user getting close", not exact accounting.
    */
   contextWindow: number;
 }
 
 /**
- * Best-effort context-window lookup keyed off the model id. Add specific cases
- * for families you know about and fall through to a conservative default. Only
- * used for the UI pill — consequence of being off is a slightly wrong
- * percentage, not a routing decision.
+ * The one model this bot talks to.
+ *
+ * This was `process.env.MODAL_INFERENCE_MODEL || 'moonshotai/Kimi-K3'`, which
+ * read as a model switch and was not one. Every fact downstream of the id is a
+ * K3 constant that the id did not select:
+ *
+ *   - ENDPOINT. `getChatCompletionsUrl` resolves `MODAL_INFERENCE_BASE_URL`, one
+ *     dedicated Modal Auto Endpoint serving exactly this model. Nothing routes
+ *     on the id; it is just a string in the request body. Setting the variable
+ *     to `anthropic/claude-sonnet-5` never reached Anthropic.
+ *   - COST. `computeCostUSD` takes no model argument and bills
+ *     `KIMI_K3_RATES_PER_MTOK` unconditionally. That figure is the dollar number
+ *     in the usage pill and the `costMoney` on every controllog
+ *     `modelCompletion` row — rows that also carry `model: profile.id`. A
+ *     changed id therefore relabelled Kimi prices as another vendor's.
+ *   - REQUEST SHAPE. `reasoning_effort` is sent with the literal set this
+ *     endpoint 400s outside of, `max_completion_tokens` replaces `max_tokens`
+ *     because K3 deprecated it, and sampling params are withheld because K3
+ *     fixes them (see `streamChatCompletion`).
+ *   - CAPABILITIES. `toOpenAIMessages` always echoes `reasoning_content` back
+ *     because Moonshot requires it; `supportsReasoning` is hardcoded true.
+ *
+ * A context-window lookup table keyed on the id used to live here too, and was
+ * the only thing the id genuinely selected — for a cosmetic percentage. It is
+ * gone with the variable.
+ *
+ * If a second model ever becomes reachable it arrives with its own base URL,
+ * rate table and dialect. Change them together, here, in a commit that says so.
  */
-export function getContextWindow(modelId: string): number {
-  const id = modelId.toLowerCase();
-  // Kimi K3 (the production model on Modal) — 1M context.
-  if (/kimi|moonshot/.test(id)) return 1_000_000;
-  // Anthropic 1M-context variants (explicit suffix in the id).
-  if (/(opus|sonnet)[-_]?4[-_.]?7[-_.]?(1m|extended)/i.test(id) || /(:1m|@1m|-1m)/.test(id)) {
-    return 1_000_000;
-  }
-  // Anthropic Claude 3+ standard context.
-  if (/claude-(3|opus|sonnet|haiku|4|opus-4|sonnet-4|haiku-4)/.test(id)) return 200_000;
-  // Gemini 2.x and 3.x — 1M token windows are the norm.
-  if (/gemini-(2|2\.5|3|flash|pro)/.test(id)) return 1_000_000;
-  // GPT-4o family.
-  if (/gpt-4o/.test(id)) return 128_000;
-  // GPT-5: 400k as of late 2025.
-  if (/gpt-5/.test(id)) return 400_000;
-  // Sensible default.
-  return 200_000;
-}
+export const MODEL_ID = 'moonshotai/Kimi-K3';
 
-const DEFAULT_MODEL = 'moonshotai/Kimi-K3';
+/** Kimi K3's prompt-token capacity — 1M. Feeds the "% context full" pill only. */
+export const CONTEXT_WINDOW = 1_000_000;
 
 export function getModelProfile(): ModelProfile {
-  const id = (process.env.MODAL_INFERENCE_MODEL || DEFAULT_MODEL).trim();
   return {
-    id,
+    id: MODEL_ID,
     maxTokens: 16384,
     supportsReasoning: true,
-    contextWindow: getContextWindow(id),
+    contextWindow: CONTEXT_WINDOW,
   };
-}
-
-/** Convenience: just the active model id. */
-export function getModel(): string {
-  return getModelProfile().id;
 }
 
 /**

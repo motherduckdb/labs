@@ -17,11 +17,19 @@
  * supplement branch regardless of `QUACKBOT_DIVE_SUPPLEMENT`, which is what
  * keeps arms A and B comparable now that the flag defaults off.
  *
- * NOTE (Modal migration): the LLM transport is now Modal's Kimi K3 Shared API,
- * which serves ONE model — the historical "force Gemini" behaviour below is no
+ * NOTE (Modal migration): the LLM transport is now a dedicated Modal endpoint
+ * serving ONE model — the historical "force Gemini" behaviour below is no
  * longer reachable through it. Re-running these arms on Gemini needs a
  * MODAL_INFERENCE_BASE_URL that actually serves Gemini; re-running them on K3
  * is the un-done follow-up work called out in PLAN.md §9.
+ *
+ * BENCH_MODEL survives that, but only as half of a pair. The model id is a
+ * string in the request body — it does not route. Setting it alone just
+ * mislabels a K3 run; it is meaningful ONLY together with a
+ * MODAL_INFERENCE_BASE_URL pointed at an endpoint that serves that model. Even
+ * then the `reported cost (USD)` column stays wrong, because cost comes from
+ * `computeCostUSD`, which bills Kimi K3's rate table unconditionally. The
+ * script warns about both when you set it.
  *
  * Task set × N runs (default 3 prompts × 3 runs = 9 runs/arm, 27 total).
  * Every dive the model saves is tracked and deleted before exit (delete_dive
@@ -33,8 +41,8 @@
  *   npx tsx scripts/bench-dive-guide.ts
  *
  * Env knobs: BENCH_N (runs per prompt, default 3), BENCH_THINKING
- * (default 'low'), BENCH_MODEL (default: MODAL_INFERENCE_MODEL, i.e. Kimi K3),
- * BENCH_ARMS (comma list of A,B,C — default all).
+ * (default 'low'), BENCH_MODEL (default: MODEL_ID, i.e. Kimi K3 — see the
+ * pairing caveat above), BENCH_ARMS (comma list of A,B,C — default all).
  *
  * Never logs secrets.
  */
@@ -47,7 +55,7 @@ import { buildSystemPrompt } from '../src/core/system-prompt';
 import { fetchQueryGuideBlock } from '../src/core/query-guide';
 import { dispatchTool as realDispatchTool } from '../src/core/tool-dispatch';
 import { buildGeminiDiveSupplement } from '../src/core/gemini-dive-guide';
-import type { ModelProfile } from '../src/core/llm-client';
+import { CONTEXT_WINDOW, MODEL_ID, type ModelProfile } from '../src/core/llm-client';
 import type { TurnSink } from '../src/core/turn-sink';
 
 // ---------------------------------------------------------------------------
@@ -510,7 +518,7 @@ async function cleanup(client: Client, createdDiveIds: Set<string>): Promise<str
 async function main() {
   loadEnvKeys(ENV_PATH, [
     'MOTHERDUCK_TOKEN', 'MOTHERDUCK_API_URL',
-    'MODAL_INFERENCE_BASE_URL', 'MODAL_INFERENCE_MODEL',
+    'MODAL_INFERENCE_BASE_URL',
     'MODAL_KEY', 'MODAL_SECRET', 'MODAL_INFERENCE_KEY',
   ]);
   if (!process.env.MOTHERDUCK_TOKEN) throw new Error('MOTHERDUCK_TOKEN missing from .env');
@@ -520,20 +528,33 @@ async function main() {
     throw new Error('Modal credentials missing from .env — set MODAL_KEY + MODAL_SECRET, or MODAL_INFERENCE_KEY');
   }
 
-  const model = (process.env.BENCH_MODEL || process.env.MODAL_INFERENCE_MODEL || 'moonshotai/Kimi-K3').trim();
+  const model = (process.env.BENCH_MODEL || MODEL_ID).trim();
+  const baseUrl = (process.env.MODAL_INFERENCE_BASE_URL || '').trim();
   const thinkingLevel = ((process.env.BENCH_THINKING || 'low').trim() as ThinkingLevel);
   const N = Number(process.env.BENCH_N || '3');
   const armIds = ((process.env.BENCH_ARMS || 'A,B,C').split(',').map((s) => s.trim()) as ArmId[])
     .filter((id) => id in ARMS);
 
   console.log(`[bench] model=${model} thinking=${thinkingLevel} N=${N} arms=${armIds.join(',')}`);
-  console.log(`[bench] deployed MODAL_INFERENCE_MODEL is '${process.env.MODAL_INFERENCE_MODEL ?? '(default)'}'`);
+  console.log(`[bench] endpoint=${baseUrl || '(unset — the loop will throw)'}`);
+  // The id does not route; the endpoint does. Overriding one without the other
+  // benchmarks whatever that endpoint serves under a name it isn't.
+  if (model !== MODEL_ID) {
+    console.warn(
+      `[bench] WARNING: BENCH_MODEL='${model}' but the model id only labels the request — ` +
+      `it is the endpoint above that picks the model. Confirm that endpoint serves '${model}'. ` +
+      `The 'reported cost (USD)' column is Kimi K3 rates regardless (computeCostUSD has no ` +
+      `model argument), so treat it as token counts, not dollars.`,
+    );
+  }
 
   const profile: ModelProfile = {
     id: model,
     maxTokens: 16384,
+    // K3's window. Only right while the endpoint is the K3 one; the bench uses
+    // it for the same cosmetic percentage the bot does, so it is not load-bearing.
+    contextWindow: CONTEXT_WINDOW,
     supportsReasoning: true,
-    contextWindow: 1_000_000,
   };
 
   const client = await createMCPClient('bench-p3');
@@ -583,7 +604,8 @@ async function main() {
       `- Model: \`${model}\``,
       `- Thinking level: \`${thinkingLevel}\`  ·  sampling params: locked by the model (none sent)`,
       `- Runs per prompt: ${N}  ·  arms: ${armIds.join(', ')}`,
-      `- Deployed MODAL_INFERENCE_MODEL: \`${process.env.MODAL_INFERENCE_MODEL ?? '(default)'}\``,
+      `- Inference endpoint: \`${baseUrl || '(unset)'}\`  ·  the endpoint, not the id above, selects the model`,
+      `- Cost column: Kimi K3 rates (\`computeCostUSD\` is unconditional)${model === MODEL_ID ? '' : ' — WRONG for this model'}`,
       `- MCP endpoint: \`${(process.env.MOTHERDUCK_API_URL || '').replace(/\/$/, '')}/mcp\` (prod, jm_quackbot PAT)`,
       `- Query guide prefetched into system prompt: ${allRows.length ? 'yes' : 'n/a'}`,
       '',
