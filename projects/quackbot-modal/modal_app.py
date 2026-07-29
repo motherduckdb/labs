@@ -70,15 +70,20 @@ image = (
 
 # One secret carrying everything the bot needs. Modal surfaces these as plain
 # environment variables, so the TypeScript side's `process.env` reads are
-# unchanged from the Fly deployment. Create it with:
+# unchanged from the Fly deployment. Build it with:
 #
-#   modal secret create quackbot-modal \
-#     SLACK_BOT_TOKEN=xoxb-... \
-#     SLACK_SIGNING_SECRET=... \
-#     MOTHERDUCK_TOKEN=... \
-#     DATABASE_URL=postgres://... \
-#     MODAL_INFERENCE_BASE_URL=... \
-#     MODAL_KEY=wk-... MODAL_SECRET=ws-...
+#   python3 scripts/make-modal-secret.py
+#
+# and NOT by hand. The script assembles the secret without any credential
+# being typed into a shell, and reads the source .env as data rather than
+# sourcing it — a DATABASE_URL carrying `&channel_binding=require` breaks zsh
+# on the bare `&`, and the failures that don't error (glob expansion, command
+# substitution) are worse than the one that does.
+#
+# The keys it sets are SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, MOTHERDUCK_TOKEN,
+# DATABASE_URL, MODAL_INFERENCE_KEY and MODAL_INFERENCE_BASE_URL. There is no
+# MODAL_KEY/MODAL_SECRET pair: buildAuthHeaders sends one dot-joined bearer
+# (llm-client.ts), so the two-variable form authenticates nothing.
 #
 # SLACK_SIGNING_SECRET is new — Socket Mode never needed it, the HTTP Events
 # API does. SLACK_APP_TOKEN (xapp-) is no longer used at all.

@@ -28,9 +28,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FLY_ENV = os.path.normpath(os.path.join(HERE, "..", "..", "quackbot", ".env"))
 
 FROM_FLY = ["SLACK_BOT_TOKEN", "MOTHERDUCK_TOKEN", "DATABASE_URL"]
-# MODAL_INFERENCE_BASE_URL is not a credential, but it lives here anyway: the
-# fallback in llm-client.ts is the Shared API, which this workspace is not
-# entitled to, so omitting it turns every LLM call into a 401.
+# MODAL_INFERENCE_BASE_URL is not a credential, but it lives here anyway
+# because it is required: the endpoint is per-workspace, so there is nothing
+# sensible to default to. getChatCompletionsUrl() throws without it and
+# worker.ts lists it in REQUIRED_ENV, so omitting it here means a container
+# that dies at startup. (It used to fall back to Modal's Shared API, which
+# this workspace has no entitlement to — a silent 401 instead of a clear
+# "you forgot a variable". That default is gone.)
 FROM_NEW = ["SLACK_SIGNING_SECRET", "MODAL_INFERENCE_KEY", "MODAL_INFERENCE_BASE_URL"]
 
 

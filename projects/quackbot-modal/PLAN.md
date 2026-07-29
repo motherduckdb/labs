@@ -33,7 +33,7 @@ Slack ──HTTPS──> web  (@modal.asgi_app, FastAPI, min_containers=1)
                                 │
                                 v
                  run_turn  (@app.function, cpu=2, memory=2048, timeout=900)
-                   └─ subprocess: node --import tsx src/worker.ts  (event JSON on stdin)
+                   └─ subprocess: node_modules/.bin/tsx src/worker.ts (event JSON on stdin)
                         ├─ pg advisory lock ......... per-thread mutex
                         ├─ pg unique insert ......... event dedupe
                         ├─ pg poll .................. Approve/Deny handshake
@@ -119,7 +119,15 @@ OpenRouter-specific behaviours. Each needs a decision:
 | `reasoning: { effort }` | Top-level `reasoning_effort`: `low` \| `high` \| `max` |
 | `temperature: 0.3` | **Remove** — K3 locks sampling params |
 | `max_tokens` | `max_completion_tokens` (`max_tokens` is deprecated) |
-| Default `google/gemini-3-flash-preview` | Default `moonshotai/Kimi-K3` |
+| Default `google/gemini-3-flash-preview` ⚠️ see below | Default `moonshotai/Kimi-K3` |
+
+⚠️ **That last row is the pre-migration code's `DEFAULT_MODEL` — configuration, not a
+measurement, and it is left as written because as configuration it is accurate.** It does
+NOT say what the Fly deploy was actually serving. Telemetry says the 171 pre-migration
+model calls ran **`openai/gpt-5.6-luna`** (corroborated by
+`src/core/tool-invocation.test.ts:32`, which records live `gpt-5.6-luna` arg-padding
+behaviour). §7.5 quoted this cell as the measured baseline and was wrong to; if you need
+to know what ran, query controllog, not this table.
 
 Five of these are behaviour changes rather than renames, and they're where the risk sits:
 
@@ -141,8 +149,9 @@ bills at the full $15/MTok — the original collapse charged for thinking on the
 that asks for none.
 
 The unset default is `low` in *both* places that decide it. `DEFAULT_THINKING` in
-`src/slack/handlers.ts` was `medium`, a leftover from Gemini 3 Flash where thinking was fast
-and cheap enough not to show; because it always supplied a valid level, `toReasoningEffort`'s
+`src/slack/handlers.ts` was `medium`, a leftover from the OpenRouter era (which model it was
+chosen for is not recorded — see the ⚠️ under §3's table before assuming); because it always
+supplied a valid level, `toReasoningEffort`'s
 documented `low` fallback could never fire. Production pinned `QUACKBOT_THINKING_LEVEL=low`
 in `modal_app.py`'s `CONFIG`, so the live bot was never affected — the bug was that deleting
 one line of Python would have raised every turn's reasoning budget with nothing to catch it.
@@ -152,11 +161,15 @@ OpenRouter hands back `usage.cost`. Modal won't. We compute it from
 `$3.00 / $0.30 cached / $15.00` per MTok using `prompt_tokens_details.cached_tokens`. Rates
 go in one constant with a comment pointing at the model library page, since they'll drift.
 
-**d) Model-id regexes.** `getContextWindow` and `VISION_MODEL_PATTERNS` pattern-match
-OpenRouter id shapes. Add a Kimi case: 1M context, vision-capable.
+**d) Model-id regexes — SUPERSEDED.** The plan here was to add a Kimi case to `getContextWindow`
+and `VISION_MODEL_PATTERNS`, which pattern-matched OpenRouter id shapes. `getContextWindow` is
+**gone**: it was a lookup table keyed on an id that turned out not to select anything, and it
+went with the `MODAL_INFERENCE_MODEL` override. The context window is now the plain constant
+`CONTEXT_WINDOW = 1_000_000` beside `MODEL_ID` in `llm-client.ts`, which is the honest shape —
+one model, one endpoint, one rate table, one dialect. **The model is not configurable; do not
+document it as though it were.**
 *Note:* `modelSupportsVision` is exported but never called anywhere, and the bot has no Slack
-file-upload handling — the vision path is dead code inherited from data-chat-mini. Updating
-the regex is cheap correctness, not a feature.
+file-upload handling — the vision path is dead code inherited from data-chat-mini.
 
 **e) The Gemini dive-guide supplement dies.** `agentic-loop.ts:342-345` gates
 `buildGeminiDiveSupplement()` behind `/gemini/i.test(profile.id)`. Kimi won't match, so the
@@ -232,7 +245,11 @@ Not a code change, but it gates the live smoke and is **not reversible without a
 - `SLACK_APP_TOKEN` (`xapp-`) becomes unnecessary.
 
 Slack won't accept the request URL until the endpoint is live and answers the
-`url_verification` challenge, so **deploy before flipping the manifest**.
+`url_verification` challenge, so **deploy before flipping the manifest** — and note that for
+a *fresh* app (as opposed to this migration, which reconfigured an app that already existed)
+that instruction is circular: deploying needs `SLACK_SIGNING_SECRET`, which needs the app.
+The README's Setup step 1 documents the way out — create the app from a manifest with the
+URLs removed, deploy, then apply the full manifest.
 
 ⚠️ **This is a one-app-at-a-time cutover.** Flipping the manifest to HTTP immediately stops
 the Fly bot from receiving events. If you want both alive at once for comparison, that needs
@@ -265,8 +282,14 @@ npm package version and the browser build — the same reason the Fly Dockerfile
 `copy=True` is required on the files that later build steps depend on; without it Modal mounts
 them at container start, after `npm ci` would have run.
 
-Deploy: `modal deploy modal_app.py`. Logs: `modal app logs quackbot-modal -f` (note: Starter
-tier retains **1 day** of logs — worth knowing before relying on them for a postmortem).
+Deploy is not one command; the ordered path is in the README's
+[Deploy](./README.md#deploy-modal) section. In brief: build the `quackbot-modal` secret with
+`scripts/make-modal-secret.py` (never an inline `modal secret create` — the script's
+docstring explains why: no credential through a shell, and the `.env` is parsed as data
+rather than sourced, which a `DATABASE_URL` containing a bare `&` requires),
+`modal run modal_app.py::migrate`, then `modal deploy modal_app.py`.
+Logs: `modal app logs quackbot-modal -f` (note: Starter tier retains **1 day** of logs —
+worth knowing before relying on them for a postmortem).
 
 ---
 
@@ -295,10 +318,15 @@ tier retains **1 day** of logs — worth knowing before relying on them for a po
      workspace lacks — it 401s. So the default wasn't a fallback, it was a known-broken
      endpoint chosen silently, which is the *same* failure the original guess was rejected
      for. Restored to throwing, with the real per-workspace URL named in the message.
-   - `buildAuthHeaders()` supports **both** schemes and prefers the proxy-token pair when
-     `MODAL_KEY` and `MODAL_SECRET` are both set, falling back to
-     `Authorization: Bearer $MODAL_INFERENCE_KEY`. Collapse to the winner and drop the dead
-     env vars from `.env.example` once the dashboard settles it.
+   - `buildAuthHeaders()` — **RESOLVED, and this bullet used to describe the old shape.** It
+     said the function supports both schemes and prefers a `MODAL_KEY`/`MODAL_SECRET` pair.
+     It no longer does: it is one line returning
+     `Authorization: Bearer $MODAL_INFERENCE_KEY` (`llm-client.ts:71-73`), because the
+     endpoint accepts the proxy pair dot-joined into a single bearer. **`MODAL_KEY` and
+     `MODAL_SECRET` are retired env vars — do not set them, and do not copy them out of any
+     older instruction.** They survive only in test env-scrubbing lists, a stale comment at
+     `modal_app.py:81`, and `scripts/bench-dive-guide.ts`; none of those is a live code path,
+     and the last two are worth cleaning up.
    - `src/worker.ts` lists `MODAL_INFERENCE_BASE_URL` in `REQUIRED_ENV` so a container fails
      at startup rather than mid-turn, after the placeholder is posted. The credentials are
      deliberately *not* listed, because "exactly one of two sets" is not a check that list can
@@ -310,28 +338,62 @@ tier retains **1 day** of logs — worth knowing before relying on them for a po
    webscraper example.
 4. **Cold-start latency for `run_turn`** is unmeasured. The bot posts a placeholder message
    immediately today, so a second or two of extra latency is cosmetic — but worth measuring.
-5. **Model latency is the migration's biggest regression, and it is mostly the model.**
-   `model_completion.wall_ms` p50 went from **2.4s** (Gemini 3 Flash via OpenRouter, 171
-   calls) to **39.0s** (Kimi K3 on Modal, 6 calls). Six calls is a thin sample — one cold
-   endpoint or one long turn moves that p50 a lot — so treat "16×" as an order of magnitude,
-   not a figure. It is also not a host comparison: a flash-tier proprietary model was
-   replaced with a frontier-scale open-weights MoE. Prefill is ~12–14K tokens either way
-   (≈5.4K system prompt + ≈8K guide block + tool schemas) and costs seconds at most, so the
-   gap is decode throughput.
+5. **Per-turn latency AND cost are the migration's biggest regression — and the first
+   diagnosis of them was wrong. Corrected here rather than overwritten.**
+
+   `model_completion.wall_ms` p50 went from **2.4s** (171 calls) to **39.0s** (Kimi K3 on
+   Modal, 6 calls). Six calls is a thin sample — one cold endpoint or one long turn moves
+   that p50 a lot — so treat "16×" as an order of magnitude, not a figure.
+
+   **What the first version of this entry got wrong.** It said the baseline was Gemini 3
+   Flash and that prefill was "~12–14K tokens either way … so the gap is decode throughput".
+   Both premises were false:
+
+   - The baseline model id was copied out of §3's *configuration* table (the pre-migration
+     `DEFAULT_MODEL`) and presented as measured. **A configured default is not a
+     measurement.** Telemetry says those 171 calls ran `openai/gpt-5.6-luna`. This is the
+     specific failure mode worth naming: the number was in a table in this document, it
+     looked authoritative, and nobody asked what its column heading meant.
+   - The prompt size was never measured either. Telemetry says five of the six Kimi calls
+     carried **236–239K prompt tokens** — ~20× the claim. The "≈8K guide block" traces to
+     `query-guide.ts:12`, which says the guide is ~5-10 **KB**; a byte figure was read as a
+     token figure. The decode-throughput conclusion rested entirely on the prompt being
+     small, so it is **withdrawn, not replaced** — `wall_ms` covers prefill and decode
+     together and nothing records time-to-first-token, so which dominates is unknown.
+
+   **The correction turns this into a cost finding, which is probably the bigger one.** At
+   $3.00/MTok uncached, 236K prompt tokens is **$0.71 per model call**; completion at
+   $15/MTok is noise beside it. Several calls per Slack turn puts a single question in a
+   thread in the dollars. The mechanism analysis is in the README's "Latency and cost"
+   section; the short version is that **nothing caps a tool result** on its way into the
+   message history (`executeToolWithStatus` → `dispatchTool` → `tool_result`; every
+   `slice(0, 500)` in the repo is display-side) and **nothing caps history replay** —
+   `handlers.ts` spreads the whole stored array into each turn and saves it back, so a big
+   query result is re-billed on every model call of every later turn in that thread, forever.
+   §4 moved history into Postgres and never gave it a bound; that omission is now load-bearing.
 
    Two things were genuinely ours and are fixed: the `DEFAULT_THINKING` mismatch above, and
    prompt-prefix instability across turns — `conversations.messages` is `jsonb`, jsonb does
    not preserve object key order, and tool-call `arguments` are echoed back into the prefix
    verbatim, so every turn after the first re-sent its own history reshuffled and invalidated
    the cache from the prior turn's first tool call onward (`stableStringify` in
-   `llm-client.ts` now canonicalises it). Streaming was checked and is *not* buffered — the
-   sink paints on the first event of a call, bypassing its own throttle.
+   `llm-client.ts` now canonicalises it). At 236K tokens that fix is worth roughly 10× on the
+   prompt bill ($0.30 vs $3.00 per MTok) rather than the housekeeping it was filed as — if it
+   works, which is unverified. Streaming was checked and is *not* buffered — the sink paints
+   on the first event of a call, bypassing its own throttle.
 
    **Unresolved and worth a live probe:** the endpoint returns
    `prompt_tokens_details: null`, so it reports no cached-token count. We cannot confirm the
    prefix cache is being hit at all, cannot measure the fix above, and `computeCostUSD` bills
    every prompt token at the uncached $3.00/MTok rate. Settling it means posting the same
    prefix twice and reading `usage` off the response.
+
+   **Unresolved and answerable from telemetry we already write, at no code cost:** which
+   mechanism produced the 236K prompts (`tool_end.payload.result_bytes` and
+   `model_prompt.payload.history_len`), and whether the 171 baseline calls carried comparable
+   prompts (`model_prompt.payload.prompt_tokens`). Until that last one is answered, "K3 is
+   16× slower" and "our prompts got 20× bigger" are two live explanations for the same
+   observation and this plan cannot choose between them. Nobody has run the query.
 
 ---
 

@@ -519,13 +519,18 @@ async function main() {
   loadEnvKeys(ENV_PATH, [
     'MOTHERDUCK_TOKEN', 'MOTHERDUCK_API_URL',
     'MODAL_INFERENCE_BASE_URL',
-    'MODAL_KEY', 'MODAL_SECRET', 'MODAL_INFERENCE_KEY',
+    'MODAL_INFERENCE_KEY',
   ]);
   if (!process.env.MOTHERDUCK_TOKEN) throw new Error('MOTHERDUCK_TOKEN missing from .env');
-  // Either auth scheme is acceptable — see buildAuthHeaders in llm-client.ts.
-  const hasProxyToken = Boolean(process.env.MODAL_KEY && process.env.MODAL_SECRET);
-  if (!hasProxyToken && !process.env.MODAL_INFERENCE_KEY) {
-    throw new Error('Modal credentials missing from .env — set MODAL_KEY + MODAL_SECRET, or MODAL_INFERENCE_KEY');
+  // One scheme only. This used to also accept a MODAL_KEY + MODAL_SECRET pair,
+  // which buildAuthHeaders (llm-client.ts) no longer reads — so that branch
+  // passed validation here and then sent an empty bearer. The proxy pair still
+  // works, but dot-joined into MODAL_INFERENCE_KEY: `wk-....ws-...`.
+  if (!process.env.MODAL_INFERENCE_KEY) {
+    throw new Error('MODAL_INFERENCE_KEY missing from .env — the dot-joined proxy pair, wk-<id>.ws-<secret>');
+  }
+  if (!process.env.MODAL_INFERENCE_BASE_URL) {
+    throw new Error('MODAL_INFERENCE_BASE_URL missing from .env — required, the endpoint is per-workspace');
   }
 
   const model = (process.env.BENCH_MODEL || MODEL_ID).trim();
