@@ -111,6 +111,58 @@ check("skips a plain message in a channel", m._should_spawn(env(DM, channel_type
 check("skips a message with no channel",    m._should_spawn(env(DM, channel=None)), False)
 check("skips a message with no ts",         m._should_spawn(env(DM, ts=None)), False)
 
+
+# ---------------------------------------------------------------------------
+# _spawn_decision — the per-delivery decision, retries included
+# ---------------------------------------------------------------------------
+# The same asymmetry as above, sharpened. A Slack RETRY that we refuse to spawn
+# is a false negative with no second chance: Slack retries because it never saw
+# a 200, and among the reasons for that are ones where the turn never started
+# at all — `run_turn.spawn()` runs *before* the ack, so a Modal API blip, or
+# this container being evicted between the spawn and the response, both leave a
+# retry as the only surviving copy of the user's message. Dropping it is a
+# silent, permanent loss; the user just sees a bot that ignored them.
+#
+# The other direction costs one container that boots, loses the worker's
+# (channel, ts) dedupe claim — written BEFORE any work in handlers.ts, so a
+# retry arriving mid-turn cannot double-post — and exits. At most three of
+# those per event, since three is Slack's whole retry budget. Spend the
+# container.
+#
+# These cases pin the behaviour a previous version got wrong by short-circuiting
+# on `x-slack-retry-num`, so that reintroducing that shortcut fails here.
+print()
+
+NEW = {}                                       # first delivery: no retry headers
+RETRY1 = {"x-slack-retry-num": "1", "x-slack-retry-reason": "http_timeout"}
+RETRY3 = {"x-slack-retry-num": "3"}            # Slack's last attempt; also no reason header
+
+def spawns(body, headers):
+    return m._spawn_decision(body, headers)[0]
+
+def note(body, headers):
+    return m._spawn_decision(body, headers)[1]
+
+# Retries of a real turn MUST spawn — this is the event-loss fix.
+check("spawns a retried DM",                spawns(env(DM), RETRY1))
+check("spawns a retried app_mention",       spawns(env(MENTION), RETRY1))
+check("spawns Slack's final retry",         spawns(env(DM), RETRY3))
+check("spawns a retried assistant_thread_started",
+      spawns({"type": "event_callback", "event": {"type": "assistant_thread_started"}}, RETRY1))
+# Unchanged for first deliveries.
+check("spawns a first-delivery DM",         spawns(env(DM), NEW))
+
+# The body filter still decides; a retried non-turn is still a non-turn.
+check("skips a retried message_changed",    spawns(env(DM, subtype="message_changed"), RETRY1), False)
+check("skips a retried bot message",        spawns(env(DM, bot_id="B999"), RETRY1), False)
+
+# The note is what makes a retry visible in `modal app logs` — without it a
+# duplicate-looking turn and a genuine re-delivery are indistinguishable there.
+check("note names the retry attempt",       "slack retry 1" in note(env(DM), RETRY1))
+check("note carries Slack's reason",        "http_timeout" in note(env(DM), RETRY1))
+check("note tolerates a missing reason",    "slack retry 3" in note(env(DM), RETRY3))
+check("note marks a first delivery",        note(env(DM), NEW) == "first delivery")
+
 print()
 if fails:
     print("FAILURES:"); [print(" ", f) for f in fails]; sys.exit(1)

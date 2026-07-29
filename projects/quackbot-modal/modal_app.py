@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import time
+import traceback
 
 import modal
 
@@ -89,6 +90,23 @@ CONFIG = {
     "QUACKBOT_THINKING_LEVEL": "low",
 }
 
+# How the TypeScript entrypoints are launched, and NOT via `npx`. Every Slack
+# turn pays this once, before any Slack, database, MCP or model work starts;
+# `npx` spends roughly a second of that re-resolving a binary whose location we
+# already know, because it re-walks node_modules and consults its own cache on
+# every invocation.
+#
+# This is the exact file `npx tsx` ends up executing. `npm ci --omit=dev`
+# (image build, above) installs tsx — it is a runtime dependency, not a dev one
+# — and npm links every dependency's `bin` entry into `node_modules/.bin`;
+# tsx's is `dist/cli.mjs`, so the shim is a mode-755 symlink to a file starting
+# `#!/usr/bin/env node`. Verified against a clean `npm ci --omit=dev` from this
+# repo's lockfile (tsx 4.23.0), not assumed.
+#
+# `node node_modules/tsx/dist/cli.mjs` would be equivalent; `node --import tsx`
+# would not — that registers the loader only, and is a different CLI contract.
+TSX = "/app/node_modules/.bin/tsx"
+
 
 # ---------------------------------------------------------------------------
 # run_turn — one Slack event, one turn, then exit
@@ -113,7 +131,7 @@ CONFIG = {
 def run_turn(event: dict) -> None:
     """Run the TypeScript worker for exactly one Slack event."""
     proc = subprocess.run(
-        ["npx", "tsx", "src/worker.ts"],
+        [TSX, "src/worker.ts"],
         input=json.dumps(event),
         capture_output=True,
         text=True,
@@ -192,7 +210,7 @@ def migrate() -> None:
 )
 def housekeeping() -> None:
     proc = subprocess.run(
-        ["npx", "tsx", "src/housekeeping.ts"],
+        [TSX, "src/housekeeping.ts"],
         capture_output=True,
         text=True,
         cwd="/app",
@@ -259,6 +277,59 @@ def _should_spawn(body: dict) -> bool:
         return True
 
     return True
+
+
+def _spawn_decision(body: dict, headers) -> tuple[bool, str]:
+    """Does this HTTP delivery get a container, and what should be logged about it?
+
+    Returns `(spawn, note)`, where `note` names the delivery — "first delivery"
+    or the retry number and Slack's stated reason — for the log line.
+
+    RETRIES ARE SPAWNED LIKE ANY OTHER DELIVERY. This is the part that was
+    wrong before: the endpoint used to answer 200 and drop anything carrying
+    `x-slack-retry-num`, arguing that we ack before doing the work, so a retry
+    can only mean "our ack was slow" and the turn is already running. That is
+    true of *most* retries and of none of these:
+
+      * `run_turn.spawn()` runs BEFORE the 200 is returned. If the spawn
+        raises — a Modal API blip, a transient auth failure, a scheduling
+        error — FastAPI answers 500 and no turn exists.
+      * The same window loses the event if this container dies inside it: an
+        eviction, or a `modal deploy` rolling the web container mid-request.
+      * Anything that makes the request never reach the handler at all — a
+        Modal-side 502, a connection reset — has the same shape from Slack's
+        side, and equally no turn.
+
+    In each case Slack's retry is the only remaining copy of the user's
+    message, and ignoring it loses that message permanently and silently: the
+    bot simply never answers, with nothing in any log saying why.
+
+    Duplicates are caught where they can be caught correctly — in the worker,
+    against shared state, rather than here in a container that knows nothing
+    about the other deliveries. `handle()` in src/slack/handlers.ts claims
+    `(channel, ts)` with `insert … on conflict do nothing` BEFORE any Slack,
+    database or model work, so a retry landing mid-turn loses the claim and
+    exits without posting. (Checked, because the fix depends on it: if the
+    claim were written at the END of a turn, letting retries through would
+    double-post.) Assistant lifecycle events bypass that claim, but all they
+    do is an idempotent `kvSet`, so replaying one is a no-op too.
+
+    The trade, priced: ignoring retries costs a permanently lost message every
+    time a spawn fails. Spawning them costs one extra container that boots,
+    loses the dedupe claim and exits — at most three times per event, since
+    that is Slack's whole retry budget. A silent unrecoverable loss is worth
+    more than three seconds of a 2-CPU container.
+
+    The `_should_spawn` filter still applies to retries: it is a pure function
+    of the body, so a retried non-turn is still a non-turn.
+    """
+    retry_num = headers.get("x-slack-retry-num")
+    if retry_num:
+        reason = headers.get("x-slack-retry-reason") or "-"
+        note = f"slack retry {retry_num} (reason={reason})"
+    else:
+        note = "first delivery"
+    return _should_spawn(body), note
 
 
 def _verify_slack_signature(signing_secret: str, headers, raw_body: bytes) -> bool:
@@ -381,26 +452,35 @@ def web():
         if body.get("type") == "url_verification":
             return JSONResponse({"challenge": body.get("challenge")})
 
-        # Slack retries anything it thinks failed. We ack immediately and do
-        # the work out of band, so a retry means "our ack was slow", never
-        # "the work didn't happen" — replaying it would double-post. The
-        # worker's own (channel, ts) dedupe is the backstop; this just avoids
-        # spending a container to discover that.
-        if request.headers.get("x-slack-retry-num"):
-            return PlainTextResponse("ok (retry ignored)")
-
         # Drop the events that provably aren't turns before paying for a
-        # container. The worker still re-checks; this is an optimisation, not
-        # the decision. See `_should_spawn`.
-        if not _should_spawn(body):
-            event = body.get("event") or {}
+        # container, and decide how to treat a Slack retry. The worker still
+        # re-checks both; this is an optimisation, not the decision. See
+        # `_spawn_decision` and `_should_spawn`.
+        spawn, note = _spawn_decision(body, request.headers)
+        event = body.get("event") or {}
+        if not spawn:
             print(
                 f"[edge] not a turn, not spawning: type={event.get('type')} "
-                f"subtype={event.get('subtype') or '-'}"
+                f"subtype={event.get('subtype') or '-'} [{note}]"
             )
             return PlainTextResponse("ok (not a turn)")
 
-        run_turn.spawn(body)
+        try:
+            run_turn.spawn(body)
+        except Exception as err:
+            # The spawn is the entire handoff. Acking a delivery whose spawn
+            # failed throws the message away, so answer 500 instead and let
+            # Slack redeliver — which now reaches the same path rather than
+            # being dropped. Log it as well: a bare 500 surfaces as a Slack
+            # delivery failure with no cause attached to it anywhere.
+            print(
+                f"[edge] spawn FAILED [{note}] type={event.get('type')} "
+                f"channel={event.get('channel')} ts={event.get('ts')}: {err!r}\n"
+                f"{traceback.format_exc()}"
+            )
+            return PlainTextResponse("spawn failed", status_code=500)
+
+        print(f"[edge] spawned run_turn [{note}] type={event.get('type')}")
         return PlainTextResponse("ok")
 
     @api.post("/slack/interactive")
