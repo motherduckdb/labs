@@ -456,7 +456,9 @@ async def _evaluate_loop(
     width = len(str(len(questions)))
     sem = asyncio.Semaphore(concurrency)
     write_lock = asyncio.Lock()
-    provider = OpenRouterProvider(reasoning_effort=None if reasoning == "off" else reasoning)
+    # OpenRouter's documented "disable reasoning" is effort="none"; omitting the
+    # reasoning param would instead fall back to the model's endpoint default.
+    provider = OpenRouterProvider(reasoning_effort="none" if reasoning == "off" else reasoning)
     skill_text = SKILL_PATH.read_text() if SKILL_PATH.exists() else None
     md_token = os.environ.get("MOTHERDUCK_TOKEN")
     if not md_token:
