@@ -48,6 +48,7 @@ MODEL_ALIASES = {
     "haiku": "anthropic/claude-haiku-4.5",
     "gemini": "google/gemini-3-flash-preview",
     "gpt": "openai/gpt-5.5",
+    "luna": "openai/gpt-5.6-luna",
 }
 
 
@@ -250,10 +251,13 @@ def _correctness_mark(c: str) -> str:
 @click.option("--task-ids", "task_ids", type=str, default=None,
               help="Comma-separated task_ids to run as one batch (overrides --split).")
 @click.option("--max-turns", type=int, default=40)
-@click.option("--reasoning", type=click.Choice(["low", "medium", "high", "off"]), default="low",
+@click.option("--reasoning", type=click.Choice(["low", "medium", "high", "max", "off"]), default="low",
               help="Thinking budget. Default 'low' — the cost/accuracy sweet spot for this skill.")
 @click.option("--watch", is_flag=True, default=False, help="Stream tool calls live.")
 @click.option("--concurrency", type=int, default=15, help="Questions to run in parallel.")
+@click.option("--luna-max", "luna_max", is_flag=True, default=False,
+              help="Shortcut: openai/gpt-5.6-luna at reasoning=max (418/419 test @ $1.86, "
+                   "~1/5 the gemini cost). Overrides --model and --reasoning.")
 @click.option("--no-guides", "no_guides", is_flag=True, default=False,
               help="Ablation baseline: list_guides/get_guide always answer 'No guides "
                    "exist.' — measures the agent without the semantic layer.")
@@ -269,10 +273,13 @@ def evaluate(
     reasoning: str,
     watch: bool,
     concurrency: int,
+    luna_max: bool,
     no_guides: bool,
     out: Path | None,
 ) -> None:
     """Run the agent across the eval set and write per-question JSONL."""
+    if luna_max:
+        model, reasoning = "luna", "max"
     model = MODEL_ALIASES.get(model, model)
     database = database or _md_database()
 
@@ -311,6 +318,24 @@ def evaluate(
         max_turns=max_turns, reasoning=reasoning, watch=watch,
         concurrency=concurrency, no_guides=no_guides, out=out,
     ))
+
+
+def _describe_exception(e: BaseException) -> str:
+    """Render an exception for the jsonl `error` field. An ExceptionGroup's
+    str() hides the sub-exceptions (the MCP SDK surfaces transport failures
+    through an anyio TaskGroup) — flatten them so the actual cause is recorded."""
+    desc = f"{type(e).__name__}: {e}"
+    if isinstance(e, BaseExceptionGroup):
+        leaves: list[BaseException] = []
+        stack: list[BaseException] = [e]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, BaseExceptionGroup):
+                stack.extend(cur.exceptions)
+            else:
+                leaves.append(cur)
+        desc += " [" + "; ".join(f"{type(s).__name__}: {s}" for s in leaves) + "]"
+    return desc
 
 
 def _tid_prefix(task_id: str | None) -> str:
@@ -483,23 +508,35 @@ async def _evaluate_loop(
 
             # One MCP session per task: all data + schema + guide access goes
             # server-side against md:<db> through this read-only session.
+            # MCP transport flakes come in bursts under concurrency (observed
+            # 18/419 on one run, all fine on retry) — one retry keeps a
+            # transient outage from being scored as incorrect answers.
             t0 = time.time()
-            try:
-                async with create_mcp_session(
-                    session_hint=tid, database=database, no_guides=no_guides,
-                ) as mcp:
-                    run = await run_agent(
-                        mcp=mcp, database=database,
-                        question=q["question"], guidelines=q.get("guidelines"),
-                        model=model, provider=provider, skill_text=skill_text,
-                        max_turns=max_turns,
-                        on_tool_call=(lambda call, _tid=tid: _render_tool_call(call, _tid)) if watch else None,
-                        on_thinking=(lambda text, _tid=tid: _render_thinking(text, _tid)) if watch else None,
-                    )
-                err = None
-            except Exception as e:
-                run = None
-                err = f"{type(e).__name__}: {e}"
+            run, err = None, None
+            for attempt in range(2):
+                try:
+                    async with create_mcp_session(
+                        session_hint=tid, database=database, no_guides=no_guides,
+                    ) as mcp:
+                        run = await run_agent(
+                            mcp=mcp, database=database,
+                            question=q["question"], guidelines=q.get("guidelines"),
+                            model=model, provider=provider, skill_text=skill_text,
+                            max_turns=max_turns,
+                            on_tool_call=(lambda call, _tid=tid: _render_tool_call(call, _tid)) if watch else None,
+                            on_thinking=(lambda text, _tid=tid: _render_thinking(text, _tid)) if watch else None,
+                        )
+                    err = None
+                    break
+                except Exception as e:
+                    run = None
+                    err = _describe_exception(e)
+                    if attempt == 0:
+                        console.print(
+                            f"  {_tid_prefix(tid)}[yellow]run failed, retrying:[/yellow] "
+                            f"[dim]{err[:160]}[/dim]"
+                        )
+                        await asyncio.sleep(3)
 
             elapsed = time.time() - t0
 
