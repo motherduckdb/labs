@@ -95,10 +95,15 @@ def format_answer(
     # concatenation.
     if len(result) == 1 and len(result[0]) == 1:
         return str(result[0][0])
-    elements = [
-        str(row[0]) if len(row) == 1 else ":".join(str(value) for value in row)
-        for row in result
-    ]
+    element_type = criteria.get("element_type", "string")
+    elements = []
+    for row in result:
+        if len(row) == 1:
+            elements.append(str(row[0]))
+        elif element_type == "label:number" and len(row) == 2:
+            elements.append(_format_compound(list(row), decimals, ":"))
+        else:
+            elements.append(":".join(str(value) for value in row))
     return f"{delimiter} ".join(elements)
 
 
@@ -148,33 +153,30 @@ def _compound_match(
     expected_count = label_count + 1
     if len(pred_parts) != expected_count or len(gold_parts) != expected_count:
         return False
-    if not all(
-        _labels_match(pred_parts[index], gold_parts[index]) for index in range(label_count)
-    ):
+    if not all(_labels_match(pred_parts[index], gold_parts[index]) for index in range(label_count)):
         return False
     return _numbers_match(pred_parts[-1], gold_parts[-1], tolerance)
 
 
-def _list_element_match(predicted: str, gold: str) -> bool:
-    # Compound list elements (currently AC-014) compare their label exactly
-    # after normalization and their numeric tail sign-sensitively.
+def _list_element_match(predicted: str, gold: str, criteria: dict[str, Any]) -> bool:
+    if criteria.get("element_type", "string") != "label:number":
+        return _labels_match(predicted, gold, fuzzy=True)
+
     pred_head, pred_sep, pred_tail = predicted.strip().rpartition(":")
     gold_head, gold_sep, gold_tail = gold.strip().rpartition(":")
-    if pred_sep and gold_sep and _decimal(gold_tail) is not None:
-        decimal_places = len(gold_tail.rsplit(".", 1)[1]) if "." in gold_tail else 0
-        rounding_tolerance = Decimal(1).scaleb(-decimal_places) / 2
+    if pred_sep and gold_sep:
         return _labels_match(pred_head, gold_head) and _numbers_match(
             pred_tail,
             gold_tail,
-            rounding_tolerance,
+            criteria.get("tolerance", 0),
         )
-    return _labels_match(predicted, gold, fuzzy=True)
+    return False
 
 
 def answers_match(predicted: str, gold: str, criteria: dict[str, Any]) -> bool:
     """Compare two answer strings using the declared criteria."""
-    pred = predicted.strip().strip("\"").strip("'")
-    expected = gold.strip().strip("\"").strip("'")
+    pred = predicted.strip().strip('"').strip("'")
+    expected = gold.strip().strip('"').strip("'")
     pred_na = pred.casefold() in _NA_VARIANTS
     gold_na = expected.casefold() in _NA_VARIANTS
     if pred_na or gold_na:
@@ -213,7 +215,7 @@ def answers_match(predicted: str, gold: str, criteria: dict[str, Any]) -> bool:
             return False
         if criteria.get("order_sensitive", False):
             return all(
-                _list_element_match(pred_item, gold_item)
+                _list_element_match(pred_item, gold_item, criteria)
                 for pred_item, gold_item in zip(pred_items, gold_items, strict=True)
             )
         unmatched = list(gold_items)
@@ -222,7 +224,7 @@ def answers_match(predicted: str, gold: str, criteria: dict[str, Any]) -> bool:
                 (
                     index
                     for index, gold_item in enumerate(unmatched)
-                    if _list_element_match(pred_item, gold_item)
+                    if _list_element_match(pred_item, gold_item, criteria)
                 ),
                 None,
             )

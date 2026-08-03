@@ -124,7 +124,7 @@ The same evaluation loop can run the 40-question Agentic Company DABstep set. It
 canonical `questions.jsonl` and `manual.md` from the adjacent `the-agentic-company` repository;
 it does not copy them into this project. By default that repository is resolved as
 `../../../the-agentic-company` from this project (set `AGENTIC_COMPANY_REPO` to override it).
-The v0.3.0 manifest contract and exact question/manual hashes are validated before model spend.
+The v0.3.1 manifest contract and exact question/manual hashes are validated before model spend.
 
 Only `manual.md` is published as model context. The architecture documents and private semantic
 contracts are never published or added to a prompt. The guide is personal (`access=user`): the
@@ -155,6 +155,10 @@ table discovery and rejects explicit schema references, metadata enumeration, an
 lookup as benchmark-integrity defenses. For a warehouse-enforced security boundary, publish a
 sanitized share that omits those schemas entirely.
 
+Before model spend, the profile also scans all 68 public relations and compares a deterministic
+row-count/content fingerprint with the canonical local database. This detects data changes behind
+the stable share URL instead of treating the snapshot cutoff as proof of database identity.
+
 ## Iterating toward 100%
 
 Each miss points at one of four artifacts to fix, then re-run:
@@ -173,6 +177,8 @@ skill/SKILL.md          the skill (procedure + navigation)
 context/items/*.md      the semantic-layer source (one file = one item; published as guides)
 src/mcp_client.py       MCP session + tool-call plumbing (query/schema/guides)
 src/agent.py            tools + prompt + OpenRouter provider
+src/agentic_company_profile.py  Agentic artifact contract, preflight, and profile policy
+src/agentic_company_score.py    strict criteria-driven Agentic Company scorer
 src/load.py             build the MotherDuck database
 src/run.py              CLI: load / guides-load / evaluate / summary
 src/score.py            DABStep scorer (verbatim)

@@ -6,6 +6,7 @@ import inspect
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -22,24 +23,25 @@ from src.agent import (
     build_agentic_company_system_prompt,
     build_system_prompt,
 )
+from src.agentic_company_profile import AGENTIC_COMPANY_PROFILE
 from src.agentic_company_score import answers_match, format_answer, score
 from src.mcp_client import MCPSession, _attach_trusted_share, _read_only_violation
 from src.run import (
-    AGENTIC_COMPANY_BENCHMARK,
-    AGENTIC_COMPANY_DATABASE_BYTES,
-    AGENTIC_COMPANY_DATABASE_SHA256,
-    AGENTIC_COMPANY_GUIDE_TOPIC,
-    AGENTIC_COMPANY_SHARE,
-    AGENTIC_COMPANY_SKILL_PATH,
-    AGENTIC_COMPANY_SNAPSHOT_CUTOFF,
     _build_run_provenance,
     _load_questions,
-    _resolve_agentic_paths,
-    _validate_agentic_manifest,
     cli,
 )
 from src.score import Correctness, ExecutionError
 
+AGENTIC_COMPANY_BENCHMARK = AGENTIC_COMPANY_PROFILE.name
+AGENTIC_COMPANY_DATABASE_BYTES = AGENTIC_COMPANY_PROFILE.database_bytes
+AGENTIC_COMPANY_DATABASE_SHA256 = AGENTIC_COMPANY_PROFILE.database_sha256
+AGENTIC_COMPANY_GUIDE_TOPIC = AGENTIC_COMPANY_PROFILE.guide_topic
+AGENTIC_COMPANY_SHARE = AGENTIC_COMPANY_PROFILE.share
+AGENTIC_COMPANY_SKILL_PATH = AGENTIC_COMPANY_PROFILE.skill_path
+AGENTIC_COMPANY_SNAPSHOT_CUTOFF = AGENTIC_COMPANY_PROFILE.snapshot_cutoff
+_resolve_agentic_paths = AGENTIC_COMPANY_PROFILE.resolve_paths
+_validate_agentic_manifest = AGENTIC_COMPANY_PROFILE.validate_manifest
 CANONICAL_QUESTIONS = _resolve_agentic_paths()[0]
 
 
@@ -89,12 +91,13 @@ def _write_benchmark_fixture(directory: Path, questions: list[dict]) -> tuple[Pa
     (directory / "manifest.json").write_text(
         json.dumps(
             {
-                "version": "0.3.0",
+                "version": AGENTIC_COMPANY_PROFILE.manifest_version,
                 "snapshot_cutoff": AGENTIC_COMPANY_SNAPSHOT_CUTOFF,
                 "task_count": len(questions),
                 "topic_count": len({question["topic_id"] for question in questions}),
                 "difficulty_distribution": distribution,
                 "excluded_schemas": ["ground_truth", "sim"],
+                "context_files": ["benchmarks/dabstep_agentic_company/manual.md"],
                 "source_database": {
                     "path": "data/company_for_analysis.duckdb",
                     "bytes": AGENTIC_COMPANY_DATABASE_BYTES,
@@ -131,6 +134,14 @@ def _write_benchmark_fixture(directory: Path, questions: list[dict]) -> tuple[Pa
 def _ids_hash(questions: list[dict]) -> str:
     ids = "\n".join(str(question["task_id"]) for question in questions)
     return hashlib.sha256(ids.encode()).hexdigest()
+
+
+def _profile_for_fixture(directory: Path):
+    return replace(
+        AGENTIC_COMPANY_PROFILE,
+        questions_sha256=hashlib.sha256((directory / "questions.jsonl").read_bytes()).hexdigest(),
+        manual_sha256=hashlib.sha256((directory / "manual.md").read_bytes()).hexdigest(),
+    )
 
 
 class QuestionLoaderTests(unittest.TestCase):
@@ -243,6 +254,9 @@ class AgenticScoringTests(unittest.TestCase):
             "type": "list[string]",
             "delimiter": ",",
             "order_sensitive": True,
+            "element_type": "label:number",
+            "decimals": 2,
+            "tolerance": 0.005,
         }
         gold = "Cedarpoint Outfitters:406.67, ParcelPeak Marketplace:45.69"
         reversed_answer = "ParcelPeak Marketplace:45.69, Cedarpoint Outfitters:406.67"
@@ -250,6 +264,13 @@ class AgenticScoringTests(unittest.TestCase):
         self.assertTrue(
             answers_match(
                 "Cedarpoint Outfitters:406.666, ParcelPeak Marketplace:45.694",
+                gold,
+                criteria,
+            )
+        )
+        self.assertFalse(
+            answers_match(
+                "Cedarpoint Outfitters:406.676, ParcelPeak Marketplace:45.69",
                 gold,
                 criteria,
             )
@@ -267,7 +288,14 @@ class AgenticScoringTests(unittest.TestCase):
             format_answer([("2026-02", "cash_out_ap", -2952349.09)], triple),
             "2026-02:cash_out_ap:-2952349.09",
         )
-        ordered_list = {"type": "list[string]", "delimiter": ",", "order_sensitive": True}
+        ordered_list = {
+            "type": "list[string]",
+            "delimiter": ",",
+            "order_sensitive": True,
+            "element_type": "label:number",
+            "decimals": 2,
+            "tolerance": 0.005,
+        }
         self.assertEqual(
             format_answer([("A", "1.00"), ("B", "2.00")], ordered_list),
             "A:1.00, B:2.00",
@@ -656,7 +684,7 @@ class SubmissionTests(unittest.TestCase):
 class CLIProfileTests(unittest.TestCase):
     def test_agentic_provenance_matches_installed_controllog_schema(self) -> None:
         artifacts = {
-            "version": "0.3.0",
+            "version": AGENTIC_COMPANY_PROFILE.manifest_version,
             "questions_sha256": "q-sha",
             "manual_sha256": "m-sha",
             "database_sha256": "db-sha",
@@ -691,16 +719,10 @@ class CLIProfileTests(unittest.TestCase):
             )
             out = fixture_dir / "result.jsonl"
             loop = AsyncMock()
+            fixture_profile = _profile_for_fixture(fixture_dir)
             with (
                 patch("src.run._evaluate_loop", loop),
-                patch(
-                    "src.run.AGENTIC_COMPANY_QUESTIONS_SHA256",
-                    hashlib.sha256((fixture_dir / "questions.jsonl").read_bytes()).hexdigest(),
-                ),
-                patch(
-                    "src.run.AGENTIC_COMPANY_MANUAL_SHA256",
-                    hashlib.sha256((fixture_dir / "manual.md").read_bytes()).hexdigest(),
-                ),
+                patch("src.run.AGENTIC_COMPANY_PROFILE", fixture_profile),
             ):
                 result = runner.invoke(
                     cli,
@@ -720,7 +742,34 @@ class CLIProfileTests(unittest.TestCase):
         self.assertEqual(kwargs["benchmark"], AGENTIC_COMPANY_BENCHMARK)
         self.assertEqual(kwargs["split"], "all")
         self.assertEqual([question["task_id"] for question in kwargs["questions"]], ["AC-030"])
-        self.assertEqual(kwargs["guide_topic"], AGENTIC_COMPANY_GUIDE_TOPIC)
+        self.assertEqual(kwargs["profile"].guide_topic, AGENTIC_COMPANY_GUIDE_TOPIC)
+        self.assertEqual(kwargs["artifacts"].version, AGENTIC_COMPANY_PROFILE.manifest_version)
+
+    @unittest.skipUnless(CANONICAL_QUESTIONS.is_file(), "external benchmark checkout not present")
+    def test_default_canonical_bundle_reaches_shared_loop(self) -> None:
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            loop = AsyncMock()
+            with patch("src.run._evaluate_loop", loop):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "evaluate",
+                        "--benchmark",
+                        AGENTIC_COMPANY_BENCHMARK,
+                        "--task-id",
+                        "AC-030",
+                        "--out",
+                        str(Path(tmpdir) / "result.jsonl"),
+                    ],
+                )
+        self.assertEqual(result.exit_code, 0, result.output)
+        kwargs = loop.await_args.kwargs
+        self.assertEqual(kwargs["artifacts"].version, "0.3.1")
+        self.assertEqual(
+            kwargs["artifacts"].questions_sha256,
+            AGENTIC_COMPANY_PROFILE.questions_sha256,
+        )
 
     def test_invalid_limit_and_duplicate_ids_fail_before_loop(self) -> None:
         runner = CliRunner()
@@ -737,16 +786,7 @@ class CLIProfileTests(unittest.TestCase):
                 AGENTIC_COMPANY_BENCHMARK,
             ]
             env = {"AGENTIC_COMPANY_REPO": str(repo_root)}
-            with (
-                patch(
-                    "src.run.AGENTIC_COMPANY_QUESTIONS_SHA256",
-                    hashlib.sha256((fixture_dir / "questions.jsonl").read_bytes()).hexdigest(),
-                ),
-                patch(
-                    "src.run.AGENTIC_COMPANY_MANUAL_SHA256",
-                    hashlib.sha256((fixture_dir / "manual.md").read_bytes()).hexdigest(),
-                ),
-            ):
+            with patch("src.run.AGENTIC_COMPANY_PROFILE", _profile_for_fixture(fixture_dir)):
                 invalid_limit = runner.invoke(cli, [*common, "--limit", "0"], env=env)
                 duplicate_ids = runner.invoke(
                     cli,
@@ -816,6 +856,49 @@ class CLIProfileTests(unittest.TestCase):
 
 
 class MCPBoundaryTests(unittest.TestCase):
+    def test_public_snapshot_fingerprint_is_checked_before_model_spend(self) -> None:
+        fingerprint_rows = [
+            ["catalog.products", 8, "111"],
+            ["catalog.skus", 19, "222"],
+        ]
+        profile = replace(
+            AGENTIC_COMPANY_PROFILE,
+            public_schemas=("catalog",),
+            public_relation_count=2,
+            public_snapshot_fingerprint=AGENTIC_COMPANY_PROFILE.snapshot_fingerprint(
+                fingerprint_rows
+            ),
+        )
+
+        class FakeSession:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            async def call_tool(self, name: str, args: dict):
+                if name == "list_tables":
+                    return SimpleNamespace(
+                        is_error=False,
+                        rows=[
+                            {"schema": "catalog", "name": "products"},
+                            {"schema": "catalog", "name": "skus"},
+                        ],
+                        text="ok",
+                    )
+                if name == "query":
+                    self.queries.append(args["sql"])
+                    return SimpleNamespace(is_error=False, rows=fingerprint_rows, text="ok")
+                raise AssertionError(name)
+
+        async def exercise() -> None:
+            session = FakeSession()
+            await profile._verify_public_snapshot(session)
+            self.assertIn("md5_number(to_json(t))", session.queries[0])
+            drifted = replace(profile, public_snapshot_fingerprint="0" * 64)
+            with self.assertRaisesRegex(RuntimeError, "does not match"):
+                await drifted._verify_public_snapshot(session)
+
+        asyncio.run(exercise())
+
     def test_list_columns_splits_qualified_names_and_reports_column_rows(self) -> None:
         class FakeSession:
             def __init__(self) -> None:

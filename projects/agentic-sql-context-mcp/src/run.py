@@ -9,13 +9,11 @@ loop, MCP tools, concurrency, retries, logging, results, and summary behavior.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import subprocess
 import time
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import click
@@ -28,7 +26,11 @@ from rich.text import Text
 
 from src import guides_load
 from src.agent import OpenRouterProvider, run_agent
-from src.agentic_company_score import score as score_agentic_company
+from src.agentic_company_profile import (
+    AGENTIC_COMPANY_PROFILE,
+    AgenticCompanyArtifacts,
+    AgenticCompanyProfile,
+)
 from src.load import DEFAULT_DATABASE, build_db
 from src.mcp_client import create_mcp_session
 from src.score import ExecutionError
@@ -38,58 +40,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 RESULTS_DIR = REPO_ROOT / "results"
 SKILL_PATH = REPO_ROOT / "skill" / "SKILL.md"
-AGENTIC_COMPANY_SKILL_PATH = REPO_ROOT / "skill" / "AGENTIC_COMPANY.md"
 TASKS_PATH = DATA_DIR / "dabstep" / "tasks" / "all.jsonl"
 SPLIT_PATH = DATA_DIR / "split.json"
 
-AGENTIC_COMPANY_BENCHMARK = "agentic-company"
-AGENTIC_COMPANY_DATABASE = "agentic_company_snapshot"
-AGENTIC_COMPANY_GUIDE_TOPIC = "agentic-company/manual"
-AGENTIC_COMPANY_MANIFEST_VERSION = "0.3.0"
-AGENTIC_COMPANY_SNAPSHOT_CUTOFF = "2026-07-31"
-AGENTIC_COMPANY_TASK_COUNT = 40
-AGENTIC_COMPANY_TOPIC_COUNT = 10
-AGENTIC_COMPANY_DIFFICULTY_DISTRIBUTION = {"easy": 10, "hard": 30}
-AGENTIC_COMPANY_DATABASE_BYTES = 705_441_792
-AGENTIC_COMPANY_DATABASE_SHA256 = (
-    "0a3c0bd92591093ad936d4eeb3cecf60958916dbbfd75ea4210b88619f0d9aa2"
-)
-AGENTIC_COMPANY_QUESTIONS_SHA256 = (
-    "ed3dc9836d8401cfdf614270adad262e0f22ae68df67e6c08741c0871170abd1"
-)
-AGENTIC_COMPANY_MANUAL_SHA256 = (
-    "fb68e02d6263e4d5d260769bf2b716be2d0c4139743ae67f7a87c1b45c14013f"
-)
-AGENTIC_COMPANY_SHARE = (
-    "md:_share/agentic_company_snapshot_share/"
-    "6b172abb-d377-4f0f-9a8a-d0ac199e074d"
-)
-AGENTIC_COMPANY_EXCLUDED_SCHEMAS = ("ground_truth", "sim")
-_AGENTIC_REQUIRED_FIELDS = (
-    "task_id",
-    "question",
-    "guidelines",
-    "answer",
-    "answer_criteria",
-    "level",
-    "topic_id",
-    "topic",
-    "snapshot_cutoff",
-    "source_tables",
-)
-_AGENTIC_CRITERIA_TYPES = {
-    "number",
-    "string",
-    "label:number",
-    "label:label:number",
-    "list[string]",
-}
-
 console = Console()
-
 PROJECT_ID = "agentic-sql-claude-edition"
 AGENT_ID = "asc-sql"
-
 MODEL_ALIASES = {
     "opus": "anthropic/claude-opus-4.7",
     "sonnet": "anthropic/claude-sonnet-4.6",
@@ -161,185 +117,6 @@ def _md_database() -> str:
     return os.environ.get("MD_DATABASE", DEFAULT_DATABASE)
 
 
-def _agentic_company_benchmark_dir() -> Path:
-    configured = os.environ.get("AGENTIC_COMPANY_REPO")
-    root = Path(configured).expanduser() if configured else REPO_ROOT.parents[2] / "the-agentic-company"
-    return root / "benchmarks" / "dabstep_agentic_company"
-
-
-def _resolve_agentic_paths(
-    questions_jsonl: Path | None = None,
-    manual: Path | None = None,
-) -> tuple[Path, Path, Path]:
-    benchmark_dir = _agentic_company_benchmark_dir()
-    return (
-        questions_jsonl or benchmark_dir / "questions.jsonl",
-        manual or benchmark_dir / "manual.md",
-        benchmark_dir / "manifest.json",
-    )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _validate_agentic_manifest(questions: list[dict], manifest: dict) -> None:
-    """Reject incomplete/drifted benchmark artifacts before model spend."""
-    if manifest.get("version") != AGENTIC_COMPANY_MANIFEST_VERSION:
-        raise ValueError(
-            "Agentic Company manifest version does not match this harness: "
-            f"expected {AGENTIC_COMPANY_MANIFEST_VERSION!r}, "
-            f"received {manifest.get('version')!r}."
-        )
-    cutoff = manifest.get("snapshot_cutoff")
-    if cutoff != AGENTIC_COMPANY_SNAPSHOT_CUTOFF:
-        raise ValueError(
-            "Agentic Company manifest snapshot_cutoff does not match this harness: "
-            f"expected {AGENTIC_COMPANY_SNAPSHOT_CUTOFF!r}, received {cutoff!r}."
-        )
-    excluded_schemas = manifest.get("excluded_schemas")
-    if excluded_schemas != list(AGENTIC_COMPANY_EXCLUDED_SCHEMAS):
-        raise ValueError(
-            "Agentic Company manifest excluded_schemas does not match the enforced "
-            f"boundary: expected {list(AGENTIC_COMPANY_EXCLUDED_SCHEMAS)!r}, "
-            f"received {excluded_schemas!r}."
-        )
-    source_database = manifest.get("source_database")
-    if not isinstance(source_database, dict):
-        raise TypeError("Agentic Company manifest source_database must be an object.")
-    if source_database.get("path") != "data/company_for_analysis.duckdb":
-        raise ValueError("Agentic Company manifest source_database.path is not canonical.")
-    source_bytes = source_database.get("bytes")
-    if source_bytes != AGENTIC_COMPANY_DATABASE_BYTES:
-        raise ValueError(
-            "Agentic Company manifest database byte size does not match the pinned snapshot."
-        )
-    if source_database.get("sha256") != AGENTIC_COMPANY_DATABASE_SHA256:
-        raise ValueError(
-            "Agentic Company manifest database SHA does not match the pinned snapshot."
-        )
-    expected_count = manifest.get("task_count")
-    if isinstance(expected_count, bool) or not isinstance(expected_count, int):
-        raise TypeError("Agentic Company manifest task_count must be an integer.")
-    if expected_count != AGENTIC_COMPANY_TASK_COUNT:
-        raise ValueError(
-            f"Agentic Company manifest task_count must be {AGENTIC_COMPANY_TASK_COUNT}."
-        )
-    if len(questions) != expected_count:
-        raise ValueError(
-            "Agentic Company questions.jsonl does not match manifest task_count: "
-            f"expected {expected_count}, loaded {len(questions)}."
-        )
-    expected_distribution = manifest.get("difficulty_distribution")
-    if not isinstance(expected_distribution, dict):
-        raise TypeError("Agentic Company manifest difficulty_distribution must be an object.")
-    if expected_distribution != AGENTIC_COMPANY_DIFFICULTY_DISTRIBUTION:
-        raise ValueError(
-            "Agentic Company manifest difficulty_distribution does not match the "
-            f"pinned benchmark: {AGENTIC_COMPANY_DIFFICULTY_DISTRIBUTION}."
-        )
-    actual_distribution: dict[str, int] = {}
-    for question in questions:
-        level = str(question.get("level") or "")
-        actual_distribution[level] = actual_distribution.get(level, 0) + 1
-    if actual_distribution != expected_distribution:
-        raise ValueError(
-            "Agentic Company question difficulty distribution does not match manifest: "
-            f"expected {expected_distribution}, loaded {actual_distribution}."
-        )
-    expected_topics = manifest.get("topic_count")
-    actual_topics = len({str(question.get("topic_id")) for question in questions})
-    if isinstance(expected_topics, bool) or not isinstance(expected_topics, int):
-        raise TypeError("Agentic Company manifest topic_count must be an integer.")
-    if expected_topics != AGENTIC_COMPANY_TOPIC_COUNT:
-        raise ValueError(
-            f"Agentic Company manifest topic_count must be {AGENTIC_COMPANY_TOPIC_COUNT}."
-        )
-    if actual_topics != expected_topics:
-        raise ValueError(
-            "Agentic Company question topic count does not match manifest: "
-            f"expected {expected_topics}, loaded {actual_topics}."
-        )
-    topics = manifest.get("topics")
-    if not isinstance(topics, list) or len(topics) != expected_topics:
-        raise ValueError("Agentic Company manifest topics must list every topic exactly once.")
-    expected_by_id: dict[str, dict] = {}
-    for topic in topics:
-        if not isinstance(topic, dict) or not isinstance(topic.get("topic_id"), str):
-            raise TypeError("Every Agentic Company manifest topic must be an object with topic_id.")
-        topic_id = topic["topic_id"]
-        if topic_id in expected_by_id:
-            raise ValueError(f"Duplicate Agentic Company manifest topic_id {topic_id!r}.")
-        expected_by_id[topic_id] = topic
-    canonical_topic_ids = {f"T{index:02d}" for index in range(1, 11)}
-    if set(expected_by_id) != canonical_topic_ids:
-        raise ValueError("Agentic Company manifest must contain topic IDs T01 through T10.")
-    actual_by_id: dict[str, dict[str, object]] = {}
-    for question in questions:
-        topic_id = question["topic_id"]
-        topic_name = question["topic"]
-        if question["snapshot_cutoff"] != cutoff:
-            raise ValueError(
-                f"{question['task_id']}: snapshot_cutoff does not match manifest."
-            )
-        source_tables = question["source_tables"]
-        if not isinstance(source_tables, list) or not source_tables or not all(
-            isinstance(table, str) and table for table in source_tables
-        ):
-            raise TypeError(f"{question['task_id']}: source_tables must be non-empty strings.")
-        actual = actual_by_id.setdefault(
-            topic_id,
-            {"topic": topic_name, "task_count": 0, "easy_count": 0, "hard_count": 0},
-        )
-        if actual["topic"] != topic_name:
-            raise ValueError(f"{topic_id}: question topic labels are inconsistent.")
-        actual["task_count"] = int(actual["task_count"]) + 1
-        level_key = f"{question['level']}_count"
-        actual[level_key] = int(actual[level_key]) + 1
-    if set(actual_by_id) != set(expected_by_id):
-        raise ValueError("Agentic Company manifest topic IDs do not match questions.jsonl.")
-    for topic_id, expected in expected_by_id.items():
-        actual = actual_by_id[topic_id]
-        for field in ("topic", "task_count", "easy_count", "hard_count"):
-            if expected.get(field) != actual[field]:
-                raise ValueError(
-                    f"Agentic Company topic {topic_id} {field} does not match manifest: "
-                    f"expected {expected.get(field)!r}, loaded {actual[field]!r}."
-                )
-
-
-def _validate_agentic_criteria(criteria: object, location: str) -> None:
-    if not isinstance(criteria, dict):
-        raise TypeError(f"{location}: answer_criteria must be an object")
-    answer_type = criteria.get("type")
-    if answer_type not in _AGENTIC_CRITERIA_TYPES:
-        raise ValueError(f"{location}: unsupported answer criteria type {answer_type!r}")
-    if answer_type in {"number", "label:number", "label:label:number"}:
-        decimals = criteria.get("decimals")
-        if isinstance(decimals, bool) or not isinstance(decimals, int) or decimals < 0:
-            raise ValueError(f"{location}: decimals must be a non-negative integer")
-        tolerance = criteria.get("tolerance")
-        try:
-            parsed_tolerance = Decimal(str(tolerance))
-        except (InvalidOperation, ValueError, TypeError) as exc:
-            raise ValueError(f"{location}: tolerance must be a finite non-negative number") from exc
-        if not parsed_tolerance.is_finite() or parsed_tolerance < 0:
-            raise ValueError(f"{location}: tolerance must be a finite non-negative number")
-    if answer_type in {"label:number", "label:label:number", "list[string]"}:
-        delimiter = criteria.get("delimiter")
-        if not isinstance(delimiter, str) or not delimiter:
-            raise ValueError(f"{location}: delimiter must be a non-empty string")
-    if answer_type == "list[string]":
-        if not isinstance(criteria.get("order_sensitive"), bool):
-            raise ValueError(f"{location}: order_sensitive must be a boolean")
-        if not isinstance(criteria.get("empty_answer", ""), str):
-            raise ValueError(f"{location}: empty_answer must be a string")
-
-
 def _bad_golds() -> set[str]:
     """Task ids with provably-wrong hf_consensus golds, set aside (see bad_golds.json)."""
     p = DATA_DIR / "bad_golds.json"
@@ -359,54 +136,9 @@ def _load_questions(
     split='test'      -> the 419 held-out questions (all minus the 26 train minus 5 bad golds);
     split='all'       -> 445 (450 minus 5 bad golds).
     """
-    if benchmark == AGENTIC_COMPANY_BENCHMARK:
-        if split != "all":
-            raise ValueError("Agentic Company supports only split='all'.")
-        if questions_path is None:
-            questions_path = _resolve_agentic_paths()[0]
-        if not questions_path.is_file():
-            raise FileNotFoundError(f"Agentic Company questions not found: {questions_path}")
-        questions: list[dict] = []
-        seen: set[str] = set()
-        for line_number, line in enumerate(questions_path.read_text().splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                question = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{questions_path}:{line_number}: invalid JSON: {exc}") from exc
-            missing = [field for field in _AGENTIC_REQUIRED_FIELDS if field not in question]
-            if missing:
-                raise ValueError(f"{questions_path}:{line_number}: missing fields {missing}")
-            task_id = question["task_id"]
-            if not isinstance(task_id, str) or not task_id:
-                raise ValueError(f"{questions_path}:{line_number}: task_id must be a string")
-            if task_id in seen:
-                raise ValueError(f"{questions_path}:{line_number}: duplicate task_id {task_id!r}")
-            location = f"{questions_path}:{line_number}"
-            _validate_agentic_criteria(question["answer_criteria"], location)
-            if not all(
-                isinstance(question[field], str)
-                for field in (
-                    "question",
-                    "guidelines",
-                    "answer",
-                    "level",
-                    "topic_id",
-                    "topic",
-                    "snapshot_cutoff",
-                )
-            ):
-                raise ValueError(
-                    f"{location}: question, guidelines, answer, level, topic_id, topic, "
-                    "and snapshot_cutoff must be strings"
-                )
-            if question["level"] not in {"easy", "hard"}:
-                raise ValueError(f"{location}: level must be 'easy' or 'hard'")
-            seen.add(task_id)
-            question["question_index"] = len(questions)
-            questions.append(question)
-        return questions
+    if benchmark == AGENTIC_COMPANY_PROFILE.name:
+        path = questions_path or AGENTIC_COMPANY_PROFILE.resolve_paths()[0]
+        return AGENTIC_COMPANY_PROFILE.load_questions(path, split=split)
     if benchmark != "dabstep":
         raise ValueError(f"Unknown benchmark: {benchmark!r}")
 
@@ -469,7 +201,7 @@ def context_cmd() -> None:
 @cli.command("guides-load")
 @click.option(
     "--benchmark",
-    type=click.Choice(["dabstep", AGENTIC_COMPANY_BENCHMARK]),
+    type=click.Choice(["dabstep", AGENTIC_COMPANY_PROFILE.name]),
     default="dabstep",
     show_default=True,
     help="Guide bundle to publish.",
@@ -502,8 +234,15 @@ def guides_load_cmd(
     label = "planning" if dry_run else "publishing"
     console.print(f"[bold]{label}[/bold] context items → MotherDuck guides …")
     try:
-        if benchmark == AGENTIC_COMPANY_BENCHMARK:
-            manual_path = _resolve_agentic_paths(manual=manual)[1]
+        if benchmark == AGENTIC_COMPANY_PROFILE.name:
+            questions_path, manual_path, manifest_path = AGENTIC_COMPANY_PROFILE.resolve_paths(
+                manual=manual
+            )
+            AGENTIC_COMPANY_PROFILE.load_bundle(
+                questions_path,
+                manual_path,
+                manifest_path,
+            )
             results = guides_load.publish_manual_sync(
                 manual_path=manual_path,
                 prefix=prefix,
@@ -564,7 +303,7 @@ def _correctness_mark(c: str) -> str:
 @cli.command()
 @click.option(
     "--benchmark",
-    type=click.Choice(["dabstep", AGENTIC_COMPANY_BENCHMARK]),
+    type=click.Choice(["dabstep", AGENTIC_COMPANY_PROFILE.name]),
     default="dabstep",
     show_default=True,
 )
@@ -627,87 +366,43 @@ def evaluate(
     if luna_max:
         model, reasoning = "luna", "max"
     model = MODEL_ALIASES.get(model, model)
-    is_agentic_company = benchmark == AGENTIC_COMPANY_BENCHMARK
-    split = split or ("all" if is_agentic_company else "templates")
-    if is_agentic_company and split != "all":
-        raise click.ClickException("agentic-company supports only --split all.")
-    if not is_agentic_company and (questions_jsonl is not None or manual is not None):
+    profile = AGENTIC_COMPANY_PROFILE if benchmark == AGENTIC_COMPANY_PROFILE.name else None
+    split = split or (profile.default_split if profile else "templates")
+    if profile and split != profile.default_split:
+        raise click.ClickException(
+            f"{profile.name} supports only --split {profile.default_split}."
+        )
+    if profile is None and (questions_jsonl is not None or manual is not None):
         raise click.ClickException(
             "--questions-jsonl and --manual are only valid with --benchmark agentic-company."
         )
 
-    artifacts: dict = {}
-    manifest: dict | None = None
-    resolved_questions_path: Path | None = None
-    if is_agentic_company:
-        resolved_questions_path, resolved_manual_path, manifest_path = _resolve_agentic_paths(
+    artifacts: AgenticCompanyArtifacts | None = None
+    if profile:
+        resolved_questions_path, resolved_manual_path, manifest_path = profile.resolve_paths(
             questions_jsonl=questions_jsonl,
             manual=manual,
         )
-        for label, path in (
-            ("questions", resolved_questions_path),
-            ("manual", resolved_manual_path),
-            ("manifest", manifest_path),
-        ):
-            if not path.is_file():
-                raise click.ClickException(f"Agentic Company {label} not found: {path}")
         try:
-            manifest = json.loads(manifest_path.read_text())
-        except json.JSONDecodeError as exc:
-            raise click.ClickException(
-                f"Agentic Company manifest is not valid JSON: {manifest_path}: {exc}"
-            ) from exc
-        if not isinstance(manifest, dict):
-            raise click.ClickException(
-                f"Agentic Company manifest must be a JSON object: {manifest_path}"
+            all_questions, artifacts = profile.load_bundle(
+                resolved_questions_path,
+                resolved_manual_path,
+                manifest_path,
             )
-        database = (
-            database
-            or os.environ.get("AGENTIC_COMPANY_MD_DATABASE")
-            or AGENTIC_COMPANY_DATABASE
-        )
+        except (TypeError, ValueError, OSError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        database = profile.database_name(database)
     else:
         database = database or _md_database()
-
-    try:
-        all_questions = _load_questions(
-            "all" if (task_ids is not None or task_id is not None) else split,
-            benchmark=benchmark,
-            questions_path=resolved_questions_path,
-        )
-    except (TypeError, ValueError, OSError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if is_agentic_company:
         try:
-            _validate_agentic_manifest(all_questions, manifest or {})
-        except (TypeError, ValueError) as exc:
+            all_questions = _load_questions(
+                "all" if (task_ids is not None or task_id is not None) else split,
+                benchmark=benchmark,
+            )
+        except (TypeError, ValueError, OSError) as exc:
             raise click.ClickException(str(exc)) from exc
-        questions_sha256 = _sha256(resolved_questions_path)
-        manual_sha256 = _sha256(resolved_manual_path)
-        if questions_sha256 != AGENTIC_COMPANY_QUESTIONS_SHA256:
-            raise click.ClickException(
-                "Agentic Company questions.jsonl does not match the pinned v0.3.0 artifact."
-            )
-        if manual_sha256 != AGENTIC_COMPANY_MANUAL_SHA256:
-            raise click.ClickException(
-                "Agentic Company manual.md does not match the pinned v0.3.0 artifact."
-            )
-        artifacts = {
-            "version": manifest["version"],
-            "snapshot_cutoff": manifest["snapshot_cutoff"],
-            "questions_path": str(resolved_questions_path.resolve()),
-            "questions_sha256": questions_sha256,
-            "manual_path": str(resolved_manual_path.resolve()),
-            "manual_sha256": manual_sha256,
-            "database_sha256": manifest["source_database"]["sha256"],
-            "share": AGENTIC_COMPANY_SHARE,
-        }
 
-    task_key = (
-        (lambda value: str(value).casefold())
-        if is_agentic_company
-        else (lambda value: str(value))
-    )
+    task_key = profile.task_key if profile else (lambda value: str(value))
     if task_ids is not None:
         wanted = [t.strip() for t in task_ids.split(",") if t.strip()]
         if not wanted:
@@ -738,8 +433,8 @@ def evaluate(
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     default_name = (
-        f"agentic-company_{split}_{ts}.jsonl"
-        if is_agentic_company
+        f"{profile.name}_{split}_{ts}.jsonl"
+        if profile
         else f"{split}_{ts}.jsonl"
     )
     out = out or RESULTS_DIR / default_name
@@ -754,17 +449,23 @@ def evaluate(
         + (" · [bold red]NO GUIDES[/bold red]" if no_guides else "")
     )
 
-    asyncio.run(_evaluate_loop(
-        benchmark=benchmark, split=split, database=database, model=model, questions=questions,
-        max_turns=max_turns, reasoning=reasoning, watch=watch,
-        concurrency=concurrency, no_guides=no_guides, out=out,
-        skill_path=AGENTIC_COMPANY_SKILL_PATH if is_agentic_company else SKILL_PATH,
-        guide_topic=AGENTIC_COMPANY_GUIDE_TOPIC if is_agentic_company else None,
-        attach_share=AGENTIC_COMPANY_SHARE if is_agentic_company else None,
-        excluded_schemas=AGENTIC_COMPANY_EXCLUDED_SCHEMAS if is_agentic_company else (),
-        artifacts=artifacts,
-        project_id=("agentic-company-dabstep" if is_agentic_company else PROJECT_ID),
-    ))
+    asyncio.run(
+        _evaluate_loop(
+            benchmark=benchmark,
+            split=split,
+            database=database,
+            model=model,
+            questions=questions,
+            max_turns=max_turns,
+            reasoning=reasoning,
+            watch=watch,
+            concurrency=concurrency,
+            no_guides=no_guides,
+            out=out,
+            profile=profile,
+            artifacts=artifacts,
+        )
+    )
 
 
 def _describe_exception(e: BaseException) -> str:
@@ -787,46 +488,6 @@ def _describe_exception(e: BaseException) -> str:
 
 def _tid_prefix(task_id: str | None) -> str:
     return f"[dim][{task_id}][/dim] " if task_id else ""
-
-
-def _score_question(
-    *,
-    benchmark: str,
-    execution_result,
-    question: dict,
-    predicted_sql: str | None,
-    hit_limit: bool = False,
-):
-    if benchmark == AGENTIC_COMPANY_BENCHMARK:
-        return score_agentic_company(
-            execution_result=execution_result,
-            gold_answer=question.get("answer", ""),
-            criteria=question.get("answer_criteria") or {},
-            predicted_sql=predicted_sql,
-            hit_limit=hit_limit,
-        )
-    return score_dabstep(
-        execution_result=execution_result,
-        gold_answer=question.get("answer", ""),
-        guidelines=question.get("guidelines"),
-        predicted_sql=predicted_sql,
-        hit_limit=hit_limit,
-    )
-
-
-def _agentic_result_metadata(question: dict, artifacts: dict | None) -> dict:
-    return {
-        "benchmark": AGENTIC_COMPANY_BENCHMARK,
-        "question_index": question.get("question_index"),
-        "topic_id": question.get("topic_id"),
-        "topic": question.get("topic"),
-        "answer_criteria": question.get("answer_criteria"),
-        "snapshot_cutoff": question.get("snapshot_cutoff"),
-        "source_tables": question.get("source_tables"),
-        "questions_sha256": (artifacts or {}).get("questions_sha256"),
-        "manual_sha256": (artifacts or {}).get("manual_sha256"),
-        "database_sha256": (artifacts or {}).get("database_sha256"),
-    }
 
 
 def _render_thinking(text: str, task_id: str | None = None) -> None:
@@ -927,73 +588,12 @@ def _render_tool_call(call: dict, task_id: str | None = None) -> None:
     console.print(Padding(Text(f"→ {tool} (unknown)"), (0, 0, 0, 6)))
 
 
-async def _preflight_agentic_company(
-    *,
-    database: str,
-    attach_share: str,
-    excluded_schemas: tuple[str, ...],
-    artifacts: dict,
-    verify_guide: bool,
-) -> None:
-    """Fail before model spend if the pinned share or single guide is wrong."""
-    async with create_mcp_session(
-        session_hint="agentic-company-preflight",
-        database=database,
-        attach_share=attach_share,
-        excluded_schemas=excluded_schemas,
-        guide_topic=AGENTIC_COMPANY_GUIDE_TOPIC,
-    ) as mcp:
-        cutoff = await mcp.call_tool(
-            "query",
-            {"sql": "SELECT max(sim_date)::VARCHAR FROM finance.pnl_daily"},
-        )
-        expected_cutoff = artifacts.get("snapshot_cutoff")
-        if cutoff.is_error or cutoff.rows != [[expected_cutoff]]:
-            raise click.ClickException(
-                "Agentic Company share preflight failed: expected finance.pnl_daily "
-                f"through {expected_cutoff}, received {cutoff.text}"
-            )
-        if not verify_guide:
-            return
-        listing = await mcp.call_tool(
-            "list_guides",
-            {"topic": AGENTIC_COMPANY_GUIDE_TOPIC},
-        )
-        try:
-            guide_uuid = guides_load.select_agentic_manual(
-                guides_load._guide_listing_payload(listing)
-            )
-        except (RuntimeError, TypeError) as exc:
-            raise click.ClickException(
-                f"Agentic Company manual guide preflight failed: {exc}"
-            ) from exc
-        if guide_uuid is None:
-            raise click.ClickException(
-                "Expected exactly one guide under agentic-company/manual; run "
-                "`asm guides-load --benchmark agentic-company` before evaluation."
-            )
-        guide = await mcp.call_tool("get_guide", {"uuid": guide_uuid})
-        try:
-            remote_text = json.loads(guide.text).get("text", "")
-            local_text = Path(artifacts["manual_path"]).read_text().rstrip()
-        except (KeyError, OSError, AttributeError, json.JSONDecodeError) as exc:
-            raise click.ClickException("Could not verify the Agentic Company manual guide.") from exc
-        marker = f"\n\n{guides_load.AGENTIC_COMPANY_MANUAL_DESCRIPTION}\n\n"
-        remote_body = remote_text.split(marker, 1)[1] if marker in remote_text else None
-        if guide.is_error or remote_body != local_text:
-            raise click.ClickException(
-                "The published Agentic Company manual does not match the selected manual.md. "
-                "Run `asm guides-load --benchmark agentic-company` to update it."
-            )
-
-
 async def _evaluate_loop(
     *, benchmark: str, split: str, database: str, model: str, questions: list[dict],
     max_turns: int, reasoning: str, watch: bool, concurrency: int,
-    no_guides: bool = False, out: Path, skill_path: Path = SKILL_PATH,
-    guide_topic: str | None = None, attach_share: str | None = None,
-    excluded_schemas: tuple[str, ...] = (), artifacts: dict | None = None,
-    project_id: str = PROJECT_ID,
+    no_guides: bool = False, out: Path,
+    profile: AgenticCompanyProfile | None = None,
+    artifacts: AgenticCompanyArtifacts | None = None,
 ) -> None:
     correct = 0
     by_cat: dict[str, int] = {}
@@ -1009,19 +609,42 @@ async def _evaluate_loop(
     # OpenRouter's documented "disable reasoning" is effort="none"; omitting the
     # reasoning param would instead fall back to the model's endpoint default.
     provider = OpenRouterProvider(reasoning_effort="none" if reasoning == "off" else reasoning)
+    skill_path = profile.skill_path if profile else SKILL_PATH
     skill_text = skill_path.read_text() if skill_path.exists() else None
+    guide_topic = profile.guide_topic if profile else None
+    attach_share = profile.share if profile else None
+    excluded_schemas = profile.excluded_schemas if profile else ()
+    project_id = profile.project_id if profile else PROJECT_ID
+    artifact_provenance = artifacts.provenance() if artifacts else None
     md_token = os.environ.get("MOTHERDUCK_TOKEN")
     if not md_token:
         raise click.ClickException("MOTHERDUCK_TOKEN is not set.")
-    if benchmark == AGENTIC_COMPANY_BENCHMARK:
-        if attach_share is None:
-            raise click.ClickException("Agentic Company profile requires its configured share.")
-        await _preflight_agentic_company(
-            database=database,
-            attach_share=attach_share,
-            excluded_schemas=excluded_schemas,
-            artifacts=artifacts or {},
-            verify_guide=not no_guides,
+    if profile:
+        if artifacts is None:
+            raise click.ClickException("Agentic Company profile requires validated artifacts.")
+        try:
+            await profile.preflight(
+                database=database,
+                artifacts=artifacts,
+                verify_guide=not no_guides,
+            )
+        except (RuntimeError, TypeError, ValueError, OSError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    def score_question(execution_result, question: dict, predicted_sql, hit_limit=False):
+        if profile:
+            return profile.score(
+                execution_result=execution_result,
+                question=question,
+                predicted_sql=predicted_sql,
+                hit_limit=hit_limit,
+            )
+        return score_dabstep(
+            execution_result=execution_result,
+            gold_answer=question.get("answer", ""),
+            guidelines=question.get("guidelines"),
+            predicted_sql=predicted_sql,
+            hit_limit=hit_limit,
         )
     f = out.open("w")
     wall_t0 = time.time()
@@ -1037,7 +660,7 @@ async def _evaluate_loop(
         concurrency=concurrency,
         out=out,
         question_count=len(questions),
-        artifacts=artifacts,
+        artifacts=artifact_provenance,
     )
     run_provenance["resolved_config"]["no_guides"] = no_guides
     controllog.init(
@@ -1111,8 +734,7 @@ async def _evaluate_loop(
 
             if run is None:
                 execution_result = ExecutionError("RunFailure", err or "")
-                result = _score_question(
-                    benchmark=benchmark,
+                result = score_question(
                     execution_result=execution_result,
                     question=q,
                     predicted_sql=None,
@@ -1121,8 +743,7 @@ async def _evaluate_loop(
                 exec_result = run.final_rows if run.final_rows is not None else ExecutionError(
                     "NoSubmission", "agent did not submit"
                 )
-                result = _score_question(
-                    benchmark=benchmark,
+                result = score_question(
                     execution_result=exec_result,
                     question=q,
                     predicted_sql=run.final_sql,
@@ -1149,8 +770,8 @@ async def _evaluate_loop(
                 "cached_tokens": run.cached_tokens if run else 0,
                 "error": err, "ts": datetime.now(timezone.utc).isoformat(),
             }
-            if benchmark == AGENTIC_COMPANY_BENCHMARK:
-                row.update(_agentic_result_metadata(q, artifacts))
+            if profile and artifacts:
+                row.update(profile.result_metadata(q, artifacts))
 
             total_tokens = (run.prompt_tokens + run.completion_tokens) if run else 0
             wall_ms = int(elapsed * 1000)
