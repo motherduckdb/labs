@@ -75,6 +75,26 @@ check("rejects empty headers", m._verify_slack_signature(SECRET, {}, BODY), Fals
 
 
 # ---------------------------------------------------------------------------
+# _oversized — the pre-read body-size gate
+# ---------------------------------------------------------------------------
+# This runs before request.body(), so it only ever sees Content-Length. The
+# rejection direction matters: anything Slack actually sends must pass, and
+# anything without a trustworthy declared length must not.
+print()
+
+check("passes a typical Slack event size", m._oversized({"content-length": "4096"}), False)
+check("passes exactly the limit",          m._oversized({"content-length": str(m.MAX_BODY_BYTES)}), False)
+check("rejects one byte over the limit",   m._oversized({"content-length": str(m.MAX_BODY_BYTES + 1)}))
+check("rejects a missing content-length",  m._oversized({}))
+check("rejects a non-numeric length",      m._oversized({"content-length": "banana"}))
+# int() alone would happily parse these three; they must not slip under the cap.
+check("rejects a negative length",         m._oversized({"content-length": "-1"}))
+check("rejects a plus-signed length",      m._oversized({"content-length": "+5"}))
+check("rejects non-ASCII digits",          m._oversized({"content-length": "١٢٣"}))
+check("rejects any transfer-encoding",     m._oversized({"transfer-encoding": "chunked", "content-length": "4"}))
+
+
+# ---------------------------------------------------------------------------
 # _should_spawn — the pre-spawn filter
 # ---------------------------------------------------------------------------
 # The costly direction is a false NEGATIVE: dropping a real turn loses a user's
