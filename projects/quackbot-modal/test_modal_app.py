@@ -87,6 +87,11 @@ check("passes exactly the limit",          m._oversized({"content-length": str(m
 check("rejects one byte over the limit",   m._oversized({"content-length": str(m.MAX_BODY_BYTES + 1)}))
 check("rejects a missing content-length",  m._oversized({}))
 check("rejects a non-numeric length",      m._oversized({"content-length": "banana"}))
+# int() alone would happily parse these three; they must not slip under the cap.
+check("rejects a negative length",         m._oversized({"content-length": "-1"}))
+check("rejects a plus-signed length",      m._oversized({"content-length": "+5"}))
+check("rejects non-ASCII digits",          m._oversized({"content-length": "١٢٣"}))
+check("rejects any transfer-encoding",     m._oversized({"transfer-encoding": "chunked", "content-length": "4"}))
 
 
 # ---------------------------------------------------------------------------

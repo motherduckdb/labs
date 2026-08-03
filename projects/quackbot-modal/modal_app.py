@@ -340,22 +340,32 @@ def _spawn_decision(body: dict, headers) -> tuple[bool, str]:
 # The signature check can only run after the whole body has been buffered into
 # memory — the HMAC covers every byte — so an attacker who never passes the
 # check can still make the always-warm edge container hold whatever they POST.
-# Bound that from the Content-Length header, before reading anything. Real
-# Slack events are a few KB; 100 KB is far above anything Slack sends and far
-# below anything that hurts. A request with no declared length (chunked) or a
-# non-numeric one is rejected too: Slack always sends Content-Length, and "no
-# declared length" is exactly the shape an unbounded-body flood takes.
-MAX_BODY_BYTES = 100_000
+# Bound that from the Content-Length header, before reading anything, and
+# again on the buffered bytes after reading (the header is a claim; the body
+# is the fact — a proxy that forwards a chunked body alongside a small
+# Content-Length would otherwise sail past the preflight).
+#
+# 1 MB, not something tighter: Slack documents per-field ceilings (40K chars
+# of message text, 50 blocks) but no total-payload bound, and a UTF-8-heavy
+# or block-heavy event could plausibly clear 100 KB. Dropping a legitimate
+# event 413s it, Slack retries the identical bytes, and after three identical
+# 413s the user's message is silently gone — the same asymmetry
+# `_should_spawn` documents, so the cap errs the same direction. 1 MB is
+# still ~30× any observed Slack payload and bounds a flood just as well.
+MAX_BODY_BYTES = 1_000_000
 
 
 def _oversized(headers) -> bool:
+    # A Transfer-Encoding request has no trustworthy declared length at all;
+    # Slack never sends one, so reject rather than reason about framing.
+    if headers.get("transfer-encoding") is not None:
+        return True
     length = headers.get("content-length")
-    if length is None:
+    # Strict ASCII digits only. int() alone would accept "-1" (under any cap),
+    # "+5", "1_0", and non-ASCII digit scripts — none of which are valid HTTP.
+    if length is None or not (length.isascii() and length.isdigit()):
         return True
-    try:
-        return int(length) > MAX_BODY_BYTES
-    except ValueError:
-        return True
+    return int(length) > MAX_BODY_BYTES
 
 
 def _verify_slack_signature(signing_secret: str, headers, raw_body: bytes) -> bool:
@@ -462,7 +472,11 @@ def web():
     from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import JSONResponse, PlainTextResponse
 
-    api = FastAPI()
+    # No docs routes: FastAPI's defaults serve /docs, /redoc and /openapi.json
+    # unauthenticated, which would advertise both the app's existence and its
+    # route map to anyone who finds the URL. openapi_url=None alone kills the
+    # schema, but all three are named so nothing answers at the paths either.
+    api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     signing_secret = os.environ["SLACK_SIGNING_SECRET"]
 
     @api.post("/slack/events")
@@ -470,6 +484,8 @@ def web():
         if _oversized(request.headers):
             return PlainTextResponse("payload too large", status_code=413)
         raw = await request.body()
+        if len(raw) > MAX_BODY_BYTES:
+            return PlainTextResponse("payload too large", status_code=413)
         if not _verify_slack_signature(signing_secret, request.headers, raw):
             return PlainTextResponse("bad signature", status_code=401)
 
@@ -516,6 +532,8 @@ def web():
         if _oversized(request.headers):
             return PlainTextResponse("payload too large", status_code=413)
         raw = await request.body()
+        if len(raw) > MAX_BODY_BYTES:
+            return PlainTextResponse("payload too large", status_code=413)
         if not _verify_slack_signature(signing_secret, request.headers, raw):
             return PlainTextResponse("bad signature", status_code=401)
 
@@ -557,7 +575,8 @@ def web():
 
     # No /health route, deliberately. Nothing probes it (Fly needed health
     # checks; Modal doesn't), and an unauthenticated 200 is a beacon telling
-    # scanners there's a live app behind this URL. The two Slack routes answer
-    # nothing without a valid signature, and every other path 404s.
+    # scanners there's a live app behind this URL. With the docs routes
+    # disabled above, the two Slack routes answer nothing without a valid
+    # signature and every other path 404s.
 
     return api
