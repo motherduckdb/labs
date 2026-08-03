@@ -25,10 +25,10 @@ Provider/usage/caching machinery is ported from agentic-sql-mini unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
-import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -267,6 +267,42 @@ Guideline sanity-check: a guideline can be mislabeled. If it shows a `{{card_sch
 """
 
 
+_AGENTIC_COMPANY_SYSTEM_PROMPT = """You are an expert data analyst. You answer factoid questions by querying a multi-schema company database with SQL via tools.
+
+**Database:** {database} (MotherDuck, DuckDB SQL).
+Use `schema.table` names, or `{database}.schema.table` when fully qualifying. Public business schemas include `catalog`, `comms`, `cx`, `dtc`, `finance`, `hr`, `marketing`, `ops`, `wholesale`, and `workflow`. The private `ground_truth` and `sim` schemas are outside the analyst information boundary and must never be queried.
+
+The shared operating context is exactly one guide under the topic `agentic-company/manual`. It explains evidence authority, lifecycle semantics, time/grain discipline, and reporting conventions. At the start of every task, call `list_guides(topic="agentic-company/manual")`, then read the returned guide with `get_guide(uuid)`. There are no benchmark architecture documents or task-specific SQL recipes in context; synthesize the manual with the database schema and records.
+
+You have six tools:
+- `list_guides` — list the single manual guide and discover its opaque `uuid`.
+- `get_guide` — read that guide's full markdown by the discovered `uuid`.
+- `list_tables` — list public tables/views.
+- `list_columns` — describe one table's columns.
+- `query` — run a read-only SELECT (returns up to ~50 rows).
+- `submit_answer` — submit the SQL whose result IS the final answer. Call exactly once after verifying the query; every run MUST end with it. An unsubmitted run scores zero.
+
+Follow the skill below exactly.
+
+============================== SKILL ==============================
+{skill}
+===================================================================
+"""
+
+
+AGENTIC_COMPANY_USER_PROMPT_TEMPLATE = """Question: {question}
+
+Guidelines: {guidelines}
+
+Use the shared analyst manual and the public database records to derive the answer. The validator is strict about output shape, ordering, rounding, and sign; make the submitted SQL return exactly the value or components requested by the guidelines, with no explanation.
+"""
+
+
+def build_agentic_company_system_prompt(database: str, skill_text: str) -> str:
+    """Build the isolated Agentic Company prompt (no DABstep/payment context)."""
+    return _AGENTIC_COMPANY_SYSTEM_PROMPT.format(database=database, skill=skill_text)
+
+
 @dataclass
 class RunState:
     """Mutable state captured during one agent run."""
@@ -277,7 +313,7 @@ class RunState:
     final_rows: list[tuple] | ExecutionError | None = None
     submitted: bool = False
     tool_calls: list[dict] = field(default_factory=list)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    submission_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     on_tool_call: Callable[[dict], None] | None = None
     max_turns: int = 40
 
@@ -434,8 +470,15 @@ def _format_query_display(result: MCPResult, row_cap: int = _QUERY_DISPLAY_ROW_C
     return "\n".join(lines)
 
 
-def _make_tools(state: RunState) -> list:
-    @function_tool
+def _make_tools(state: RunState, guide_topic: str | None = None) -> list:
+    guide_description = None
+    if guide_topic:
+        guide_description = (
+            "List the guides for the configured dataset topic. Call with "
+            f'topic="{guide_topic}" to discover the guide uuid, then call get_guide.'
+        )
+
+    @function_tool(description_override=guide_description)
     async def list_guides(topic: str | None = None) -> str:
         """Browse the guide catalog by topic (this dataset's knowledge).
 
@@ -527,49 +570,53 @@ def _make_tools(state: RunState) -> list:
     @function_tool
     async def submit_answer(sql: str) -> str:
         """Submit the SQL whose result IS the answer. Call once with working SQL."""
-        with state.lock:
+        # The SDK may invoke sibling tool calls concurrently. Serialize the
+        # entire check/execute/latch transaction so two successful submissions
+        # cannot race and make the final answer depend on response timing. A
+        # failed execution releases the lock without latching, so retry remains
+        # possible.
+        async with state.submission_lock:
             if state.submitted:
                 return "ERROR: answer already submitted"
-        start_time, start_perf = _tool_timing_start()
-        # Execute FIRST (via the read-only MCP query tool). Only latch the
-        # submission on success — a SQL error here must NOT end the run, or a
-        # single typo would lock the agent out of resubmitting a corrected query.
-        try:
-            result = await state.mcp.call_tool("query", {"sql": sql})
-        except Exception as e:
-            state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": str(e)}, start_time, start_perf))
-            return (
-                f"Your submitted SQL failed to execute: {e}\n"
-                "The answer was NOT recorded. Fix the SQL and call submit_answer "
-                "again with a corrected query." + _budget_suffix(state)
-            )
-        if result.is_error:
-            state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": result.text}, start_time, start_perf))
-            return (
-                f"Your submitted SQL failed to execute: {result.text}\n"
-                "The answer was NOT recorded. Fix the SQL and call submit_answer "
-                "again with a corrected query." + _budget_suffix(state)
-            )
-        # result.rows is positional (list of arrays); score.py wants list[tuple].
-        # A None here means the server returned no structuredContent.rows at all
-        # (unparseable), which we CANNOT distinguish from an answer — treat it as
-        # a submission failure so a genuine empty result (rows == []) is the only
-        # thing that latches as "". Don't end the run; let the model resubmit.
-        if result.rows is None:
-            state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": "no rows in result payload"}, start_time, start_perf))
-            return (
-                "Your submitted SQL ran but returned no parseable result rows "
-                "(no structuredContent.rows). The answer was NOT recorded. Make "
-                "sure the query SELECTs the answer value(s) and call submit_answer "
-                "again." + _budget_suffix(state)
-            )
-        rows = [tuple(r) for r in result.rows]
-        with state.lock:
+            start_time, start_perf = _tool_timing_start()
+            # Execute FIRST (via the read-only MCP query tool). Only latch the
+            # submission on success — a SQL error here must NOT end the run, or a
+            # single typo would lock the agent out of resubmitting a corrected query.
+            try:
+                result = await state.mcp.call_tool("query", {"sql": sql})
+            except Exception as e:
+                state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": str(e)}, start_time, start_perf))
+                return (
+                    f"Your submitted SQL failed to execute: {e}\n"
+                    "The answer was NOT recorded. Fix the SQL and call submit_answer "
+                    "again with a corrected query." + _budget_suffix(state)
+                )
+            if result.is_error:
+                state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": result.text}, start_time, start_perf))
+                return (
+                    f"Your submitted SQL failed to execute: {result.text}\n"
+                    "The answer was NOT recorded. Fix the SQL and call submit_answer "
+                    "again with a corrected query." + _budget_suffix(state)
+                )
+            # result.rows is positional (list of arrays); score.py wants list[tuple].
+            # A None here means the server returned no structuredContent.rows at all
+            # (unparseable), which we CANNOT distinguish from an answer — treat it as
+            # a submission failure so a genuine empty result (rows == []) is the only
+            # thing that latches as "". Don't end the run; let the model resubmit.
+            if result.rows is None:
+                state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "error": "no rows in result payload"}, start_time, start_perf))
+                return (
+                    "Your submitted SQL ran but returned no parseable result rows "
+                    "(no structuredContent.rows). The answer was NOT recorded. Make "
+                    "sure the query SELECTs the answer value(s) and call submit_answer "
+                    "again." + _budget_suffix(state)
+                )
+            rows = [tuple(r) for r in result.rows]
             state.submitted = True
             state.final_sql = sql
             state.final_rows = rows
-        state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "rows": len(rows)}, start_time, start_perf))
-        return f"Submitted. {len(rows)} rows."
+            state.record(_with_tool_timing({"tool": "submit_answer", "sql": sql, "rows": len(rows)}, start_time, start_perf))
+            return f"Submitted. {len(rows)} rows."
 
     return [list_guides, get_guide, list_tables, list_columns, query, submit_answer]
 
@@ -597,6 +644,8 @@ async def run_agent(
     model: str,
     provider: OpenRouterProvider,
     skill_text: str | None = None,
+    prompt_profile: str = "dabstep",
+    guide_topic: str | None = None,
     max_turns: int = 40,
     temperature: float = 0.0,
     on_tool_call: Callable[[dict], None] | None = None,
@@ -610,16 +659,27 @@ async def run_agent(
         on_tool_call=on_tool_call,
         max_turns=max_turns,
     )
-    tools = _make_tools(state)
+    tools = _make_tools(state, guide_topic=guide_topic)
+
+    if prompt_profile == "dabstep":
+        instructions = build_system_prompt(database, skill_text)
+        user_prompt_template = USER_PROMPT_TEMPLATE
+    elif prompt_profile == "agentic-company":
+        if skill_text is None:
+            raise ValueError("Agentic Company profile requires its dedicated skill text.")
+        instructions = build_agentic_company_system_prompt(database, skill_text)
+        user_prompt_template = AGENTIC_COMPANY_USER_PROMPT_TEMPLATE
+    else:
+        raise ValueError(f"Unknown prompt profile: {prompt_profile!r}")
 
     agent = Agent(
         name="asc-sql",
-        instructions=build_system_prompt(database, skill_text),
+        instructions=instructions,
         tools=tools,
         model_settings=ModelSettings(temperature=temperature, max_tokens=16384),
     )
 
-    user_msg = USER_PROMPT_TEMPLATE.format(
+    user_msg = user_prompt_template.format(
         question=question,
         guidelines=guidelines or "(none)",
     )
@@ -678,8 +738,11 @@ async def run_agent(
         _usage_var.reset(usage_token)
         _thinking_var.reset(thinking_token)
 
-    if not state.submitted and not hit_limit:
-        hit_limit = True
+    hit_limit = _resolve_hit_limit(
+        prompt_profile=prompt_profile,
+        submitted=state.submitted,
+        hit_limit=hit_limit,
+    )
 
     # Capture the full conversation (Responses-API items: reasoning / function_call /
     # function_call_output / message) so controllog-viz can render the trace.
@@ -702,3 +765,10 @@ async def run_agent(
         completion_tokens=usage.completion_tokens,
         cached_tokens=usage.cached_tokens,
     )
+
+
+def _resolve_hit_limit(*, prompt_profile: str, submitted: bool, hit_limit: bool) -> bool:
+    """Preserve DABstep semantics while accepting Agentic final-turn submissions."""
+    if submitted:
+        return False if prompt_profile == "agentic-company" else hit_limit
+    return True
