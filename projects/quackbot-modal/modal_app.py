@@ -337,6 +337,27 @@ def _spawn_decision(body: dict, headers) -> tuple[bool, str]:
     return _should_spawn(body), note
 
 
+# The signature check can only run after the whole body has been buffered into
+# memory — the HMAC covers every byte — so an attacker who never passes the
+# check can still make the always-warm edge container hold whatever they POST.
+# Bound that from the Content-Length header, before reading anything. Real
+# Slack events are a few KB; 100 KB is far above anything Slack sends and far
+# below anything that hurts. A request with no declared length (chunked) or a
+# non-numeric one is rejected too: Slack always sends Content-Length, and "no
+# declared length" is exactly the shape an unbounded-body flood takes.
+MAX_BODY_BYTES = 100_000
+
+
+def _oversized(headers) -> bool:
+    length = headers.get("content-length")
+    if length is None:
+        return True
+    try:
+        return int(length) > MAX_BODY_BYTES
+    except ValueError:
+        return True
+
+
 def _verify_slack_signature(signing_secret: str, headers, raw_body: bytes) -> bool:
     """Slack's v0 request signature.
 
@@ -446,6 +467,8 @@ def web():
 
     @api.post("/slack/events")
     async def slack_events(request: Request):
+        if _oversized(request.headers):
+            return PlainTextResponse("payload too large", status_code=413)
         raw = await request.body()
         if not _verify_slack_signature(signing_secret, request.headers, raw):
             return PlainTextResponse("bad signature", status_code=401)
@@ -490,6 +513,8 @@ def web():
 
     @api.post("/slack/interactive")
     async def slack_interactive(request: Request):
+        if _oversized(request.headers):
+            return PlainTextResponse("payload too large", status_code=413)
         raw = await request.body()
         if not _verify_slack_signature(signing_secret, request.headers, raw):
             return PlainTextResponse("bad signature", status_code=401)
@@ -530,8 +555,9 @@ def web():
         # message alone in the meantime.
         return PlainTextResponse("")
 
-    @api.get("/health")
-    async def health():
-        return PlainTextResponse("ok")
+    # No /health route, deliberately. Nothing probes it (Fly needed health
+    # checks; Modal doesn't), and an unauthenticated 200 is a beacon telling
+    # scanners there's a live app behind this URL. The two Slack routes answer
+    # nothing without a valid signature, and every other path 404s.
 
     return api
