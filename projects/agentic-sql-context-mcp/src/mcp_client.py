@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator
 from urllib.parse import quote
 
+import duckdb
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -90,6 +91,14 @@ _GUIDE_TOPIC_CHARSET = re.compile(r"^[A-Za-z0-9._/-]+$")
 # identifiers we pin; anything else is a config error worth failing loudly on.
 _DB_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Trusted MotherDuck share addresses accepted by the session bootstrap. Share
+# attachment is configuration, never an agent tool: the model still goes
+# through the read-only query guard below and cannot ATTACH anything itself.
+_SHARE_URL = re.compile(
+    r"^md:_share/[A-Za-z_][A-Za-z0-9_]*/"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
 # Defense-in-depth read-only guard for the `query` tool. The real protection is a
 # read-scoped MotherDuck token; this is a belt-and-suspenders reject of any
 # statement that leads with a mutating/among keyword so a prompt-injected
@@ -104,9 +113,43 @@ _MUTATING_SQL_LEADERS = frozenset({
     "begin", "start", "commit", "rollback", "call", "pragma",
 })
 
-# Strip -- line comments and /* */ block comments before inspecting statements.
-_SQL_LINE_COMMENT = re.compile(r"--[^\n]*")
-_SQL_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_DYNAMIC_CATALOG_ACCESS = re.compile(
+    r"^(?:query_table|query|duckdb_[A-Za-z0-9_]*|pragma_[A-Za-z0-9_]*)$",
+    re.IGNORECASE,
+)
+
+
+def _sql_tokens(sql: str) -> list[str]:
+    """Return DuckDB-tokenized keywords/identifiers/operators, omitting values.
+
+    DuckDB's tokenizer correctly handles ordinary, escaped, and dollar-quoted
+    strings and skips comments. That avoids the endless quote/comment edge
+    cases of regex-based SQL inspection while retaining quoted identifiers.
+    """
+    tokens: list[str] = []
+    for position, token_type in duckdb.tokenize(sql):
+        if token_type == duckdb.token_type.string_const:
+            continue
+        char = sql[position]
+        if char == '"':
+            index = position + 1
+            value: list[str] = []
+            while index < len(sql):
+                if sql[index] == '"':
+                    if index + 1 < len(sql) and sql[index + 1] == '"':
+                        value.append('"')
+                        index += 2
+                        continue
+                    break
+                value.append(sql[index])
+                index += 1
+            tokens.append("".join(value).casefold())
+        elif char.isalpha() or char == "_":
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_$]*", sql[position:])
+            tokens.append((match.group(0) if match else char).casefold())
+        else:
+            tokens.append(char)
+    return tokens
 
 
 def _read_only_violation(sql: str) -> str | None:
@@ -119,23 +162,27 @@ def _read_only_violation(sql: str) -> str | None:
     """
     if not isinstance(sql, str) or not sql.strip():
         return None
-    cleaned = _SQL_BLOCK_COMMENT.sub(" ", sql)
-    cleaned = _SQL_LINE_COMMENT.sub(" ", cleaned)
-    for statement in cleaned.split(";"):
-        statement = statement.strip()
-        if not statement:
-            continue
-        # First bare word (strip a leading '(' from "(SELECT …)").
-        first = statement.lstrip("(").split(None, 1)
-        if not first:
-            continue
-        leader = first[0].lower()
-        if leader in _MUTATING_SQL_LEADERS:
+    try:
+        statements = duckdb.extract_statements(sql)
+    except duckdb.Error:
+        return None  # Let the server return the actionable SQL syntax error.
+    allowed_types = {duckdb.StatementType.SELECT, duckdb.StatementType.EXPLAIN}
+    for statement in statements:
+        if statement.type not in allowed_types:
             return (
                 f"Refused: this path is read-only, but the SQL leads with "
-                f"'{first[0]}'. Only read queries (SELECT / WITH / DESCRIBE / …) "
+                f"'{statement.type.name}'. Only read queries "
+                f"(SELECT / WITH / DESCRIBE / …) "
                 f"are permitted."
             )
+        if statement.type == duckdb.StatementType.EXPLAIN:
+            statement_tokens = _sql_tokens(statement.query)
+            if {"analyze", "analyse"}.intersection(statement_tokens):
+                return (
+                    "Refused: EXPLAIN ANALYZE/ANALYSE executes its child statement "
+                    "and is not permitted on this read-only path. Use plain EXPLAIN "
+                    "for query planning."
+                )
     return None
 
 
@@ -272,6 +319,8 @@ class MCPSession:
         session: ClientSession,
         database: str | None = None,
         no_guides: bool = False,
+        excluded_schemas: tuple[str, ...] = (),
+        guide_topic: str | None = None,
     ) -> None:
         self._session = session
         # Ablation baseline: when set, every guide-read tool short-circuits to
@@ -290,6 +339,9 @@ class MCPSession:
                 f"[A-Za-z_][A-Za-z0-9_]* slug."
             )
         self._database = db
+        self._excluded_schemas = frozenset(schema.casefold() for schema in excluded_schemas)
+        self._guide_topic = guide_topic
+        self._listed_guide_uuids: set[str] = set()
 
     async def call_tool(
         self,
@@ -337,11 +389,40 @@ class MCPSession:
         #    instead.)
         call_args = dict(args)
         if name in ("query", "list_tables", "list_columns"):
-            call_args.setdefault("database", self._database)
+            # The database is a session boundary, not a model-controlled arg.
+            call_args["database"] = self._database
         elif name in ("get_query_guide", "list_guides", "get_guide"):
             # get_query_guide takes no args; list_guides takes an optional topic;
             # get_guide takes a uuid. All tolerate the empty-padding strip.
             call_args = _sanitize_guide_args(call_args)
+
+        if (
+            self._guide_topic
+            and name == "list_guides"
+            and call_args.get("topic") != self._guide_topic
+        ):
+            return MCPResult(
+                text=f"Refused: this benchmark exposes only topic {self._guide_topic!r}.",
+                is_error=True,
+                rows=None,
+            )
+        if self._guide_topic and name == "get_guide":
+            requested_uuid = call_args.get("uuid")
+            if requested_uuid not in self._listed_guide_uuids:
+                return MCPResult(
+                    text=(
+                        "Refused: get_guide may read only a uuid returned by this "
+                        "session's configured topic listing."
+                    ),
+                    is_error=True,
+                    rows=None,
+                )
+
+        if name == "list_columns":
+            normalized = await self._normalize_list_columns_args(call_args)
+            if isinstance(normalized, MCPResult):
+                return normalized
+            call_args = normalized
 
         # 4a. Read-only guard for `query` (defense-in-depth over a read-scoped
         #     token). submit_answer runs its SQL through this same tool, so this
@@ -350,6 +431,13 @@ class MCPSession:
             violation = _read_only_violation(call_args.get("sql", ""))
             if violation is not None:
                 return MCPResult(text=violation, is_error=True, rows=None)
+
+        # 4a.1 Dataset information boundary. The Agentic Company share contains
+        # private simulation/answer schemas that are not benchmark context. Hide
+        # them from discovery and reject explicit references before dispatch.
+        restricted = self._restricted_schema_violation(name, call_args)
+        if restricted is not None:
+            return MCPResult(text=restricted, is_error=True, rows=None)
 
         # 4b. Guide-write guard (topic + required fields).
         if name in GUIDE_WRITE_TOOLS:
@@ -363,12 +451,34 @@ class MCPSession:
         is_error = getattr(result, "isError", False) is True
 
         structured = getattr(result, "structuredContent", None)
+        if name == "list_tables" and isinstance(structured, dict) and self._excluded_schemas:
+            structured = self._filter_table_listing(structured)
         if structured is not None:
             text = json.dumps(structured)
-            rows = structured.get("rows") if isinstance(structured, dict) else None
+            if isinstance(structured, dict) and name == "list_columns":
+                rows = structured.get("columns")
+            elif isinstance(structured, dict) and name == "list_tables":
+                rows = [
+                    *structured.get("tables", []),
+                    *structured.get("views", []),
+                ]
+            else:
+                rows = structured.get("rows") if isinstance(structured, dict) else None
         else:
             text = _join_content_text(getattr(result, "content", None))
             rows = None
+
+        if (
+            name == "list_guides"
+            and self._guide_topic
+            and isinstance(structured, dict)
+            and isinstance(structured.get("guides"), list)
+        ):
+            self._listed_guide_uuids = {
+                str(guide["uuid"])
+                for guide in structured["guides"]
+                if isinstance(guide, dict) and guide.get("uuid")
+            }
 
         # 6. detectPayloadFailure: promote a payload-level success:false to a
         #    real error and prepend its message.
@@ -378,6 +488,176 @@ class MCPSession:
             text = f"Tool reported failure: {message}\n\n{text}"
 
         return MCPResult(text=text, is_error=is_error, rows=rows)
+
+    async def _normalize_list_columns_args(self, args: dict) -> dict | MCPResult:
+        """Translate user-friendly qualified names to the MCP's split fields.
+
+        MotherDuck's list_columns tool takes separate database/schema/table
+        arguments and otherwise defaults schema to ``main``. The agent API
+        intentionally exposes one ``table`` string, so normalize
+        ``schema.table`` and ``database.schema.table`` here. Resolve an
+        unqualified name only when it is unique among visible schemas.
+        """
+        raw_table = args.get("table")
+        if not isinstance(raw_table, str) or not raw_table.strip():
+            return MCPResult(
+                text="list_columns requires a non-empty table name.",
+                is_error=True,
+                rows=None,
+            )
+        raw_parts = [part.strip().strip('"') for part in raw_table.split(".")]
+        if not 1 <= len(raw_parts) <= 3 or any(
+            not _DB_IDENTIFIER.fullmatch(part) for part in raw_parts
+        ):
+            return MCPResult(
+                text=(
+                    "Invalid table name. Use table, schema.table, or "
+                    "database.schema.table with plain identifiers."
+                ),
+                is_error=True,
+                rows=None,
+            )
+
+        normalized = dict(args)
+        normalized["database"] = self._database
+        if len(raw_parts) == 3:
+            requested_database, schema, table = raw_parts
+            if requested_database.casefold() != self._database.casefold():
+                return MCPResult(
+                    text=(
+                        f"Refused: this session exposes only database {self._database!r}."
+                    ),
+                    is_error=True,
+                    rows=None,
+                )
+            normalized["schema"] = schema
+            normalized["table"] = table
+            return normalized
+        if len(raw_parts) == 2:
+            normalized["schema"], normalized["table"] = raw_parts
+            return normalized
+
+        table = raw_parts[0]
+        explicit_schema = normalized.get("schema")
+        if explicit_schema is not None:
+            if not isinstance(explicit_schema, str) or not _DB_IDENTIFIER.fullmatch(
+                explicit_schema
+            ):
+                return MCPResult(
+                    text="Invalid schema name for list_columns.",
+                    is_error=True,
+                    rows=None,
+                )
+            normalized["table"] = table
+            return normalized
+
+        listing = await self._session.call_tool(
+            "list_tables",
+            {"database": self._database, "keywords": table, "limit": 500},
+        )
+        payload = getattr(listing, "structuredContent", None)
+        if getattr(listing, "isError", False) is True or not isinstance(payload, dict):
+            return MCPResult(
+                text=f"Could not resolve unqualified table {table!r}; use schema.table.",
+                is_error=True,
+                rows=None,
+            )
+        matches = [
+            item
+            for key in ("tables", "views")
+            for item in payload.get(key, [])
+            if isinstance(item, dict)
+            and str(item.get("name") or "").casefold() == table.casefold()
+            and str(item.get("schema") or "").casefold() not in self._excluded_schemas
+        ]
+        if len(matches) != 1:
+            candidates = ", ".join(
+                f"{item.get('schema')}.{item.get('name')}" for item in matches
+            )
+            detail = f" Candidates: {candidates}." if candidates else ""
+            return MCPResult(
+                text=(
+                    f"Unqualified table {table!r} is not uniquely resolvable.{detail} "
+                    "Use schema.table from list_tables."
+                ),
+                is_error=True,
+                rows=None,
+            )
+        normalized["schema"] = str(matches[0]["schema"])
+        normalized["table"] = str(matches[0]["name"])
+        return normalized
+
+    def _restricted_schema_violation(self, name: str, args: dict) -> str | None:
+        if not self._excluded_schemas:
+            return None
+        candidate = ""
+        if name == "query":
+            candidate = str(args.get("sql") or "")
+        elif name == "list_columns":
+            candidate = ".".join(
+                str(value)
+                for value in (args.get("schema"), args.get("table"))
+                if value
+            )
+        else:
+            return None
+        tokens = _sql_tokens(candidate)
+        if name == "query":
+            if tokens and tokens[0] in {"show", "summarize", "describe", "desc"}:
+                return (
+                    "Refused: catalog-wide SQL discovery is outside this benchmark's "
+                    "public-schema interface. Use list_tables/list_columns."
+                )
+            for index, token in enumerate(tokens[:-1]):
+                if (_DYNAMIC_CATALOG_ACCESS.fullmatch(token) and tokens[index + 1] == "("):
+                    return (
+                        "Refused: dynamic table/catalog access is outside this benchmark's "
+                        "public-schema interface. Use list_tables/list_columns and explicit "
+                        "public schema.table names."
+                    )
+                if token in {"information_schema", "pg_catalog"} and tokens[index + 1] == ".":
+                    return (
+                        "Refused: metadata catalogs are outside this benchmark's "
+                        "public-schema interface. Use list_tables/list_columns."
+                    )
+            if "sqlite_master" in tokens:
+                return (
+                    "Refused: metadata catalogs are outside this benchmark's "
+                    "public-schema interface. Use list_tables/list_columns."
+                )
+        for schema in self._excluded_schemas:
+            if any(
+                token == schema and tokens[index + 1] == "."
+                for index, token in enumerate(tokens[:-1])
+            ):
+                return f"Refused: schema '{schema}' is outside this benchmark's data boundary."
+        return None
+
+    def _filter_table_listing(self, payload: dict) -> dict:
+        filtered = dict(payload)
+        for key in ("tables", "views"):
+            values = filtered.get(key)
+            if isinstance(values, list):
+                filtered[key] = [
+                    item
+                    for item in values
+                    if not (
+                        isinstance(item, dict)
+                        and str(item.get("schema") or "").casefold()
+                        in self._excluded_schemas
+                    )
+                ]
+        if isinstance(filtered.get("tables"), list):
+            filtered["tableCount"] = len(filtered["tables"])
+        if isinstance(filtered.get("views"), list):
+            filtered["viewCount"] = len(filtered["views"])
+        visible_count = int(filtered.get("tableCount") or 0) + int(
+            filtered.get("viewCount") or 0
+        )
+        for key in ("count", "totalCount"):
+            if key in filtered:
+                filtered[key] = visible_count
+        return filtered
 
 
 def _join_content_text(content: Any) -> str:
@@ -407,6 +687,10 @@ async def create_mcp_session(
     session_hint: str | None = None,
     database: str | None = None,
     no_guides: bool = False,
+    attach_share: str | None = None,
+    attach_database: str = "sample_data",
+    excluded_schemas: tuple[str, ...] = (),
+    guide_topic: str | None = None,
 ) -> AsyncIterator[MCPSession]:
     """Open an authenticated MCP session as an async context manager.
 
@@ -436,7 +720,86 @@ async def create_mcp_session(
     async with streamablehttp_client(url, headers=headers) as (read_stream, write_stream, _):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
-            yield MCPSession(session, database=database, no_guides=no_guides)
+            if attach_share is not None:
+                await _attach_trusted_share(
+                    session,
+                    share_url=attach_share,
+                    alias=database or "",
+                    bootstrap_database=attach_database,
+                )
+            yield MCPSession(
+                session,
+                database=database,
+                no_guides=no_guides,
+                excluded_schemas=excluded_schemas,
+                guide_topic=guide_topic,
+            )
+
+
+async def _attach_trusted_share(
+    session: ClientSession,
+    *,
+    share_url: str,
+    alias: str,
+    bootstrap_database: str,
+) -> None:
+    """Attach a configured share before exposing the read-only agent session."""
+    if not _SHARE_URL.fullmatch(share_url):
+        raise ValueError(f"Invalid MotherDuck share URL: {share_url!r}")
+    for label, value in (("share alias", alias), ("bootstrap database", bootstrap_database)):
+        if not _DB_IDENTIFIER.fullmatch(value):
+            raise ValueError(f"Invalid {label} {value!r}: expected a plain database identifier.")
+
+    sql = f"ATTACH '{share_url}' AS {alias} (READ_ONLY)"
+    result = await session.call_tool(
+        "query",
+        {"database": bootstrap_database, "sql": sql},
+    )
+    structured = getattr(result, "structuredContent", None)
+    text = json.dumps(structured) if structured is not None else _join_content_text(
+        getattr(result, "content", None)
+    )
+    # MotherDuck attachments can persist for the authenticated session. Treat
+    # the idempotent already-attached response as success; all other failures
+    # are configuration errors and must happen before the model runs.
+    payload_failed = isinstance(structured, dict) and structured.get("success") is False
+    attach_failed = getattr(result, "isError", False) is True or payload_failed
+    attach_error_is_idempotent = any(
+        marker in text.casefold()
+        for marker in ("already attached", "already exists")
+    )
+    if attach_failed and not attach_error_is_idempotent:
+        raise RuntimeError(f"Could not attach MotherDuck share as {alias!r}: {text}")
+
+    expected_path = share_url.removeprefix("md:")
+    quote_char = "'"
+    verify_sql = (
+        "SELECT database_name, path, type, readonly FROM duckdb_databases() "
+        f"WHERE database_name = {quote_char}{alias}{quote_char}"
+    )
+    verified = await session.call_tool(
+        "query",
+        {"database": alias, "sql": verify_sql},
+    )
+    verified_structured = getattr(verified, "structuredContent", None)
+    verified_rows = (
+        verified_structured.get("rows") if isinstance(verified_structured, dict) else None
+    )
+    expected_rows = [[alias, expected_path, "motherduck", True]]
+    if (
+        getattr(verified, "isError", False) is True
+        or not isinstance(verified_structured, dict)
+        or verified_structured.get("success") is False
+        or verified_rows != expected_rows
+    ):
+        verify_text = (
+            json.dumps(verified_structured)
+            if verified_structured is not None
+            else _join_content_text(getattr(verified, "content", None))
+        )
+        raise RuntimeError(
+            f"Database alias {alias!r} is not the configured read-only share: {verify_text}"
+        )
 
 
 async def call_tool_write(session: MCPSession, name: str, args: dict) -> MCPResult:

@@ -1,9 +1,9 @@
-"""CLI: build the MotherDuck DB, run the agent over the 26 templates, summarize.
+"""CLI for the shared DABstep and Agentic Company evaluation harness.
 
-Single setup (one DB, one skill; the semantic layer lives in MotherDuck MCP
-guides, reached per task through a read-only MCP session). The eval set is the
-26 template-representative questions (`train_ids` in data/split.json); gold
-answers come from data/dabstep/tasks/all.jsonl.
+DABstep remains the default profile. Agentic Company supplies an external
+question set, a single manual guide, a shared multi-schema snapshot, an
+isolated prompt/skill, and criteria-driven scoring while reusing the same agent
+loop, MCP tools, concurrency, retries, logging, results, and summary behavior.
 """
 
 from __future__ import annotations
@@ -26,9 +26,15 @@ from rich.text import Text
 
 from src import guides_load
 from src.agent import OpenRouterProvider, run_agent
+from src.agentic_company_profile import (
+    AGENTIC_COMPANY_PROFILE,
+    AgenticCompanyArtifacts,
+    AgenticCompanyProfile,
+)
 from src.load import DEFAULT_DATABASE, build_db
 from src.mcp_client import create_mcp_session
-from src.score import ExecutionError, score
+from src.score import ExecutionError
+from src.score import score as score_dabstep
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
@@ -38,10 +44,8 @@ TASKS_PATH = DATA_DIR / "dabstep" / "tasks" / "all.jsonl"
 SPLIT_PATH = DATA_DIR / "split.json"
 
 console = Console()
-
 PROJECT_ID = "agentic-sql-claude-edition"
 AGENT_ID = "asc-sql"
-
 MODEL_ALIASES = {
     "opus": "anthropic/claude-opus-4.7",
     "sonnet": "anthropic/claude-sonnet-4.6",
@@ -66,6 +70,7 @@ def _git_output(*args: str) -> str | None:
 
 def _build_run_provenance(
     *,
+    benchmark: str,
     split: str,
     database: str,
     model: str,
@@ -74,10 +79,12 @@ def _build_run_provenance(
     concurrency: int,
     out: Path,
     question_count: int,
+    artifacts: dict | None = None,
 ) -> dict:
     commit_sha = _git_output("rev-parse", "HEAD")
     dirty_status = _git_output("status", "--porcelain")
     resolved_config = {
+        "benchmark": benchmark,
         "split": split,
         "database": database,
         "model": model,
@@ -87,7 +94,13 @@ def _build_run_provenance(
         "question_count": question_count,
         "run_label": out.stem,
     }
-    return {
+    if artifacts:
+        # controllog.run_metadata has a fixed keyword schema. Keep benchmark
+        # provenance nested inside its supported resolved_config payload so
+        # artifact hashes participate in the config hash without becoming an
+        # unexpected top-level keyword.
+        resolved_config["benchmark_artifacts"] = artifacts
+    provenance = {
         "commit_sha": commit_sha,
         "repo": _git_output("config", "--get", "remote.origin.url"),
         "dirty": bool(dirty_status) if dirty_status is not None else None,
@@ -95,8 +108,9 @@ def _build_run_provenance(
         "resolved_config": resolved_config,
         "agent_name": AGENT_ID,
         "dataset_name": database,
-        "dataset_version": split,
+        "dataset_version": (artifacts or {}).get("version", split),
     }
+    return provenance
 
 
 def _md_database() -> str:
@@ -111,12 +125,23 @@ def _bad_golds() -> set[str]:
     return {str(t) for t in json.loads(p.read_text()).get("task_ids", [])}
 
 
-def _load_questions(split: str) -> list[dict]:
+def _load_questions(
+    split: str,
+    *,
+    benchmark: str = "dabstep",
+    questions_path: Path | None = None,
+) -> list[dict]:
     """Load questions, excluding known-bad golds from the test/all sets.
     split='templates' -> the 26 train_ids (one per template; bad golds aren't among them);
     split='test'      -> the 419 held-out questions (all minus the 26 train minus 5 bad golds);
     split='all'       -> 445 (450 minus 5 bad golds).
     """
+    if benchmark == AGENTIC_COMPANY_PROFILE.name:
+        path = questions_path or AGENTIC_COMPANY_PROFILE.resolve_paths()[0]
+        return AGENTIC_COMPANY_PROFILE.load_questions(path, split=split)
+    if benchmark != "dabstep":
+        raise ValueError(f"Unknown benchmark: {benchmark!r}")
+
     all_qs = [json.loads(line) for line in TASKS_PATH.read_text().splitlines() if line.strip()]
     bad = _bad_golds()
     if split == "all":
@@ -174,17 +199,34 @@ def context_cmd() -> None:
 
 
 @cli.command("guides-load")
+@click.option(
+    "--benchmark",
+    type=click.Choice(["dabstep", AGENTIC_COMPANY_PROFILE.name]),
+    default="dabstep",
+    show_default=True,
+    help="Guide bundle to publish.",
+)
 @click.option("--dry-run", is_flag=True, default=False,
               help="Preview the planned guide topics without making any MCP calls.")
 @click.option("--prefix", default=None,
-              help="Guide topic prefix (default $DABSTEP_GUIDES_PREFIX or 'dabstep').")
-def guides_load_cmd(dry_run: bool, prefix: str | None) -> None:
-    """Publish the local context items to the MotherDuck MCP as guides.
+              help="Override the DABstep topic prefix (Agentic Company is fixed).")
+@click.option(
+    "--manual",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Agentic Company manual.md (defaults to the canonical external benchmark path).",
+)
+def guides_load_cmd(
+    benchmark: str,
+    dry_run: bool,
+    prefix: str | None,
+    manual: Path | None,
+) -> None:
+    """Publish the selected benchmark's context to MotherDuck MCP guides.
 
-    The write half of the "context layer IS guides" swap: each context item is
-    created (or, idempotently, updated via the committed guides.lock.json) as a
-    guide via the guide-write tools. Requires MOTHERDUCK_TOKEN; org-level guides
-    need an admin token (see guides_load for the access/prefix config).
+    DABstep publishes its context-item bundle. Agentic Company discovers or
+    creates exactly one personal manual at its fixed topic, without a local UUID
+    lock. Live publication requires MOTHERDUCK_TOKEN.
     """
     if not dry_run and not os.environ.get("MOTHERDUCK_TOKEN"):
         raise click.ClickException("MOTHERDUCK_TOKEN is not set.")
@@ -192,8 +234,25 @@ def guides_load_cmd(dry_run: bool, prefix: str | None) -> None:
     label = "planning" if dry_run else "publishing"
     console.print(f"[bold]{label}[/bold] context items → MotherDuck guides …")
     try:
-        results = guides_load.publish_all_sync(prefix=prefix, dry_run=dry_run)
-    except RuntimeError as exc:
+        if benchmark == AGENTIC_COMPANY_PROFILE.name:
+            questions_path, manual_path, manifest_path = AGENTIC_COMPANY_PROFILE.resolve_paths(
+                manual=manual
+            )
+            AGENTIC_COMPANY_PROFILE.load_bundle(
+                questions_path,
+                manual_path,
+                manifest_path,
+            )
+            results = guides_load.publish_manual_sync(
+                manual_path=manual_path,
+                prefix=prefix,
+                dry_run=dry_run,
+            )
+        else:
+            if manual is not None:
+                raise click.ClickException("--manual is only valid for agentic-company.")
+            results = guides_load.publish_all_sync(prefix=prefix, dry_run=dry_run)
+    except (RuntimeError, TypeError, ValueError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     table = Table(show_header=True, box=None, padding=(0, 2))
@@ -242,11 +301,34 @@ def _correctness_mark(c: str) -> str:
 
 
 @cli.command()
-@click.option("--split", type=click.Choice(["templates", "test", "all"]), default="templates",
-              help="'templates' = 26 reps (default); 'test' = 424 held-out; 'all' = full 450.")
+@click.option(
+    "--benchmark",
+    type=click.Choice(["dabstep", AGENTIC_COMPANY_PROFILE.name]),
+    default="dabstep",
+    show_default=True,
+)
+@click.option("--split", type=click.Choice(["templates", "test", "all"]), default=None,
+              help="DABstep: templates/test/all. Agentic Company: all (default).")
 @click.option("--model", default="gemini", help="OpenRouter model id or alias: gemini, opus, sonnet, haiku, gpt")
 @click.option("--database", default=None, help="MotherDuck database to query (read-only).")
-@click.option("--limit", type=int, default=None, help="Cap number of questions.")
+@click.option(
+    "--questions-jsonl",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to the pinned Agentic Company questions.jsonl artifact.",
+)
+@click.option(
+    "--manual",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to the pinned Agentic Company manual.md artifact.",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Cap number of selected questions (must be at least 1).",
+)
 @click.option("--task-id", "task_id", type=str, default=None, help="Run only this task_id.")
 @click.option("--task-ids", "task_ids", type=str, default=None,
               help="Comma-separated task_ids to run as one batch (overrides --split).")
@@ -263,9 +345,12 @@ def _correctness_mark(c: str) -> str:
                    "exist.' — measures the agent without the semantic layer.")
 @click.option("--out", type=click.Path(path_type=Path), default=None)
 def evaluate(
-    split: str,
+    benchmark: str,
+    split: str | None,
     model: str,
     database: str | None,
+    questions_jsonl: Path | None,
+    manual: Path | None,
     limit: int | None,
     task_id: str | None,
     task_ids: str | None,
@@ -281,27 +366,78 @@ def evaluate(
     if luna_max:
         model, reasoning = "luna", "max"
     model = MODEL_ALIASES.get(model, model)
-    database = database or _md_database()
+    profile = AGENTIC_COMPANY_PROFILE if benchmark == AGENTIC_COMPANY_PROFILE.name else None
+    split = split or (profile.default_split if profile else "templates")
+    if profile and split != profile.default_split:
+        raise click.ClickException(
+            f"{profile.name} supports only --split {profile.default_split}."
+        )
+    if profile is None and (questions_jsonl is not None or manual is not None):
+        raise click.ClickException(
+            "--questions-jsonl and --manual are only valid with --benchmark agentic-company."
+        )
 
+    artifacts: AgenticCompanyArtifacts | None = None
+    if profile:
+        resolved_questions_path, resolved_manual_path, manifest_path = profile.resolve_paths(
+            questions_jsonl=questions_jsonl,
+            manual=manual,
+        )
+        try:
+            all_questions, artifacts = profile.load_bundle(
+                resolved_questions_path,
+                resolved_manual_path,
+                manifest_path,
+            )
+        except (TypeError, ValueError, OSError) as exc:
+            raise click.ClickException(str(exc)) from exc
+        database = profile.database_name(database)
+    else:
+        database = database or _md_database()
+        try:
+            all_questions = _load_questions(
+                "all" if (task_ids is not None or task_id is not None) else split,
+                benchmark=benchmark,
+            )
+        except (TypeError, ValueError, OSError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    task_key = profile.task_key if profile else (lambda value: str(value))
     if task_ids is not None:
         wanted = [t.strip() for t in task_ids.split(",") if t.strip()]
-        by_id = {str(q["task_id"]): q for q in _load_questions("all")}
-        missing = [t for t in wanted if t not in by_id]
+        if not wanted:
+            raise click.ClickException("--task-ids must contain at least one task ID.")
+        if len(wanted) != len({task_key(task) for task in wanted}):
+            raise click.ClickException("--task-ids must not contain duplicate task IDs.")
+        by_id = {task_key(q["task_id"]): q for q in all_questions}
+        missing = [task for task in wanted if task_key(task) not in by_id]
         if missing:
-            raise click.ClickException(f"task_ids not found in all.jsonl: {missing}")
-        questions = [by_id[t] for t in wanted]
+            raise click.ClickException(f"task_ids not found in the selected question set: {missing}")
+        questions = [by_id[task_key(task)] for task in wanted]
     elif task_id is not None:
-        all_qs = _load_questions("all")
-        questions = [q for q in all_qs if str(q["task_id"]) == task_id]
+        questions = [
+            question
+            for question in all_questions
+            if task_key(question["task_id"]) == task_key(task_id)
+        ]
         if not questions:
-            raise click.ClickException(f"task_id {task_id!r} not found in all.jsonl")
+            raise click.ClickException(
+                f"task_id {task_id!r} not found in the selected question set"
+            )
     else:
-        questions = _load_questions(split)
-        if limit:
-            questions = questions[:limit]
+        questions = all_questions
+    if limit is not None:
+        questions = questions[:limit]
+    if not questions:
+        raise click.ClickException("No questions were selected for evaluation.")
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out = out or RESULTS_DIR / f"{split}_{ts}.jsonl"
+    default_name = (
+        f"{profile.name}_{split}_{ts}.jsonl"
+        if profile
+        else f"{split}_{ts}.jsonl"
+    )
+    out = out or RESULTS_DIR / default_name
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if concurrency < 1:
@@ -313,11 +449,23 @@ def evaluate(
         + (" · [bold red]NO GUIDES[/bold red]" if no_guides else "")
     )
 
-    asyncio.run(_evaluate_loop(
-        split=split, database=database, model=model, questions=questions,
-        max_turns=max_turns, reasoning=reasoning, watch=watch,
-        concurrency=concurrency, no_guides=no_guides, out=out,
-    ))
+    asyncio.run(
+        _evaluate_loop(
+            benchmark=benchmark,
+            split=split,
+            database=database,
+            model=model,
+            questions=questions,
+            max_turns=max_turns,
+            reasoning=reasoning,
+            watch=watch,
+            concurrency=concurrency,
+            no_guides=no_guides,
+            out=out,
+            profile=profile,
+            artifacts=artifacts,
+        )
+    )
 
 
 def _describe_exception(e: BaseException) -> str:
@@ -441,9 +589,11 @@ def _render_tool_call(call: dict, task_id: str | None = None) -> None:
 
 
 async def _evaluate_loop(
-    *, split: str, database: str, model: str, questions: list[dict],
+    *, benchmark: str, split: str, database: str, model: str, questions: list[dict],
     max_turns: int, reasoning: str, watch: bool, concurrency: int,
     no_guides: bool = False, out: Path,
+    profile: AgenticCompanyProfile | None = None,
+    artifacts: AgenticCompanyArtifacts | None = None,
 ) -> None:
     correct = 0
     by_cat: dict[str, int] = {}
@@ -459,15 +609,49 @@ async def _evaluate_loop(
     # OpenRouter's documented "disable reasoning" is effort="none"; omitting the
     # reasoning param would instead fall back to the model's endpoint default.
     provider = OpenRouterProvider(reasoning_effort="none" if reasoning == "off" else reasoning)
-    skill_text = SKILL_PATH.read_text() if SKILL_PATH.exists() else None
+    skill_path = profile.skill_path if profile else SKILL_PATH
+    skill_text = skill_path.read_text() if skill_path.exists() else None
+    guide_topic = profile.guide_topic if profile else None
+    attach_share = profile.share if profile else None
+    excluded_schemas = profile.excluded_schemas if profile else ()
+    project_id = profile.project_id if profile else PROJECT_ID
+    artifact_provenance = artifacts.provenance() if artifacts else None
     md_token = os.environ.get("MOTHERDUCK_TOKEN")
     if not md_token:
         raise click.ClickException("MOTHERDUCK_TOKEN is not set.")
+    if profile:
+        if artifacts is None:
+            raise click.ClickException("Agentic Company profile requires validated artifacts.")
+        try:
+            await profile.preflight(
+                database=database,
+                artifacts=artifacts,
+                verify_guide=not no_guides,
+            )
+        except (RuntimeError, TypeError, ValueError, OSError) as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    def score_question(execution_result, question: dict, predicted_sql, hit_limit=False):
+        if profile:
+            return profile.score(
+                execution_result=execution_result,
+                question=question,
+                predicted_sql=predicted_sql,
+                hit_limit=hit_limit,
+            )
+        return score_dabstep(
+            execution_result=execution_result,
+            gold_answer=question.get("answer", ""),
+            guidelines=question.get("guidelines"),
+            predicted_sql=predicted_sql,
+            hit_limit=hit_limit,
+        )
     f = out.open("w")
     wall_t0 = time.time()
 
     run_id = controllog.new_id()
     run_provenance = _build_run_provenance(
+        benchmark=benchmark,
         split=split,
         database=database,
         model=model,
@@ -476,13 +660,14 @@ async def _evaluate_loop(
         concurrency=concurrency,
         out=out,
         question_count=len(questions),
+        artifacts=artifact_provenance,
     )
     run_provenance["resolved_config"]["no_guides"] = no_guides
     controllog.init(
-        project_id=PROJECT_ID,
+        project_id=project_id,
         log_dir=RESULTS_DIR,
         default_dims={
-            "split": split, "model": model, "database": database,
+            "benchmark": benchmark, "split": split, "model": model, "database": database,
             "run_id": run_id, "run_label": out.stem,
         },
     )
@@ -519,11 +704,16 @@ async def _evaluate_loop(
                 try:
                     async with create_mcp_session(
                         session_hint=tid, database=database, no_guides=no_guides,
+                        attach_share=attach_share,
+                        excluded_schemas=excluded_schemas,
+                        guide_topic=guide_topic,
                     ) as mcp:
                         run = await run_agent(
                             mcp=mcp, database=database,
                             question=q["question"], guidelines=q.get("guidelines"),
                             model=model, provider=provider, skill_text=skill_text,
+                            prompt_profile=benchmark,
+                            guide_topic=guide_topic,
                             max_turns=max_turns,
                             on_tool_call=(lambda call, _tid=tid: _render_tool_call(call, _tid)) if watch else None,
                             on_thinking=(lambda text, _tid=tid: _render_thinking(text, _tid)) if watch else None,
@@ -543,18 +733,20 @@ async def _evaluate_loop(
             elapsed = time.time() - t0
 
             if run is None:
-                result = score(
-                    execution_result=ExecutionError("RunFailure", err or ""),
-                    gold_answer=q.get("answer", ""), guidelines=q.get("guidelines"),
+                execution_result = ExecutionError("RunFailure", err or "")
+                result = score_question(
+                    execution_result=execution_result,
+                    question=q,
                     predicted_sql=None,
                 )
             else:
                 exec_result = run.final_rows if run.final_rows is not None else ExecutionError(
                     "NoSubmission", "agent did not submit"
                 )
-                result = score(
-                    execution_result=exec_result, gold_answer=q.get("answer", ""),
-                    guidelines=q.get("guidelines"), predicted_sql=run.final_sql,
+                result = score_question(
+                    execution_result=exec_result,
+                    question=q,
+                    predicted_sql=run.final_sql,
                     hit_limit=run.hit_limit,
                 )
 
@@ -578,6 +770,8 @@ async def _evaluate_loop(
                 "cached_tokens": run.cached_tokens if run else 0,
                 "error": err, "ts": datetime.now(timezone.utc).isoformat(),
             }
+            if profile and artifacts:
+                row.update(profile.result_metadata(q, artifacts))
 
             total_tokens = (run.prompt_tokens + run.completion_tokens) if run else 0
             wall_ms = int(elapsed * 1000)
@@ -585,15 +779,15 @@ async def _evaluate_loop(
             terminal_state = "DONE" if run is not None else "FAILED"
             postings = [
                 controllog.post("resource.tokens", "provider:openrouter", "+tokens", -total_tokens, {"model": model}),
-                controllog.post("resource.tokens", f"project:{PROJECT_ID}", "+tokens", +total_tokens, {"model": model}),
+                controllog.post("resource.tokens", f"project:{project_id}", "+tokens", +total_tokens, {"model": model}),
                 controllog.post("truth.time", f"agent:{AGENT_ID}", "ms", -wall_ms, {"kind": "wall"}),
-                controllog.post("truth.time", f"project:{PROJECT_ID}", "ms", +wall_ms, {"kind": "wall"}),
+                controllog.post("truth.time", f"project:{project_id}", "ms", +wall_ms, {"kind": "wall"}),
                 controllog.post("truth.money", "vendor:openrouter", "$", -float(cost), {"model": model}),
-                controllog.post("truth.money", f"project:{PROJECT_ID}", "$", +float(cost), {"model": model}),
+                controllog.post("truth.money", f"project:{project_id}", "$", +float(cost), {"model": model}),
                 controllog.post("truth.state", f"task:{tid}", "tasks", -1, {"from": "WIP"}),
                 controllog.post("truth.state", f"task:{tid}", "tasks", +1, {"to": terminal_state}),
                 controllog.post("truth.utility", f"task:{tid}", "points", +reward, {"metric": "reward"}),
-                controllog.post("truth.utility", f"project:{PROJECT_ID}", "points", -reward, {"metric": "reward"}),
+                controllog.post("truth.utility", f"project:{project_id}", "points", -reward, {"metric": "reward"}),
             ]
             controllog.event(
                 kind="task_complete",
