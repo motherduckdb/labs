@@ -510,7 +510,11 @@ def web():
             return PlainTextResponse("ok (not a turn)")
 
         try:
-            run_turn.spawn(body)
+            # `.aio`: this handler is async, and the blocking `spawn` would
+            # otherwise stall the event loop on the one container that owes
+            # Slack a 3s ack for every event in flight (Modal warns about
+            # exactly this at runtime — AsyncUsageWarning).
+            await run_turn.spawn.aio(body)
         except Exception as err:
             # The spawn is the entire handoff. Acking a delivery whose spawn
             # failed throws the message away, so answer 500 instead and let
