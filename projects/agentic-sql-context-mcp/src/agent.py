@@ -54,6 +54,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = REPO_ROOT / "skill" / "SKILL.md"
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_TIMEOUT = 120.0
+
+# Local OpenAI-compatible server (LM Studio), selected with `asm evaluate --local`.
+# LM Studio ignores the api key, but the OpenAI SDK refuses to build a client
+# without a non-empty one. The timeout is generous on purpose: a 27B model on
+# local hardware answers in minutes, not the seconds a hosted endpoint takes,
+# and one agent turn can carry a ~20K-token prompt.
+LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
+LMSTUDIO_API_KEY = "lm-studio"
+LMSTUDIO_MODEL = "qwen3.8-27b"
+LMSTUDIO_TIMEOUT = 1800.0
+# One question at a time: a single local model instance has no spare capacity,
+# and parallel questions only trade per-question latency for each other.
+LMSTUDIO_CONCURRENCY = 1
 
 
 def _add_anthropic_cache_breakpoints(messages: list) -> list:
@@ -117,8 +131,9 @@ _thinking_var: contextvars.ContextVar[Callable[[str], None] | None] = contextvar
 )
 
 
-class OpenRouterProvider(ModelProvider):
-    """Minimal ModelProvider that routes requests through OpenRouter.
+class LLMProvider(ModelProvider):
+    """Minimal ModelProvider for an OpenAI-compatible endpoint — OpenRouter by
+    default, or a local LM Studio server when `local=True`.
 
     Single shared client / connection pool — safe to use across many
     concurrent `run_agent` calls. Per-task usage and the per-task thinking
@@ -129,17 +144,28 @@ class OpenRouterProvider(ModelProvider):
         self,
         api_key: str | None = None,
         reasoning_effort: str | None = "medium",
+        local: bool = False,
     ) -> None:
-        self._client = AsyncOpenAI(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=api_key or os.environ.get("OPENROUTER_API_KEY", ""),
-            default_headers={
-                "HTTP-Referer": "https://github.com/motherduckdb/agentic-sql-context-mcp",
-                "X-Title": "agentic-sql-context-mcp",
-            },
-            max_retries=8,
-            timeout=120.0,
-        )
+        self.local = local
+        if local:
+            self._client = AsyncOpenAI(
+                base_url=os.environ.get("LMSTUDIO_BASE_URL", LMSTUDIO_BASE_URL),
+                api_key=api_key
+                or os.environ.get("LMSTUDIO_API_KEY", LMSTUDIO_API_KEY),
+                max_retries=2,
+                timeout=LMSTUDIO_TIMEOUT,
+            )
+        else:
+            self._client = AsyncOpenAI(
+                base_url=OPENROUTER_BASE_URL,
+                api_key=api_key or os.environ.get("OPENROUTER_API_KEY", ""),
+                default_headers={
+                    "HTTP-Referer": "https://github.com/motherduckdb/agentic-sql-context-mcp",
+                    "X-Title": "agentic-sql-context-mcp",
+                },
+                max_retries=8,
+                timeout=OPENROUTER_TIMEOUT,
+            )
         self.reasoning_effort = reasoning_effort
         self._wrap_client_for_tracking()
 
@@ -150,11 +176,16 @@ class OpenRouterProvider(ModelProvider):
         original_create = self._client.chat.completions.create
 
         async def tracked_create(*args, **kwargs):
-            extra_body = dict(kwargs.get("extra_body") or {})
-            extra_body.setdefault("usage", {"include": True})
-            if self.reasoning_effort:
-                extra_body.setdefault("reasoning", {"effort": self.reasoning_effort})
-            kwargs["extra_body"] = extra_body
+            # `usage.include` and the `reasoning` block are OpenRouter
+            # extensions. LM Studio's OpenAI-compatible server does not know
+            # them — at best they are ignored, and an unknown body field can
+            # come back a 400 — so local mode sends neither.
+            if not self.local:
+                extra_body = dict(kwargs.get("extra_body") or {})
+                extra_body.setdefault("usage", {"include": True})
+                if self.reasoning_effort:
+                    extra_body.setdefault("reasoning", {"effort": self.reasoning_effort})
+                kwargs["extra_body"] = extra_body
             # Anthropic models via OpenRouter need explicit cache_control
             # breakpoints — without them prompt caching never kicks in. We mark
             # the system prompt (the SKILL preamble) and the most-recent message
@@ -207,8 +238,9 @@ class OpenRouterProvider(ModelProvider):
         self._client.chat.completions.create = tracked_create
 
     def get_model(self, model_name: str | None) -> Model:
+        default = LMSTUDIO_MODEL if self.local else "google/gemini-3-flash-preview"
         return OpenAIChatCompletionsModel(
-            model=model_name or "google/gemini-3-flash-preview",
+            model=model_name or default,
             openai_client=self._client,
         )
 
@@ -642,7 +674,7 @@ async def run_agent(
     question: str,
     guidelines: str | None,
     model: str,
-    provider: OpenRouterProvider,
+    provider: LLMProvider,
     skill_text: str | None = None,
     prompt_profile: str = "dabstep",
     guide_topic: str | None = None,

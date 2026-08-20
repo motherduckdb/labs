@@ -25,7 +25,7 @@ from rich.table import Table
 from rich.text import Text
 
 from src import guides_load
-from src.agent import OpenRouterProvider, run_agent
+from src.agent import LMSTUDIO_CONCURRENCY, LMSTUDIO_MODEL, LLMProvider, run_agent
 from src.agentic_company_profile import (
     AGENTIC_COMPANY_PROFILE,
     AgenticCompanyArtifacts,
@@ -53,6 +53,8 @@ MODEL_ALIASES = {
     "gemini": "google/gemini-3-flash-preview",
     "gpt": "openai/gpt-5.5",
     "luna": "openai/gpt-5.6-luna",
+    # Local LM Studio model id (only reachable with --local).
+    "qwen": LMSTUDIO_MODEL,
 }
 
 
@@ -337,6 +339,10 @@ def _correctness_mark(c: str) -> str:
               help="Thinking budget. Default 'low' — the cost/accuracy sweet spot for this skill.")
 @click.option("--watch", is_flag=True, default=False, help="Stream tool calls live.")
 @click.option("--concurrency", type=int, default=15, help="Questions to run in parallel.")
+@click.option("--local", "local", is_flag=True, default=False,
+              help="Run against the local LM Studio server instead of OpenRouter "
+                   f"({LMSTUDIO_MODEL} at http://localhost:1234/v1, concurrency "
+                   f"{LMSTUDIO_CONCURRENCY}, no reasoning/usage extensions).")
 @click.option("--luna-max", "luna_max", is_flag=True, default=False,
               help="Shortcut: openai/gpt-5.6-luna at reasoning=max (418/419 test @ $1.86, "
                    "~1/5 the gemini cost). Overrides --model and --reasoning.")
@@ -344,7 +350,9 @@ def _correctness_mark(c: str) -> str:
               help="Ablation baseline: list_guides/get_guide always answer 'No guides "
                    "exist.' — measures the agent without the semantic layer.")
 @click.option("--out", type=click.Path(path_type=Path), default=None)
+@click.pass_context
 def evaluate(
+    ctx: click.Context,
     benchmark: str,
     split: str | None,
     model: str,
@@ -358,13 +366,24 @@ def evaluate(
     reasoning: str,
     watch: bool,
     concurrency: int,
+    local: bool,
     luna_max: bool,
     no_guides: bool,
     out: Path | None,
 ) -> None:
     """Run the agent across the eval set and write per-question JSONL."""
+    if luna_max and local:
+        raise click.ClickException("--luna-max routes through OpenRouter; it cannot combine with --local.")
     if luna_max:
         model, reasoning = "luna", "max"
+    if local:
+        # Defaults the local server needs, applied only where the caller did
+        # not ask for something specific.
+        source = ctx.get_parameter_source
+        if source("model") is click.core.ParameterSource.DEFAULT:
+            model = LMSTUDIO_MODEL
+        if source("concurrency") is click.core.ParameterSource.DEFAULT:
+            concurrency = LMSTUDIO_CONCURRENCY
     model = MODEL_ALIASES.get(model, model)
     profile = AGENTIC_COMPANY_PROFILE if benchmark == AGENTIC_COMPANY_PROFILE.name else None
     split = split or (profile.default_split if profile else "templates")
@@ -446,6 +465,7 @@ def evaluate(
     console.rule(
         f"[bold]{split}[/bold] · {len(questions)} questions · {model} · "
         f"reasoning={reasoning} · db={database} · concurrency={concurrency}"
+        + (" · [bold cyan]LOCAL (LM Studio)[/bold cyan]" if local else "")
         + (" · [bold red]NO GUIDES[/bold red]" if no_guides else "")
     )
 
@@ -460,6 +480,7 @@ def evaluate(
             reasoning=reasoning,
             watch=watch,
             concurrency=concurrency,
+            local=local,
             no_guides=no_guides,
             out=out,
             profile=profile,
@@ -591,7 +612,7 @@ def _render_tool_call(call: dict, task_id: str | None = None) -> None:
 async def _evaluate_loop(
     *, benchmark: str, split: str, database: str, model: str, questions: list[dict],
     max_turns: int, reasoning: str, watch: bool, concurrency: int,
-    no_guides: bool = False, out: Path,
+    local: bool = False, no_guides: bool = False, out: Path,
     profile: AgenticCompanyProfile | None = None,
     artifacts: AgenticCompanyArtifacts | None = None,
 ) -> None:
@@ -608,7 +629,12 @@ async def _evaluate_loop(
     write_lock = asyncio.Lock()
     # OpenRouter's documented "disable reasoning" is effort="none"; omitting the
     # reasoning param would instead fall back to the model's endpoint default.
-    provider = OpenRouterProvider(reasoning_effort="none" if reasoning == "off" else reasoning)
+    # In local mode the provider drops the reasoning field entirely.
+    provider = LLMProvider(
+        reasoning_effort="none" if reasoning == "off" else reasoning,
+        local=local,
+    )
+    vendor = "lmstudio-local" if local else "openrouter"
     skill_path = profile.skill_path if profile else SKILL_PATH
     skill_text = skill_path.read_text() if skill_path.exists() else None
     guide_topic = profile.guide_topic if profile else None
@@ -663,6 +689,7 @@ async def _evaluate_loop(
         artifacts=artifact_provenance,
     )
     run_provenance["resolved_config"]["no_guides"] = no_guides
+    run_provenance["resolved_config"]["local"] = local
     controllog.init(
         project_id=project_id,
         log_dir=RESULTS_DIR,
@@ -778,11 +805,11 @@ async def _evaluate_loop(
             reward = 1.0 if result.is_correct else 0.0
             terminal_state = "DONE" if run is not None else "FAILED"
             postings = [
-                controllog.post("resource.tokens", "provider:openrouter", "+tokens", -total_tokens, {"model": model}),
+                controllog.post("resource.tokens", f"provider:{vendor}", "+tokens", -total_tokens, {"model": model}),
                 controllog.post("resource.tokens", f"project:{project_id}", "+tokens", +total_tokens, {"model": model}),
                 controllog.post("truth.time", f"agent:{AGENT_ID}", "ms", -wall_ms, {"kind": "wall"}),
                 controllog.post("truth.time", f"project:{project_id}", "ms", +wall_ms, {"kind": "wall"}),
-                controllog.post("truth.money", "vendor:openrouter", "$", -float(cost), {"model": model}),
+                controllog.post("truth.money", f"vendor:{vendor}", "$", -float(cost), {"model": model}),
                 controllog.post("truth.money", f"project:{project_id}", "$", +float(cost), {"model": model}),
                 controllog.post("truth.state", f"task:{tid}", "tasks", -1, {"from": "WIP"}),
                 controllog.post("truth.state", f"task:{tid}", "tasks", +1, {"to": terminal_state}),
