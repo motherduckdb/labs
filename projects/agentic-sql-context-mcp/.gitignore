@@ -10,3 +10,6 @@ results/controllog/
 
 # generated viz artifacts
 *.html
+
+# per-principal guide uuid locks (the committed guides.lock.json is shared)
+guides.lock.*.json

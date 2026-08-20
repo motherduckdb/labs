@@ -212,6 +212,12 @@ def context_cmd() -> None:
               help="Preview the planned guide topics without making any MCP calls.")
 @click.option("--prefix", default=None,
               help="Override the DABstep topic prefix (Agentic Company is fixed).")
+@click.option("--lockfile", type=click.Path(path_type=Path), default=None,
+              help="DABstep: use this uuid lockfile instead of the committed "
+                   "guides.lock.json. Guide uuids are per-principal — a second "
+                   "MotherDuck account cannot update guides it does not own — so "
+                   "publish under your own lockfile (e.g. guides.lock.<you>.json, "
+                   "gitignored) to leave the committed one intact.")
 @click.option(
     "--manual",
     type=click.Path(path_type=Path),
@@ -222,6 +228,7 @@ def guides_load_cmd(
     benchmark: str,
     dry_run: bool,
     prefix: str | None,
+    lockfile: Path | None,
     manual: Path | None,
 ) -> None:
     """Publish the selected benchmark's context to MotherDuck MCP guides.
@@ -245,6 +252,10 @@ def guides_load_cmd(
                 manual_path,
                 manifest_path,
             )
+            if lockfile is not None:
+                raise click.ClickException(
+                    "--lockfile is only valid for dabstep; agentic-company keeps no local lock."
+                )
             results = guides_load.publish_manual_sync(
                 manual_path=manual_path,
                 prefix=prefix,
@@ -253,7 +264,9 @@ def guides_load_cmd(
         else:
             if manual is not None:
                 raise click.ClickException("--manual is only valid for agentic-company.")
-            results = guides_load.publish_all_sync(prefix=prefix, dry_run=dry_run)
+            results = guides_load.publish_all_sync(
+                prefix=prefix, dry_run=dry_run, lockfile_path=lockfile,
+            )
     except (RuntimeError, TypeError, ValueError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
 

@@ -369,8 +369,15 @@ async def publish_all(
     prefix: str | None = None,
     access: str | None = None,
     dry_run: bool = False,
+    lockfile_path: Path | None = None,
 ) -> list[dict]:
-    """Publish every local DABstep context item as a MotherDuck guide."""
+    """Publish every local DABstep context item as a MotherDuck guide.
+
+    `lockfile_path` overrides the committed `guides.lock.json`. The lock's uuids
+    are per-principal — a token can only update guides it owns — so a second
+    MotherDuck principal publishing the same bundle needs its own lock rather
+    than the committed one (whose uuids it cannot see).
+    """
     prefix = (prefix or os.environ.get("DABSTEP_GUIDES_PREFIX", DEFAULT_PREFIX)).rstrip("/")
     access = access or os.environ.get("DABSTEP_GUIDES_ACCESS", DEFAULT_ACCESS)
     store = ContextStore()
@@ -380,7 +387,7 @@ async def publish_all(
         prefix=prefix,
         access=access,
         dry_run=dry_run,
-        lockfile_path=LOCKFILE_PATH,
+        lockfile_path=lockfile_path or LOCKFILE_PATH,
     )
 
 
@@ -550,9 +557,17 @@ def publish_all_sync(
     prefix: str | None = None,
     access: str | None = None,
     dry_run: bool = False,
+    lockfile_path: Path | None = None,
 ) -> list[dict]:
     """Synchronous wrapper over publish_all for the Click entrypoint in run.py."""
-    return asyncio.run(publish_all(prefix=prefix, access=access, dry_run=dry_run))
+    return asyncio.run(
+        publish_all(
+            prefix=prefix,
+            access=access,
+            dry_run=dry_run,
+            lockfile_path=lockfile_path,
+        )
+    )
 
 
 def publish_manual_sync(
