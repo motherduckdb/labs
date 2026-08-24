@@ -3,7 +3,9 @@ __pycache__/
 .venv/
 .env
 results/*.jsonl
+results/*.log
 results/controllog/
+results/doe_decode_speed/
 *.db
 *.db.wal
 .DS_Store

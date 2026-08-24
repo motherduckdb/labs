@@ -69,6 +69,11 @@ LMSTUDIO_TIMEOUT = 1800.0
 # and parallel questions only trade per-question latency for each other.
 LMSTUDIO_CONCURRENCY = 1
 
+# Per-response generation cap sent as ModelSettings.max_tokens. It bounds one
+# reply, not the conversation: the request still has to fit prompt + this inside
+# the server's loaded context window.
+MAX_OUTPUT_TOKENS = 40000
+
 
 def _add_anthropic_cache_breakpoints(messages: list) -> list:
     """Mark the system message and the last message with cache_control so
@@ -708,7 +713,7 @@ async def run_agent(
         name="asc-sql",
         instructions=instructions,
         tools=tools,
-        model_settings=ModelSettings(temperature=temperature, max_tokens=16384),
+        model_settings=ModelSettings(temperature=temperature, max_tokens=MAX_OUTPUT_TOKENS),
     )
 
     user_msg = user_prompt_template.format(
