@@ -348,8 +348,9 @@ def _correctness_mark(c: str) -> str:
 @click.option("--task-ids", "task_ids", type=str, default=None,
               help="Comma-separated task_ids to run as one batch (overrides --split).")
 @click.option("--max-turns", type=int, default=40)
-@click.option("--reasoning", type=click.Choice(["low", "medium", "high", "max", "off"]), default="low",
-              help="Thinking budget. Default 'low' — the cost/accuracy sweet spot for this skill.")
+@click.option("--reasoning", type=click.Choice(["default", "low", "medium", "high", "max", "off"]), default="low",
+              help="Thinking budget. Default 'low' — the cost/accuracy sweet spot for this skill. "
+                   "'default' omits the reasoning param entirely (provider/model default).")
 @click.option("--watch", is_flag=True, default=False, help="Stream tool calls live.")
 @click.option("--concurrency", type=int, default=15, help="Questions to run in parallel.")
 @click.option("--local", "local", is_flag=True, default=False,
@@ -641,10 +642,18 @@ async def _evaluate_loop(
     sem = asyncio.Semaphore(concurrency)
     write_lock = asyncio.Lock()
     # OpenRouter's documented "disable reasoning" is effort="none"; omitting the
-    # reasoning param would instead fall back to the model's endpoint default.
-    # In local mode the provider drops the reasoning field entirely.
+    # reasoning param instead falls back to the model's endpoint default — which
+    # is what --reasoning default asks for explicitly (reasoning_effort=None
+    # makes LLMProvider skip the field). In local mode the provider drops the
+    # reasoning field entirely regardless.
+    if reasoning == "default":
+        reasoning_effort = None
+    elif reasoning == "off":
+        reasoning_effort = "none"
+    else:
+        reasoning_effort = reasoning
     provider = LLMProvider(
-        reasoning_effort="none" if reasoning == "off" else reasoning,
+        reasoning_effort=reasoning_effort,
         local=local,
     )
     vendor = "lmstudio-local" if local else "openrouter"
