@@ -43,11 +43,18 @@ All optional, under `vars:` in `dbt_project.yml`:
 vars:
   save_charts_as_dives: true
   dbt_charts_dive:
+    share:
+      access: organization     # the default. `unrestricted` for a link anyone can open
     commands: [build, run]     # which dbt commands publish; default build/run/seed/snapshot
     all_or_nothing: false      # true: one bad board fails the run instead of being skipped
     project: my_project        # the registry key, if two projects share one database
     recreate: false            # true: rebuild the share (changes its URL)
 ```
+
+Every Dive of a run reads one share of your database, made once and scoped to your MotherDuck
+organization, so a colleague can open a Dive without being granted the database. `access:
+unrestricted` makes a link work for anyone; `share: false` makes no share at all, and then a
+Dive attaches the database itself and only its own grantees can open one.
 
 Board-level settings live in `dbt_charts.yml` under `dive:`, next to your other dbt Charts
 config.

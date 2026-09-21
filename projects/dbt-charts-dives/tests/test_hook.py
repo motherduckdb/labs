@@ -188,9 +188,36 @@ def test_an_unknown_command_still_publishes():
     assert call("_publishes_on", "", {}) is True
 
 
-def test_a_run_without_a_share_touches_no_share():
+def test_a_run_shares_the_database_with_the_organization_by_default():
+    """A Dive is a page somebody else opens, so a run publishes against a share of the
+    database rather than the database itself — scoped to the organization, which is as far
+    as a default ought to reach. One share serves every Dive of the run."""
     wh = run_hook()
+    created = wh.statements("CREATE OR REPLACE SHARE")
+    assert len(created) == 1, created
+    assert "ACCESS ORGANIZATION" in created[0] and "UPDATE MANUAL" in created[0]
+    assert "required_databases" in "".join(wh.sql), "the Flight is told to attach the share"
+
+
+def test_an_empty_share_block_is_the_default_too():
+    """`share:` with nothing under it is the same as leaving it out, not a falsy skip."""
+    created = run_hook({"share": {}}).statements("CREATE OR REPLACE SHARE")
+    assert len(created) == 1 and "ACCESS ORGANIZATION" in created[0]
+
+
+def test_a_project_can_open_the_share_to_anyone():
+    """What the bundled example does: its data is synthetic and its Dives are meant to work
+    from a link, so it overrides the default and takes an unrestricted share."""
+    created = run_hook({"share": {"access": "unrestricted"}}).statements("CREATE OR REPLACE SHARE")
+    assert len(created) == 1 and "ACCESS UNRESTRICTED" in created[0]
+
+
+def test_a_project_can_refuse_the_share_altogether():
+    """`share: false`: no share is made and every Dive attaches the database itself, so only
+    somebody who already has a grant on it can open one."""
+    wh = run_hook({"share": False})
     assert wh.statements("CREATE OR REPLACE SHARE", "UPDATE SHARE") == []
+    assert "required_databases" not in "".join(wh.sql)
 
 
 def test_a_new_share_does_not_refresh_itself():

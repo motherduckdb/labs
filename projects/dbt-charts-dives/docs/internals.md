@@ -90,7 +90,8 @@ run behaves comes from dbt vars:
 ```yaml
 vars:
   dbt_charts_dive:
-    share: true             # publish against a share
+    share: {access: organization}   # the default; `unrestricted` for a public link,
+                                    # `false` to publish against the database itself
     commands: [build, run, seed, snapshot, clone, retry]   # which dbt commands publish
     wait: true              # false returns once the Flight is queued
     timeout: 900
@@ -103,8 +104,9 @@ Skip a run with `dbt build --vars '{save_charts_as_dives: false}'`.
 
 ## Sharing
 
-A Dive attaches your own database by default, so only you can open it. With `share: true` the
-run creates or reuses a share and publishes every Dive against it:
+A Dive is a page other people open, so a run publishes every Dive of that run against one
+share of the target database, resolved once and scoped to your MotherDuck organization. A
+colleague can open the Dive without being granted the database itself:
 
 ```
 dbt_charts_dive: created share analytics_share (unrestricted, update manual) -> md:_share/analytics_share/<uuid>
@@ -120,9 +122,11 @@ the snapshot would take that too. An automatic share (`share: {update: automatic
 at any moment, and during a run that includes the staging table: your boards, your
 `dbt_project.yml` and this package's source, to everyone the share reaches.
 
-`access` defaults to `organization`; `unrestricted` makes a Dive link work for anyone. To point
-Dives elsewhere, set `required_databases: ["analytics=md:_share/analytics_share/<uuid>"]`, alias
-first.
+`access` defaults to `organization`; `unrestricted` makes a Dive link work for anyone, and
+`share: false` makes no share at all — the Dives attach the database itself and only its own
+grantees can open one. One share covers every board in the run; there is nothing to repeat per
+Dive. To point Dives elsewhere, set
+`required_databases: ["analytics=md:_share/analytics_share/<uuid>"]`, alias first.
 
 ## Things to know
 

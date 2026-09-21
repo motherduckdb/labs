@@ -74,8 +74,13 @@
   {%- set share = none -%}
   {%- set options = {} -%}
   {%- do options.update(cfg.get('options', {})) -%}
-  {%- if cfg.get('share', false) and not options.get('required_databases') -%}
-    {%- set share = dbt_charts_dive._ensure_share(db, cfg.get('share')) -%}
+  {#- Every Dive of a run reads one share of the target database, resolved once here. It is
+      scoped to the organization unless the project says otherwise, so a Dive link works for
+      a colleague without handing them the database. `share: false` skips it and the Dives
+      attach the database itself, which only its own grantees can open. -#}
+  {%- set share_spec = cfg.get('share', {}) -%}
+  {%- if share_spec is not sameas false and not options.get('required_databases') -%}
+    {%- set share = dbt_charts_dive._ensure_share(db, share_spec) -%}
     {%- do options.update({'required_databases': [db ~ '=' ~ share.url]}) -%}
   {%- endif -%}
 
