@@ -74,8 +74,23 @@
   {%- set share = none -%}
   {%- set options = {} -%}
   {%- do options.update(cfg.get('options', {})) -%}
-  {%- if cfg.get('share', false) and not options.get('required_databases') -%}
-    {%- set share = dbt_charts_dive._ensure_share(db, cfg.get('share')) -%}
+  {#- A Dive is a page other people open, so it reads a share of the target database and
+      never the database itself: one share per run, pointed at by every Dive of that run,
+      resolved once right here. What the project gets to decide is the share's reach, not
+      whether there is one — a Dive attached to the raw database opens for nobody but the
+      database's own grantees, which is not a dashboard. -#}
+  {%- set share_spec = cfg.get('share', {}) -%}
+  {%- if share_spec is sameas false -%}
+    {% do exceptions.raise_compiler_error(
+      "dbt_charts_dive: share: false is no longer a setting — a Dive always reads a share, or"
+      ~ " nobody but the database's own grantees could open it. Say share: {access:"
+      ~ " organization} for a share your MotherDuck organization can read (the default), or"
+      ~ " share: {access: unrestricted} for a link that works for anyone.") %}
+  {%- endif -%}
+  {#- The one thing that still wins: a project that named its own resource through
+      `required_databases` has already decided what the Dives attach. -#}
+  {%- if not options.get('required_databases') -%}
+    {%- set share = dbt_charts_dive._ensure_share(db, share_spec) -%}
     {%- do options.update({'required_databases': [db ~ '=' ~ share.url]}) -%}
   {%- endif -%}
 

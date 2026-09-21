@@ -90,7 +90,7 @@ run behaves comes from dbt vars:
 ```yaml
 vars:
   dbt_charts_dive:
-    share: true             # publish against a share
+    share: {access: organization}   # the default; `unrestricted` for a public link
     commands: [build, run, seed, snapshot, clone, retry]   # which dbt commands publish
     wait: true              # false returns once the Flight is queued
     timeout: 900
@@ -103,8 +103,9 @@ Skip a run with `dbt build --vars '{save_charts_as_dives: false}'`.
 
 ## Sharing
 
-A Dive attaches your own database by default, so only you can open it. With `share: true` the
-run creates or reuses a share and publishes every Dive against it:
+A Dive is a page other people open, so a run publishes every Dive of that run against one
+share of the target database, resolved once and scoped to your MotherDuck organization. A
+colleague can open the Dive without being granted the database itself:
 
 ```
 dbt_charts_dive: created share analytics_share (unrestricted, update manual) -> md:_share/analytics_share/<uuid>
@@ -120,9 +121,15 @@ the snapshot would take that too. An automatic share (`share: {update: automatic
 at any moment, and during a run that includes the staging table: your boards, your
 `dbt_project.yml` and this package's source, to everyone the share reaches.
 
-`access` defaults to `organization`; `unrestricted` makes a Dive link work for anyone. To point
-Dives elsewhere, set `required_databases: ["analytics=md:_share/analytics_share/<uuid>"]`, alias
-first.
+`access` defaults to `organization`; `unrestricted` makes a Dive link work for anyone. Those
+two are the whole of the decision — a share is always made, because a Dive attached to the raw
+database opens for nobody but the database's own grantees, and the run refuses `share: false`
+rather than quietly widening what the project asked to keep closed. One share covers every
+board in the run; there is nothing to repeat per Dive.
+
+To read a share you manage yourself instead, name it:
+`required_databases: ["analytics=md:_share/analytics_share/<uuid>"]`, alias first. That is the
+one setting the run does not second-guess, and it is then your share's reach that applies.
 
 ## Things to know
 
