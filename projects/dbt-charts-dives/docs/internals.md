@@ -90,8 +90,7 @@ run behaves comes from dbt vars:
 ```yaml
 vars:
   dbt_charts_dive:
-    share: {access: organization}   # the default; `unrestricted` for a public link,
-                                    # `false` to publish against the database itself
+    share: {access: organization}   # the default; `unrestricted` for a public link
     commands: [build, run, seed, snapshot, clone, retry]   # which dbt commands publish
     wait: true              # false returns once the Flight is queued
     timeout: 900
@@ -122,11 +121,15 @@ the snapshot would take that too. An automatic share (`share: {update: automatic
 at any moment, and during a run that includes the staging table: your boards, your
 `dbt_project.yml` and this package's source, to everyone the share reaches.
 
-`access` defaults to `organization`; `unrestricted` makes a Dive link work for anyone, and
-`share: false` makes no share at all — the Dives attach the database itself and only its own
-grantees can open one. One share covers every board in the run; there is nothing to repeat per
-Dive. To point Dives elsewhere, set
-`required_databases: ["analytics=md:_share/analytics_share/<uuid>"]`, alias first.
+`access` defaults to `organization`; `unrestricted` makes a Dive link work for anyone. Those
+two are the whole of the decision — a share is always made, because a Dive attached to the raw
+database opens for nobody but the database's own grantees, and the run refuses `share: false`
+rather than quietly widening what the project asked to keep closed. One share covers every
+board in the run; there is nothing to repeat per Dive.
+
+To read a share you manage yourself instead, name it:
+`required_databases: ["analytics=md:_share/analytics_share/<uuid>"]`, alias first. That is the
+one setting the run does not second-guess, and it is then your share's reach that applies.
 
 ## Things to know
 

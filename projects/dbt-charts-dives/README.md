@@ -53,8 +53,8 @@ vars:
 
 Every Dive of a run reads one share of your database, made once and scoped to your MotherDuck
 organization, so a colleague can open a Dive without being granted the database. `access:
-unrestricted` makes a link work for anyone; `share: false` makes no share at all, and then a
-Dive attaches the database itself and only its own grantees can open one.
+unrestricted` makes a link work for anyone instead. There is no setting for publishing against
+the database itself: a Dive that attached it would open for nobody but its own grantees.
 
 Board-level settings live in `dbt_charts.yml` under `dive:`, next to your other dbt Charts
 config.

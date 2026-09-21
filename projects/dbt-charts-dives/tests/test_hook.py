@@ -212,12 +212,14 @@ def test_a_project_can_open_the_share_to_anyone():
     assert len(created) == 1 and "ACCESS UNRESTRICTED" in created[0]
 
 
-def test_a_project_can_refuse_the_share_altogether():
-    """`share: false`: no share is made and every Dive attaches the database itself, so only
-    somebody who already has a grant on it can open one."""
-    wh = run_hook({"share": False})
-    assert wh.statements("CREATE OR REPLACE SHARE", "UPDATE SHARE") == []
-    assert "required_databases" not in "".join(wh.sql)
+def test_a_project_cannot_refuse_the_share():
+    """There is no way to publish a Dive against the raw database. Silently ignoring
+    `share: false` would be worse than refusing it: the project would believe it had opted
+    out of sharing and would have opted into an organization share instead."""
+    with pytest.raises(Failed) as e:
+        run_hook({"share": False})
+    assert "share: false is no longer a setting" in str(e.value)
+    assert "unrestricted" in str(e.value), "the message names the settings that do exist"
 
 
 def test_a_new_share_does_not_refresh_itself():
