@@ -95,10 +95,22 @@ def test_a_vega_chart_redraws_when_the_rows_change(chart_type):
     assert before != after, f"{chart_type} drew the same picture for different rows"
 
 
+def _squared(rows: list[dict]) -> list[dict]:
+    """Squares every number.
+
+    ``_moved`` multiplies by three and adds one, which is enough for anything that plots a
+    value but not for anything that plots a *ratio*: a spark bar's bar widths are
+    ``value / max``, and once the values are large ``(3v+1)/(3max+1)`` rounds to the same
+    tenth of a pixel. Squaring changes the shape of the distribution, so the widths have to
+    move however big the numbers are.
+    """
+    return [{k: (v * v if isinstance(v, (int, float)) and not isinstance(v, bool) else v) for k, v in r.items()} for r in rows]
+
+
 def test_the_cards_the_dive_draws_itself_redraw_when_the_rows_change():
     """Table, KPI and spark bar, in jsdom: the rows it was given, then other rows."""
     before = H.dom(TYPES)["initial"]
-    after = H.dom_with_rows(TYPES, _moved)["initial"]
+    after = H.dom_with_rows(TYPES, _squared)["initial"]
     assert before["tables"][0]["rows"] != after["tables"][0]["rows"]
     assert before["kpis"][0]["value"] != after["kpis"][0]["value"]
     assert [r["width"] for r in before["sparks"][0]["rects"]] != [r["width"] for r in after["sparks"][0]["rects"]]

@@ -173,6 +173,28 @@ def compile_board(project_dir: Path, board_rel: str, *, dive_width: int = DEFAUL
         }
 
 
+# Channels an author can spell a null into by hand. dct's own channel validator already
+# treats a falsy field as "no channel" (``resolve/chart/channel.py::_validate_channel_field``:
+# ``if not data_field or data_field in available_columns: return``), but YAML only parses
+# ``null``/``NULL``/``~``/empty as a null — ``None`` and ``nil`` arrive as strings and are then
+# looked up as column names, which fails the whole chart. Read them as the empty one.
+#
+# Only the optional encodings. A null-ish ``x``, ``y``, ``theta`` or ``latitude`` is left to
+# fail: those are optional in the model because dct auto-detects them when absent, so blanking
+# one would draw a chart that looks right while plotting a column the author never named.
+_NULLABLE_CHANNELS = ("color", "size", "shape")
+_SPELLED_NULL = {"", "none", "null", "nil"}
+
+
+def _read_spelled_nulls_as_unset(board: Any, board_rel: str) -> None:
+    for cid, chart in board.charts.items():
+        for channel in _NULLABLE_CHANNELS:
+            value = getattr(chart, channel, None)
+            if isinstance(value, str) and value.strip().lower() in _SPELLED_NULL:
+                setattr(chart, channel, None)
+                print(f"dbt_charts_dive: {board_rel}: {cid}.{channel} is {value!r}, reading it as no {channel} channel", flush=True)
+
+
 def _open_board(session: Any, board_rel: str, dive_width: int) -> tuple[Any, Any, dict[str, Any]]:
     """dct's compiled board, pinned to the Dive viewport, and the executor that runs it."""
     from dbt_charts.agent_api import Diagnostic
@@ -188,6 +210,7 @@ def _open_board(session: Any, board_rel: str, dive_width: int) -> tuple[Any, Any
         errs = "; ".join(str(e.model_dump(exclude_none=True)) for e in cr.errors)
         raise RuntimeError(f"{board_rel} failed to compile: {errs}")
     board = cr.board
+    _read_spelled_nulls_as_unset(board, board_rel)
     frame = board.resolved_style.frame.model_copy(update={"width": float(dive_width)})
     board.resolved_style = dataclasses.replace(board.resolved_style, frame=frame)
     executor = Executor(board, adapter_registry=session.adapter_registry, query_registry=cr.query_registry, use_cache=False)

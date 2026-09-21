@@ -354,12 +354,13 @@ def test_tabs_default_and_click_in_chromium():
     assert rep["console_errors"] == [] and rep["alerts"] == []
     T = m["style"]["tabs"]
     assert [(t["slug"], t["active"], t["weight"]) for t in rep["tabs"]] == [("overview", False, T["inactive_weight"]), ("detail", True, T["active_weight"])]
-    assert rep["dive_state"]["view"] == "detail" and rep["kpi_values"] == ["11k", "100"] and rep["vega_svgs"] == 0
     texts = H.svg_groups(H.dct_svg(board))
     assert set(texts) == {"revenue_kpi", "orders_kpi"}, "dct renders only the default tab's charts"
+    kpis = [texts["revenue_kpi"]["texts"][0], texts["orders_kpi"]["texts"][0]]  # dct's own values
+    assert rep["dive_state"]["view"] == "detail" and rep["kpi_values"] == kpis and rep["vega_svgs"] == 0
     s1, s2 = rep["steps"]
     assert s1["dive_state"]["view"] == "overview" and s1["vega_svgs"] == 1 and s1["kpi_values"] == [] and [t["active"] for t in s1["tabs"]] == [True, False]
-    assert s2["dive_state"]["view"] == "detail" and s2["vega_svgs"] == 0 and s2["kpi_values"] == ["11k", "100"]
+    assert s2["dive_state"]["view"] == "detail" and s2["vega_svgs"] == 0 and s2["kpi_values"] == kpis
 
 
 def test_tabs_in_jsdom():

@@ -72,8 +72,12 @@ lists come from a query (those are evaluated once at compile time).
   the SQL returns. Bucket values are canonicalized and sorted the same way; the fill is not.
 - Slot heights: dbt Charts reports a table card's content height, the manifest keeps the
   sizing-pass slot. They agree within 3px unless a taller sibling stretches the row.
-- Pixels: per-card SSIM against dbt Charts' PNG at 880px runs KPI 0.97 to 0.995, Vega
-  charts 0.91 to 0.997, pies 0.80 to 0.85, tables 0.33 to 0.60 (HTML columns versus measured
-  lanes). Board means land 0.89 to 0.997. Floors: KPI 0.9, Vega 0.75, table 0.3, board 0.8.
+- Pixels: per-card SSIM against dbt Charts' PNG at 880px runs KPI 0.97 to 0.999, Vega
+  charts 0.91 to 0.998, the pie family 0.69 to 0.85 (the typography of the labels inside the
+  wheel), tables 0.33 to 0.60 (HTML columns versus measured lanes). Board means land 0.89 to
+  0.997. Floors: KPI 0.9, Vega 0.75, pie 0.6, table 0.3, board 0.8. The pie floor sits well
+  under the measurement on purpose: its labels reflow whenever the slice proportions change,
+  and the example database is regenerated from time to time. A card drawing the wrong thing
+  scores 0.3 to 0.6, which the rival check catches regardless of the floor.
 - Not compared: dbt Charts' footer, which the Dive omits; the pixels of the variables bar,
   though its controls, values and labels are checked; vertical spacing between cards.

@@ -178,6 +178,7 @@ each one twice, with the numbers moved underneath it, so this table cannot quiet
 |---|---|
 | bar, line, area, scatter, heatmap, histogram | live |
 | pie, donut | live, the percentages in the slice labels included |
+| a channel with a null spelled by hand (`color: None`) | read as no channel, the way dbt Charts reads an empty one |
 | table, kpi | live; the Dive draws these itself from dbt Charts' resolved style |
 | point_map, bubble_map | live |
 | geoshape, map | live, with the TopoJSON carried in the Dive rather than fetched |

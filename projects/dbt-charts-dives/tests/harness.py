@@ -46,9 +46,16 @@ BOARDS = [
     "charts/variables/celebration.yml",
     "charts/variables/drill-down.yml",
 ]
-# Upstream bug: ``daily_trend`` has ``color: None`` (the string "None"), a ValueError that
-# takes dbt-charts' own render down at board level. The Dive turns it into one error card.
-DCT_FAILING_BOARDS = {"charts/general/analytics-dashboard.yml", "charts/variables/analytics-dashboard.yml"}
+# ``daily_trend`` has ``color: None`` — the string, because YAML does not know that spelling
+# of a null — which dbt-charts looks up as a column and fails on at board level. The Dive
+# reads it as the unset channel instead (``builder._read_spelled_nulls_as_unset``), so these
+# two boards render in a Dive and cannot be compared against a dbt-charts render.
+DCT_FAILING_BOARDS = {
+    "charts/general/analytics-dashboard.yml",
+    "charts/variables/analytics-dashboard.yml",
+    FIXTURE_REL + "/spelled_nulls.yml",  # the same spelled null, one per spelling
+    FIXTURE_REL + "/bad_channel.yml",    # a column that is genuinely not there
+}
 FIXTURE_BOARDS = {p.name: f"{FIXTURE_REL}/{p.name}" for p in sorted(FIXTURES_DIR.glob("*.yml")) if not p.name.startswith("_")}
 
 

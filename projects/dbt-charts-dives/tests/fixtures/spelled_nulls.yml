@@ -1,0 +1,42 @@
+# Channels with a null spelled by hand. YAML parses `null`, `NULL` and `~` as a null, so a
+# chart only ever sees a string for the spellings it does not know — `None` (Python), `nil`
+# (Ruby), or a quoted empty. dbt Charts looks each one up as a column name and fails the
+# chart; the compiler reads them as the unset channel dbt Charts' own validator already
+# accepts. `sized` is the control: a real column still encodes.
+source: dbt_charts_examples
+queries:
+  q: |
+    SELECT region, SUM(revenue) AS revenue, COUNT(*) AS orders
+    FROM {{ ref('fct_orders') }} GROUP BY 1 ORDER BY 1
+charts:
+  python_none:
+    title: color written as None
+    type: line
+    query: q
+    x: region
+    y: revenue
+    color: None
+  ruby_nil:
+    title: color written as nil
+    type: bar
+    query: q
+    x: region
+    y: revenue
+    color: nil
+  quoted_empty:
+    title: color written as an empty string
+    type: bar
+    query: q
+    x: region
+    y: revenue
+    color: ""
+  sized:
+    title: a real column still encodes
+    type: scatter
+    query: q
+    x: orders
+    y: revenue
+    color: region
+rows:
+  - cols: [python_none, ruby_nil]
+  - cols: [quoted_empty, sized]
