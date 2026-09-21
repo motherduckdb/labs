@@ -1,0 +1,62 @@
+# Synthetic: drill-down links — a `link:` template on a bar (Vega encoding.href), on a KPI
+# (the card is the anchor), on a table (whole-row band) and on a table column ({{ col }} and
+# {{ col | urlencode }} cell links, a header link).
+title: "Links Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  by_category: |
+    SELECT
+      product_category,
+      COUNT(*) AS orders,
+      SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    WHERE product_category IS NOT NULL
+    GROUP BY 1
+    ORDER BY revenue DESC
+  totals: |
+    SELECT SUM(revenue) AS revenue, 'all regions' AS scope
+    FROM {{ ref('fct_orders') }}
+  by_product: |
+    SELECT product_name, product_category, SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    WHERE product_name IS NOT NULL
+    GROUP BY 1, 2
+    ORDER BY revenue DESC
+    LIMIT 6
+
+charts:
+  category_bar:
+    title: "Revenue by Category"
+    type: bar
+    query: by_category
+    x: product_category
+    y: revenue
+    link: "https://example.com/orders?category={{ x }}"
+  total_kpi:
+    label: "Total Revenue"
+    type: kpi
+    query: totals
+    value: revenue
+    link: "https://example.com/orders?scope={{ scope | urlencode }}"
+  product_table:
+    title: "Products"
+    type: table
+    query: by_product
+    link: "https://example.com/products?name={{ product_name | urlencode }}"
+    style:
+      columns:
+        product_category:
+          label: "Category"
+          link: "https://example.com/orders?category={{ product_category }}"
+          header_link: "https://example.com/categories"
+        product_name:
+          label: "Product"
+        revenue:
+          label: "Revenue"
+          format: currency
+
+rows:
+  - cols: [total_kpi, category_bar]
+  - product_table

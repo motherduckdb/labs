@@ -1,0 +1,69 @@
+# Synthetic: a tabs layout (explicit id, non-first default) whose second tab holds a
+# `details:` collapsible section, plus a layout item hidden by a `visible:` condition.
+title: "Tabs and Details Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+variables:
+  show_extra:
+    input: checkbox
+    label: "Show extra"
+    default: false
+
+queries:
+  by_region: |
+    SELECT region, SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    GROUP BY 1
+    ORDER BY 1
+  by_category: |
+    SELECT product_category, SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    WHERE product_category IS NOT NULL
+    GROUP BY 1
+    ORDER BY 1
+  totals: |
+    SELECT SUM(revenue) AS revenue, COUNT(*) AS orders
+    FROM {{ ref('fct_orders') }}
+
+charts:
+  region_bar:
+    title: "Revenue by Region"
+    type: bar
+    query: by_region
+    x: region
+    y: revenue
+  category_table:
+    title: "Categories"
+    type: table
+    query: by_category
+  revenue_kpi:
+    label: "Total Revenue"
+    type: kpi
+    query: totals
+    value: revenue
+  orders_kpi:
+    label: "Total Orders"
+    type: kpi
+    query: totals
+    value: orders
+
+tabs:
+  id: view
+  default: "Detail"
+  items:
+    - title: "Overview"
+      rows:
+        - region_bar
+    - title: "Detail"
+      rows:
+        - cols: [revenue_kpi, orders_kpi]
+        - details:
+            summary: "Show categories"
+            expanded_title: "Hide categories"
+            expanded: false
+          rows:
+            - category_table
+        - visible: show_extra
+          rows:
+            - region_bar

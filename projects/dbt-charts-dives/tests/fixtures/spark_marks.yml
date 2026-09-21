@@ -1,0 +1,27 @@
+source: dbt_charts_examples
+queries:
+  q: |
+    SELECT label, v::DOUBLE AS bar_auto, v::DOUBLE AS bar_capped, w::DOUBLE AS pct, w::DOUBLE AS post, v::DOUBLE AS tower
+    FROM (VALUES
+      ('a', 0.0, 0.0), ('b', 15.0, 42.5), ('c', 42.5, 99.95),
+      ('d', 75.0, 1234567.0), ('e', 96.0, 0.25), ('f', 120.0, -3.0)
+    ) AS t(label, v, w)
+charts:
+  marks:
+    title: Single-value marks
+    type: table
+    query: q
+    style:
+      columns:
+        bar_auto:
+          spark: {type: bar, width: 72, height: 14}
+        bar_capped:
+          spark: {type: bar, width: 72, height: 14, max: 150, color: "#7c3aed", border_radius: 4}
+        pct:
+          spark: {type: bar-normalize, width: 80, height: 20, max: 100, background: "#e5e7eb", value_visible: true, value_suffix: "%"}
+        post:
+          spark: {type: bar-normalize, width: 80, height: 12, max: 100, thresholds: {30.5: "#f59e0b", 70: "#dc2626"}, value_visible: true}
+        tower:
+          spark: {type: column, width: 14, height: 18, max: 100, thresholds: {50: "#059669"}}
+rows:
+  - cols: [marks]

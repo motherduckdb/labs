@@ -1,0 +1,34 @@
+# Synthetic: a board whose SQL contains the very number the compiler uses to stand in for a
+# variable slot while it reparses the query. Swapping back is a text replace, so the board's
+# own number would become a slot the viewer fills.
+title: "Sentinel Number Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+variables:
+  min_orders:
+    input: number
+    label: "Min orders"
+    min: 0
+    max: 100
+    default: 1
+
+queries:
+  by_region: |
+    SELECT
+      region,
+      COUNT(*) AS orders
+    FROM main.orders
+    WHERE 987654301 > order_id
+    GROUP BY 1
+    HAVING COUNT(*) >= {{ min_orders }}
+    ORDER BY region
+
+charts:
+  region_table:
+    title: "Regions"
+    type: table
+    query: by_region
+
+rows:
+  - cols: [region_table]

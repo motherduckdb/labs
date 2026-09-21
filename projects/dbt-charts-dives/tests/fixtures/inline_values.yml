@@ -1,0 +1,35 @@
+# Synthetic: inline values — no SQL, no database. The Dive carries a snapshot.
+title: "Inline Values Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+
+queries:
+  scores:
+    columns: [name, score, joined]
+    values:
+      - [Alice, 92.4, 2024-01-05]
+      - [Bob, 87.1, 2024-02-11]
+      - [Carol, 78.9, 2024-03-20]
+  total:
+    rows:
+      - total_score: 258.4
+
+charts:
+  score_table:
+    title: "Scores"
+    type: table
+    query: scores
+  score_bar:
+    title: "Score by Person"
+    type: bar
+    query: scores
+    x: name
+    y: score
+  total_kpi:
+    label: "Total Score"
+    type: kpi
+    query: total
+    value: total_score
+
+rows:
+  - cols: [total_kpi, score_bar]
+  - score_table

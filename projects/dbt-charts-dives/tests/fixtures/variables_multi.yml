@@ -1,0 +1,58 @@
+# Synthetic: every free-input variable strategy at once — a multiselect (one SQL shape per
+# selection count, members inlined as an IN list), a daterange (typed DATE slots), a number
+# (raw {{ }} interpolation) and a checkbox that a Jinja conditional branches on.
+title: "Variables Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+variables:
+  regions:
+    input: multiselect
+    label: "Regions"
+    options:
+      static: ["North", "South", "East", "West"]
+    default: ["North", "South"]
+  period:
+    input: daterange
+    label: "Period"
+    default: ["2023-01-01", "2023-12-31"]
+  min_orders:
+    input: number
+    label: "Min orders"
+    min: 0
+    max: 100
+    step: 1
+    default: 2
+  large_only:
+    input: checkbox
+    label: "Large orders only"
+    default: false
+
+queries:
+  by_region: |
+    SELECT
+      region,
+      COUNT(*) AS orders,
+      SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    WHERE {{ filter('region', regions) }}
+      AND {{ filter_date_range('order_date', period) }}
+      {% if large_only %}AND revenue >= 100{% endif %}
+    GROUP BY 1
+    HAVING COUNT(*) >= {{ min_orders }}
+    ORDER BY revenue DESC, region
+
+charts:
+  region_bar:
+    title: "Revenue by Region"
+    type: bar
+    query: by_region
+    x: region
+    y: revenue
+  region_table:
+    title: "Regions"
+    type: table
+    query: by_region
+
+rows:
+  - cols: [region_bar, region_table]

@@ -1,0 +1,26 @@
+# Synthetic: one query naming tables both ways — a {{ ref() }}, which dbt Charts resolves to
+# a fully qualified relation, and a plain `main.products`, which resolves against whatever
+# catalog the connection defaults to. A Dive has no default catalog, so both have to be
+# qualified and both databases declared.
+title: "Mixed Relations Fixture"
+tags: [no-dive]
+source: dbt_charts_examples
+
+queries:
+  mixed: |
+    SELECT
+      o.region,
+      COUNT(*) AS orders,
+      (SELECT COUNT(*) FROM main.products) AS products
+    FROM {{ ref('fct_orders') }} AS o
+    GROUP BY 1
+    ORDER BY region
+
+charts:
+  region_table:
+    title: "Regions"
+    type: table
+    query: mixed
+
+rows:
+  - cols: [region_table]

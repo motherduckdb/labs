@@ -1,0 +1,27 @@
+# dbt package: publishes every dbt Charts board under charts/ as a MotherDuck Dive at the
+# end of `dbt build`. The consuming project only sets one flag:
+#
+#   vars:
+#     save_charts_as_dives: true
+#
+# The hook below belongs to this package, so nothing has to be added to the root project's
+# dbt_project.yml. See README.md.
+name: dbt_charts_dive
+version: '0.2.0'
+config-version: 2
+require-dbt-version: [">=1.8.0", "<3.0.0"]
+
+# Only macros/ is dbt's business here: src/ is the Python this package stages into
+# MotherDuck, tests/ is its own test suite, and dbt v2 would otherwise try to parse the
+# .md files in them as docs blocks.
+macro-paths: ["macros"]
+model-paths: []
+seed-paths: []
+test-paths: []
+analysis-paths: []
+snapshot-paths: []
+docs-paths: []
+asset-paths: []
+
+on-run-end:
+  - "{{ dbt_charts_dive.save_charts_as_dives() }}"

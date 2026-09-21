@@ -1,0 +1,49 @@
+# Synthetic: the four map families. Their geometry is a TopoJSON URL the renderer fetches,
+# and a choropleth joins the query rows to it — which is where a Dive's live rows have to
+# arrive, not the top-level dataset every other family reads.
+title: "Map Types Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  states: |
+    SELECT 6 AS state, SUM(revenue) AS revenue FROM {{ ref('fct_orders') }} WHERE region = 'North'
+    UNION ALL
+    SELECT 36, SUM(revenue) FROM {{ ref('fct_orders') }} WHERE region = 'South'
+  places: |
+    SELECT 37.77 AS lat, -122.42 AS lng, COUNT(*) AS orders FROM {{ ref('fct_orders') }} WHERE region = 'North'
+    UNION ALL
+    SELECT 40.71, -74.0, COUNT(*) FROM {{ ref('fct_orders') }} WHERE region = 'South'
+
+charts:
+  m_geoshape:
+    title: "Geoshape"
+    type: geoshape
+    query: states
+    geo_source: us-states
+    lookup: state
+    value: revenue
+  m_map:
+    title: "Map"
+    type: map
+    query: states
+    geo_source: us-states
+    lookup: state
+    value: revenue
+  m_point:
+    title: "Point map"
+    type: point_map
+    query: places
+    latitude: lat
+    longitude: lng
+  m_bubble:
+    title: "Bubble map"
+    type: bubble_map
+    query: places
+    latitude: lat
+    longitude: lng
+    size: orders
+
+rows:
+  - cols: [m_geoshape, m_map]
+  - cols: [m_point, m_bubble]

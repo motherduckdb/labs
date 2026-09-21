@@ -1,0 +1,22 @@
+source: dbt_charts_examples
+queries:
+  q: |
+    SELECT label, v::DOUBLE AS drift, v::DOUBLE AS tinted, v::DOUBLE AS pole, v::DOUBLE AS ruler
+    FROM (VALUES ('a', -40.0), ('b', -10.0), ('c', 0.0), ('d', 25.0), ('e', 80.0), ('f', NULL::DOUBLE)) AS t(label, v)
+charts:
+  signed:
+    title: Marks around a midline
+    type: table
+    query: q
+    style:
+      columns:
+        drift:
+          spark: {type: bar, width: 72, height: 14}
+        tinted:
+          spark: {type: bar, width: 72, height: 14, negative_color: true}
+        pole:
+          spark: {type: column, width: 14, height: 18, max: 80, negative_color: true}
+        ruler:
+          spark: {type: bar-normalize, width: 80, height: 16, max: 80, value_visible: true}
+rows:
+  - cols: [signed]

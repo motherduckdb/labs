@@ -1,0 +1,19 @@
+source: dbt_charts_examples
+queries:
+  q: |
+    SELECT * FROM (VALUES
+      ('a', '42', true), ('b', 'n/a', false), ('c', '', true), ('d', '7.5', false)
+    ) AS t(label, amount, flag)
+charts:
+  odd:
+    title: Cells a mark cannot read
+    type: table
+    query: q
+    style:
+      columns:
+        amount:
+          spark: {type: bar, width: 72, height: 14}
+        flag:
+          spark: {type: bar-normalize, width: 72, height: 14, max: 10}
+rows:
+  - cols: [odd]
