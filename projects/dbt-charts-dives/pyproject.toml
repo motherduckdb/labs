@@ -25,7 +25,11 @@ classifiers = [
 ]
 dependencies = [
   # The compiler we drive; md_compat.py patches private functions of this exact minor.
-  "dbt-charts==0.8.0",  # the Dive is built out of its private functions; see md_compat.py
+  # The compiler is built out of dbt Charts' private functions (see md_compat.py and
+  # tests/test_private_api.py, which names every one of them). 0.8.0 is what it was
+  # written against; a newer release is allowed, and that test is what fails first if
+  # one of those names has moved.
+  "dbt-charts>=0.8.0",
   # Plugin API (BasePlugin.configure_cursor) and MotherDuck path handling.
   "dbt-duckdb>=1.9,<2",
   "dbt-core>=1.8,<2",

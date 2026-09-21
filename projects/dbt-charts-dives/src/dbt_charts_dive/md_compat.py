@@ -1,4 +1,4 @@
-"""MotherDuck compatibility patches for dbt-charts 0.8.x.
+"""MotherDuck compatibility patches for dbt-charts.
 
 dbt-charts treats every non-absolute DuckDB ``path:`` as a file relative to the
 project directory and, for read-only sources, disables DuckDB's external access.
@@ -12,8 +12,10 @@ database can coexist in one process). Everything else is left exactly as
 dbt-charts does it.
 
 These four are the private names this module depends on; ``builder.py`` borrows
-more of them (see its module docstring). All of them are 0.8-only — the version
-bound lives in ``pyproject.toml`` and the Flight's requirements.
+more of them (see its module docstring). They were all written against 0.8.0, which
+is the floor in ``pyproject.toml`` and in the Flight's requirements;
+``tests/test_private_api.py`` names them all and is what catches a release that
+has moved one.
 """
 
 from __future__ import annotations

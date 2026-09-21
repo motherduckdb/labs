@@ -213,7 +213,7 @@ Three things about an in-cell mark cannot be, or are deliberately not, ported ex
 - dbt v2 or dbt-core 1.8+, MotherDuck target. The Flight runs as your MotherDuck user and only
   its owner can run it, so a shared project should set `flight_name` to a service account's.
 - The Flight needs PyPI for dbt Charts and jsDelivr for the Vega runtime, cached per version.
-- dbt Charts is pinned to an exact version: the Dive is built out of ~26 of its private
+- dbt Charts is floored at the release this was written against: the Dive is built out of ~26 of its private
   functions and `md_compat.py` patches four more, so a moved name is a different Dive, not
   an import error.
 - Boards with inline `values:` data ship as snapshots. The rest query live.

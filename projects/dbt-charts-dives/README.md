@@ -67,9 +67,10 @@ tabs, and collapsible `details:` sections.
 - dbt v2 or dbt-core 1.8+, and a MotherDuck target. The Flight runs as your MotherDuck
   user and only its owner can run it, so set `flight_name` to a service account's for a
   shared project.
-- dbt Charts is pinned to an exact version, 0.8.0. The compiler borrows about 26 of its
-  private functions, so a renamed one is a quietly different Dive rather than an import
-  error.
+- dbt Charts is floored at 0.8.0, the release this was written against. The compiler
+  borrows about 26 of its private functions, so a renamed one is a quietly different Dive
+  rather than an import error. `tests/test_private_api.py` names every one of them and
+  fails first, by name, if a newer release has moved any; run it after a version bump.
 - The Flight needs network access, for dbt Charts on PyPI and the Vega runtime on
   jsDelivr. Both are cached per version.
 - Boards with inline `values:` data ship as snapshots. There is no SQL to re-run, so

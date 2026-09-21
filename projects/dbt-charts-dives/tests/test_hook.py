@@ -296,8 +296,17 @@ def test_not_waiting_says_that_nothing_can_fail_the_build():
     assert any("fail_on_error" in m for m in logged)
 
 
-def test_the_flight_installs_the_dbt_charts_it_was_written_against():
-    """The Dive is built out of ~26 private dbt Charts functions. A floating minor installs
-    whatever is newest at run time, and a moved private name is a silently different Dive."""
-    requirements = call("_flight_requirements")
-    assert re.search(r"^dbt-charts==\d+\.\d+\.\d+$", requirements, re.M), requirements
+def test_the_flight_installs_the_dbt_charts_the_package_declares():
+    """The version lives in two files — `pyproject.toml`, for anyone importing the compiler,
+    and the Flight's own requirements, for the copy that actually builds the Dives. They have
+    to say the same thing: a Flight that installed a different dbt Charts than the one the
+    tests ran against would compile silently different Dives. It also has to say *something*,
+    because the compiler is built out of ~26 of that version's private functions."""
+    # not `dbt-charts-dive`, which is this package's own name a few lines above it
+    declared = re.search(r'"dbt-charts((?:==|>=|~=)[^"]*)"', (MACROS.parent / "pyproject.toml").read_text())
+    assert declared, "pyproject.toml does not depend on dbt-charts"
+    bound = declared.group(1).strip()
+    assert re.fullmatch(r"(==|>=|~=)\d+\.\d+\.\d+", bound), f"dbt-charts needs a version bound, got {bound!r}"
+    assert re.search(rf"^dbt-charts{re.escape(bound)}$", call("_flight_requirements"), re.M), (
+        f"the Flight installs a different dbt-charts than pyproject.toml declares ({bound})"
+    )

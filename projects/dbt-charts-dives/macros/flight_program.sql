@@ -56,12 +56,13 @@ if __name__ == "__main__":
 {% macro _flight_requirements() -%}
 {{ '' -}}
 # Installed on MotherDuck compute before the program runs. dbt-charts is the compiler whose
-# output the Dive renders — pinned exactly, because the Dive is built out of some 26 of its
-# private functions and a moved name is a silently different Dive, not an import error.
+# output the Dive renders. The Dive is built out of some 26 of its private functions, so a
+# moved name is a silently different Dive rather than an import error; the floor is the
+# release this was written against, and tests/test_private_api.py names every one of them.
 # dbt-duckdb (and dbt-core, via it) is how dbt Charts reads the warehouse; duckdb is pinned
 # to the version MotherDuck supports.
 duckdb==1.5.5
-dbt-charts==0.8.0
+dbt-charts>=0.8.0
 dbt-duckdb>=1.9,<2
 pyyaml>=6
 {%- endmacro %}
