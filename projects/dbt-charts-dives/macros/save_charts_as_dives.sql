@@ -62,7 +62,9 @@
   {%- set schema = target.schema | default('main', true) -%}
   {#- Named for this invocation and the hour, so two runs against one database cannot
       overwrite each other's staging, and one nobody finished can be told from one in use. -#}
-  {%- set stamp = modules.datetime.datetime.now(modules.datetime.timezone.utc).strftime('%Y%m%d%H') -%}
+  {#- dbt's own run timestamp, which is UTC and the same for every hook in the run.
+     Not modules.datetime: dbt exposes that as a dict of five names with no timezone. -#}
+  {%- set stamp = run_started_at.strftime('%Y%m%d%H') -%}
   {%- set inputs_table = 'dbt_charts_dive_inputs_' ~ (invocation_id | string | replace('-', ''))[:12] ~ '_' ~ stamp -%}
   {%- set inputs = dbt_charts_dive._relation(db, schema, inputs_table) -%}
 

@@ -112,7 +112,12 @@ def run_hook(cfg: dict | None = None, warehouse: Warehouse | None = None, log=No
         "invocation_args_dict": {"which": flags.get("which", "build")},
         "run_query": wh,
         "log": (lambda message, info=False: log(message)) if log else (lambda message, info=False: None),
-        "modules": types.SimpleNamespace(datetime=_dt),
+        # exactly the shape dbt exposes: a dict of dicts, and `datetime` carries five
+        # names with no `timezone` among them. Handing over the real module here once
+        # hid a `modules.datetime.timezone.utc` that cannot work under dbt at all.
+        "modules": {"datetime": {n: getattr(_dt, n) for n in ("date", "datetime", "time", "timedelta", "tzinfo")},
+                    "pytz": None, "re": re, "itertools": None},
+        "run_started_at": _dt.datetime.now(_dt.UTC),
         "local_md5": lambda text: _hashlib.md5(str(text).encode()).hexdigest(),
         "tojson": json.dumps,
         "exceptions": types.SimpleNamespace(raise_compiler_error=_raise),
