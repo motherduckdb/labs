@@ -1,0 +1,32 @@
+# Synthetic: a variable interpolated inside the author's own string literal. dbt Charts
+# binds a parameter there, so this board is only compilable through the raw interpolation a
+# member of a multiselect still gets — and a slot inside a literal is a value that can end
+# the literal, so the Dive must not put one there.
+title: "Quoted Slot Fixture"
+tags: [no-dive]
+source: dbt_charts_examples
+
+variables:
+  regions:
+    input: multiselect
+    label: "Regions"
+    options:
+      static: ["North", "South"]
+    default: ["North"]
+
+queries:
+  by_region: |
+    SELECT region, COUNT(*) AS orders
+    FROM {{ ref('fct_orders') }}
+    WHERE region IN ({% for r in regions %}'{{ r }}'{{ ", " if not loop.last }}{% endfor %})
+    GROUP BY 1
+    ORDER BY region
+
+charts:
+  region_table:
+    title: "Regions"
+    type: table
+    query: by_region
+
+rows:
+  - cols: [region_table]

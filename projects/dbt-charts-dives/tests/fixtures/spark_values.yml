@@ -1,0 +1,102 @@
+# Synthetic: dbt Charts draws this family in Python (`render/chart/spark_bar.py`) and the
+# Dive draws it in the browser from live rows; every card here is rendered both ways and
+# compared primitive by primitive (`test_spark_bar.py`).
+title: "Spark Bar Values Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  negatives: |
+    SELECT 'North' AS category, -4 AS count UNION ALL SELECT 'South', -9 UNION ALL SELECT 'East', -1
+  mixed: |
+    SELECT 'North' AS category, 8 AS count UNION ALL SELECT 'South', -6 UNION ALL SELECT 'East', 0
+  zeros: |
+    SELECT 'North' AS category, 0 AS count UNION ALL SELECT 'South', 0
+  nulls: |
+    SELECT 'North' AS category, NULL::BIGINT AS count UNION ALL SELECT 'South', 7
+  floats: |
+    SELECT 'North' AS category, 1.25 AS count UNION ALL SELECT 'South', 9.5
+  integral: |
+    SELECT 'North' AS category, 3.0 AS count UNION ALL SELECT 'South', 8.0
+  thousands: |
+    SELECT 'North' AS category, 1234567 AS count UNION ALL SELECT 'South', 987654
+  one: |
+    SELECT 'Only region' AS category, 5 AS count
+  long: |
+    SELECT 'A region with a very long name indeed' AS category, 5 AS count UNION ALL SELECT 'Short', 2
+  twelve: |
+    SELECT 'Region 1' AS category, 3 AS count UNION ALL SELECT 'Region 2' AS category, 6 AS count UNION ALL SELECT 'Region 3' AS category, 9 AS count UNION ALL SELECT 'Region 4' AS category, 12 AS count UNION ALL SELECT 'Region 5' AS category, 15 AS count UNION ALL SELECT 'Region 6' AS category, 18 AS count UNION ALL SELECT 'Region 7' AS category, 21 AS count UNION ALL SELECT 'Region 8' AS category, 24 AS count UNION ALL SELECT 'Region 9' AS category, 27 AS count UNION ALL SELECT 'Region 10' AS category, 30 AS count UNION ALL SELECT 'Region 11' AS category, 33 AS count UNION ALL SELECT 'Region 12' AS category, 36 AS count
+
+charts:
+  v_negatives:
+    title: "All negative"
+    type: spark_bar
+    query: negatives
+    x: count
+    y: category
+  v_mixed:
+    title: "Mixed signs"
+    type: spark_bar
+    query: mixed
+    x: count
+    y: category
+  v_zeros:
+    title: "All zero"
+    type: spark_bar
+    query: zeros
+    x: count
+    y: category
+  v_nulls:
+    title: "A null value"
+    type: spark_bar
+    query: nulls
+    x: count
+    y: category
+  v_floats:
+    title: "Fractions"
+    type: spark_bar
+    query: floats
+    x: count
+    y: category
+  v_integral:
+    title: "Whole floats"
+    type: spark_bar
+    query: integral
+    x: count
+    y: category
+  v_thousands:
+    title: "Thousands"
+    type: spark_bar
+    query: thousands
+    x: count
+    y: category
+  v_one:
+    title: "One row"
+    type: spark_bar
+    query: one
+    x: count
+    y: category
+  v_long:
+    title: "Long labels"
+    type: spark_bar
+    query: long
+    x: count
+    y: category
+  v_twelve:
+    title: "Twelve rows"
+    type: spark_bar
+    query: twelve
+    x: count
+    y: category
+
+rows:
+  - cols: [v_negatives]
+  - cols: [v_mixed]
+  - cols: [v_zeros]
+  - cols: [v_nulls]
+  - cols: [v_floats]
+  - cols: [v_integral]
+  - cols: [v_thousands]
+  - cols: [v_one]
+  - cols: [v_long]
+  - cols: [v_twelve]

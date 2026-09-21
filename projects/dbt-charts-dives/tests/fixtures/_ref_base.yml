@@ -1,0 +1,7 @@
+# Partial: the query lives here, so the board that extends it never names the model itself.
+queries:
+  from_partial: |
+    SELECT region, COUNT(*) AS orders
+    FROM {{ ref('fct_orders') }}
+    GROUP BY 1
+    ORDER BY region

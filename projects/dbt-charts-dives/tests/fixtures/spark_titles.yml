@@ -1,0 +1,35 @@
+# Synthetic: dbt Charts draws this family in Python (`render/chart/spark_bar.py`) and the
+# Dive draws it in the browser from live rows; every card here is rendered both ways and
+# compared primitive by primitive (`test_spark_bar.py`).
+title: "Spark Bar Titles Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  regions: |
+    SELECT region AS category, COUNT(*) AS count FROM {{ ref('fct_orders') }} GROUP BY 1 ORDER BY 1
+  auto: |
+    SELECT region AS label, COUNT(*) AS total FROM {{ ref('fct_orders') }} GROUP BY 1 ORDER BY 1
+
+charts:
+  t_subtitle:
+    title: "With a subtitle"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    subtitle: "and the line under it"
+  t_untitled:
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+  t_auto:
+    title: "Auto-detected fields"
+    type: spark_bar
+    query: auto
+
+rows:
+  - cols: [t_subtitle]
+  - cols: [t_untitled]
+  - cols: [t_auto]

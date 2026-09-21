@@ -1,0 +1,129 @@
+# Synthetic: KPI formatting at dbt-charts' decision boundaries.
+# Each KPI reads one column of a single row so every branch of
+# finalize_kpi_value_format / format_kpi_parts is exercised by a real value.
+title: "KPI Threshold Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  edge_values: |
+    SELECT
+      999            AS below_threshold,
+      1000           AS at_threshold,
+      1234.5         AS mid,
+      12345678       AS big,
+      -1500          AS neg,
+      2500000000     AS huge,
+      0.42           AS cents,
+      0.156          AS ratio,
+      1234.56        AS money,
+      0.0            AS zero
+    FROM {{ ref('fct_orders') }}
+    LIMIT 1
+
+charts:
+  k_below:
+    label: "Below 1000 (exact digits)"
+    type: kpi
+    query: edge_values
+    value: below_threshold
+  k_at:
+    label: "At 1000 (compact SI)"
+    type: kpi
+    query: edge_values
+    value: at_threshold
+  k_mid:
+    label: "1234.5 unformatted"
+    type: kpi
+    query: edge_values
+    value: mid
+  k_big:
+    label: "Millions narrative"
+    type: kpi
+    query: edge_values
+    value: big
+  k_neg:
+    label: "Negative compact"
+    type: kpi
+    query: edge_values
+    value: neg
+  k_huge:
+    label: "Billions narrative"
+    type: kpi
+    query: edge_values
+    value: huge
+  k_cents:
+    label: "Currency sub-unit fallback"
+    type: kpi
+    query: edge_values
+    value: cents
+    style:
+      value:
+        format: currency
+  k_currency:
+    label: "Currency compact"
+    type: kpi
+    query: edge_values
+    value: money
+    style:
+      value:
+        format: currency
+  k_pct:
+    label: "Percent"
+    type: kpi
+    query: edge_values
+    value: ratio
+    style:
+      value:
+        format: percent
+  k_integer:
+    label: "Integer"
+    type: kpi
+    query: edge_values
+    value: big
+    style:
+      value:
+        format: integer
+  k_number_full:
+    label: "Number full"
+    type: kpi
+    query: edge_values
+    value: mid
+    style:
+      value:
+        format: number_full
+  k_currency_whole:
+    label: "Currency whole"
+    type: kpi
+    query: edge_values
+    value: money
+    style:
+      value:
+        format: currency_whole
+  k_number:
+    label: "Number (analytic house)"
+    type: kpi
+    query: edge_values
+    value: big
+    style:
+      value:
+        format: number
+  k_zero:
+    label: "Zero"
+    type: kpi
+    query: edge_values
+    value: zero
+  k_inline_d3:
+    label: "Inline d3 spec"
+    type: kpi
+    query: edge_values
+    value: big
+    style:
+      value:
+        format: ".2s"
+
+rows:
+  - cols: [k_below, k_at, k_mid, k_big]
+  - cols: [k_neg, k_huge, k_cents, k_currency]
+  - cols: [k_pct, k_integer, k_number_full, k_currency_whole]
+  - cols: [k_number, k_zero, k_inline_d3]

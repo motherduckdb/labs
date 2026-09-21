@@ -1,0 +1,121 @@
+# Synthetic: dbt Charts draws this family in Python (`render/chart/spark_bar.py`) and the
+# Dive draws it in the browser from live rows; every card here is rendered both ways and
+# compared primitive by primitive (`test_spark_bar.py`).
+title: "Spark Bar Config Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  regions: |
+    SELECT region AS category, COUNT(*) AS count FROM {{ ref('fct_orders') }} GROUP BY 1 ORDER BY 1
+
+charts:
+  s_default:
+    title: "Default"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+  s_no_labels:
+    title: "No labels"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      label: {visible: false}
+  s_no_counts:
+    title: "No counts"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      count: {visible: false}
+  s_bare:
+    title: "Neither"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      label: {visible: false}
+      count: {visible: false}
+  s_tall:
+    title: "Tall bars"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      bar: {height: 26, padding: 8}
+  s_colors:
+    title: "Colours"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      bar: {color: "#ff5500", background: "#eef2ff"}
+  s_square:
+    title: "Square corners"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      border: {radius: 0}
+  s_wide_label:
+    title: "Wide label lane"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      label: {width: 160}
+  s_wide_count:
+    title: "Wide count lane"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      count: {width: 90}
+  s_small_font:
+    title: "Small font"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      font: {size: 9, color: "#444444"}
+  s_max_two:
+    title: "Two bars"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      max_bars: 2
+  s_min_width:
+    title: "Min width"
+    type: spark_bar
+    query: regions
+    x: count
+    y: category
+    style:
+      min_width: 900
+
+rows:
+  - cols: [s_default]
+  - cols: [s_no_labels]
+  - cols: [s_no_counts]
+  - cols: [s_bare]
+  - cols: [s_tall]
+  - cols: [s_colors]
+  - cols: [s_square]
+  - cols: [s_wide_label]
+  - cols: [s_wide_count]
+  - cols: [s_small_font]
+  - cols: [s_max_two]
+  - cols: [s_min_width]

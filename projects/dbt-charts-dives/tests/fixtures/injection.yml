@@ -1,0 +1,46 @@
+# Synthetic: variable values that reach SQL as *values*. dbt Charts binds every
+# {{ var }} as a parameter (adapter_registry._compose_query_refs -> render_parameterized),
+# so a region name, a number and a date are data wherever they land. The Dive resolves the
+# same variables in the viewer's browser and has to keep that property.
+title: "Injection Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+variables:
+  needle:
+    input: text
+    label: "Region"
+    default: "North"
+  period:
+    input: daterange
+    label: "Period"
+    default: ["2023-01-01", "2023-12-31"]
+  min_orders:
+    input: number
+    label: "Min orders"
+    min: 0
+    max: 100
+    step: 1
+    default: 1
+
+queries:
+  by_region: |
+    SELECT
+      region,
+      COUNT(*) AS orders,
+      SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    WHERE region = {{ needle }}
+      AND {{ filter_date_range('order_date', period) }}
+    GROUP BY 1
+    HAVING COUNT(*) >= {{ min_orders }}
+    ORDER BY region
+
+charts:
+  region_table:
+    title: "Regions"
+    type: table
+    query: by_region
+
+rows:
+  - cols: [region_table]

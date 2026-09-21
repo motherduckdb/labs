@@ -1,0 +1,108 @@
+# Synthetic: one card of every chart type dbt Charts offers, so the suite says which of them
+# a Dive can draw — and, with the rows changed underneath it, which of them redraw.
+title: "Chart Types Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  by_region: |
+    SELECT region, SUM(revenue) AS revenue, COUNT(*) AS orders
+    FROM {{ ref('fct_orders') }}
+    GROUP BY 1
+    ORDER BY 1
+  by_month: |
+    SELECT DATE_TRUNC('month', order_date)::VARCHAR AS month, SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    GROUP BY 1
+    ORDER BY 1
+  cells: |
+    SELECT region, product_category, SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    WHERE product_category IS NOT NULL
+    GROUP BY 1, 2
+  orders: |
+    SELECT quantity, revenue, region
+    FROM {{ ref('fct_orders') }}
+    ORDER BY order_id
+    LIMIT 200
+  totals: |
+    SELECT SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+
+charts:
+  c_bar:
+    title: "Bar"
+    type: bar
+    query: by_region
+    x: region
+    y: revenue
+  c_line:
+    title: "Line"
+    type: line
+    query: by_month
+    x: month
+    y: revenue
+  c_area:
+    title: "Area"
+    type: area
+    query: by_month
+    x: month
+    y: revenue
+  c_scatter:
+    title: "Scatter"
+    type: scatter
+    query: orders
+    x: quantity
+    y: revenue
+    color: region
+  c_heatmap:
+    title: "Heatmap"
+    type: heatmap
+    query: cells
+    x: region
+    y: product_category
+    color: revenue
+  c_pie:
+    title: "Pie"
+    type: pie
+    query: by_region
+    theta: revenue
+    color: region
+  c_donut:
+    title: "Donut"
+    type: donut
+    query: by_region
+    theta: revenue
+    color: region
+  c_histogram:
+    title: "Histogram"
+    type: histogram
+    query: orders
+    x: revenue
+  c_table:
+    title: "Table"
+    type: table
+    query: by_region
+  c_kpi:
+    label: "Revenue"
+    type: kpi
+    query: totals
+    value: revenue
+  c_spark:
+    title: "Spark bar"
+    type: spark_bar
+    query: by_region
+    x: revenue
+    y: region
+  c_callout:
+    title: "Callout"
+    type: callout
+    message: "A callout says the same thing however the data moves."
+
+rows:
+  - cols: [c_bar, c_line]
+  - cols: [c_area, c_scatter]
+  - cols: [c_heatmap, c_pie]
+  - cols: [c_donut, c_histogram]
+  - cols: [c_table, c_kpi]
+  - cols: [c_spark, c_callout]

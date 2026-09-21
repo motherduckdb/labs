@@ -1,0 +1,16 @@
+# Synthetic: a board whose only model reference comes from the partial it extends. Reading
+# the board's own text finds no ref() at all, so a failed `fct_orders` would go unnoticed
+# and the board would be published against yesterday's table.
+title: "Extends Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+extends: ./_ref_base.yml
+
+charts:
+  region_table:
+    title: "Regions"
+    type: table
+    query: from_partial
+
+rows:
+  - cols: [region_table]

@@ -1,0 +1,23 @@
+source: dbt_charts_examples
+queries:
+  q: |
+    SELECT label, w::DOUBLE AS amount
+    FROM (VALUES
+      ('a', 999999.0), ('b', 1000000.0), ('c', 9007199254740992.0),
+      ('d', 0.25), ('e', 99.95), ('f', -3.0), ('g', 1234567.0),
+      -- ties at the sixth significant digit, which %g breaks to even
+      ('h', 1234565.0), ('i', 1234575.0), ('j', -1234565.0), ('k', 1511105941.0),
+      -- 0.15 and -0.15 only look like ties; 0.75 and 0.25 are ones
+      ('l', 0.15), ('m', -0.15), ('n', 0.75), ('o', 2.25)
+    ) AS t(label, w)
+charts:
+  labels:
+    title: The numbers a bar label has to print
+    type: table
+    query: q
+    style:
+      columns:
+        amount:
+          spark: {type: bar-normalize, width: 80, height: 16, max: 100, value_visible: true, value_suffix: " u"}
+rows:
+  - cols: [labels]

@@ -1,0 +1,42 @@
+# Synthetic: a KPI whose colours come from a rule about its own value. dbt Charts resolves
+# those rules against the rows it compiled, once; the Dive reads whatever the query returns
+# now, so it has to resolve them again.
+title: "KPI Conditional Fixture"
+tags: [no-dive]
+source: dbt_charts_examples
+
+queries:
+  totals: |
+    SELECT SUM(revenue) AS revenue, COUNT(*) AS orders, 'North' AS busiest_region
+    FROM {{ ref('fct_orders') }}
+
+charts:
+  k_rev:
+    label: "Revenue"
+    type: kpi
+    query: totals
+    value: revenue
+    conditional_formatting:
+      revenue:
+        when:
+          - gte: 1000
+            font: { color: positive.text }
+            background: positive.bg
+          - default: true
+            font: { color: negative.text }
+
+  k_region:
+    label: "Busiest region"
+    type: kpi
+    query: totals
+    value: busiest_region
+    conditional_formatting:
+      busiest_region:
+        when:
+          - in: [North, South]
+            font: { color: positive.text }
+          - default: true
+            font: { color: negative.text }
+
+rows:
+  - cols: [k_rev, k_region]

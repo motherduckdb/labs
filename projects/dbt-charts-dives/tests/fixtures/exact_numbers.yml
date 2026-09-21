@@ -1,0 +1,31 @@
+# Synthetic: numbers a double cannot hold. A DECIMAL with more digits than a float has, and
+# an id past 2^53. dbt Charts keeps both exact (Python ints and Decimals all the way to its
+# formatter); the Dive has to as well — on screen and in the link.
+title: "Exact Numbers Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  exact: |
+    SELECT
+      9007199254740993::BIGINT                       AS order_id,
+      123456789012345678.90123456789::DECIMAL(38,11) AS amount,
+      1.5                                            AS ordinary
+    FROM {{ ref('fct_orders') }}
+    LIMIT 1
+
+charts:
+  exact_table:
+    title: "Exact"
+    type: table
+    query: exact
+    style:
+      columns:
+        order_id:
+          format: integer
+          link: "https://example.com/orders/{{ order_id }}"
+        amount:
+          format: number_full
+
+rows:
+  - cols: [exact_table]

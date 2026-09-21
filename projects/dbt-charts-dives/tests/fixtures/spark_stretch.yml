@@ -1,0 +1,24 @@
+source: dbt_charts_examples
+queries:
+  q: |
+    SELECT label, v::DOUBLE AS load, [1, 5, 3, 9]::DOUBLE[] AS trend, v::DOUBLE AS pinned, v::DOUBLE AS tower, v::DOUBLE AS overwide
+    FROM (VALUES ('a', 30.0), ('b', 70.0), ('c', 95.0)) AS t(label, v)
+charts:
+  stretch:
+    title: Marks with no authored width
+    type: table
+    query: q
+    style:
+      columns:
+        load:
+          spark: {type: bar}
+        trend:
+          spark: {type: line}
+        pinned:
+          spark: {type: bar, width: 40}
+        tower:
+          spark: {type: column}
+        overwide:
+          spark: {type: column, width: 300}
+rows:
+  - cols: [stretch]

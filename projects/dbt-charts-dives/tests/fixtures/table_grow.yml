@@ -1,0 +1,25 @@
+# Synthetic: rows exceed page_rows by 2 — dbt-charts' grow-by-2 rule shows every
+# row on one page; the Dive slices at page_rows. Documents that deviation.
+title: "Grow-by-2 Table Fixture"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  customers: |
+    SELECT customer_id, COUNT(*) AS orders, SUM(revenue) AS revenue
+    FROM {{ ref('fct_orders') }}
+    GROUP BY 1
+    ORDER BY revenue DESC, customer_id
+    LIMIT 7
+
+charts:
+  grown:
+    title: "Seven rows, page_rows 5"
+    type: table
+    query: customers
+    style:
+      pagination:
+        page_rows: 5
+
+rows:
+  - grown

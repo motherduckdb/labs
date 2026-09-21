@@ -1,0 +1,21 @@
+# Synthetic: a board whose title is one of the generated Dive's own placeholders. Filling
+# them one at a time would paste the Vega runtime into this board's manifest.
+title: "__VEGA_BUNDLE_B64__ __MANIFEST_JSON__"
+tags: [no-dive]   # a test fixture: never publish it as a Dive
+source: dbt_charts_examples
+
+queries:
+  by_region: |
+    SELECT region, COUNT(*) AS orders
+    FROM {{ ref('fct_orders') }}
+    GROUP BY 1
+    ORDER BY region
+
+charts:
+  region_table:
+    title: "Regions"
+    type: table
+    query: by_region
+
+rows:
+  - cols: [region_table]
