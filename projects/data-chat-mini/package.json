@@ -43,7 +43,7 @@
   },
   "overrides": {
     "postcss": "^8.5.14",
-    "fast-uri": "^3.1.4",
+    "fast-uri": "^3.1.7",
     "eslint": {
       "minimatch": {
         "brace-expansion": "^1.1.16"
