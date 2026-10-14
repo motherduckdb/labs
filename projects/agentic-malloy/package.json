@@ -19,7 +19,7 @@
     "@duckdb/node-api": "1.5.3-r.3",
     "@malloydata/db-duckdb": "^0.0.412",
     "@malloydata/malloy": "^0.0.412",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "yaml": "^2.6.0"
   },
   "devDependencies": {
