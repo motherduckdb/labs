@@ -1,0 +1,11 @@
+tests:
+  - {name: issue_pk, type: unique, asset: p3_github.issues, columns: [number], severity: error}
+  - {name: issue_state, type: accepted_values, asset: p3_github.issues, column: state, values: [open, closed], severity: error}
+  - {name: search_pk, type: unique, asset: p3_github.search_issues, columns: [number], severity: error}
+  - {name: search_volume, type: volume, asset: p3_github.search_issues, min_ratio: 0.2, max_ratio: 5.0, severity: warn}
+  - {name: products_shape, type: contract, asset: p3_github.products, severity: error,
+     columns: {sku: VARCHAR, name: VARCHAR, category: VARCHAR, price: "DECIMAL(10,2)"}}
+  - {name: products_pk, type: unique, asset: p3_github.products, columns: [sku], severity: error}
+  - {name: order_pk, type: unique, asset: p3_github.orders, columns: [order_id], severity: error}
+  - {name: order_customer, type: not_null, asset: p3_github.orders, columns: [order_id, customer_id, sku], severity: error}
+  - {name: order_status, type: accepted_values, asset: p3_github.orders, column: status, values: [placed, shipped, delivered, cancelled], severity: error}

@@ -1,0 +1,4 @@
+duckdb==1.5.6
+pytz
+pyyaml
+requests==2.32.5

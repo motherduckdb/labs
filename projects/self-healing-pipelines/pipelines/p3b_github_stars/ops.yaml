@@ -1,0 +1,4 @@
+# Op profile (sqlguard). Declared here + learned from query_history for green runs by scripts/learn_ops.py.
+# Adding a destructive op is a reviewed change: the L2 diff guard blocks it.
+ops:
+  - {kind: UPSERT, table: p3b_github_stars.repo_stats, source: declared}

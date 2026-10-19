@@ -1,0 +1,104 @@
+# Registry of everything the healer watches and runs. Flight ids are written back by scripts/deploy.py.
+#
+# autonomy is a ceiling: a failure class may lower it (categories.yaml) but never raise it.
+# lineage: `upstream` lists pipelines whose assets this one reads; the checker groups a downstream
+# failure under an open upstream incident instead of opening a new one.
+# resources: shared things a failure can be blamed on (hosts, secrets). One bad shared secret behind
+# two pipelines becomes one incident.
+
+repo: motherduckdb/labs
+project_path: projects/self-healing-pipelines
+base_branch: heal/dev          # promoted to main by a human; every Flight takes HEAL_REF from its config
+data_db: heal_lake             # pipeline outputs; one schema per pipeline
+state_db: heal                 # healer state (incidents, events, guides index, ...)
+chaos_db: heal_chaos           # world config for scenarios; the fixer may never read or write it
+fixtures_repo: Alex-Monahan/self-healing-fixtures
+
+defaults:
+  autonomy: L1
+  budget_usd: 10
+  owners: ["@Alex-Monahan"]
+  green_runs_to_resolve: 2     # K
+  watch_runs_before_fix: 3     # N: a transient class that persists this many runs gets a fixer
+
+pipelines:
+  p1_wiki:
+    flight_name: heal-p1-wiki
+    flight_id: null
+    entry: pipelines/p1_wiki/main.py
+    description: Daily Wikimedia pageviews for a tracked list of articles
+    autonomy: L1
+    upstream: []
+    assets: [p1_wiki.pageviews]
+    resources: ["host:wikimedia.org"]
+    secrets: []
+  p2_nws:
+    flight_name: heal-p2-nws
+    flight_id: null
+    entry: pipelines/p2_nws/main.py
+    description: NWS api.weather.gov 7-day forecast periods for a few grid points
+    autonomy: L1
+    upstream: []
+    assets: [p2_nws.forecast_periods]
+    resources: ["host:api.weather.gov"]
+    secrets: []
+  p3_github:
+    flight_name: heal-p3-github
+    flight_id: null
+    entry: pipelines/p3_github/main.py
+    description: GitHub REST - issues of the fixtures repo, closed-issue search on duckdb/duckdb, and CSV fixtures
+    autonomy: L1
+    upstream: []
+    assets: [p3_github.issues, p3_github.search_issues, p3_github.products, p3_github.orders]
+    resources: ["host:api.github.com", "host:raw.githubusercontent.com", "secret:github_read"]
+    secrets: [github_read]
+  p3b_github_stars:
+    flight_name: heal-p3b-github-stars
+    flight_id: null
+    entry: pipelines/p3b_github_stars/main.py
+    description: Second job on the same GitHub read token - daily stargazer counts for a few repos
+    autonomy: L1
+    upstream: []
+    assets: [p3b_github_stars.repo_stats]
+    resources: ["host:api.github.com", "secret:github_read"]
+    secrets: [github_read]
+  p4_usgs:
+    flight_name: heal-p4-usgs
+    flight_id: null
+    entry: pipelines/p4_usgs/main.py
+    description: USGS earthquake catalog (FDSN event API), M2.5+ over a trailing window
+    autonomy: L1
+    upstream: []
+    assets: [p4_usgs.earthquakes]
+    resources: ["host:earthquake.usgs.gov"]
+    secrets: []
+  p5_marts:
+    flight_name: heal-p5-marts
+    flight_id: null
+    entry: pipelines/p5_marts/main.py
+    description: SQL marts over P1-P4 with data tests; where cascades show up
+    autonomy: L2
+    upstream: [p1_wiki, p2_nws, p3_github, p4_usgs]
+    assets: [p5_marts.daily_weather, p5_marts.quake_summary, p5_marts.attention, p5_marts.order_facts]
+    resources: []
+    secrets: []
+
+healer:
+  checker:
+    flight_name: heal-checker
+    flight_id: null
+    entry: healer/checker/main.py
+    schedule_test: "* * * * *"
+    schedule_default: "*/15 * * * *"
+  fixer:
+    flight_name: heal-fixer
+    flight_id: null
+    entry: healer/fixer/main.py
+    max_runtime_sec: 2700
+  watchdog:
+    flight_name: heal-watchdog
+    flight_id: null
+    entry: healer/watchdog/main.py
+    ref: watchdog-v1             # pinned release tag, never the base branch
+    schedule_test: "2-59/5 * * * *"
+    schedule_default: "7-59/15 * * * *"

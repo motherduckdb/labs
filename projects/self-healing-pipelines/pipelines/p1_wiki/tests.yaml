@@ -1,0 +1,5 @@
+tests:
+  - {name: pk_unique, type: unique, asset: p1_wiki.pageviews, columns: [article, day], severity: error}
+  - {name: views_not_null, type: not_null, asset: p1_wiki.pageviews, columns: [article, day, views], severity: error}
+  - {name: has_rows, type: row_count_min, asset: p1_wiki.pageviews, min: 1, severity: error}
+  - {name: loaded_volume, type: volume, asset: p1_wiki.pageviews, min_ratio: 0.3, max_ratio: 3.0, severity: warn}

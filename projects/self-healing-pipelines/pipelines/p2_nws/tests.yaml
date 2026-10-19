@@ -1,0 +1,7 @@
+tests:
+  - {name: shape, type: contract, asset: p2_nws.forecast_periods, severity: error,
+     columns: {city: VARCHAR, number: INTEGER, start_time: "TIMESTAMP WITH TIME ZONE", temperature: DOUBLE, temperature_unit: VARCHAR}}
+  - {name: temperature_present, type: not_null, asset: p2_nws.forecast_periods, columns: [temperature, temperature_unit], severity: error}
+  - {name: unit_known, type: accepted_values, asset: p2_nws.forecast_periods, column: temperature_unit, values: [F, C], severity: error}
+  - {name: periods_unique, type: unique, asset: p2_nws.forecast_periods, columns: [city, number], severity: error}
+  - {name: enough_periods, type: row_count_min, asset: p2_nws.forecast_periods, min: 20, severity: error}

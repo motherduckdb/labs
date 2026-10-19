@@ -1,0 +1,6 @@
+tests:
+  - {name: pk, type: unique, asset: p4_usgs.earthquakes, columns: [id], severity: error}
+  - {name: core_fields, type: not_null, asset: p4_usgs.earthquakes, columns: [id, time, lat, lon], severity: error}
+  - {name: loaded_volume, type: volume, asset: p4_usgs.earthquakes, min_ratio: 0.2, max_ratio: 5.0, severity: warn}
+  - {name: mag_range, type: sql, asset: p4_usgs.earthquakes, severity: warn,
+     sql: "SELECT count(*) FROM {asset} WHERE mag < -2 OR mag > 10"}

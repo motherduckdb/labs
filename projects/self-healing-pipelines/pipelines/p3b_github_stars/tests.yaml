@@ -1,0 +1,3 @@
+tests:
+  - {name: pk, type: unique, asset: p3b_github_stars.repo_stats, columns: [repo, day], severity: error}
+  - {name: stars_present, type: not_null, asset: p3b_github_stars.repo_stats, columns: [stars], severity: error}

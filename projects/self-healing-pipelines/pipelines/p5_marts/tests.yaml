@@ -1,0 +1,13 @@
+tests:
+  - {name: weather_temps, type: not_null, asset: p5_marts.daily_weather, columns: [high_f, low_f], severity: error,
+     upstream_assets: [p2_nws.forecast_periods]}
+  - {name: weather_pk, type: unique, asset: p5_marts.daily_weather, columns: [city, day], severity: error,
+     upstream_assets: [p2_nws.forecast_periods]}
+  - {name: quakes_present, type: row_count_min, asset: p5_marts.quake_summary, min: 1, severity: error,
+     upstream_assets: [p4_usgs.earthquakes]}
+  - {name: attention_present, type: row_count_min, asset: p5_marts.attention, min: 1, severity: error,
+     upstream_assets: [p1_wiki.pageviews]}
+  - {name: order_pk, type: unique, asset: p5_marts.order_facts, columns: [order_id], severity: error,
+     upstream_assets: [p3_github.orders, p3_github.products]}
+  - {name: order_revenue, type: not_null, asset: p5_marts.order_facts, columns: [revenue], severity: error,
+     upstream_assets: [p3_github.orders, p3_github.products]}
