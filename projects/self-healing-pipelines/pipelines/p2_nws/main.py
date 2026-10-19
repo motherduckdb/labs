@@ -27,7 +27,7 @@ def load(ctx):
         wind_speed VARCHAR, short_forecast VARCHAR)""")
     con.executemany("INSERT INTO stg_periods VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
     select = """SELECT city, grid, number, name, start_time, end_time, is_daytime,
-                       TRY_CAST(temperature_raw AS DOUBLE) AS temperature, temperature_unit, wind_speed, short_forecast,
+                       TRY_CAST(temperature_raw AS DOUBLE) AS temperature, temperature_unit, temperature_raw, wind_speed, short_forecast,
                        now() AS fetched_at FROM stg_periods"""
     execute(con, f"CREATE OR REPLACE TABLE {ctx.table(NAME + '.forecast_periods')} AS {select}")
     execute(con, f"CREATE TABLE IF NOT EXISTS {ctx.table(NAME + '.forecast_history')} AS {select} LIMIT 0")

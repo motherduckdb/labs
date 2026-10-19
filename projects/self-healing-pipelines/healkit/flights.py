@@ -31,9 +31,10 @@ def runs(con, flight_id: str, limit: int = 50) -> list[dict]:
 
 def logs(con, flight_id: str, run_number: int, limit: int = 200) -> list[str]:
     """Newest first, last `limit` lines."""
-    rows = con.execute("""SELECT line FROM MD_GET_FLIGHT_LOGS(flight_id := ?::UUID, run_number := ?, "limit" := ?, "order" := 'desc')""",
+    rows = con.execute("""SELECT line_number, line FROM MD_GET_FLIGHT_LOGS(flight_id := ?::UUID, run_number := ?, "limit" := ?, "order" := 'desc')""",
                        [flight_id, run_number, limit]).fetchall()
-    return [r[0] for r in rows]
+    # Don't trust the API's ordering argument; sort on line_number ourselves.
+    return [r[1] for r in sorted(rows, key=lambda r: r[0], reverse=True)]
 
 
 def heal_events_from_logs(lines: list[str]) -> list[dict]:

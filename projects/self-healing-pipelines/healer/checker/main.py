@@ -465,9 +465,9 @@ def other_category_proposals(con, comps: dict):
     rows = con.execute(f"""
         WITH o AS (SELECT i.incident_id, f.embedding FROM {S}.main.incidents i JOIN {S}.main.fingerprints f USING (incident_id)
                    WHERE i.category = 'other' AND i.status = 'resolved')
-        SELECT a.incident_id, count(DISTINCT b.incident_id) AS similar FROM o a JOIN o b
+        SELECT a.incident_id, count(DISTINCT b.incident_id) AS n_similar FROM o a JOIN o b
           ON a.incident_id <> b.incident_id AND array_cosine_similarity(a.embedding, b.embedding) >= 0.85
-        GROUP BY ALL HAVING similar >= 2 ORDER BY similar DESC LIMIT 1""").fetchall()
+        GROUP BY ALL HAVING n_similar >= 2 ORDER BY n_similar DESC LIMIT 1""").fetchall()
     if not rows or control(con).get("category_proposal_open"):
         return
     fixer = next((c for c in comps.values() if c["kind"] == "fixer"), None)

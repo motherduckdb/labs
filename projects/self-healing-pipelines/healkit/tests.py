@@ -36,6 +36,7 @@ class Result:
     passed: bool
     failing: int
     message: str
+    sample: list | None = None
 
 
 def load(pipeline: str) -> list[dict]:
@@ -54,19 +55,33 @@ def _q(asset: str) -> str:
     return f"{data_db()}.{asset}"
 
 
+def _sample(con, sql: str, n: int = 3) -> list[dict]:
+    """A few failing rows for the HEAL_EVENT, so classification sees evidence, not just a count."""
+    try:
+        cur = con.execute(f"{sql} LIMIT {n}")
+        cols = [d[0] for d in cur.description]
+        return [{c: (str(v)[:200] if v is not None else None) for c, v in zip(cols, row)} for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
 def _run_one(con, t: dict) -> Result:
     kind, asset, sev = t["type"], t["asset"], t.get("severity", "error")
     tbl = _q(asset)
-    failing, msg = 0, ""
+    failing, msg, sample = 0, "", None
     if kind == "unique":
         cols = ", ".join(t["columns"])
         failing = con.execute(f"SELECT coalesce(sum(n - 1), 0) FROM (SELECT count(*) AS n FROM {tbl} GROUP BY {cols} HAVING n > 1)").fetchone()[0]
         msg = f"{failing} duplicate rows on ({cols}) in {asset}"
+        if failing:
+            sample = _sample(con, f"SELECT * FROM {tbl} WHERE ({cols}) IN (SELECT ({cols}) FROM {tbl} GROUP BY ALL HAVING count(*) > 1) ORDER BY {cols}", 4)
     elif kind == "not_null":
         cond = " OR ".join(f"{c} IS NULL" for c in t["columns"])
         failing = con.execute(f"SELECT count(*) FROM {tbl} WHERE {cond}").fetchone()[0]
         total = con.execute(f"SELECT count(*) FROM {tbl}").fetchone()[0]
         msg = f"{failing} of {total} rows have NULL in ({', '.join(t['columns'])}) in {asset}"
+        if failing:
+            sample = _sample(con, f"SELECT * FROM {tbl} WHERE {cond}")
     elif kind == "accepted_values":
         vals = t["values"]
         failing = con.execute(f"SELECT count(*) FROM {tbl} WHERE {t['column']} IS NOT NULL AND {t['column']}::VARCHAR NOT IN (SELECT unnest(?::VARCHAR[]))", [vals]).fetchone()[0]
@@ -102,7 +117,7 @@ def _run_one(con, t: dict) -> Result:
         msg = f"{t['name']}: {failing} failing rows in {asset}"
     else:
         raise ValueError(f"unknown test type {kind}")
-    return Result(t["name"], kind, asset, sev, failing == 0, int(failing), msg)
+    return Result(t["name"], kind, asset, sev, failing == 0, int(failing), msg, sample)
 
 
 def run(con, pipeline: str, only_assets: set[str] | None = None) -> list[Result]:
@@ -120,7 +135,7 @@ def run(con, pipeline: str, only_assets: set[str] | None = None) -> list[Result]
         if not r.passed:
             events.emit("test", r.severity, r.message, asset=r.asset, test=f"{r.type}:{r.name}",
                         error_type="DataTestFailed",
-                        detail={"failing": r.failing, "upstream_assets": t.get("upstream_assets")})
+                        detail={"failing": r.failing, "upstream_assets": t.get("upstream_assets"), "sample_rows": r.sample})
     failed = [r for r in results if not r.passed and r.severity == "error"]
     if failed:
         raise DataTestFailed("; ".join(r.message for r in failed))
