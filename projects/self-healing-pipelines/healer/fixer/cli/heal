@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""heal: the fixer agent's tool. Talks to the broker; holds no credentials.
+
+  heal context                 incident, failure events, lineage, paths, last good sha, how to work
+  heal logs [--run N]          log tail of the failing run (redacted)
+  heal guide list              Guides shortlisted for this incident (+ category playbook)
+  heal guide get <id> [--version N]    read one Guide in full (every read is logged)
+  heal repro                   run the pipeline at the current code in a fresh sandbox; expect the failure
+  heal verify                  run the pipeline (+ affected downstream) in a fresh sandbox; must be green
+  heal datadiff                sandbox vs production: rows and columns per asset
+  heal submit <file.json>      submit the final result (validated; errors are returned)
+"""
+import json
+import os
+import sys
+import urllib.request
+
+
+def call(path, body=None):
+    req = urllib.request.Request(os.environ["HEAL_BROKER_URL"] + path, data=json.dumps(body or {}).encode(), method="POST",
+                                 headers={"X-Heal-Token": os.environ["HEAL_BROKER_TOKEN"], "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=1800) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read() or b"{}")
+
+
+def show(x):
+    if isinstance(x, dict) and set(x) == {"text"}:
+        print(x["text"])
+    else:
+        print(json.dumps(x, indent=1, default=str))
+
+
+def main(a):
+    if not a or a[0] in ("-h", "--help", "help"):
+        print(__doc__); return 0
+    cmd = a[0]
+    if cmd == "context":
+        show(call("/context"))
+    elif cmd == "logs":
+        show(call("/logs", {"run": int(a[a.index("--run") + 1]) if "--run" in a else None}))
+    elif cmd == "guide" and len(a) > 1 and a[1] == "list":
+        show(call("/guide/list"))
+    elif cmd == "guide" and len(a) > 2 and a[1] == "get":
+        g = call("/guide/get", {"id": a[2], "version": int(a[a.index("--version") + 1]) if "--version" in a else None})
+        if "content" in g:
+            print(f"# Guide {g['guide_id']} v{g['version']} ({g['topic']})\n{g['note']}\n\n{g['content']}")
+        else:
+            show(g)
+    elif cmd in ("repro", "verify"):
+        r = call("/run", {"mode": cmd})
+        if "runs" not in r:
+            show(r); return 1
+        for run in r["runs"]:
+            print(f"--- {run['pipeline']}: exit {run['exit']} ({run['seconds']}s)")
+            print(run["log_tail"])
+        if r.get("datadiff"):
+            print("--- datadiff"); show(r["datadiff"])
+        print(f"\nRESULT: {'GREEN' if r['ok'] else 'FAILED'} (tree {r['tree'][:10]})")
+        return 0 if r["ok"] else 2
+    elif cmd == "datadiff":
+        show(call("/datadiff"))
+    elif cmd == "submit" and len(a) > 1:
+        try:
+            body = json.load(open(a[1]))
+        except Exception as e:
+            print(f"could not read {a[1]} as JSON: {e}"); return 1
+        r = call("/submit", body)
+        show(r)
+        return 0 if r.get("accepted") else 1
+    else:
+        print(__doc__); return 1
+    return 0
+
+
+sys.exit(main(sys.argv[1:]))

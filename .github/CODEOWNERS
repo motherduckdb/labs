@@ -1,0 +1,7 @@
+# self-healing-pipelines: healer code is always L3 (a human merges), enforced by the fixer's path check
+# and the CI guard; these owners are requested on every such PR.
+/projects/self-healing-pipelines/healer/     @Alex-Monahan
+/projects/self-healing-pipelines/healkit/    @Alex-Monahan
+/projects/self-healing-pipelines/bootstrap/  @Alex-Monahan
+/projects/self-healing-pipelines/.github/    @Alex-Monahan
+/.github/workflows/self-healing-pipelines.yml @Alex-Monahan

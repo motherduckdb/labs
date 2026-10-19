@@ -25,7 +25,7 @@ classes:
     ceiling: L1
     disposition: fix
     severity: high
-    description: Upstream schema or type drift - a column was added, dropped, renamed or changed type; binder/cast errors or a failing contract test
+    description: Upstream schema or type drift - the source changed the shape of its data (a field renamed, dropped, added, or changed type, e.g. a number became an object/struct). Shows up as binder or cast errors, a failing contract test, or as NULLs / missing values after our parser failed on the new shape
   source_unavailable:
     n: 2
     kind: T
@@ -97,7 +97,7 @@ classes:
     ceiling: L1
     disposition: fix
     severity: high
-    description: Nulls, constraint violations or bad values - an error-severity not_null, accepted_values or range test failed
+    description: Bad values in an unchanged shape - the source sent nulls, out-of-range or invalid values in fields whose type and structure did not change; an error-severity not_null, accepted_values or range test failed
   dependency_break:
     n: 11
     kind: P

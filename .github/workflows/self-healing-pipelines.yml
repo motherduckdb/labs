@@ -1,0 +1,35 @@
+name: self-healing-pipelines
+on:
+  pull_request:
+    paths: ["projects/self-healing-pipelines/**"]
+  push:
+    branches: [heal/dev]
+    paths: ["projects/self-healing-pipelines/**"]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: projects/self-healing-pipelines
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: astral-sh/setup-uv@v6
+      - name: compile
+        run: uv run --no-project --with pyyaml --with requests --with duckdb==1.5.6 python -m compileall -q healkit healer pipelines scripts bootstrap
+      - name: unit tests
+        run: PYTHONPATH=$PWD uv run --no-project --with pytest --with pyyaml --with requests --with duckdb==1.5.6 pytest -q tests
+      - name: yaml + registry sanity
+        run: PYTHONPATH=$PWD uv run --no-project --with pyyaml --with requests --with duckdb==1.5.6 python scripts/check_registry.py
+      - name: guard (heal PRs)
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          printf '%s' "$PR_BODY" > /tmp/pr_body.md
+          PYTHONPATH=$PWD uv run --no-project --with pyyaml --with requests --with duckdb==1.5.6 python scripts/ci_guard.py --base ${{ github.event.pull_request.base.sha }} --head-ref "$HEAD_REF" --body-file /tmp/pr_body.md
