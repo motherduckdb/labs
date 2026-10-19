@@ -44,6 +44,17 @@ else:
                 [ev["event_uid"], COMP, fid, run_no, E.get("MOTHERDUCK_FLIGHT_RUN_ID"), sha, ev["message"]])
 
 root = f"{WORK}/{PROJ}"
+if source == "git":  # direct mode: apply active healer patches (a cached tarball already contains them)
+    applied = []
+    for pid, patch in con.execute("SELECT patch_id, patch FROM heal.main.code_patches WHERE ref = ? AND status = 'active' ORDER BY patch_id",
+                                  [REF]).fetchall():
+        open(f"/tmp/heal_patch_{pid}.diff", "w").write(patch)
+        ok = sh(f"git -C {WORK} apply --whitespace=nowarn /tmp/heal_patch_{pid}.diff")
+        print(f"loader: patch {pid} {'applied' if ok.returncode == 0 else 'FAILED: ' + ok.stderr.strip()[-300:]}", flush=True)
+        if ok.returncode == 0:
+            applied.append(str(pid))
+    if applied:
+        sha = f"{sha}+p{'.'.join(applied)}"
 con.execute("INSERT INTO heal.main.code_versions (component, flight_id, run_number, ref, sha, source) VALUES (?, ?::UUID, ?, ?, ?, ?)",
             [COMP, fid, run_no, REF, sha, source])
 print(f"loader: {COMP} {REPO}@{REF} sha={sha} source={source}", flush=True)

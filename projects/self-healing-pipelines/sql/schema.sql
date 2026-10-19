@@ -110,6 +110,16 @@ INSERT OR IGNORE INTO heal.main.control (key, value, updated_by) VALUES
 CREATE TABLE IF NOT EXISTS heal.main.code_versions (
     ts TIMESTAMPTZ DEFAULT now(), component VARCHAR, flight_id UUID, run_number BIGINT, ref VARCHAR, sha VARCHAR, source VARCHAR
 );
+-- Direct mode (no GitHub write access yet): an approved fix is a patch here instead of a merged PR.
+-- The loader applies `active` patches for its ref, in patch_id order, on top of the git checkout.
+-- proposed = L3, waiting for a human (UPDATE ... SET status = 'active' to merge); reverted = rolled back;
+-- migrated = turned into a real PR later (see GITHUB_TODO.md).
+CREATE SEQUENCE IF NOT EXISTS heal.main.patch_seq START 1;
+CREATE TABLE IF NOT EXISTS heal.main.code_patches (
+    patch_id BIGINT PRIMARY KEY DEFAULT nextval('patch_seq'), created_at TIMESTAMPTZ DEFAULT now(),
+    incident_id BIGINT, ref VARCHAR, base_sha VARCHAR, paths VARCHAR[], patch VARCHAR, status VARCHAR,
+    level VARCHAR, fixer_run_id VARCHAR, title VARCHAR, body VARCHAR, activated_at TIMESTAMPTZ, reverted_at TIMESTAMPTZ, reason VARCHAR
+);
 CREATE TABLE IF NOT EXISTS heal.main.code_cache (ref VARCHAR PRIMARY KEY, sha VARCHAR, tarball BLOB, cached_at TIMESTAMPTZ DEFAULT now());
 
 CREATE SCHEMA IF NOT EXISTS heal.eval;

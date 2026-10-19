@@ -36,6 +36,7 @@ E = os.environ
 HERE = pathlib.Path(__file__).resolve().parent
 PROJ = registry()["project_path"]
 WORK = pathlib.Path("/tmp/heal_fix")
+GH_MODE = E.get("HEAL_GITHUB_MODE", "direct")   # direct: fixes are heal.code_patches rows (no GitHub write access yet)
 
 
 def sh(cmd, cwd=None, check=True, env=None, timeout=600):
@@ -134,10 +135,26 @@ class Fixer:
         sh(f"git clone -q --depth 200 --branch {self.base_branch} https://{auth}github.com/{registry()['repo']} {self.repo}", timeout=300)
         sh(["git", "-C", str(self.repo), "config", "user.name", "self-healing fixer"])
         sh(["git", "-C", str(self.repo), "config", "user.email", "self-healing-fixer@users.noreply.github.com"])
-        self.base_sha = sh(["git", "-C", str(self.repo), "rev-parse", "HEAD"]).strip()
-        self.base_tree = sh(["git", "-C", str(self.repo), "rev-parse", "HEAD^{tree}"]).strip()
         self.branch = f"heal/{self.incident_id}-a{self.attempt}" + ("-revert" if self.mode == "revert" else "")
         sh(["git", "-C", str(self.repo), "checkout", "-q", "-b", self.branch])
+        self.apply_direct_patches()
+        self.base_sha = sh(["git", "-C", str(self.repo), "rev-parse", "HEAD"]).strip()
+        self.base_tree = sh(["git", "-C", str(self.repo), "rev-parse", "HEAD^{tree}"]).strip()
+
+    def apply_direct_patches(self):
+        """Direct mode: the code the pipelines actually run is git + active patches; start from exactly that."""
+        rows = self.con.execute(f"SELECT patch_id, patch FROM {S}.main.code_patches WHERE ref = ? AND status = 'active' ORDER BY patch_id",
+                                [self.base_branch]).fetchall()
+        for pid, patch in rows:
+            f = WORK / f"patch_{pid}.diff"
+            f.write_text(patch)
+            r = subprocess.run(["git", "-C", str(self.repo), "apply", "--whitespace=nowarn", str(f)], capture_output=True, text=True)
+            if r.returncode:
+                print(f"patch {pid} does not apply: {r.stderr[-300:]}", flush=True)
+                continue
+            sh(["git", "-C", str(self.repo), "add", "-A"])
+            sh(["git", "-C", str(self.repo), "commit", "-q", "-m", f"direct patch {pid}"])
+        self.applied_patches = [r[0] for r in rows]
 
     def tree_hash(self):
         sh(["git", "-C", str(self.repo), "add", "-A", "--", PROJ])
@@ -372,6 +389,30 @@ Autonomy level: {self.level}
         self.approver_log.append(out)
         return out
 
+    def local_ci(self) -> tuple[str, str]:
+        """Direct mode stand-in for the GitHub Actions workflow: compile, unit tests, registry check."""
+        env = {**{k: v for k, v in E.items() if k in ("PATH", "HOME", "VIRTUAL_ENV", "UV", "TMPDIR", "LANG")}, "PYTHONPATH": str(self.proj)}
+        steps = [[sys.executable, "-m", "compileall", "-q", "healkit", "healer", "pipelines", "scripts", "bootstrap"],
+                 [sys.executable, "scripts/check_registry.py"]]
+        subprocess.run("uv pip install -q pytest || python -m pip install -q pytest", shell=True, capture_output=True, timeout=300)
+        steps.append([sys.executable, "-m", "pytest", "-q", "tests"])
+        out = []
+        for cmd in steps:
+            r = subprocess.run(cmd, cwd=self.proj, env=env, capture_output=True, text=True, timeout=600)
+            out.append(f"$ {' '.join(cmd[1:])} -> {r.returncode}\n{(r.stdout + r.stderr)[-800:]}")
+            if r.returncode:
+                return "failure", "\n".join(out)
+        return "success", "\n".join(out)
+
+    def direct_patch(self, title, body, level, status):
+        """Record the fix as a patch (git diff against the base, paths relative to the repo root)."""
+        patch = sh(["git", "-C", str(self.repo), "diff", "--cached", "--binary", self.base_sha, "--", PROJ])
+        paths = [l for l in sh(["git", "-C", str(self.repo), "diff", "--cached", "--name-only", self.base_sha, "--", PROJ]).splitlines()]
+        pid = self.con.execute(f"""INSERT INTO {S}.main.code_patches (incident_id, ref, base_sha, paths, patch, status, level, fixer_run_id, title, body,
+                                   activated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'active' THEN now() END) RETURNING patch_id""",
+                               [self.incident_id, self.base_branch, self.base_sha, paths, patch, status, level, self.run_id, title, body, status]).fetchone()[0]
+        return pid
+
     # --------------------------------------------------------------------------------- github
     def push_pr(self, title, body, labels, draft=False):
         sh(["git", "-C", str(self.repo), "add", "-A", "--", PROJ])
@@ -393,6 +434,18 @@ Autonomy level: {self.level}
         sha = self.inc.get("fix_sha")
         if not sha:
             raise Stop("escalated", "regressed but no fix sha recorded to revert")
+        if sha.startswith("direct:"):
+            pid = int(sha.split(":")[1])
+            if self.level == "L3":
+                raise Stop("proposed", f"L3: revert of direct patch {pid} proposed (set code_patches.status = 'reverted' to apply)")
+            self.con.execute(f"UPDATE {S}.main.code_patches SET status = 'reverted', reverted_at = now(), reason = ? WHERE patch_id = ?",
+                             [f"incident {self.incident_id} regressed", pid])
+            self.con.execute(f"UPDATE {S}.main.incidents SET fix_sha = NULL WHERE incident_id = ?", [self.incident_id])
+            self.broker.action("note", f"reverted direct patch {pid}", "ok")
+            print(f"reverted direct patch {pid}; retrying the fix from the reverted base", flush=True)
+            self.mode = "fix"
+            self.setup_repo()
+            return True
         sh(["git", "-C", str(self.repo), "fetch", "-q", "--deepen", "200"], check=False)
         r = subprocess.run(["git", "-C", str(self.repo), "revert", "--no-edit", sha], capture_output=True, text=True)
         if r.returncode:
@@ -533,6 +586,8 @@ Autonomy level: {self.level}
 ```
 """
         labels = ["heal", f"incident:{self.incident_id}", f"level:{level}", f"category:{inc['category']}"]
+        if GH_MODE == "direct":
+            return self.finish_direct(approved, level, title, body, sub, links, dropped, diffstat, appr_txt, downgrade)
         pr, head = self.push_pr(title, body, labels, draft=not approved)
         draft = {"summary": f"{inc['class'].replace('_', ' ')} in {self.pipeline}: {sub['root_cause'][:300]}",
                  "symptoms": sub["symptoms"], "root_cause": sub["root_cause"],
@@ -558,6 +613,35 @@ Autonomy level: {self.level}
         self.gh.comment(pr["number"], f"L3 proposal. Approver review:\n```\n{appr_txt[:5000]}\n```")
         lifecycle.transition(self.con, self.incident_id, "proposed", f"L3 proposal PR #{pr['number']}{' (' + downgrade + ')' if downgrade else ''}",
                              actor="fixer", lease_owner=None)
+        return "proposed"
+
+
+
+    def finish_direct(self, approved, level, title, body, sub, links, dropped, diffstat, appr_txt, downgrade):
+        status = "active" if approved and level in ("L1", "L2") else ("proposed" if approved else "denied")
+        ci = ("n/a", "")
+        if status == "active":
+            ci = self.local_ci()
+            if ci[0] != "success":
+                status = "proposed"
+        pid = self.direct_patch(title, body + f"\n\n### Local CI: {ci[0]}\n```\n{ci[1][-2000:]}\n```", level, status)
+        draft = {"summary": f"{self.inc['class'].replace('_', ' ')} in {self.pipeline}: {sub['root_cause'][:300]}",
+                 "symptoms": sub["symptoms"], "root_cause": sub["root_cause"],
+                 "fix": f"{sub['fix_summary']}\n\nDirect patch {pid} (no GitHub write access yet).\n\n```\n{diffstat[-800:]}\n```",
+                 "verification": sub["verification"], "approver_notes": (approved or {}).get("notes") or (approved or {}).get("feedback") or "",
+                 "validated_links": links, "dropped_links": dropped,
+                 "assets": sub.get("assets") or registry()["pipelines"].get(self.pipeline, {}).get("assets", [])}
+        self.con.execute(f"UPDATE {S}.main.fixer_runs SET branch = ?, summary = ?::JSON WHERE fixer_run_id = ?",
+                         [f"direct:{pid}", json.dumps(draft, default=str), self.run_id])
+        print(f"direct patch {pid}: {status} (level {level}, local CI {ci[0]})\n{diffstat}", flush=True)
+        if status == "denied":
+            raise Stop("escalated", f"approver denied after {len(self.approver_log)} rounds; draft kept as patch {pid}")
+        if status == "active":
+            lifecycle.transition(self.con, self.incident_id, "merged", f"approved, local CI green, direct patch {pid} active",
+                                 actor="fixer", fix_sha=f"direct:{pid}", merged_at="now()", lease_owner=None)
+            return "merged"
+        why = f"L3 proposal: direct patch {pid}" + (f" ({downgrade})" if downgrade else "") + ("" if ci[0] in ("n/a", "success") else f"; local CI {ci[0]}")
+        lifecycle.transition(self.con, self.incident_id, "proposed", why, actor="fixer", fix_sha=f"direct:{pid}", lease_owner=None)
         return "proposed"
 
 

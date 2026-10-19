@@ -123,7 +123,7 @@ def code_change_note(con, pipeline: str, sha: str | None) -> str:
         return f"code changed since last green run: no (sha {sha[:10]})"
     note = f"code changed since last green run: yes ({row[0][:10]} -> {sha[:10]})"
     g = lifecycle.gh()
-    if g.enabled:
+    if g.enabled and "+" not in row[0] + sha:   # patched shas (git sha + direct patches) aren't GitHub commits
         try:
             files = [f["filename"] for f in g.compare(row[0], sha).get("files", [])][:20]
             note += "; changed files: " + ", ".join(files)
@@ -363,6 +363,13 @@ def trigger_pipeline(con, comps: dict, pipeline: str, why: str):
 
 
 def verify_and_watch(con, comps: dict):
+    # Direct mode: a human activating a proposed patch (code_patches.status = 'active') is the merge.
+    for inc_id, sha, st in con.execute(f"""SELECT i.incident_id, i.fix_sha, p.status FROM {S}.main.incidents i
+            JOIN {S}.main.code_patches p ON i.fix_sha = 'direct:' || p.patch_id WHERE i.status = 'proposed'""").fetchall():
+        if st == "active":
+            lifecycle.transition(con, inc_id, "merged", f"{sha} activated by a human", merged_at="now()")
+        elif st in ("denied", "reverted"):
+            lifecycle.transition(con, inc_id, "escalated", f"proposal {sha} was {st}")
     # L3 proposals: a human merging the PR moves the incident to merged.
     g = lifecycle.gh()
     for inc_id, pr in con.execute(f"SELECT incident_id, gh_pr FROM {S}.main.incidents WHERE status = 'proposed' AND gh_pr IS NOT NULL").fetchall():

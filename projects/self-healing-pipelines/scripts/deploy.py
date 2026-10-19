@@ -21,10 +21,10 @@ TOKEN_NAME = "self-healing-main"
 FIXER_CONFIG = {
     "INCIDENT_ID": "0", "AUTONOMY": "L3", "MODE": "fix", "ATTEMPT": "1", "BUDGET_USD": "10", "APPROVER_ROUNDS": "2",
     "MODEL": "~anthropic/claude-opus-latest", "APPROVER_MODEL": "~openai/gpt-sol-latest", "RUNTIME_CAP_S": "2700",
-    "OPENCODE_STEPS": "80", "HEAL_LEASE_S": "900",
+    "OPENCODE_STEPS": "80", "HEAL_LEASE_S": "900", "HEAL_GITHUB_MODE": "direct",
 }
 CHECKER_CONFIG = {"HEAL_GREEN_RUNS": "2", "HEAL_WATCH_RUNS": "3", "HEAL_FLAP_WINDOW": "10", "HEAL_BACKOFF_BASE_S": "60",
-                  "HEAL_LEASE_S": "900", "HEAL_WATCHDOG_SILENT_S": "1200"}
+                  "HEAL_LEASE_S": "900", "HEAL_WATCHDOG_SILENT_S": "1200", "HEAL_GITHUB_MODE": "direct"}
 WATCHDOG_CONFIG = {"HEAL_CHECKER_STALE_S": "300", "HEAL_CHECKER_STUCK_S": "600", "HEAL_FIXER_RUNTIME_CAP_S": "2700"}
 
 
@@ -39,7 +39,7 @@ def components(ref: str):
     yield ("checker", h["checker"]["flight_name"], {**base, "HEAL_COMPONENT": "checker", "HEAL_ENTRY": h["checker"]["entry"], **CHECKER_CONFIG},
            ["openrouter", "github"], h["checker"], 600)
     yield ("fixer", h["fixer"]["flight_name"], {**base, "HEAL_COMPONENT": "fixer", "HEAL_ENTRY": h["fixer"]["entry"], **FIXER_CONFIG},
-           ["openrouter", "github"], None, h["fixer"]["max_runtime_sec"])
+           ["openrouter", "github", "github_read"], None, h["fixer"]["max_runtime_sec"])
     yield ("watchdog", h["watchdog"]["flight_name"], {**base, "HEAL_REF": h["watchdog"]["ref"] if ref == REG["base_branch"] else ref,
                                                       "HEAL_COMPONENT": "watchdog", "HEAL_ENTRY": h["watchdog"]["entry"], **WATCHDOG_CONFIG},
            ["github"], h["watchdog"], 300)
