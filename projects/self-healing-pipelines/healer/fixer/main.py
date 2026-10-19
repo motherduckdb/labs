@@ -278,7 +278,9 @@ execute.execute guarded writes, pipeline.main(name, load, transactional=...)). R
         bindir = WORK / "bin"
         bindir.mkdir(exist_ok=True)
         for tool in ("heal", "mdsql"):
-            shutil.copy(HERE / "cli" / tool, bindir / tool)
+            # The agent's PATH has no python3; pin the shebang to this interpreter (the CLIs are stdlib-only).
+            src = (HERE / "cli" / tool).read_text().split("\n", 1)[1]
+            (bindir / tool).write_text(f"#!{sys.executable}\n{src}")
             (bindir / tool).chmod(0o755)
         self.oc_env = {
             "PATH": f"{bindir}:/usr/local/bin:/usr/bin:/bin", "HOME": str(home), "XDG_CONFIG_HOME": str(home / ".config"),
