@@ -54,7 +54,9 @@ def main():
     con = duckdb.connect("md:")
     con.execute("SET TimeZone='UTC'")
     secrets = {r[0] for r in con.execute("SELECT name FROM duckdb_secrets()").fetchall()}
-    existing = {r[1]: str(r[0]) for r in con.execute("SELECT flight_id, flight_name FROM MD_LIST_FLIGHTS(owner_only := true)").fetchall()}
+    rows = con.execute("SELECT flight_id, flight_name, schedule_cron FROM MD_LIST_FLIGHTS(owner_only := true)").fetchall()
+    existing = {r[1]: str(r[0]) for r in rows}
+    current_cron = {r[1]: r[2] for r in rows}
     for comp, fname, cfg, want_secrets, sched, max_rt in components(args.ref):
         if args.only and comp not in args.only:
             continue
@@ -65,9 +67,11 @@ def main():
                       access_token_name=TOKEN_NAME, max_runtime_sec=max_rt)
         if fname in existing:
             fid = existing[fname]
+            # Only touch the schedule when it changes; clearing a schedule that doesn't exist is an error.
+            if (cron or None) != (current_cron.get(fname) or None):
+                params["schedule_cron"] = cron or ""
             sets = ", ".join(f"{k} := ?" for k in params)
-            con.execute(f"SELECT * FROM MD_UPDATE_FLIGHT(flight_id := ?::UUID, {sets}, schedule_cron := ?)",
-                        [fid, *params.values(), cron or ""]).fetchall()
+            con.execute(f"SELECT * FROM MD_UPDATE_FLIGHT(flight_id := ?::UUID, {sets})", [fid, *params.values()]).fetchall()
             action = "updated"
         else:
             sets = ", ".join(f"{k} := ?" for k in params)
