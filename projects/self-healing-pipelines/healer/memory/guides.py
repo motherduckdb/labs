@@ -151,7 +151,7 @@ def write_incident_guide(con, inc: dict, draft: dict, links: list[dict], pipelin
     content = render(con, inc, draft, links, outcome, history)
     description = (draft.get("summary") or f"{inc['class']} in {inc['pipeline']}: {inc['title']}")[:500]
     tables = [a for a in (draft.get("assets") or []) if "." in a][:5]
-    row = con.execute(f"""SELECT id, version FROM MD_CREATE_GUIDE(topic := ?, title := ?, description := ?, content := ?,
+    row = con.execute(f"""SELECT id, current_version FROM MD_CREATE_GUIDE(topic := ?, title := ?, description := ?, content := ?,
                               external_id := ?, change_comment := ?, "references" := {_refs_sql(pipeline_flight_id, tables, links)})""",
                       [incident_topic(inc["category"]), f"#{inc['incident_id']} {inc['title']}"[:200], description, content,
                        inc.get("fix_sha") or f"incident-{inc['incident_id']}", f"incident {inc['incident_id']} resolved"]).fetchone()
@@ -175,7 +175,7 @@ def add_outcome_version(con, guide_id: str, outcome: str, note: str):
     lines = cur.splitlines()
     lines = [f"outcome: {outcome}" if l.startswith("outcome: ") else l for l in lines]
     content = "\n".join(lines).replace("## Outcome history\n", f"## Outcome history\n- {now}: {outcome} - {note}\n", 1)
-    row = con.execute("SELECT version FROM MD_UPDATE_GUIDE(id := ?::UUID, content := ?, change_comment := ?)",
+    row = con.execute("SELECT current_version FROM MD_UPDATE_GUIDE(id := ?::UUID, content := ?, change_comment := ?)",
                       [guide_id, content, f"{outcome}: {note}"[:200]]).fetchone()
     con.execute(f"UPDATE {S}.main.guide_index SET outcome = ?, version = ?, updated_at = now() WHERE guide_id = ?::UUID",
                 [outcome, row[0] if row else None, guide_id])

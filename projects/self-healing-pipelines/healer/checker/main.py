@@ -336,6 +336,16 @@ def write_guide(con, inc_id: int, comps: dict):
     lifecycle.sync_issue(con, inc_id, f"Incident Guide written: `{gid}` under `{guides.incident_topic(inc['category'])}`.")
 
 
+def missing_guides(con, comps: dict):
+    """Retry: every resolved incident gets a Guide, even if writing it failed at resolution time."""
+    for (inc_id,) in con.execute(f"""SELECT incident_id FROM {S}.main.incidents WHERE status = 'resolved' AND guide_id IS NULL
+                                     AND pipeline <> 'healer' ORDER BY incident_id LIMIT 5""").fetchall():
+        try:
+            write_guide(con, inc_id, comps)
+        except Exception as e:
+            print(f"  guide retry failed for {inc_id}: {e}", flush=True)
+
+
 def warn_events(con, run: dict):
     warns = [e for e in run_events(con, run) if e["severity"] == "warn" and e["kind"] == "test"]
     if not warns:
@@ -516,7 +526,7 @@ def main():
             continue
         con.execute(f"INSERT OR IGNORE INTO {S}.main.processed_runs (flight_id, run_number, component, status, sha) VALUES (?::UUID, ?, ?, ?, ?)",
                     [run["flight_id"], run["run_number"], comp["name"], run["status"], sha])
-    for phase in (verify_and_watch, leases_and_dispatch, other_category_proposals):
+    for phase in (verify_and_watch, leases_and_dispatch, missing_guides, other_category_proposals):
         try:
             phase(con, comps)
         except Exception:
