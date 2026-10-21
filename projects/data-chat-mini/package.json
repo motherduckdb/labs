@@ -19,7 +19,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@tailwindcss/typography": "^0.5.19",
     "idb-keyval": "^6.2.2",
     "mviz": "^1.7.0",
