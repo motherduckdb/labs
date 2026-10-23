@@ -18,7 +18,7 @@ export interface AuthConfig {
 }
 
 let config: AuthConfig = {
-  mdTokenLookupUrl: 'https://surfacecontroller.motherduck.com/mom/lookup-user',
+  mdTokenLookupUrl: 'https://api.motherduck.com/mom/lookup-user',
   cookiePath: '/',
 };
 
