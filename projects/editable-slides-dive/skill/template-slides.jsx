@@ -131,13 +131,8 @@ const HANDLE_DEFS = [
   { k: "sw", ax: -1, ay: 1, cursor: "nesw-resize" },  { k: "w", ax: -1, ay: 0, cursor: "ew-resize" },
 ];
 const SNAP = 5;
-const SAVE_EDITABLE_DIVE_URL = "https://save-editable-dive.vercel.app/start";
-// Chromium-family browsers (Chrome, modern Edge, and Samsung Internet) are the
-// binding 32K practical limit; the often-cited 2,083 limit is legacy Edge/IE.
-const SAVE_LAUNCH_MAX_CHARS = 32768;
+// The largest override bag a save accepts: the same 64 KB limit the save Flight enforces.
 const SAVE_OVERRIDE_MAX_BYTES = 65536;
-const SAVE_COMPRESSION_DEBOUNCE_MS = 180;
-const SAVE_COMPRESSION_RETRY = "Still preparing the compressed Save link — click Save again";
 const DIVE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 // Edit-mode scrollbars: thin, square-cornered, low-alpha — scoped to .ed-scroll containers
 // so the published view and page content keep native scrollbars.
@@ -1335,9 +1330,9 @@ function validateTableGeometry(element, path, added) {
 //
 // `columns` is the one open namespace, because its keys are the author's column names. It is bounded
 // by COUNT (the manual table's column ceiling) and not by an inner allowlist: enumerating the
-// per-column setting names here would put every future one behind a core change and a Save-service
-// redeploy, while the values are already covered by assertSafeJson's depth, length and
-// forbidden-key rules and by serializeSceneLiteral's escaping on the way into the JSX module.
+// per-column setting names here would put every future one behind a core change and a re-assembly
+// of every dive, while the values are already covered by assertSafeJson's depth, length and
+// forbidden-key rules and by the save's scene-literal escaping on the way into the JSX module.
 function validateSqlTable(element, path, added) {
   const fail = (message) => editableDiveFail(added ? "INVALID_OVERRIDES" : "INVALID_SCENE", message);
   // null is "no opinion" for every key here, exactly as it is for the manual table's tracks: the
@@ -1866,9 +1861,9 @@ function bakeScene(scene, rawOverrides, options) {
   return result;
 }
 
-// A stable fingerprint of the patch-key allowlist. The Dive and this server must agree on which
-// keys are patchable; when the server lags behind a Dive that gained a new patchable field, saves
-// fail late with INVALID_OVERRIDES. Exposing this on /api/health makes a stale deploy visible
+// A stable fingerprint of the patch-key allowlist. Two copies of the core disagree on which keys
+// are patchable when one was generated before a new patchable field existed, and a bag built by the
+// newer one then fails late with INVALID_OVERRIDES. Comparing fingerprints names the older copy
 // without spending a real save to discover it.
 function patchKeyAllowlistFingerprint() {
   const shape = Object.keys(EDITABLE_DIVE_TYPE_KEYS).sort().map((type) => (
@@ -1907,128 +1902,6 @@ function mapRequiredResources(raw) {
 // which side of a version skew it is looking at. See scripts/sync-merge-core.mjs.
 const EDITABLE_DIVE_CORE_FINGERPRINT = "7916132d";
 // __MERGE_CORE_END__
-
-function encodeBase64UrlBytes(bytes) {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function encodeBase64UrlJson(value) {
-  return encodeBase64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function saveLaunchHref(scene, format, bytes) {
-  const fragment = new URLSearchParams({
-    v: "2",
-    dive_id: scene.diveId,
-    z: format,
-    ov: encodeBase64UrlBytes(bytes),
-  }).toString();
-  return `${SAVE_EDITABLE_DIVE_URL}#${fragment}`;
-}
-
-function saveLaunchTooLarge(length) {
-  return `These edits are too large for the secure Save link (${length.toLocaleString()} characters; limit ${SAVE_LAUNCH_MAX_CHARS.toLocaleString()}). Use Copy JSON for a manual bake-back.`;
-}
-
-function buildSaveLaunch(scene, rawOverrides, preparedLaunch = null) {
-  if (!scene || typeof scene.diveId !== "string" || !DIVE_UUID_RE.test(scene.diveId)) {
-    return { href: null, error: "This Dive source does not include a valid save target ID." };
-  }
-  if (rawOverrides == null) return { href: null, error: "Make an edit before saving." };
-  try {
-    validateBakeInput(scene, rawOverrides, { maxOverrideBytes: SAVE_OVERRIDE_MAX_BYTES });
-    const json = JSON.stringify(rawOverrides);
-    const bytes = new TextEncoder().encode(json);
-    const href = saveLaunchHref(scene, "raw", bytes);
-    const common = { key: json, rawHrefLength: href.length, limit: SAVE_LAUNCH_MAX_CHARS, confirmationRequired: true };
-    if (href.length <= SAVE_LAUNCH_MAX_CHARS) {
-      return { ...common, href, error: null, format: "raw", needsCompression: false };
-    }
-    if (preparedLaunch && preparedLaunch.key === json) return preparedLaunch;
-    return { ...common, href: null, error: SAVE_COMPRESSION_RETRY, format: null, needsCompression: true };
-  } catch (error) {
-    if (error && error.code === "STALE_BASE") return { href: null, error: "These edits are stale. Clear them, reload the Dive, and edit again." };
-    if (error && error.code === "PAYLOAD_TOO_LARGE") return { href: null, error: "These edits exceed the 64 KB Save limit. Use Copy JSON for a manual bake-back." };
-    return { href: null, error: `These edits cannot be saved: ${String((error && error.message) || "invalid override data").slice(0, 180)}` };
-  }
-}
-
-function compressionFormatSupported(format, CompressionStreamImpl = globalThis.CompressionStream) {
-  if (typeof CompressionStreamImpl !== "function") return false;
-  try {
-    new CompressionStreamImpl(format);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function compressSaveBytes(bytes, format, CompressionStreamImpl = globalThis.CompressionStream) {
-  const stream = new CompressionStreamImpl(format);
-  const writer = stream.writable.getWriter();
-  const reader = stream.readable.getReader();
-  const chunks = [];
-  let length = 0;
-  const reading = (async () => {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      length += value.length;
-    }
-  })();
-  await writer.write(bytes);
-  await writer.close();
-  await reading;
-  const compressed = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    compressed.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return compressed;
-}
-
-async function prepareCompressedSaveLaunch(scene, rawOverrides, CompressionStreamImpl = globalThis.CompressionStream) {
-  const raw = buildSaveLaunch(scene, rawOverrides);
-  if (!raw.needsCompression) return raw;
-  if (!compressionFormatSupported("deflate-raw", CompressionStreamImpl)) {
-    return { ...raw, error: saveLaunchTooLarge(raw.rawHrefLength), ready: true };
-  }
-  try {
-    const bytes = new TextEncoder().encode(raw.key);
-    const compressed = await compressSaveBytes(bytes, "deflate-raw", CompressionStreamImpl);
-    const href = saveLaunchHref(scene, "dfl", compressed);
-    if (href.length > SAVE_LAUNCH_MAX_CHARS) {
-      return { ...raw, href: null, error: saveLaunchTooLarge(href.length), compressedHrefLength: href.length, ready: true };
-    }
-    return {
-      ...raw,
-      href,
-      error: null,
-      format: "dfl",
-      needsCompression: true,
-      compressedBytes: compressed.length,
-      compressedHrefLength: href.length,
-      ready: true,
-    };
-  } catch {
-    // A format can construct yet still fail while streaming. The safe downgrade is the
-    // already-built uncompressed candidate, which remains subject to the same URL guard.
-    return { ...raw, href: null, error: saveLaunchTooLarge(raw.rawHrefLength), ready: true };
-  }
-}
-
-function resolveSaveClick(scene, rawOverrides, preparedLaunch) {
-  const launch = buildSaveLaunch(scene, rawOverrides, preparedLaunch);
-  return launch.href
-    ? { preventDefault: false, href: launch.href, message: null, launch }
-    : { preventDefault: true, href: null, message: launch.error || "These edits cannot be saved.", launch };
-}
 
 // ── Flight Save (pure) ──────────────────────────────────────────────────────
 // Save hands the WHOLE batched bag to the save Flight in one run; nothing is written per edit.
@@ -3284,8 +3157,8 @@ function slideZOffset(scene, slides, slideId) {
 
 // ── Text lists and autofit (pure) ───────────────────────────────────────────
 // ZERO new schema keys, for the reason ghostTextOf spells out: the text allow-list is generated from
-// merge-core.mjs, frozen and byte-identical across both templates AND the deployed Save service, so a
-// new key is a four-place lockstep before a dive using it can save.
+// merge-core.mjs, frozen and byte-identical across both templates AND every saved Dive's inlined core (which the save Flight
+// bakes with), so a new key is a lockstep before a dive using it can save.
 //
 // LISTS LIVE IN `level`, already the BLOCK TYPE — the key picking a text element's HTML tag and
 // default metrics — and `ul`/`ol` are the block types HTML puts beside h1/h2/h3/p. The core validates
@@ -3517,7 +3390,7 @@ function autofitReadout(el, index) {
 // THE PLACEHOLDER GHOST, AND WHY IT NEEDS NO SCHEMA KEY. The plan sketches
 // `placeholder: "Click to add title"` on a layout's text elements. That would be a NEW key on
 // `text`, and the allow-list it has to join is generated from merge-core.mjs — frozen, twice
-// reviewed, and shared byte-for-byte with the Save service. It would also be a key that BAKES:
+// reviewed, and inlined byte-for-byte in every Dive the save Flight bakes. It would also be a key that BAKES:
 // ghost prose stored on the element, shipped in the dive source, one careless renderer away from
 // being read as content.
 //
@@ -9596,7 +9469,7 @@ function PresentShell({ slides, elements, leavesBySlide, page, imageMap, entryIn
 // Keep the platform hook, normalization, runtime merge, setter, and latest-value accessor in
 // this one section. Save reads getOverrides(), never the parent URL or its possible state ref.
 // The setter updates the ref synchronously so an input blur immediately followed by Save cannot
-// launch with the previous bag while React is still scheduling the next render.
+// send the previous bag while React is still scheduling the next render.
 // ═══════════════════════════════════════════════════════════════════════════
 function useEditableDiveOverrides() {
   const [platformOverrides, setPlatformOverrides] = useDiveState("ov", null);
@@ -9612,7 +9485,7 @@ function useEditableDiveOverrides() {
     setPlatformOverrides(resolved);
   }, [setPlatformOverrides]);
   const getOverrides = useCallback(() => latestOverridesRef.current, []);
-  // `normOv` is shared with the Save service and normalizes the v1 six only. A deck's bag must
+  // `normOv` is the merge core's (the save Flight bakes with it) and normalizes the v1 six only. A deck's bag must
   // declare the SAME schema version as the scene (spec O1 — a v1 bag against a v2 scene is
   // INVALID_OVERRIDES) and must carry the four deck keys through every element commit, since
   // every commit is built by spreading this object. Absent keys stay absent so an element-only
@@ -9640,7 +9513,7 @@ export default function EditableDive() {
 
   // ── Deck ──────────────────────────────────────────────────────────────────
   // `merged.slides` is the effective deck (base slides + slidePatch/added/deleted/slideOrder),
-  // resolved by the same core function the Save service bakes with, and undefined for a v1
+  // resolved by the same core function the save Flight bakes with, and undefined for a v1
   // scene. `wantedSlideId` is EPHEMERAL viewport state: a cursor, not a document edit, so it
   // never enters the override bag — the same rule `activeCell` and `croppingId` follow.
   const slides = merged.slides;
@@ -11739,8 +11612,6 @@ export const __TESTABLES__ = {
   isDeckScene, normSlideOv, slidesOf, slidesOfStrict, permanentizeSlideIds,
   valEq, prunePatch, validateBakeInput, permanentizeAddedIds, removeEmptyGroups,
   renumberLeafZ, bakeScene, mapRequiredResources,
-  encodeBase64UrlBytes, encodeBase64UrlJson, buildSaveLaunch,
-  compressionFormatSupported, compressSaveBytes, prepareCompressedSaveLaunch, resolveSaveClick,
   pendingEditCount, checkFlightSave, flightSaveFailure,
   elementsOfSlide, resolveActiveSlideId, stampSlide, leavesBeforeSlide, mintRefusal,
   opBag, undoEntry, reservedIds, idReserver,

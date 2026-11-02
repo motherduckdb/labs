@@ -6,8 +6,8 @@ overrides bag the in-browser editor writes to `useDiveState("ov")`. The slides t
 
 **This is a companion to `reference.md`, not a replacement.** Everything in that file about
 elements, groups, TextStyle, charts, tables and the annotation pattern still applies unchanged.
-The Save handoff does NOT: a deck saves by running the save Flight (`flight/save_deck.py`, see
-SKILL.md "Deck Save Flight"), which bakes the same bag with the same core and the same 64 KB cap. This file covers only what a DECK adds: the `slides` array, the `slide` and
+So does Save: a deck saves by running the same save Flight (`flight/save_deck.py`, see SKILL.md
+"Save Flight"), which bakes the deck bag with the same core and the same 64 KB cap. This file covers only what a DECK adds: the `slides` array, the `slide` and
 `build` element keys, the four deck-only bag keys, lists and autofit, present mode, and the slide
 design conventions.
 
@@ -33,7 +33,8 @@ Three things exist only in a deck, and the validator enforces it in **both direc
 | bag keys `slidePatch` / `addedSlides` / `deletedSlides` / `slideOrder` | **refused** | legal |
 | scene key `slides` | **refused** (`scene.slides requires scene schema v2`) | **required**, non-empty |
 
-This is not tidiness. The override bag arrives from a URL fragment, so it is attacker-controlled.
+This is not tidiness. The override bag lives in dive state, which travels with the URL, and reaches
+the save Flight as run config, so it is attacker-controlled.
 `template.jsx` has no present mode, no build control and no `sqltable` renderer or inspector — so a
 key or type that were merely "unused" there would still **bake**, and the author of a Figma-style
 dive would own an invisible, unconfigurable element in their own source with no UI able to remove
@@ -217,8 +218,8 @@ four, and no others are accepted:
 
 ### What each deck key costs in bytes
 
-The bag ceiling is **65,536 bytes** (64 KiB) — the dive-state cap, the Save handoff cap and the
-service's `SAVE_OVERRIDE_MAX_BYTES`, all the same number. Measured additions to an otherwise-empty
+The bag ceiling is **65,536 bytes** (64 KiB) — the dive-state cap, the editor's
+`SAVE_OVERRIDE_MAX_BYTES` and the save Flight's `MAX_OVERRIDE_BYTES`, all the same number. Measured additions to an otherwise-empty
 bag (`JSON.stringify` byte length):
 
 | edit | bytes |
@@ -280,8 +281,8 @@ ambiguous. Failure codes are unchanged: `INVALID_SCENE`, `INVALID_OVERRIDES`, `S
 
 Both are surprising enough to state plainly, and both add **zero schema keys** — which is why they
 exist in this shape at all. The text key set is generated from `merge-core.mjs` and is byte-identical
-across both templates and the deployed Save service, so a new key would be a four-place lockstep
-change before a dive using it could save.
+across both templates and the core inlined in every assembled dive (which the save Flight bakes
+with), so a new key would be a lockstep change before a dive using it could save.
 
 ### Lists live in `level`
 
@@ -366,16 +367,16 @@ step itself can only be read in the browser.
 | `sqltable` columns configured, `table` columns | **40** | `columns` key count / `cells` width |
 | group nesting depth | **24** | `assertSafeJson`, and the empty-group walk |
 | any single string | **256 KiB** | `assertSafeJson` — the real guard against a structure attack |
-| override bag | **65,536 B** | dive state, Save handoff, and the service, all the same number |
+| override bag | **65,536 B** | dive state, the editor's Save check, and the save Flight, all the same number |
 | assembled `.jsx` | **warn 768 KB, hard 896 KB** | `slides/assemble.js`; see below |
 
 The two that bite first in practice are the **64 KiB bag** (see the byte table above) and the
-**assembly size bands**. The bands are `1024 KB` (the Save service's `MAX_SOURCE_BYTES`, checked
+**assembly size bands**. The bands are `1024 KB` (the save Flight's `MAX_SOURCE_BYTES`, checked
 twice — on the source it fetches and again on the bake it is about to write) minus `128 KB` of bake
 headroom. That headroom is a **documented heuristic for the ordinary case, not a bound**:
-`serializeSceneLiteral` rewrites `<`, `>` and `&` as their six-character `\uXXXX` escapes, so a
+the save Flight's scene serialization rewrites `<`, `>` and `&` as their six-character `\uXXXX` escapes, so a
 legal 64 KiB bag of `<` inflates SIXFOLD and can cross the ceiling from under the band. What makes that acceptable is
-that the real guarantee is elsewhere and fails closed — the service returns `SOURCE_TOO_LARGE` with
+that the real guarantee is elsewhere and fails closed — the Flight exits 5 (too large) with
 no write attempted, and the author loses that one bag of edits, not the dive.
 
 For scale: the slides framework alone is ~520 KB, and the worked example deck (8 slides, 64

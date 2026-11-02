@@ -1,9 +1,10 @@
 // Dependency-free merge and bake core for editable Dives.
 //
 // The Dive runtime cannot import repository-local modules, so the code between the inline
-// sentinels is generated verbatim (minus ESM `export` keywords) into template.jsx. The Vercel
-// service imports this module directly during development and ships a byte-identical generated
-// copy. Run scripts/sync-merge-core.mjs after changing this file.
+// sentinels is generated verbatim (minus ESM `export` keywords) into template.jsx and
+// template-slides.jsx, and so into every assembled Dive. The save Flight (flight/save_deck.py) bakes
+// with the copy inlined in the live Dive source. Run scripts/sync-merge-core.mjs after changing this
+// file.
 
 // __INLINE_CORE_START__
 // The element types, SPLIT BY SCHEMA. A type is not merely "known": it is legal in a v1 scene, or
@@ -572,9 +573,9 @@ function validateTableGeometry(element, path, added) {
 //
 // `columns` is the one open namespace, because its keys are the author's column names. It is bounded
 // by COUNT (the manual table's column ceiling) and not by an inner allowlist: enumerating the
-// per-column setting names here would put every future one behind a core change and a Save-service
-// redeploy, while the values are already covered by assertSafeJson's depth, length and
-// forbidden-key rules and by serializeSceneLiteral's escaping on the way into the JSX module.
+// per-column setting names here would put every future one behind a core change and a re-assembly
+// of every dive, while the values are already covered by assertSafeJson's depth, length and
+// forbidden-key rules and by the save's scene-literal escaping on the way into the JSX module.
 function validateSqlTable(element, path, added) {
   const fail = (message) => editableDiveFail(added ? "INVALID_OVERRIDES" : "INVALID_SCENE", message);
   // null is "no opinion" for every key here, exactly as it is for the manual table's tracks: the
@@ -1103,9 +1104,9 @@ export function bakeScene(scene, rawOverrides, options) {
   return result;
 }
 
-// A stable fingerprint of the patch-key allowlist. The Dive and this server must agree on which
-// keys are patchable; when the server lags behind a Dive that gained a new patchable field, saves
-// fail late with INVALID_OVERRIDES. Exposing this on /api/health makes a stale deploy visible
+// A stable fingerprint of the patch-key allowlist. Two copies of the core disagree on which keys
+// are patchable when one was generated before a new patchable field existed, and a bag built by the
+// newer one then fails late with INVALID_OVERRIDES. Comparing fingerprints names the older copy
 // without spending a real save to discover it.
 export function patchKeyAllowlistFingerprint() {
   const shape = Object.keys(EDITABLE_DIVE_TYPE_KEYS).sort().map((type) => (

@@ -18,7 +18,7 @@ belongs in a single-canvas dive.
   "v": 1,                    // schema version (this document)
   "version": 1,              // CONTENT version — bump on every bake-back; overrides carry
                              // _base and are IGNORED when _base !== version (stale-edit guard)
-  "diveId": "<uuid>",       // required for the in-editor Save link; omitted only before create
+  "diveId": "<uuid>",       // required for the in-editor Save; omitted only before create
   "page": {
     "width": 1440,           // logical coordinate width. The page renders scaled to fill
                              // 100% of the available width; all x/w below are in these units
@@ -336,14 +336,14 @@ Merge semantics (both the runtime `mergeScene` and bake-back):
    `added` holds browser-created groups too, ids `new-group-N`); merge `page`; sanitize
    `parent` pointers (missing/non-group/cyclic → `null`); sort leaves by `z`.
 3. Patches equal to the base value are pruned on commit, so bags stay small (typical heavy
-   session: 1–5 KB against the 64 KB dive-state ceiling; the editor's byte meter and 64 KB
-   Save/handoff guards protect the limit).
+   session: 1–5 KB against the 64 KB dive-state ceiling; the editor's byte meter and the 64 KB
+   Save guard protect the limit).
 
 ## Bake-back merge (performed by the shared core)
 
-`merge-core.mjs` is normative. Its generated inline copy supplies runtime `mergeScene`; the Save
-server imports a byte-identical generated module and calls strict `bakeScene`. Regenerate with
-`scripts/sync-merge-core.mjs` so the two paths cannot drift.
+`merge-core.mjs` is normative. Its generated inline copy supplies runtime `mergeScene` and strict
+`bakeScene`; the save Flight runs that same inline copy, taken from the live Dive source, under Node.
+Regenerate with `scripts/sync-merge-core.mjs` so the templates cannot drift.
 
 1. Download current source; extract the JSON between `// __SCENE_START__` and
    `// __SCENE_END__` (strip `const SCENE = ` and trailing `;`), `JSON.parse` it.
@@ -354,31 +354,28 @@ server imports a byte-identical generated module and calls strict `bakeScene`. R
    them so; drop groups that ended up empty; **increment `scene.version`**.
 4. Re-serialize with `JSON.stringify(scene, null, 2)` between the sentinels; validate the
    whole file (JSON parses, ids unique, and inside the assembly size bands — **warn at
-   768 KB, hard limit 896 KB**, which is the Save service's 1 MB `MAX_SOURCE_BYTES` minus
+   768 KB, hard limit 896 KB**, which is the save Flight's 1 MB `MAX_SOURCE_BYTES` minus
    128 KB of bake headroom; see the pre-save checklist in `SKILL.md`); update the dive.
 5. Old edited URLs now carry stale `_base` values and render the freshly baked scene.
 
-## In-editor Save handoff
+## In-editor Save (Flight)
 
-- Save reads the latest full override bag through the single marked MotherDuck-state owner in
-  `template.jsx`; never parse the browser URL or a `ref:` value.
-- New launch fragments use `v=2`, tag their payload as `z=raw` or `z=dfl`, and carry `ov` as
-  base64url bytes. The destination still accepts legacy `v=1` uncompressed JSON links. Raw links
-  remain synchronous; only a raw candidate beyond 32,768 characters is debounced and compressed
-  with `CompressionStream("deflate-raw")`. A click whose live bag does not match the prepared
-  candidate is prevented with an explicit retry message. The override bag is non-secret, but it
-  must stay in the fragment and under the URL guard. Credentials, OAuth codes, and tokens never
-  belong in this URL.
-- Use the rendered `<a target="_blank" rel="noopener noreferrer">` Save control. MotherDuck
-  mediates it through an external-navigation dialog and sends no opened/blocked acknowledgement;
-  UI copy must say only that a tab was requested.
-- The destination clears the fragment and forwards the tagged bytes. The server caps encoded and
-  compressed input before inflating `dfl`, stops inflation just beyond 65,536 output bytes, and
-  returns `PAYLOAD_TOO_LARGE` without writing a session when the cap is crossed. It compresses only
-  the override bag inside the encrypted HttpOnly session (never OAuth credentials in the same
-  compression context), then runs MCP OAuth, fetches the target with the caller's minted credential,
-  gates its derived organization before matching `owner_id` to credential `userId`, preserves all
-  `version_required_resources`, bakes, writes, and verifies a matching re-read.
+- Save reads the latest full override bag through the single marked MotherDuck-state owner in the
+  template; never parse the browser URL or a `ref:` value.
+- The Save button shows `pendingEditCount(bag)` and opens a confirmation; nothing is written per
+  edit. `checkFlightSave` dry-runs `bakeScene` locally and refuses a missing `SAVE_FLIGHT_ID`, an
+  invalid `SCENE.diveId`, and an empty, stale or over-64 KB bag before any run starts.
+- Confirming calls `useRunFlight(SAVE_FLIGHT_ID).run({ DIVE_ID, BASE_VERSION, OVERRIDES })` (all
+  strings; `OVERRIDES` is the bag JSON) and follows the run with `useFlightRun`. The three config
+  keys must already exist on the Flight, because a run can only pass keys the Flight has.
+- The Flight (`flight/save_deck.py`) treats its config as untrusted. It checks `DIVE_ID` against
+  `ALLOWED_DIVE_IDS`, fetches the live Dive, requires `SCENE.diveId` to match and `SCENE.version`
+  to equal `BASE_VERSION`, bakes with the core inlined in that source, writes with
+  `MD_UPDATE_DIVE_CONTENT` preserving all `version_required_resources`, and verifies a matching
+  re-read. It writes with the Flight owner's token.
+- The dialog maps the Flight's exit codes: 2 malformed request, 3 stale, 4 bake rejected, 5 too
+  large, 6 Dive not allowed. On success the bag is cleared and the dialog offers Reload; on failure
+  the edits stay in the bag. **Copy JSON** remains the manual fallback.
 
 ## Authoring rules for groups (REQUIRED for generated scenes)
 

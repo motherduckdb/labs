@@ -28,13 +28,10 @@ function fail(message) {
 
 const core = readFileSync(corePath, "utf8");
 // The fingerprint of THIS core, computed by the core itself and emitted as a LITERAL into every
-// template (and so into every assembled dive). The Save service already publishes its own
-// fingerprint on /api/health, which makes "the service is behind the dive" visible. The reverse —
-// "the DIVE is behind the service" — had nothing at all, and it is the direction that leaves an
-// author permanently unable to save: the launch path runs the dive's own INLINE core, so a bag aimed
-// at a dive assembled before a new element type existed bakes and renders and then fails every later
-// save from that dive's own Save button. Emitting the number here lets the service name which side
-// is behind instead of only that they disagree.
+// template (and so into every assembled dive). The save Flight bakes with the core inlined in the
+// live Dive source, so a Dive assembled before a new element type existed keeps its older core, and
+// a bag that names the new type fails every save from that Dive. The literal lets anyone holding
+// only the SOURCE see which core a Dive carries and re-assemble it from the current template.
 const { patchKeyAllowlistFingerprint } = await import(pathToFileURL(corePath).href);
 const fingerprint = patchKeyAllowlistFingerprint();
 const inlineRegion = between(core, "// __INLINE_CORE_START__", "// __INLINE_CORE_END__", "inline core");
