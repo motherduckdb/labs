@@ -6,7 +6,8 @@ Google-Slides-like editor (filmstrip, layouts, layers, inspector) that saves edi
 Dive through a MotherDuck Flight. Slides can hold live SQL charts and tables, images, shapes,
 copyable code snippets and links.
 
-The skill also builds single-canvas editable Dives (`template.jsx`), for reports that scroll.
+The skill also builds single-canvas editable Dives (`template.jsx`), for reports that scroll. They
+save through the same Flight.
 
 ## What's here
 
@@ -16,10 +17,10 @@ The skill also builds single-canvas editable Dives (`template.jsx`), for reports
 | `skill/SKILL.md` | Workflow and rules. Workflow A-DECK is the slide deck. |
 | `skill/reference.md`, `skill/reference-deck.md` | The scene schema: elements, slides, builds, lists, code snippets, links, caps |
 | `skill/template-slides.jsx` | The deck framework. Copy it verbatim and patch only its three sentinel regions. |
-| `skill/template.jsx` | The canvas framework |
+| `skill/template.jsx` | The canvas framework. Same rule: patch only its three sentinel regions. |
 | `skill/merge-core.mjs`, `skill/scripts/sync-merge-core.mjs` | Merge/bake core shared by both templates, and the script that keeps their inline copies in sync |
 | `skill/scripts/check-deck.mjs` | Validates a deck scene before you assemble it |
-| `skill/flight/` | The save Flight (`save_deck.py`) a deck calls to write edits back. Set `MOTHERDUCK_HOST` and `ALLOWED_DIVE_IDS` before creating it. |
+| `skill/flight/` | The save Flight (`save_deck.py`) a deck or canvas Dive calls to write edits back. Set `MOTHERDUCK_HOST` and `ALLOWED_DIVE_IDS` before creating it. |
 | `skill/examples/` | A worked 8-slide deck on `sample_data` and a worked canvas scene |
 | `tools/assemble.mjs` | Builds `dive.jsx` from a scene and the template (the "assemble" step in `SKILL.md`) |
 | `tools/push.sh` | Pulls the live Dive, applies a patch script, checks, assembles, pushes and verifies (the "push" step) |

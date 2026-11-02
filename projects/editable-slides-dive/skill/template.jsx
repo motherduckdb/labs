@@ -2,10 +2,14 @@
 // Architecture: a declarative SCENE (pure JSON, sentinel-delimited) is rendered by a
 // generic framework below. Live edits are sparse overrides stored in useDiveState("ov")
 // (they travel with the URL); the skill's bake-back command merges them into SCENE.
-// Do not hand-edit the framework; only the SCENE block and REQUIRED_DATABASES change per dive.
+// Save runs a MotherDuck Flight (SAVE_FLIGHT_ID, flight/save_deck.py) that bakes the batched
+// override bag into this Dive's SCENE and writes a new Dive version. Edits stay batched in the bag
+// until the author clicks Save and confirms — a save rewrites the Dive and reloads it.
+// Do not hand-edit the framework; only the SCENE, REQUIRED_DATABASES and SAVE_FLIGHT_ID sentinel
+// regions change per dive.
 
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from "react";
-import { useSQLQuery, useDiveState } from "@motherduck/react-sql-query";
+import { useSQLQuery, useDiveState, useRunFlight, useFlightRun } from "@motherduck/react-sql-query";
 import {
   ComposedChart, Line, Bar, Area, Scatter, XAxis, YAxis, ZAxis,
   CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -27,6 +31,10 @@ import {
 // __DBS_START__
 export const REQUIRED_DATABASES = [];
 // __DBS_END__
+
+// __SAVE_FLIGHT_START__
+const SAVE_FLIGHT_ID = "";
+// __SAVE_FLIGHT_END__
 
 // __SCENE_START__
 const SCENE = {
@@ -77,13 +85,8 @@ const HANDLE_DEFS = [
   { k: "sw", ax: -1, ay: 1, cursor: "nesw-resize" },  { k: "w", ax: -1, ay: 0, cursor: "ew-resize" },
 ];
 const SNAP = 5;
-const SAVE_EDITABLE_DIVE_URL = "https://save-editable-dive.vercel.app/start";
-// Chromium-family browsers (Chrome, modern Edge, and Samsung Internet) are the
-// binding 32K practical limit; the often-cited 2,083 limit is legacy Edge/IE.
-const SAVE_LAUNCH_MAX_CHARS = 32768;
+// The largest override bag a save accepts: the same 64 KB limit the save Flight enforces.
 const SAVE_OVERRIDE_MAX_BYTES = 65536;
-const SAVE_COMPRESSION_DEBOUNCE_MS = 180;
-const SAVE_COMPRESSION_RETRY = "Still preparing the compressed Save link — click Save again";
 const DIVE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 // Edit-mode scrollbars: thin, square-cornered, low-alpha — scoped to .ed-scroll containers
 // so the published view and page content keep native scrollbars.
@@ -864,9 +867,9 @@ function validateTableGeometry(element, path, added) {
 //
 // `columns` is the one open namespace, because its keys are the author's column names. It is bounded
 // by COUNT (the manual table's column ceiling) and not by an inner allowlist: enumerating the
-// per-column setting names here would put every future one behind a core change and a Save-service
-// redeploy, while the values are already covered by assertSafeJson's depth, length and
-// forbidden-key rules and by serializeSceneLiteral's escaping on the way into the JSX module.
+// per-column setting names here would put every future one behind a core change and a re-assembly
+// of every dive, while the values are already covered by assertSafeJson's depth, length and
+// forbidden-key rules and by the save's scene-literal escaping on the way into the JSX module.
 function validateSqlTable(element, path, added) {
   const fail = (message) => editableDiveFail(added ? "INVALID_OVERRIDES" : "INVALID_SCENE", message);
   // null is "no opinion" for every key here, exactly as it is for the manual table's tracks: the
@@ -1395,9 +1398,9 @@ function bakeScene(scene, rawOverrides, options) {
   return result;
 }
 
-// A stable fingerprint of the patch-key allowlist. The Dive and this server must agree on which
-// keys are patchable; when the server lags behind a Dive that gained a new patchable field, saves
-// fail late with INVALID_OVERRIDES. Exposing this on /api/health makes a stale deploy visible
+// A stable fingerprint of the patch-key allowlist. Two copies of the core disagree on which keys
+// are patchable when one was generated before a new patchable field existed, and a bag built by the
+// newer one then fails late with INVALID_OVERRIDES. Comparing fingerprints names the older copy
 // without spending a real save to discover it.
 function patchKeyAllowlistFingerprint() {
   const shape = Object.keys(EDITABLE_DIVE_TYPE_KEYS).sort().map((type) => (
@@ -1437,126 +1440,47 @@ function mapRequiredResources(raw) {
 const EDITABLE_DIVE_CORE_FINGERPRINT = "7916132d";
 // __MERGE_CORE_END__
 
-function encodeBase64UrlBytes(bytes) {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+// ── Flight Save (pure) ──────────────────────────────────────────────────────
+// Save hands the WHOLE batched bag to the save Flight in one run; nothing is written per edit.
+// The Flight re-bakes with the core inlined in the live source, so the dry run below is only an
+// early, local answer to "will this bake?" — it is not what gets written.
+
+// How many separate things the bag changes — the number on the Save button.
+function pendingEditCount(bag) {
+  if (!isPlainRecord(bag)) return 0;
+  const n = (v) => (Array.isArray(v) ? v.length : isPlainRecord(v) ? Object.keys(v).length : 0);
+  return n(bag.patch) + n(bag.added) + n(bag.deleted) + n(bag.slidePatch) + n(bag.addedSlides)
+    + n(bag.deletedSlides) + (bag.slideOrder !== undefined ? 1 : 0) + (isPlainRecord(bag.page) ? 1 : 0);
 }
 
-function encodeBase64UrlJson(value) {
-  return encodeBase64UrlBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-function saveLaunchHref(scene, format, bytes) {
-  const fragment = new URLSearchParams({
-    v: "2",
-    dive_id: scene.diveId,
-    z: format,
-    ov: encodeBase64UrlBytes(bytes),
-  }).toString();
-  return `${SAVE_EDITABLE_DIVE_URL}#${fragment}`;
-}
-
-function saveLaunchTooLarge(length) {
-  return `These edits are too large for the secure Save link (${length.toLocaleString()} characters; limit ${SAVE_LAUNCH_MAX_CHARS.toLocaleString()}). Use Copy JSON for a manual bake-back.`;
-}
-
-function buildSaveLaunch(scene, rawOverrides, preparedLaunch = null) {
+function checkFlightSave(scene, rawOverrides, flightId) {
+  if (!DIVE_UUID_RE.test(String(flightId || ""))) return { ok: false, error: "No save Flight is configured for this Dive. Use Copy JSON for a manual bake-back." };
   if (!scene || typeof scene.diveId !== "string" || !DIVE_UUID_RE.test(scene.diveId)) {
-    return { href: null, error: "This Dive source does not include a valid save target ID." };
+    return { ok: false, error: "This Dive source does not include a valid save target ID." };
   }
-  if (rawOverrides == null) return { href: null, error: "Make an edit before saving." };
+  if (pendingEditCount(rawOverrides) === 0) return { ok: false, error: "No unsaved edits." };
   try {
-    validateBakeInput(scene, rawOverrides, { maxOverrideBytes: SAVE_OVERRIDE_MAX_BYTES });
-    const json = JSON.stringify(rawOverrides);
-    const bytes = new TextEncoder().encode(json);
-    const href = saveLaunchHref(scene, "raw", bytes);
-    const common = { key: json, rawHrefLength: href.length, limit: SAVE_LAUNCH_MAX_CHARS, confirmationRequired: true };
-    if (href.length <= SAVE_LAUNCH_MAX_CHARS) {
-      return { ...common, href, error: null, format: "raw", needsCompression: false };
-    }
-    if (preparedLaunch && preparedLaunch.key === json) return preparedLaunch;
-    return { ...common, href: null, error: SAVE_COMPRESSION_RETRY, format: null, needsCompression: true };
+    const { summary } = bakeScene(scene, rawOverrides, { maxOverrideBytes: SAVE_OVERRIDE_MAX_BYTES });
+    return { ok: true, summary, json: JSON.stringify(rawOverrides) };
   } catch (error) {
-    if (error && error.code === "STALE_BASE") return { href: null, error: "These edits are stale. Clear them, reload the Dive, and edit again." };
-    if (error && error.code === "PAYLOAD_TOO_LARGE") return { href: null, error: "These edits exceed the 64 KB Save limit. Use Copy JSON for a manual bake-back." };
-    return { href: null, error: `These edits cannot be saved: ${String((error && error.message) || "invalid override data").slice(0, 180)}` };
+    if (error && error.code === "STALE_BASE") return { ok: false, error: "These edits are stale. Clear them, reload the Dive, and edit again." };
+    if (error && error.code === "PAYLOAD_TOO_LARGE") return { ok: false, error: "These edits exceed the 64 KB Save limit. Use Copy JSON for a manual bake-back." };
+    return { ok: false, error: `These edits cannot be saved: ${String((error && error.message) || "invalid override data").slice(0, 180)}` };
   }
 }
 
-function compressionFormatSupported(format, CompressionStreamImpl = globalThis.CompressionStream) {
-  if (typeof CompressionStreamImpl !== "function") return false;
-  try {
-    new CompressionStreamImpl(format);
-    return true;
-  } catch {
-    return false;
-  }
-}
+// The save Flight's exit codes (flight/save_deck.py).
+const SAVE_FLIGHT_EXIT_MESSAGES = {
+  2: "The save request was malformed.",
+  3: "Someone saved this Dive after you started editing. Copy JSON to keep your edits, then reload.",
+  4: "The save Flight rejected these edits.",
+  5: "These edits are too large to save.",
+  6: "The save Flight is not allowed to write this Dive.",
+};
 
-async function compressSaveBytes(bytes, format, CompressionStreamImpl = globalThis.CompressionStream) {
-  const stream = new CompressionStreamImpl(format);
-  const writer = stream.writable.getWriter();
-  const reader = stream.readable.getReader();
-  const chunks = [];
-  let length = 0;
-  const reading = (async () => {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      length += value.length;
-    }
-  })();
-  await writer.write(bytes);
-  await writer.close();
-  await reading;
-  const compressed = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    compressed.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return compressed;
-}
-
-async function prepareCompressedSaveLaunch(scene, rawOverrides, CompressionStreamImpl = globalThis.CompressionStream) {
-  const raw = buildSaveLaunch(scene, rawOverrides);
-  if (!raw.needsCompression) return raw;
-  if (!compressionFormatSupported("deflate-raw", CompressionStreamImpl)) {
-    return { ...raw, error: saveLaunchTooLarge(raw.rawHrefLength), ready: true };
-  }
-  try {
-    const bytes = new TextEncoder().encode(raw.key);
-    const compressed = await compressSaveBytes(bytes, "deflate-raw", CompressionStreamImpl);
-    const href = saveLaunchHref(scene, "dfl", compressed);
-    if (href.length > SAVE_LAUNCH_MAX_CHARS) {
-      return { ...raw, href: null, error: saveLaunchTooLarge(href.length), compressedHrefLength: href.length, ready: true };
-    }
-    return {
-      ...raw,
-      href,
-      error: null,
-      format: "dfl",
-      needsCompression: true,
-      compressedBytes: compressed.length,
-      compressedHrefLength: href.length,
-      ready: true,
-    };
-  } catch {
-    // A format can construct yet still fail while streaming. The safe downgrade is the
-    // already-built uncompressed candidate, which remains subject to the same URL guard.
-    return { ...raw, href: null, error: saveLaunchTooLarge(raw.rawHrefLength), ready: true };
-  }
-}
-
-function resolveSaveClick(scene, rawOverrides, preparedLaunch) {
-  const launch = buildSaveLaunch(scene, rawOverrides, preparedLaunch);
-  return launch.href
-    ? { preventDefault: false, href: launch.href, message: null, launch }
-    : { preventDefault: true, href: null, message: launch.error || "These edits cannot be saved.", launch };
+function flightSaveFailure(status, exitCode) {
+  if (status === "CANCELLED") return "The save was cancelled. Your edits are still here.";
+  return `${SAVE_FLIGHT_EXIT_MESSAGES[exitCode] || `The save Flight failed${exitCode != null ? ` (exit ${exitCode})` : ""}.`} Your edits are still here.`;
 }
 
 // ── Align / distribute (pure) ───────────────────────────────────────────────
@@ -2536,21 +2460,27 @@ function IconBtn({ icon: Icon, title, onClick, active, disabled, danger, label }
   );
 }
 
-function SaveAnchor({ href, onClick }) {
+// Save is deliberately LOUD and deliberately two-step: it shows how many edits are batched, and a
+// click opens a confirmation (SaveDialog) rather than writing — a save rewrites the Dive and reloads.
+function SaveButton({ count, busy, onClick }) {
   const [hover, setHover] = useState(false);
+  const live = count > 0 && !busy;
   return (
-    <a href={href || "#"} target="_blank" rel="noopener noreferrer" title="Save edits to this Dive"
-      onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+    <button onClick={onClick} disabled={!live} title={busy ? "Saving…" : count ? `Save ${count} batched edit${count === 1 ? "" : "s"} to this Dive` : "No unsaved edits"}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{
-        display: "flex", alignItems: "center", gap: 5, padding: "5px 9px",
-        background: hover ? T.hover : "transparent", border: "none", borderRadius: 6,
-        cursor: "pointer", color: T.accent, fontSize: 11.5, fontWeight: 600,
-        fontFamily: T.font, textDecoration: "none", whiteSpace: "nowrap",
+        display: "flex", alignItems: "center", gap: 6, padding: "5px 10px",
+        background: live ? (hover ? "#4aa8e6" : T.accent) : T.inputBg, border: "none", borderRadius: 6,
+        cursor: live ? "pointer" : "default", color: live ? "#ffffff" : T.textFaint,
+        fontSize: 11.5, fontWeight: 600, fontFamily: T.font, whiteSpace: "nowrap",
         transition: `background ${T.ease}, color ${T.ease}`,
       }}>
       <Save size={14} strokeWidth={1.75} />
-      Save
-    </a>
+      {busy ? "Saving…" : "Save"}
+      {count > 0 && !busy ? (
+        <span style={{ background: "rgba(255,255,255,0.22)", borderRadius: 999, padding: "0 6px", fontSize: 10.5, fontVariantNumeric: "tabular-nums" }}>{count}</span>
+      ) : null}
+    </button>
   );
 }
 
@@ -3004,7 +2934,7 @@ function ShapeMenu({ onPick }) {
   );
 }
 
-function TopBar({ onAdd, onUndo, onRedo, canUndo, canRedo, bytes, onSave, saveHref, onCopy, onReset, stale, onClearStale, tool, onToolChange }) {
+function TopBar({ onAdd, onUndo, onRedo, canUndo, canRedo, bytes, onSave, saveCount, saveBusy, onCopy, onReset, stale, onClearStale, tool, onToolChange }) {
   const [resetArmed, setResetArmed] = useState(false);
   useEffect(() => {
     if (!resetArmed) return;
@@ -3044,11 +2974,12 @@ function TopBar({ onAdd, onUndo, onRedo, canUndo, canRedo, bytes, onSave, saveHr
       <div style={{ flex: 1 }} />
       <ByteMeter bytes={bytes} />
       {divider}
-      <SaveAnchor href={saveHref} onClick={onSave} />
       <IconBtn icon={Copy} label="Copy JSON" title="Copy overrides JSON (for bake-back)" onClick={onCopy} />
       <IconBtn icon={RotateCcw} label={resetArmed ? "Really reset?" : "Reset edits"} danger={resetArmed}
         title="Discard all overrides and return to the saved scene"
         onClick={() => { if (resetArmed) { setResetArmed(false); onReset(); } else setResetArmed(true); }} />
+      {divider}
+      <SaveButton count={saveCount} busy={saveBusy} onClick={onSave} />
     </div>
   );
 }
@@ -4150,6 +4081,71 @@ function Toast({ text }) {
   );
 }
 
+// The Save confirmation and its outcome. One dialog, four phases, so the author sees the whole
+// lifecycle of the run they asked for: confirm -> saving -> saved | failed.
+function SaveDialog({ phase, count, summary, runStatus, message, onConfirm, onCancel, onReload }) {
+  const btn = (primary) => ({
+    border: "none", borderRadius: 6, padding: "7px 14px", fontSize: 12.5, fontWeight: 600, fontFamily: T.font,
+    cursor: "pointer", background: primary ? T.accent : T.inputBg, color: primary ? "#fff" : T.textHi,
+  });
+  const line = (label, n) => (n ? <div style={{ display: "flex", justifyContent: "space-between" }}><span>{label}</span><span style={{ fontVariantNumeric: "tabular-nums" }}>{n}</span></div> : null);
+  const s = summary || {};
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 2100, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={phase === "confirm" || phase === "failed" ? onCancel : undefined}>
+      <div onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Save edits"
+        style={{ width: 400, maxWidth: "90vw", background: T.panelBg, borderRadius: 10, boxShadow: T.panelShadow, padding: 20, color: T.textHi, fontFamily: T.font }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 650, marginBottom: 10 }}>
+          {phase === "failed" ? <AlertTriangle size={16} color={T.danger} /> : phase === "saved" ? <Check size={16} color="#3ecf8e" /> : <Save size={16} color={T.accent} />}
+          {phase === "confirm" ? `Save ${count} edit${count === 1 ? "" : "s"}?` : phase === "saving" ? "Saving…" : phase === "saved" ? "Saved" : "Save failed"}
+        </div>
+        {phase === "confirm" ? (
+          <>
+            <div style={{ fontSize: 12.5, color: T.textMut, lineHeight: 1.5, marginBottom: 12 }}>
+              This writes version {s.newVersion} of the Dive for everyone who opens it, then reloads the Dive.
+            </div>
+            <div style={{ fontSize: 12.5, color: T.textHi, background: T.inputBg, borderRadius: 6, padding: "8px 10px", display: "grid", gap: 3, marginBottom: 16 }}>
+              {line("Elements changed", s.patched)}
+              {line("Elements added", s.added)}
+              {line("Elements deleted", s.deleted)}
+              {line("Slides added", s.slidesAdded)}
+              {line("Slides deleted", s.slidesDeleted)}
+              {!s.patched && !s.added && !s.deleted && !s.slidesAdded && !s.slidesDeleted ? <span>Slide settings and order</span> : null}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button style={btn(false)} onClick={onCancel}>Keep editing</button>
+              <button style={btn(true)} onClick={onConfirm} autoFocus>Save and reload</button>
+            </div>
+          </>
+        ) : null}
+        {phase === "saving" ? (
+          <div style={{ fontSize: 12.5, color: T.textMut, lineHeight: 1.5 }}>
+            The save Flight is {runStatus === "RUNNING" ? "baking your edits into the Dive" : "starting"}. Keep this tab open.
+          </div>
+        ) : null}
+        {phase === "saved" ? (
+          <>
+            <div style={{ fontSize: 12.5, color: T.textMut, lineHeight: 1.5, marginBottom: 16 }}>
+              Version {s.newVersion} is live. Reload to keep editing on top of it.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button style={btn(true)} onClick={onReload} autoFocus>Reload</button>
+            </div>
+          </>
+        ) : null}
+        {phase === "failed" ? (
+          <>
+            <div style={{ fontSize: 12.5, color: T.textMut, lineHeight: 1.5, marginBottom: 16 }}>{message}</div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button style={btn(false)} onClick={onCancel} autoFocus>Close</button>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function CopyModal({ text, onClose }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2100, display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -4172,7 +4168,7 @@ function CopyModal({ text, onClose }) {
 // Keep the platform hook, normalization, runtime merge, setter, and latest-value accessor in
 // this one section. Save reads getOverrides(), never the parent URL or its possible state ref.
 // The setter updates the ref synchronously so an input blur immediately followed by Save cannot
-// launch with the previous bag while React is still scheduling the next render.
+// send the previous bag while React is still scheduling the next render.
 // ═══════════════════════════════════════════════════════════════════════════
 function useEditableDiveOverrides() {
   const [platformOverrides, setPlatformOverrides] = useDiveState("ov", null);
@@ -4299,39 +4295,45 @@ export default function EditableDive() {
     const t = setTimeout(() => setToast(null), 3200);
     return () => clearTimeout(t);
   }, [toast]);
-  const saveOverrides = getOverrides();
-  const rawSaveLaunch = buildSaveLaunch(SCENE, saveOverrides);
-  const [preparedSaveLaunch, setPreparedSaveLaunch] = useState(null);
-  const saveLaunch = buildSaveLaunch(SCENE, saveOverrides, preparedSaveLaunch);
+  // ── Save (Flight) ───────────────────────────────────────────────────────
+  // Edits batch in the bag; nothing is written until Save -> confirm. Confirm sends the whole bag
+  // to the save Flight in ONE run. On success the bag is cleared at once (it is stale against the
+  // version just written) and the dialog stays up until the author reloads onto that version.
+  const saveCount = pendingEditCount(ovRaw);
+  const [saveUI, setSaveUI] = useState(null); // { phase, summary, message }
+  const startSaveRun = useRunFlight(SAVE_FLIGHT_ID);
+  const saveRun = useFlightRun(SAVE_FLIGHT_ID, startSaveRun.data?.runNumber, {
+    onFinished: (run) => {
+      if (run.status === "SUCCEEDED") {
+        setOvRaw(null);
+        setSaveUI((ui) => ({ ...(ui || {}), phase: "saved" }));
+      } else {
+        setSaveUI((ui) => ({ ...(ui || {}), phase: "failed", message: flightSaveFailure(run.status, run.exitCode) }));
+      }
+    },
+  });
+  const saveBusy = !!saveUI && saveUI.phase === "saving";
   useEffect(() => {
-    if (!rawSaveLaunch.needsCompression) {
-      setPreparedSaveLaunch(null);
-      return undefined;
-    }
-    let cancelled = false;
-    const snapshot = saveOverrides;
-    const timer = setTimeout(() => {
-      prepareCompressedSaveLaunch(SCENE, snapshot).then((prepared) => {
-        if (!cancelled) setPreparedSaveLaunch(prepared);
-      });
-    }, SAVE_COMPRESSION_DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [rawSaveLaunch.key]);
-  const requestSave = useCallback((event) => {
-    const decision = resolveSaveClick(SCENE, getOverrides(), preparedSaveLaunch);
-    if (decision.preventDefault) {
-      event.preventDefault();
-      showToast(decision.message);
-      return;
-    }
-    // Keep href current for a blur-then-click edge case. In production MotherDuck mediates this
-    // anchor navigation and provides no acknowledgement back to the Dive.
-    event.currentTarget.href = decision.href;
-    showToast("Save tab requested — authorize MotherDuck, then review the target and edit counts before confirming the write.");
-  }, [getOverrides, preparedSaveLaunch, showToast]);
+    if (!saveBusy) return;
+    const err = startSaveRun.error || saveRun.error;
+    if (!err) return;
+    const denied = /permission|access|own|forbidden|403/i.test(String(err.message || ""));
+    setSaveUI((ui) => ({ ...ui, phase: "failed", message: denied
+      ? "You don't have access to run this Dive's save Flight. Ask the Dive's owner, or use Copy JSON."
+      : `Could not ${startSaveRun.error ? "start" : "follow"} the save: ${String(err.message || err).slice(0, 160)}` }));
+  }, [saveBusy, startSaveRun.error, saveRun.error]);
+  const requestSave = useCallback(() => {
+    const check = checkFlightSave(SCENE, getOverrides(), SAVE_FLIGHT_ID);
+    if (!check.ok) { showToast(check.error); return; }
+    setSaveUI({ phase: "confirm", summary: check.summary, count: pendingEditCount(getOverrides()) });
+  }, [getOverrides, showToast]);
+  const confirmSave = useCallback(() => {
+    // Re-checked at the moment of commitment: the bag the author confirms is the one that is sent.
+    const check = checkFlightSave(SCENE, getOverrides(), SAVE_FLIGHT_ID);
+    if (!check.ok) { setSaveUI({ phase: "failed", message: check.error }); return; }
+    setSaveUI((ui) => ({ ...ui, phase: "saving", summary: check.summary }));
+    startSaveRun.run({ DIVE_ID: SCENE.diveId, BASE_VERSION: String(SCENE.version), OVERRIDES: check.json });
+  }, [getOverrides, startSaveRun]);
 
   // Drop selection entries that no longer exist (deleted / stale-cleared).
   useEffect(() => {
@@ -5724,7 +5726,7 @@ export default function EditableDive() {
       <TopBar
         onAdd={addElement} onUndo={undo} onRedo={redo}
         canUndo={undoStack.current.length > 0} canRedo={redoStack.current.length > 0}
-        bytes={ovRaw == null ? 0 : byteLen(ov)} onSave={requestSave} saveHref={saveLaunch.href}
+        bytes={ovRaw == null ? 0 : byteLen(ov)} onSave={requestSave} saveCount={saveCount} saveBusy={saveBusy}
         onCopy={copyOverrides} onReset={resetAll}
         stale={merged.stale} onClearStale={resetAll}
         tool={tool} onToolChange={setTool} />
@@ -5769,6 +5771,12 @@ export default function EditableDive() {
       </div>
       {cluster}
       {toast ? <Toast text={toast} /> : null}
+      {saveUI ? (
+        <SaveDialog phase={saveUI.phase} count={saveUI.count || saveCount} summary={saveUI.summary}
+          runStatus={saveRun.status} message={saveUI.message}
+          onConfirm={confirmSave} onCancel={() => setSaveUI(null)}
+          onReload={() => window.location.reload()} />
+      ) : null}
       {copyModal ? <CopyModal text={copyModal} onClose={() => setCopyModal(null)} /> : null}
     </div>
   );
@@ -5788,8 +5796,7 @@ export const __TESTABLES__ = {
   // about THIS template — that a `slide` or a `build` key cannot reach a v1 Figma-style dive — so the
   // suite has to be able to ask this template about it directly.
   EDITABLE_DIVE_DECK_ONLY_COMMON_KEYS, EDITABLE_DIVE_LEAF_ONLY_KEYS, EDITABLE_DIVE_MAX_BUILD,
-  encodeBase64UrlBytes, encodeBase64UrlJson, buildSaveLaunch,
-  compressionFormatSupported, compressSaveBytes, prepareCompressedSaveLaunch, resolveSaveClick,
+  pendingEditCount, checkFlightSave, flightSaveFailure,
   rootDeltaEntries, alignEntries, distributeEntries,
   groupBlockOrder, resizeRect, snapCandidates, snapAxis, snapRect,
   normCrop, roundCrop, clamp01, clampZoom, roundZoom, clampPaneWidth, clampPaneWidths,

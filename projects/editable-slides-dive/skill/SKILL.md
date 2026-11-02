@@ -7,7 +7,7 @@ description: Create a MotherDuck Dive with a built-in visual editor — either a
 
 An editable dive is a single JSX dive built from one of this skill's two templates. Both render a
 declarative `SCENE` (pure JSON baked into the source) and share one merge/bake core, one override
-bag and one Save service.
+bag and one save Flight.
 
 | | `template.jsx` — **canvas** | `template-slides.jsx` — **deck** |
 |---|---|---|
@@ -27,32 +27,33 @@ clean **published page** (scaled to 100% of the screen width); a floating **Edit
 (bottom-right, shown in the off position) opens the **editor** — left layers tree, center
 canvas, right inspector — where the same toggle, now on, sits in the toolbar to switch back. Edits (move, resize, z-order,
 text, colors, chart SQL, full chart reconfiguration) are stored as sparse overrides in
-`useDiveState("ov")`. A Save-enabled scene carries its own `diveId`; the editor's **Save** link
-hands the in-memory override bag to the trusted Save service in a URL fragment, then MotherDuck
-OAuth performs the server-side bake-back. **Copy JSON** remains the manual fallback.
+`useDiveState("ov")`, and nothing is written until the author saves (see "Saving" below).
 
 In a **deck** there are exactly TWO surfaces and no third: the published view IS present mode, and
 Esc (or the top-left **Exit Presentation** control) lands in the **editor**, seated on the slide that
 was on screen. The editor's own **Present** button goes back, from the slide being edited. There is
-no floating Edit toggle on a deck, because there is no third surface to toggle to. The override bag
-and Copy JSON are identical to the canvas, but **a deck saves through a MotherDuck Flight**, not the
-Save service: edits batch in the bag, the top bar's Save button (pinned right, with a count of batched
-edits) opens a confirmation, and confirming runs the save Flight (`flight/save_deck.py`) via
-`useRunFlight` with the whole bag. The Flight bakes it with the merge core inlined in the live source,
-writes a new Dive version, and MotherDuck reloads the Dive onto it. Saving needs ownership of, or a
-`RUN` grant on, that Flight; anyone else can edit locally and use Copy JSON. See "Deck Save Flight" in
-Workflow A-DECK.
+no floating Edit toggle on a deck, because there is no third surface to toggle to. The override bag,
+Save and Copy JSON are identical to the canvas.
+
+**Saving (both templates).** An editable dive saves through a MotherDuck Flight. A scene that can
+save carries its own `SCENE.diveId`, and the `SAVE_FLIGHT_ID` sentinel names the save Flight. Edits
+batch in the bag; the top bar's Save button (pinned right, with a count of batched edits) opens a
+confirmation, and confirming runs the save Flight (`flight/save_deck.py`) via `useRunFlight` with the
+whole bag. The Flight bakes it with the merge core inlined in the live source, writes a new Dive
+version, and the Dive reloads onto it. Saving needs ownership of, or a `RUN` grant on, that Flight;
+anyone else can edit locally and use **Copy JSON**, the manual fallback. See "Save Flight" in
+Workflow A step 6.
 
 Files in this skill:
 - `template.jsx` — the complete **canvas** editor framework (`v: 1`). **Copy it verbatim and patch
-  ONLY the two sentinel regions** (`REQUIRED_DATABASES` between `__DBS_START__/__DBS_END__`, and
-  the scene between `__SCENE_START__/__SCENE_END__`). Never re-author or reformat the framework.
+  ONLY the three sentinel regions** (`REQUIRED_DATABASES` between `__DBS_START__/__DBS_END__`,
+  `SAVE_FLIGHT_ID` between `__SAVE_FLIGHT_START__/__SAVE_FLIGHT_END__`, and the scene between
+  `__SCENE_START__/__SCENE_END__`). Never re-author or reformat the framework.
 - `template-slides.jsx` — the complete **deck** editor framework (`v: 2`): the same framework plus
-  slides, a filmstrip, layouts, notes, build steps, `sqltable`, present mode and Flight-based Save.
-  THREE sentinels — the two above plus `SAVE_FLIGHT_ID` between
-  `__SAVE_FLIGHT_START__/__SAVE_FLIGHT_END__` — same rule: patch those regions and nothing else.
-- `flight/save_deck.py`, `flight/requirements.txt` — the deck save Flight (one per owner, shared by
-  all of that owner's decks; see "Deck Save Flight").
+  slides, a filmstrip, layouts, notes, build steps, `sqltable` and present mode. The same three
+  sentinels, same rule: patch those regions and nothing else.
+- `flight/save_deck.py`, `flight/requirements.txt` — the save Flight for both templates (one per
+  owner, shared by all of that owner's canvas and deck dives; see "Save Flight").
 - `reference.md` — normative `v: 1` scene/overrides schema, per-type element props (including
   `sqltable`), chart config, design rules, and the annotation pattern. Read it before authoring
   any scene.
@@ -61,8 +62,8 @@ Files in this skill:
   mode's behaviour, and the layouts' own design conventions. Read it *with* `reference.md` before
   authoring a deck.
 - `merge-core.mjs` — dependency-free runtime merge plus strict server bake, for **both** schemas.
-  It is the canonical source for the generated region in both templates and for the Save service;
-  do not copy-edit any output.
+  It is the canonical source for the generated region in both templates, and so for the copy inlined
+  in every assembled dive, which is what the save Flight bakes with; do not copy-edit any output.
 - `scripts/sync-merge-core.mjs` — regenerate/check the inline copy in both templates after core
   changes.
 - `scripts/check-deck.mjs` — author-side checker for a deck scene: validates it, proves `bakeScene`
@@ -125,8 +126,9 @@ Files in this skill:
    "Authoring rules for groups" in `reference.md`.
 
 4. **Assemble the dive file.** Copy `template.jsx`; replace the scene between the
-   `__SCENE_START__`/`__SCENE_END__` sentinels with `const SCENE = <your JSON>;` and set
-   `REQUIRED_DATABASES` between `__DBS_START__`/`__DBS_END__`, e.g.:
+   `__SCENE_START__`/`__SCENE_END__` sentinels with `const SCENE = <your JSON>;`, set
+   `SAVE_FLIGHT_ID` between `__SAVE_FLIGHT_START__`/`__SAVE_FLIGHT_END__` (leave it `""` until the
+   save Flight exists; see step 6), and set `REQUIRED_DATABASES` between `__DBS_START__`/`__DBS_END__`, e.g.:
    ```jsx
    export const REQUIRED_DATABASES = [
      { type: "share", path: "md:_share/sample_data/<uuid>", alias: "sample_data" },
@@ -152,12 +154,30 @@ Files in this skill:
    (Same parameter on `MD_UPDATE_DIVE_CONTENT`.) Verify afterwards that
    `version_required_resources` in the result is not `[]`.
 
-   To enable the in-editor Save link, put the returned canonical UUID in top-level
-   `SCENE.diveId`, reassemble, and update the new Dive once with the complete fetched
-   `version_required_resources`. The public Save service accepts any syntactically valid Dive UUID
-   as routing data, then uses the caller's short-lived credential to fetch the Dive, require its
-   derived organization in the configured org set, and require fetched `owner_id` to equal the
-   credential `userId`. A UUID in source is routing data, not authorization.
+   To enable Save, put the returned canonical UUID in top-level `SCENE.diveId` and the save
+   Flight's id in `SAVE_FLIGHT_ID`, add the Dive's id to the Flight's `ALLOWED_DIVE_IDS`, reassemble,
+   and update the new Dive once with the complete fetched `version_required_resources`. A UUID in
+   source is routing data, not authorization: every run writes with the Flight OWNER's token, so the
+   Flight's `ALLOWED_DIVE_IDS` (in its source, not its run config) bounds which Dives a run can write,
+   and only the owner and users with `RUN` on the Flight can start one.
+
+   **Save Flight.** Saves run a Flight the dive's owner owns, so set it up once per owner and reuse it
+   for every canvas and deck dive (look for an existing `editable-deck-save` with `MD_LIST_FLIGHTS()`
+   first). The same Flight handles both schemas: it bakes with the merge core inlined in the live Dive
+   source, and that core validates `v: 1` and `v: 2` scenes alike.
+   - Load the MCP `get_flight_guide` and `get_dive_guide` ("Changing data from a Dive") first.
+   - Edit `flight/save_deck.py`: `MOTHERDUCK_HOST` is the deployment (staging or production), and
+     `ALLOWED_DIVE_IDS` lists the dives it may write. Both live in source on purpose: a run's config
+     is chosen by whoever starts it, and every run writes with the OWNER's token.
+   - Create it once with config keys `DIVE_ID`, `BASE_VERSION`, `OVERRIDES` (all `''`) — a run can
+     only pass keys the Flight already has — then `max_runtime_sec` ≈ 180. It logs every run to
+     `editable_deck_saves.main.save_log` (create that database and table first; see the Flight).
+   - Per dive: add the dive's id to `ALLOWED_DIVE_IDS`, push the Flight source
+     (`MD_UPDATE_FLIGHT(..., source_code := …)`), and assemble the dive with `SAVE_FLIGHT_ID`.
+   - Exit codes the dialog explains: 2 malformed request, 3 stale (someone saved first), 4 bake
+     rejected, 5 too large, 6 Dive not allowed. A save takes ~15–20 s, most of it package install.
+   - For other people to save, recommend `GRANT RUN ON FLIGHT '<id>' TO …` and grant only on the
+     user's confirmation.
 
 7. **Verify.** (`view_dive` returns the full source and can overflow tool-output limits —
    don't rely on it for confirmation.)
@@ -181,25 +201,25 @@ Files in this skill:
   reconstruct it; failed drafts never enter the bag, while successful Run/blur edits do.
 - `REQUIRED_DATABASES` alias matches the SQL database names; share paths from `list_databases`.
 - Element ids unique; `z` values unique across leaves (gaps of 10); text elements use `h: "auto"`.
-- Save-enabled scenes have a canonical UUID in top-level `SCENE.diveId`.
+- Save-enabled scenes have a canonical UUID in top-level `SCENE.diveId`, `SAVE_FLIGHT_ID` names the
+  save Flight, and that Flight's `ALLOWED_DIVE_IDS` includes this Dive.
 - Hierarchy: every `parent` references an existing group element, no parent cycles, no empty
   groups, and each group's descendant leaves are contiguous in the global `z` order.
-- File under 896 KB. That is the Save service's `MAX_SOURCE_BYTES` (1 MB, checked on both the
+- File under 896 KB. That is the save Flight's `MAX_SOURCE_BYTES` (1 MB, checked on both the
   fetched source and the baked output) minus 128 KB of headroom for the growth baking adds.
   `assemble.js` warns from 768 KB so the growth is visible before it is fatal. The 128 KB is a
   **documented allowance for the ordinary case, not a bound**: scene serialization rewrites `<`,
   `>` and `&` as six-character `\uXXXX` escapes, so a legal 64 KB bag of `<` inflates sixfold and
-  can cross the ceiling from under the band. That save fails closed (`SOURCE_TOO_LARGE`, no write
+  can cross the ceiling from under the band. That save fails closed (Flight exit 5, no write
   attempted); nothing is corrupted and the author loses that one bag.
-- The Save service **refuses to write an element type the fetched source cannot render**
-  (`DIVE_SOURCE_OUTDATED`, HTTP 409, no write attempted). A Dive assembled before `sqltable`
-  existed therefore cannot be saved with one in it — re-assemble it from the current template
-  first. `https://save-editable-dive.vercel.app/api/health` reports the service's
-  `patch_key_allowlist` fingerprint (`patchKeyAllowlistFingerprint()`, currently **`7916132d`**),
-  which is the stale-deploy signal: it covers **every** type's patchable key set in
-  `merge-core.mjs`, deck-only types and keys included, so it moves whenever either template's
-  schema does and must match the local core. Do not confuse it with the same endpoint's
-  `organization_allowlist.fingerprint`, which is about the org allowlist and nothing else.
+- The save Flight bakes with the core **inlined in the live Dive**, so it refuses an element type or
+  key that Dive's own core does not know (exit 4, no write attempted). A Dive assembled before
+  `sqltable` existed therefore cannot be saved with one in it — re-assemble it from the current
+  template first. `EDITABLE_DIVE_CORE_FINGERPRINT` in the source (from
+  `patchKeyAllowlistFingerprint()`, currently **`7916132d`**) names which core a Dive carries: it
+  covers **every** type's patchable key set in `merge-core.mjs`, deck-only types and keys included,
+  so it moves whenever either template's schema does. A Dive whose fingerprint differs from the
+  current template's was assembled from an older core.
 
 ## Workflow A-DECK — Create a SLIDES DECK dive (`v: 2`)
 
@@ -288,21 +308,8 @@ it is the schema, and the steps below assume it. Crib coordinates from
    cd slides && DECK=my-deck.json ./push.sh
    ```
 
-   **Deck Save Flight.** Saves run a Flight the deck's owner owns, so set it up once per owner and
-   reuse it for every deck (look for an existing `editable-deck-save` with `MD_LIST_FLIGHTS()` first):
-   - Load the MCP `get_flight_guide` and `get_dive_guide` ("Changing data from a Dive") first.
-   - Edit `flight/save_deck.py`: `MOTHERDUCK_HOST` is the deployment (staging or production), and
-     `ALLOWED_DIVE_IDS` lists the decks it may write. Both live in source on purpose: a run's config
-     is chosen by whoever starts it, and every run writes with the OWNER's token.
-   - Create it once with config keys `DIVE_ID`, `BASE_VERSION`, `OVERRIDES` (all `''`) — a run can
-     only pass keys the Flight already has — then `max_runtime_sec` ≈ 180. It logs every run to
-     `editable_deck_saves.main.save_log` (create that database and table first; see the Flight).
-   - Per deck: add the deck's id to `ALLOWED_DIVE_IDS`, push the Flight source
-     (`MD_UPDATE_FLIGHT(..., source_code := …)`), and assemble the deck with `SAVE_FLIGHT_ID`.
-   - Exit codes the dialog explains: 3 stale (someone saved first), 4 bake rejected, 5 too large,
-     6 Dive not allowed. A save takes ~15–20 s, most of it package install.
-   - For other people to save, recommend `GRANT RUN ON FLIGHT '<id>' TO …` and grant only on the
-     user's confirmation.
+   **Save Flight.** The deck uses the same save Flight as the canvas (Workflow A step 6): add the
+   deck's id to `ALLOWED_DIVE_IDS`, push the Flight source, and assemble with `SAVE_FLIGHT_ID`.
    Worked example: `flight/save_deck.py`.
 
 7. **Verify in BOTH tiers. Neither alone is enough** — and this is not optional ceremony, it is
@@ -372,22 +379,19 @@ All of Workflow A's checklist still applies, with these changes and additions:
 
 ## Workflow B — Save or manually bake back browser edits
 
-**Decks** save through their Flight (above). What follows is the canvas (`v: 1`) Save service, and
-the manual bake-back that works for both.
+Both templates save through the save Flight (Workflow A step 6). What follows is the in-editor
+Save, and the manual bake-back that works for both.
 
-Preferred: click **Save** in edit mode, confirm MotherDuck's external-navigation dialog, complete
-the MCP OAuth consent screen, review the confirmation page's target Dive and patched/added/deleted
-counts, then click **Confirm and save**. The confirmation is a same-origin POST bound to the
-encrypted session's CSRF token; the fragment only routes the handoff and is never treated as proof
-of intent. `SCENE.version` is the replay nonce because every successful bake advances it. After the
-verified result, use its link back. The link reads the
-complete in-memory `useDiveState("ov")` value even when the parent URL contains a state reference.
-It refuses stale, malformed, >64 KB, or >32,768-character launch payloads. Bags whose raw
-base64url link fits take a fully synchronous path. Larger bags are prepared in the background with
-`deflate-raw`; if the click's own blur changes the bag before that candidate is current, Save stops
-and asks for one more click instead of launching stale edits. In practical terms the 64 KB handoff
-cap now supports about **1,000 ordinary element position/size edits**. The Dive can request a new
-tab but cannot learn whether the MotherDuck parent actually opened it.
+Preferred: click **Save** in edit mode (the button shows how many edits are batched), check the
+confirmation's new version number and changed/added/deleted counts, then click **Save and reload**.
+The Dive dry-runs the bake first, so a stale, malformed or over-64 KB bag is refused before any run
+starts. Confirming runs the Flight once with `DIVE_ID`, `BASE_VERSION` and `OVERRIDES`. The Flight
+refuses a stale `BASE_VERSION` (exit 3: someone saved first), re-bakes with the live Dive's own core,
+writes the new version with the Dive's existing required resources, and verifies a re-read.
+`SCENE.version` is the replay guard because every successful bake advances it. On success the bag
+is cleared and the dialog offers Reload onto the new version; on failure the edits stay in the bag
+and the dialog says why. The 64 KB bag cap supports about **1,000 ordinary element position/size
+edits**.
 
 Manual fallback input: the dive id plus overrides — preferably the JSON from **Copy JSON**;
 alternatively a shared URL with an inline `#state=` bag.

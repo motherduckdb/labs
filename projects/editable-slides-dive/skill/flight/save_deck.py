@@ -1,22 +1,22 @@
-"""Save Flight for editable slide-deck Dives.
+"""Save Flight for editable Dives: canvas (template.jsx, `v: 1`) and deck (template-slides.jsx, `v: 2`).
 
-The deck Dive batches every edit into one override bag (useDiveState("ov")). Its Save button runs
+The Dive batches every edit into one override bag (useDiveState("ov")). Its Save button runs
 this Flight with that bag; the Flight bakes the bag into the Dive's SCENE and writes a new Dive
 version. Only the SCENE block between the sentinels changes — the framework code is never touched.
 
 The bake runs the merge core INLINED IN THE LIVE DIVE SOURCE (between __MERGE_CORE_START__ and
 __MERGE_CORE_END__), under Node. That is the same code the browser editor ran, so the bake here and
 the preview there cannot disagree, and a Dive assembled from an older template bakes with its own
-older core.
+older core. The core handles both scene schemas, so nothing here depends on which one the Dive uses.
 
 Config (all strings, all supplied by the Dive on each run — treat as untrusted):
-  DIVE_ID       UUID of the deck Dive to write
+  DIVE_ID       UUID of the Dive to write
   BASE_VERSION  SCENE.version the edits were made against (stale-save guard)
   OVERRIDES     the override bag, JSON
 
 Exit codes the Dive maps to messages:
   2 bad input · 3 stale (someone saved first) · 4 edits rejected by the bake
-  5 result too large · 6 Dive not allowed / not an editable deck · 1 anything else
+  5 result too large · 6 Dive not allowed / not an editable Dive · 1 anything else
 """
 
 # @flight
@@ -40,13 +40,13 @@ from nodejs_wheel import node
 
 # Deployment host. Hardcoded on purpose: config is caller-controlled, and a caller-chosen host
 # would receive the owner's token. Set this to the MotherDuck API host of the deployment the
-# decks live in (production: api.motherduck.com).
+# Dives live in (production: api.motherduck.com).
 MOTHERDUCK_HOST = "api.motherduck.com"
 
 # Dives this Flight may write. Anyone with RUN on this Flight writes with the OWNER's token, so the
-# list is what bounds a run grant. Empty = any editable deck the owner owns (fine while unshared).
+# list is what bounds a run grant. Empty = any editable Dive the owner owns (fine while unshared).
 ALLOWED_DIVE_IDS = {
-    # "<dive uuid>",  # <deck title>   (add one line per deck this Flight may write)
+    # "<dive uuid>",  # <dive title>   (add one line per Dive this Flight may write)
 }
 
 LOG_DB = "editable_deck_saves"
@@ -58,9 +58,8 @@ CORE_START = "// __MERGE_CORE_START__"
 CORE_END = "// __MERGE_CORE_END__"
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
-# Runs bakeScene from the Dive's own core and serializes the result exactly as the Vercel Save
-# service does (source.mjs serializeSceneLiteral): JSON, plus escapes so no string can become code
-# or a second sentinel.
+# Runs bakeScene from the Dive's own core and serializes the result as the SCENE literal: JSON, plus
+# escapes so no string can become code or a second sentinel.
 BAKE_DRIVER = r"""
 const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
 try {
