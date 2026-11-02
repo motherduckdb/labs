@@ -80,6 +80,79 @@ Both queries come straight from the local file: 14 snapshots, and `astronauts` 2
 rows, `mission_crew` 4 / 156, `missions` 2 / 68, `spacecraft` 1 / 32. Only a query that reads
 table data goes to the network.
 
+### With a DuckLake on MotherDuck: bring your own bucket
+
+> **Optional.** This part needs your own AWS account and an S3 bucket you can write to. If you
+> don't have one, skip it: the rest of the workshop doesn't depend on it.
+
+A fully managed DuckLake on MotherDuck keeps its Parquet files in MotherDuck's storage, and
+MotherDuck doesn't hand out credentials for it. A laptop can copy that catalog, but any query
+that reads table data fails with an S3 *"No credentials are provided"* error. Only metadata
+questions work.
+
+A [bring-your-own-bucket](https://motherduck.com/docs/integrations/file-formats/ducklake/)
+DuckLake fixes this. MotherDuck still hosts the catalog, but the data files go to an S3 bucket
+you control. Your laptop can then read them directly with your own cloud credentials.
+
+Use DuckDB's AWS **credential chain** for both sides, so no keys are pasted anywhere. It picks
+up whatever your AWS CLI is already logged in with: environment variables, a profile, or an
+SSO session. For an SSO profile, run `aws sso login --profile <profile>` first and add
+`CHAIN 'sso', PROFILE '<profile>'` to each secret below.
+
+1. In a MotherDuck session (`duckdb "md:"`), store an S3 secret in MotherDuck and create the
+   DuckLake in your bucket. MotherDuck uses this secret to write and read the data files.
+
+   ```sql
+   INSTALL aws; LOAD aws;
+   CREATE SECRET my_bucket IN MOTHERDUCK (
+       TYPE S3, PROVIDER credential_chain, REGION '<region>', SCOPE 's3://<bucket>'
+   );
+   CREATE DATABASE my_lake (TYPE DUCKLAKE, DATA_PATH 's3://<bucket>/<prefix>/');
+   ```
+
+   The credential chain is resolved on your machine when the secret is created, and MotherDuck
+   stores the resulting credentials. Temporary credentials, such as an SSO session's, expire,
+   so re-create the secret when they do.
+2. Copy the catalog to a local file. This needs the MotherDuck token, and takes about 2 s for a
+   1M-row table (a 4.5 MB file):
+
+   ```sql
+   ATTACH 'ducklake:md:__ducklake_metadata_my_lake' AS remote (READ_ONLY);
+   ATTACH 'data/my_lake_catalog.duckdb' AS cat;
+   COPY FROM DATABASE __ducklake_metadata_remote TO cat;
+   ```
+
+3. Query from the laptop with a local S3 secret from the same credential chain. This session
+   doesn't need MotherDuck at all:
+
+   ```sql
+   INSTALL aws; LOAD aws;
+   CREATE SECRET (TYPE S3, PROVIDER credential_chain, REGION '<region>');
+   ATTACH 'ducklake:data/my_lake_catalog.duckdb' AS lake (READ_ONLY);
+   FROM lake.snapshots();                                  -- from the local file
+   SELECT state, count(*) FROM lake.personas GROUP BY ALL; -- reads Parquet straight from S3
+   ```
+
+Measured with a 1M-row table (one 37 MB Parquet file), DuckDB 1.5.6, MotherDuck and the bucket
+both in `us-east-1`:
+
+| Query | Time |
+|---|---|
+| `count(*)`, snapshots, `DESCRIBE` (local catalog) | about 20 ms or less |
+| Group-by over all rows, laptop reading S3, first run | 0.9 s |
+| The same query again (DuckDB caches the remote file) | a few ms |
+| The same query on MotherDuck, next to the data | 0.14 s |
+
+- **Freshness:** the copied catalog is a snapshot. Rows added on MotherDuck later appear only
+  after you re-copy it. To always see the latest data, attach the live catalog with
+  `ATTACH 'ducklake:md:__ducklake_metadata_my_lake' AS live (READ_ONLY)` instead of copying
+  it. Each query then costs a round trip to MotherDuck for metadata (about 1.5 s for the
+  group-by above), with the data still read from S3 on the laptop.
+- **Access control stays with the bucket:** someone with a catalog copy but no S3 credentials
+  sees the metadata and nothing else.
+- **Good for:** agents that ask many schema and metadata questions, and want to run real
+  queries on the laptop without copying the data.
+
 ## 3. Local catalog and files
 
 Keep both the catalog and the Parquet files local: a DuckLake whose `DATA_PATH` is a folder on
