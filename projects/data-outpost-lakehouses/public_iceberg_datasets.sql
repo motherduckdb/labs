@@ -1,30 +1,62 @@
--- MotherDuck's public Iceberg datasets, queryable from DuckDB with NO credentials.
--- Tested 2026-10-30 with the DuckDB CLI 1.5.6 from uv (uv tool install duckdb-cli==1.5.6).
+-- Public Hugging Face datasets served as Iceberg tables by Faceberg REST catalogs,
+-- queryable from DuckDB with NO credentials (https://github.com/huggingface/faceberg).
+-- Tested 2026-11-02 with the DuckDB CLI 1.5.6 from uv (uv tool install duckdb-cli==1.5.6),
+-- iceberg extension 890b78a9c, httpfs 4bc690d.
 -- Run:  uvx --from duckdb-cli==1.5.6 duckdb -f public_iceberg_datasets.sql
+-- The catalogs are personal demo Spaces on free hardware. If a Space is asleep, the first
+-- request wakes it: curl -s https://kszucs-catalog.hf.space/v1/config
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 .timer on
 
--- Anonymous S3 access: a config secret with no keys, scoped to the bucket (sets the region).
-CREATE SECRET md_open (TYPE s3, PROVIDER config, REGION 'us-east-1', SCOPE 's3://us-prd-motherduck-open-datasets');
+-- Attach the catalog. AUTHORIZATION_TYPE 'none' because it is public (no token, no secret).
+ATTACH 'https://kszucs-catalog.hf.space' AS hf (
+    TYPE iceberg,
+    ENDPOINT 'https://kszucs-catalog.hf.space',
+    AUTHORIZATION_TYPE 'none'
+);
+
+-- One schema per Hugging Face org, one table per dataset (11 tables).
+SELECT schema, name FROM (SHOW ALL TABLES) ORDER BY ALL;
 
 ------------------------------------------------------------------------------
--- 1. MotherDuck open datasets: TPC-H lineitem (s3, anonymous)
+-- 1. nvidia.personas_brazil: 1M synthetic Brazilian personas (22 columns, values in Portuguese)
+--    The same table MotherDuck reads in section 8 and data/workshop.duckdb copies locally.
 ------------------------------------------------------------------------------
-SELECT l_returnflag, l_linestatus, count(*) AS n, round(sum(l_extendedprice), 2) AS revenue
-FROM iceberg_scan('s3://us-prd-motherduck-open-datasets/iceberg/lineitem_iceberg', allow_moved_paths = true)
+DESCRIBE hf.nvidia.personas_brazil;
+
+-- Where do the personas live? The five largest states (reads 2 of 22 columns).
+SELECT state, count(*) AS personas, round(avg(age), 1) AS avg_age
+FROM hf.nvidia.personas_brazil
+GROUP BY ALL ORDER BY personas DESC LIMIT 5;
+
+-- How does education vary with age?
+SELECT education_level, count(*) AS personas, round(avg(age), 1) AS avg_age
+FROM hf.nvidia.personas_brazil
+GROUP BY ALL ORDER BY avg_age;
+
+-- An agent-style question: three personas for user interviews (which 3 can vary).
+SELECT municipality, age, persona
+FROM hf.nvidia.personas_brazil
+WHERE state = 'Santa Catarina' AND sex = 'Feminino' AND age BETWEEN 25 AND 34
+  AND education_level = 'Superior completo'
+LIMIT 3;
+
+------------------------------------------------------------------------------
+-- 2. A small table: SWE-bench Verified, 500 real GitHub issues coding agents are graded on
+------------------------------------------------------------------------------
+SELECT repo, count(*) AS tasks,
+       count(*) FILTER (difficulty IN ('1-4 hours', '>4 hours')) AS over_1h
+FROM hf."princeton-nlp"."SWE-bench_Verified"
+GROUP BY ALL ORDER BY tasks DESC LIMIT 5;
+
+------------------------------------------------------------------------------
+-- 3. Another catalog: the IMDb reviews dataset in lhoestq's Faceberg catalog
+------------------------------------------------------------------------------
+ATTACH 'https://lhoestq-my-catalog.hf.space' AS lq (
+    TYPE iceberg,
+    ENDPOINT 'https://lhoestq-my-catalog.hf.space',
+    AUTHORIZATION_TYPE 'none'
+);
+SELECT split, label, count(*) AS reviews
+FROM lq.stanfordnlp.imdb
 GROUP BY ALL ORDER BY ALL;
-
-------------------------------------------------------------------------------
--- 2. MotherDuck open datasets: TPC-DS, 24 tables under iceberg/tpcds/iceberg/default.db/
-------------------------------------------------------------------------------
-SELECT count(*) AS store_sales_rows
-FROM iceberg_scan('s3://us-prd-motherduck-open-datasets/iceberg/tpcds/iceberg/default.db/store_sales', allow_moved_paths = true);
-
-------------------------------------------------------------------------------
--- 3. MotherDuck open datasets: WHO ambient air quality ("ducks" table)
---    No version-hint file, so the metadata version is passed explicitly.
-------------------------------------------------------------------------------
-SELECT country_name, city, year, pm25_concentration
-FROM iceberg_scan('s3://us-prd-motherduck-open-datasets/iceberg/ducks', allow_moved_paths = true,
-                  version = '00002-ec00ab72-7a34-4785-a04b-5e6bfcdc100e')
-LIMIT 5;
