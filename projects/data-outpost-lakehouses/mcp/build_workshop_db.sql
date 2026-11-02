@@ -1,6 +1,6 @@
 -- Builds data/workshop.duckdb: a small local DuckDB file for the MCP exercises,
 -- materialized from MotherDuck's public Iceberg tables (no credentials needed).
--- Run from the workshop folder:  duckdb data/workshop.duckdb -f mcp/build_workshop_db.sql
+-- Run from the workshop folder:  uvx --from duckdb-cli==1.5.6 duckdb data/workshop.duckdb -f mcp/build_workshop_db.sql
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 CREATE OR REPLACE SECRET md_open (TYPE s3, PROVIDER config, REGION 'us-east-1', SCOPE 's3://us-prd-motherduck-open-datasets');
 
