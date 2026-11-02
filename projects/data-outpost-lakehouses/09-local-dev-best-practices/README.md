@@ -82,6 +82,9 @@ table data goes to the network.
 
 ### With a DuckLake on MotherDuck: bring your own bucket
 
+> **Optional.** This part needs your own AWS account and an S3 bucket you can write to. If you
+> don't have one, skip it: the rest of the workshop doesn't depend on it.
+
 A fully managed DuckLake on MotherDuck keeps its Parquet files in MotherDuck's storage, and
 MotherDuck doesn't hand out credentials for it. A laptop can copy that catalog, but any query
 that reads table data fails with an S3 *"No credentials are provided"* error. Only metadata
