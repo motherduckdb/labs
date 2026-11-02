@@ -45,16 +45,17 @@ cd labs/projects/data-outpost-lakehouses           # run every command in this g
 # 1. Install Python 3.13 (uv manages it; your system Python is untouched)
 uv python install 3.13
 
-# 2. Install the DuckDB CLI 1.5.6
-uv tool install duckdb-cli==1.5.6
+# 2. Install the DuckDB CLI 1.5.6 (--force replaces a duckdb from DuckDB's own installer)
+uv tool install --force duckdb-cli==1.5.6
+duckdb --version   # should print v1.5.6; if not, see "Already have DuckDB?" below
 
 # 3. Install DuckDB 1.5.6 for Python, in a .venv in this folder
 uv venv --python 3.13
-uv pip install duckdb==1.5.6
-uv run python -c "import duckdb; print(duckdb.__version__)"   # 1.5.6
+uv pip install --python .venv duckdb==1.5.6
+uv run --python .venv python -c "import duckdb; print(duckdb.__version__)"   # 1.5.6
 
 # 4. Build the workshop database (~1 min; also downloads the iceberg and httpfs extensions)
-duckdb data/workshop.duckdb -f mcp/build_workshop_db.sql
+uvx --from duckdb-cli==1.5.6 duckdb data/workshop.duckdb -f mcp/build_workshop_db.sql
 
 # 5. Pre-download the MCP server so its first start doesn't time out
 uvx --python 3.13 --with duckdb==1.5.6 mcp-server-motherduck@1.1.0 --help
@@ -65,6 +66,20 @@ uv run mcp/print_configs.py
 
 Copy each client's config from step 6. The server opens the file read-only, so don't leave a
 read-write `duckdb` session open on it.
+
+**Already have DuckDB?** The MCP server always runs DuckDB 1.5.6, whatever else is installed.
+An older or newer `duckdb` can still get in the way in three places:
+
+- **Another `duckdb` comes first on your PATH** (Homebrew, for example). Step 2 succeeds, but
+  `duckdb --version` shows the old version. `which -a duckdb` lists every copy. The steps above
+  use `uvx --from duckdb-cli==1.5.6 duckdb` wherever the version matters, so they work anyway.
+  Use that form, or put `~/.local/bin` first on your PATH.
+- **A DuckDB 2.0 CLI built `data/workshop.duckdb`.** DuckDB 1.5.6 can't open files written by
+  2.0, so the MCP server fails with *created with a newer version of DuckDB*. Delete the file and
+  rerun step 4.
+- **A Python environment is active** (virtualenv or conda). A plain `uv pip install` would
+  change that environment instead of this folder's `.venv`; `--python .venv` in step 3 prevents
+  it.
 
 **Test prompt:**
 
@@ -180,7 +195,7 @@ files, `stories` (22,160 rows) and `comments` (253,097 rows), Dec 21, 2024 to Ja
 ```bash
 # Build data/hacker_news.ducklake (~15s). Registers the files with ducklake_add_data_files;
 # no data is copied. Rebuild from scratch: delete data/hacker_news.ducklake first.
-duckdb -f frozen/build_frozen_ducklake.sql
+uvx --from duckdb-cli==1.5.6 duckdb -f frozen/build_frozen_ducklake.sql
 
 # Query it read-only (no credentials needed)
 duckdb -c "ATTACH 'ducklake:data/hacker_news.ducklake' AS hn (READ_ONLY); USE hn;
@@ -220,6 +235,9 @@ Expected: 22,160. A `CREATE` or `INSERT` on `hn` fails with *attached in read-on
 |---|---|
 | `uv`, `uvx` or `duckdb` not found | Open a new terminal, or run `uv tool update-shell`. |
 | `spawn uvx ENOENT` in a desktop app | Use the full `uvx` path from `print_configs.py` as `command`. |
+| `duckdb --version` isn't v1.5.6 | Another `duckdb` is earlier on PATH (`which -a duckdb`). Use `uvx --from duckdb-cli==1.5.6 duckdb`, as the setup steps do. |
+| `Executable already exists: duckdb` | DuckDB's own installer put a `duckdb` in `~/.local/bin`. Run `uv tool install --force duckdb-cli==1.5.6`. |
+| Server error: *created with a newer version of DuckDB* | A DuckDB 2.0 CLI built the file. Delete `data/workshop.duckdb` and rerun setup step 4. |
 | Server times out on first start | Run setup step 5. In Codex, add `startup_timeout_sec = 30` under `[mcp_servers.duckdb]` in `~/.codex/config.toml`. |
 | `Could not set lock on file ...workshop.duckdb` | Close the read-write `duckdb` session that has the file open. |
 | Copilot CLI: `Classic Personal Access Tokens (ghp_) are not supported` | `unset GH_TOKEN` (PowerShell: `Remove-Item Env:GH_TOKEN`) |
@@ -233,6 +251,7 @@ Expected: 22,160. A `CREATE` or `INSERT` on `hn` fails with *attached in read-on
 | `mcp/init.sql` | Loads the iceberg and httpfs extensions on every server connection |
 | `mcp/print_configs.py` | Prints each client's config with your absolute paths |
 | `frozen/build_frozen_ducklake.sql` | Builds `data/hacker_news.ducklake`, a frozen DuckLake over public Parquet files (section 8) |
+| `AGENTS.md`, `CLAUDE.md` | Tell coding agents to use the MCP tools and the pinned DuckDB CLI |
 | `public_iceberg_datasets.sql` | Example queries over the public Iceberg tables (`duckdb -f public_iceberg_datasets.sql`) |
 
 ## What was tested (macOS, 2026-10-30)
@@ -243,7 +262,10 @@ the `duckdb-cli` 1.5.6 build and `print_configs.py` were checked over MCP direct
 OpenCode against the current `workshop.duckdb`. The full setup also ran from scratch (fresh
 uv, no Python installed, empty caches). The other clients ran an earlier build with different
 tables. Linux and Windows weren't tested. Setup steps 1–3 (Python 3.13, `duckdb-cli` 1.5.6 and DuckDB 1.5.6 for
-Python) were rerun on 2026-11-02 with uv 0.11.6.
+Python) were rerun on 2026-11-02 with uv 0.11.6. The setup steps were also run on machines that already had
+DuckDB 1.4.1 or 2.0.0, installed with Homebrew or with DuckDB's own installer, with and
+without an active Python environment holding that version. Each run ended with the CLI, the
+`.venv` and the MCP server on 1.5.6, and the server read `workshop.duckdb`.
 
 | Client | Version | Result |
 |---|---|---|
