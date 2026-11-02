@@ -7,7 +7,10 @@ makes that loop fast.
 
 The four patterns below go from simplest to most complete. Run every command from the
 workshop folder (`labs/projects/data-outpost-lakehouses`). Everything they create under
-`data/` is already ignored by git.
+`data/` is already ignored by git. The commands use only `uvx`/`uv` and the DuckDB CLI, so
+they run on macOS, Linux and Windows (PowerShell). Where a step needs a small utility, such as
+downloading a file, it runs a Python one-liner with `uv run --python 3.13 python -c "..."`
+instead of a shell-specific tool like `curl`.
 
 > TODO: These patterns were drafted from the outline and the DuckDB/DuckLake docs. Check
 > them against what the presenters plan to show, especially patterns 3 and 4.
@@ -62,10 +65,11 @@ answered from a local file, and only real data scans go to the network.
 
 A frozen DuckLake is this pattern. Download the catalog of the space-missions DuckLake from
 [section 4](../04-ducklake/README.md) (about 5 MB) and attach the local copy. Its data files
-stay on GitHub, because the catalog stores their absolute URLs:
+stay on GitHub, because the catalog stores their absolute URLs. This one-liner runs a short
+Python snippet through uv, so it works the same in PowerShell, cmd and bash:
 
 ```bash
-curl -L -o data/space.ducklake https://raw.githubusercontent.com/marhar/frozen/main/space.ducklake
+uv run --python 3.13 python -c "import os, urllib.request; os.makedirs('data', exist_ok=True); urllib.request.urlretrieve('https://raw.githubusercontent.com/marhar/frozen/main/space.ducklake', 'data/space.ducklake')"
 ```
 
 ```sql
