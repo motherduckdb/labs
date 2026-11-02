@@ -361,10 +361,13 @@ Expected: 8,792.
 - **Demo catalogs, no SLA.** These are personal demo Spaces (`kszucs`, `lhoestq`) on free
   Hugging Face hardware. They can change, move or disappear.
 - **Spaces sleep.** A Space sleeps after about 48 hours without traffic and wakes on the
-  first request, which can take a while. Wake it before you start:
+  first request, which can take a while. Wake it before you start, with either command:
 
   ```bash
+  # macOS / Linux (curl)
   curl -s https://kszucs-catalog.hf.space/v1/config
+  # Any OS, including Windows (uv runs a Python one-liner)
+  uv run --python 3.13 python -c "import urllib.request; print(urllib.request.urlopen('https://kszucs-catalog.hf.space/v1/config', timeout=120).read().decode())"
   ```
 
   It returns a small JSON config (`{"defaults":{},"overrides":{...}}`) once the catalog is up.

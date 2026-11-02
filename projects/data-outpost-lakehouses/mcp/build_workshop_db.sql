@@ -5,6 +5,8 @@
 -- The copy reads 9 of the 22 columns (about 200 Hugging Face requests, well under the
 -- anonymous limit of 3,000 per 5 minutes). If the catalog Space is asleep, wake it first:
 -- curl -s https://kszucs-catalog.hf.space/v1/config
+-- or, on any OS including Windows:
+-- uv run --python 3.13 python -c "import urllib.request; print(urllib.request.urlopen('https://kszucs-catalog.hf.space/v1/config', timeout=120).read().decode())"
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 
 ATTACH IF NOT EXISTS 'https://kszucs-catalog.hf.space' AS hf (

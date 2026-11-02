@@ -18,7 +18,10 @@ It hasn't been tested in this workshop.
 1. The agent sends an unauthenticated `POST` with no body:
 
    ```bash
+   # macOS / Linux (curl)
    curl -X POST https://new.motherduck.com
+   # Any OS, including Windows (uv runs a Python one-liner)
+   uv run --python 3.13 python -c "import urllib.request; print(urllib.request.urlopen(urllib.request.Request('https://new.motherduck.com', data=b'', method='POST')).read().decode())"
    ```
 
    With the MotherDuck CLI installed, `motherduck new` wraps this request and saves the token.

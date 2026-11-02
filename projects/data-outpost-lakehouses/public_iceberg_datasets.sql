@@ -5,6 +5,8 @@
 -- Run:  uvx --from duckdb-cli==1.5.6 duckdb -f public_iceberg_datasets.sql
 -- The catalogs are personal demo Spaces on free hardware. If a Space is asleep, the first
 -- request wakes it: curl -s https://kszucs-catalog.hf.space/v1/config
+-- or, on any OS including Windows:
+-- uv run --python 3.13 python -c "import urllib.request; print(urllib.request.urlopen('https://kszucs-catalog.hf.space/v1/config', timeout=120).read().decode())"
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 .timer on
 
