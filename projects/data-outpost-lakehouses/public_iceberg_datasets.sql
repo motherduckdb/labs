@@ -1,5 +1,5 @@
 -- MotherDuck's public Iceberg datasets, queryable from DuckDB with NO credentials.
--- Tested 2026-10-29 with DuckDB v1.5.3 (iceberg + httpfs extensions).
+-- Tested 2026-10-30 with the DuckDB CLI 1.5.6 from uv (uv tool install duckdb-cli==1.5.6).
 -- Run:  duckdb -f public_iceberg_datasets.sql
 INSTALL iceberg; LOAD iceberg; INSTALL httpfs; LOAD httpfs;
 .timer on

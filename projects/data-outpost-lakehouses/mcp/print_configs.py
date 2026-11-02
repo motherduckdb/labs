@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 # Prints the MCP config for every client with YOUR absolute paths filled in. Copy-paste from here.
 # Run from the workshop folder:  uv run mcp/print_configs.py
 import json

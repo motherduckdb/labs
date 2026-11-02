@@ -13,6 +13,7 @@ DuckDB 1.5.6. Every client starts the server on your laptop through `uvx`.
 | Claude Desktop | [5](#5-claude-desktop) |
 | ChatGPT desktop app | [6](#6-chatgpt-desktop-app) |
 | OpenCode | [7](#7-opencode) |
+| *Next: Frozen DuckLake* | [8](#8-frozen-ducklake) |
 
 ---
 
@@ -41,20 +42,28 @@ Then, in a macOS/Linux terminal or Windows PowerShell:
 git clone https://github.com/motherduckdb/labs.git   # or download the repo ZIP from GitHub
 cd labs/projects/data-outpost-lakehouses           # run every command in this guide from here
 
-# 1. Install the DuckDB CLI 1.5.6
+# 1. Install Python 3.13 (uv manages it; your system Python is untouched)
+uv python install 3.13
+
+# 2. Install the DuckDB CLI 1.5.6
 uv tool install duckdb-cli==1.5.6
 
-# 2. Build the workshop database (~1 min; also downloads the iceberg and httpfs extensions)
+# 3. Install DuckDB 1.5.6 for Python, in a .venv in this folder
+uv venv --python 3.13
+uv pip install duckdb==1.5.6
+uv run python -c "import duckdb; print(duckdb.__version__)"   # 1.5.6
+
+# 4. Build the workshop database (~1 min; also downloads the iceberg and httpfs extensions)
 duckdb data/workshop.duckdb -f mcp/build_workshop_db.sql
 
-# 3. Pre-download the MCP server so its first start doesn't time out
+# 5. Pre-download the MCP server so its first start doesn't time out
 uvx --python 3.13 --with duckdb==1.5.6 mcp-server-motherduck@1.1.0 --help
 
-# 4. Print every client's config with your absolute paths filled in
+# 6. Print every client's config with your absolute paths filled in
 uv run mcp/print_configs.py
 ```
 
-Copy each client's config from step 4. The server opens the file read-only, so don't leave a
+Copy each client's config from step 6. The server opens the file read-only, so don't leave a
 read-write `duckdb` session open on it.
 
 **Test prompt:**
@@ -157,13 +166,61 @@ Ignore `opencode mcp list` if it says `No MCP servers configured`
 
 ---
 
+## 8. Frozen DuckLake
+
+A [frozen DuckLake](https://ducklake.select/2025/10/24/frozen-ducklake/) is a read-only
+DuckLake with no catalog server. The catalog is a single `.ducklake` file that points at
+Parquet files already sitting in object storage. Readers attach the file and query; nothing
+runs except the storage. To publish one, copy the `.ducklake` file to any bucket or web
+server. Readers can attach it over `https://` or `s3://` too.
+
+We'll build one over the Hacker News Parquet files in MotherDuck's public bucket: 60 daily
+files, `stories` (22,160 rows) and `comments` (253,097 rows), Dec 21, 2024 to Jan 19, 2025.
+
+```bash
+# Build data/hacker_news.ducklake (~15s). Registers the files with ducklake_add_data_files;
+# no data is copied. Rebuild from scratch: delete data/hacker_news.ducklake first.
+duckdb -f frozen/build_frozen_ducklake.sql
+
+# Query it read-only (no credentials needed)
+duckdb -c "ATTACH 'ducklake:data/hacker_news.ducklake' AS hn (READ_ONLY); USE hn;
+SELECT s.title, count(c.id) AS comments FROM stories s JOIN comments c ON c.parent = s.id
+GROUP BY ALL ORDER BY comments DESC LIMIT 3;"
+```
+
+Expected: *Ask HN: Who wants to be hired? (January 2025)* 493, *I am rich and have no idea
+what to do* 430, *The Origins of Wokeness* 320.
+
+The build registers December's files and January's files in separate snapshots, so you can
+time travel. `FROM hn.snapshots()` lists 7 snapshots, and
+`SELECT count(*) FROM hn.stories AT (VERSION => 3)` returns December only: 6,892 stories.
+
+**From your AI client.** The MCP server opens a new connection for every query, so an
+`ATTACH` doesn't carry over to the next tool call. Ask for the attach and the query in one
+call, with the absolute path (`print_configs.py` shows your workshop folder):
+
+> Using the duckdb tools, run this as a single query:
+> `ATTACH IF NOT EXISTS 'ducklake:<workshop>/data/hacker_news.ducklake' AS hn (READ_ONLY); SELECT count(*) FROM hn.stories`
+
+Expected: 22,160. A `CREATE` or `INSERT` on `hn` fails with *attached in read-only mode*.
+
+**Things to know:**
+
+- **Updates mean a rebuild.** Add new files with another `ducklake_add_data_files` call and
+  republish the file. The call doesn't check for duplicates, so never register a file twice.
+- **`DATA_PATH` stays empty.** `data/frozen_unused/` only gets empty folders.
+- **Schemas come from the files.** Partition values that live only in folder names
+  (`dt=2024-12-21/`) aren't columns, so the tables are created with `hive_partitioning = false`.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | `uv`, `uvx` or `duckdb` not found | Open a new terminal, or run `uv tool update-shell`. |
 | `spawn uvx ENOENT` in a desktop app | Use the full `uvx` path from `print_configs.py` as `command`. |
-| Server times out on first start | Run setup step 3. In Codex, add `startup_timeout_sec = 30` under `[mcp_servers.duckdb]` in `~/.codex/config.toml`. |
+| Server times out on first start | Run setup step 5. In Codex, add `startup_timeout_sec = 30` under `[mcp_servers.duckdb]` in `~/.codex/config.toml`. |
 | `Could not set lock on file ...workshop.duckdb` | Close the read-write `duckdb` session that has the file open. |
 | Copilot CLI: `Classic Personal Access Tokens (ghp_) are not supported` | `unset GH_TOKEN` (PowerShell: `Remove-Item Env:GH_TOKEN`) |
 | Claude Desktop doesn't show duckdb | Check `mcp-server-duckdb.log` in `~/Library/Logs/Claude/` (macOS) or `%APPDATA%\Claude\logs\` (Windows). |
@@ -175,6 +232,7 @@ Ignore `opencode mcp list` if it says `No MCP servers configured`
 | `mcp/build_workshop_db.sql` | Builds `data/workshop.duckdb` from MotherDuck's public Iceberg tables |
 | `mcp/init.sql` | Loads the iceberg and httpfs extensions on every server connection |
 | `mcp/print_configs.py` | Prints each client's config with your absolute paths |
+| `frozen/build_frozen_ducklake.sql` | Builds `data/hacker_news.ducklake`, a frozen DuckLake over public Parquet files (section 8) |
 | `public_iceberg_datasets.sql` | Example queries over the public Iceberg tables (`duckdb -f public_iceberg_datasets.sql`) |
 
 ## What was tested (macOS, 2026-10-30)
@@ -184,7 +242,8 @@ full test prompt and desktop apps ran a hello-world query. The pinned commands i
 the `duckdb-cli` 1.5.6 build and `print_configs.py` were checked over MCP directly and in
 OpenCode against the current `workshop.duckdb`. The full setup also ran from scratch (fresh
 uv, no Python installed, empty caches). The other clients ran an earlier build with different
-tables. Linux and Windows weren't tested.
+tables. Linux and Windows weren't tested. Setup steps 1–3 (Python 3.13, `duckdb-cli` 1.5.6 and DuckDB 1.5.6 for
+Python) were rerun on 2026-11-02 with uv 0.11.6.
 
 | Client | Version | Result |
 |---|---|---|
