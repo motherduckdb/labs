@@ -166,8 +166,8 @@ Guide: [03-iceberg/README.md](03-iceberg/README.md)
 
 DuckLake is an open lakehouse format that keeps the catalog in a SQL database and the data in
 Parquet files. A frozen DuckLake is a read-only DuckLake whose whole catalog is one
-`.ducklake` file, so nothing runs except storage. You build one over public Hacker News
-Parquet files without copying any data.
+`.ducklake` file, so nothing runs except storage. You attach an existing public one (a small
+space-missions dataset on GitHub) and query it, with nothing to build.
 
 - Query a frozen DuckLake with DuckDB and the open source MCP
 
@@ -253,7 +253,6 @@ have, so existing commands keep working.
 | `mcp/init.sql` | Loads the iceberg and httpfs extensions on every server connection |
 | `mcp/print_configs.py` | Prints each client's config with your absolute paths (section 2) |
 | `public_iceberg_datasets.sql` | Attaches public Hugging Face Iceberg catalogs and queries them (section 3) (`uvx --from duckdb-cli==1.5.6 duckdb -f public_iceberg_datasets.sql`) |
-| `frozen/build_frozen_ducklake.sql` | Builds `data/hacker_news.ducklake`, a frozen DuckLake over public Parquet files (section 4) |
 | `10-bonus-async-io/compare_async_io.py` | Times a remote Parquet scan on DuckDB 1.5.6 vs 2.0.0 (section 10) |
 | `02-local-mcp/` … `10-bonus-async-io/` | The detailed guide for each section |
 | `images/dive-gallery.png` | Title slide screenshot from the Dive gallery, used at the top of this page |

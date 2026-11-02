@@ -60,20 +60,25 @@ Keep only the catalog local and leave the data in object storage. The agent's me
 questions (which tables exist, their columns, how many files and rows, which snapshots) are
 answered from a local file, and only real data scans go to the network.
 
-The frozen DuckLake from [section 4](../04-ducklake/README.md) is this pattern:
-`data/hacker_news.ducklake` is a local catalog over Parquet files in S3. These come straight
-from the local file:
+A frozen DuckLake is this pattern. Download the catalog of the space-missions DuckLake from
+[section 4](../04-ducklake/README.md) (about 5 MB) and attach the local copy. Its data files
+stay on GitHub, because the catalog stores their absolute URLs:
+
+```bash
+curl -L -o data/space.ducklake https://raw.githubusercontent.com/marhar/frozen/main/space.ducklake
+```
 
 ```sql
-ATTACH 'ducklake:data/hacker_news.ducklake' AS hn (READ_ONLY);
-FROM hn.snapshots();
+ATTACH 'ducklake:data/space.ducklake' AS space (READ_ONLY);
+FROM space.snapshots();
 SELECT table_name, count(*) AS files, sum(record_count) AS rows
-FROM __ducklake_metadata_hn.ducklake_data_file JOIN __ducklake_metadata_hn.ducklake_table USING (table_id)
+FROM __ducklake_metadata_space.ducklake_data_file JOIN __ducklake_metadata_space.ducklake_table USING (table_id)
 GROUP BY ALL ORDER BY ALL;
 ```
 
-The second query is the last statement of
-[`frozen/build_frozen_ducklake.sql`](../frozen/build_frozen_ducklake.sql).
+Both queries come straight from the local file: 14 snapshots, and `astronauts` 2 files / 85
+rows, `mission_crew` 4 / 156, `missions` 2 / 68, `spacecraft` 1 / 32. Only a query that reads
+table data goes to the network.
 
 ## 3. Local catalog and files
 

@@ -70,7 +70,7 @@ As of 2026-11-02 the `duckdb-cli` package on PyPI stops at 1.5.6, so
 [DuckDB installation](https://duckdb.org/install/).
 
 > TODO: Add a lakehouse version of the comparison, such as a DuckLake over the same files
-> (the frozen DuckLake from section 4, or the local DuckLake from section 9). Not tested
+> (the frozen space-missions DuckLake from section 4, or the local DuckLake from section 9). Not tested
 > with 2.0. Opening those `.ducklake` catalog files with 2.0 might also make them unreadable
 > by 1.5.6, so test on copies.
 
