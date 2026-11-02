@@ -45,22 +45,25 @@ cd labs/projects/data-outpost-lakehouses           # run every command in this g
 # 1. Install Python 3.13 (uv manages it; your system Python is untouched)
 uv python install 3.13
 
-# 2. Install DuckDB 1.5.6 for Python, in a .venv in this folder
+# 2. Install the DuckDB CLI 1.5.6
+uv tool install --force duckdb-cli==1.5.6
+
+# 3. Install DuckDB 1.5.6 for Python, in a .venv in this folder
 uv venv --python 3.13
 uv pip install --python .venv duckdb==1.5.6
 uv run --python .venv python -c "import duckdb; print(duckdb.__version__)"   # 1.5.6
 
-# 3. Build the workshop database (~1 min; also downloads the iceberg and httpfs extensions)
+# 4. Build the workshop database (~1 min; also downloads the iceberg and httpfs extensions)
 uvx --from duckdb-cli==1.5.6 duckdb data/workshop.duckdb -f mcp/build_workshop_db.sql
 
-# 4. Pre-download the MCP server so its first start doesn't time out
+# 5. Pre-download the MCP server so its first start doesn't time out
 uvx --python 3.13 --with duckdb==1.5.6 mcp-server-motherduck@1.1.0 --help
 
-# 5. Print every client's config with your absolute paths filled in
+# 6. Print every client's config with your absolute paths filled in
 uv run mcp/print_configs.py
 ```
 
-Copy each client's config from step 5. The server opens the file read-only, so don't leave a
+Copy each client's config from step 6. The server opens the file read-only, so don't leave a
 read-write `duckdb` session open on it.
 
 **Test prompt:**
@@ -180,7 +183,7 @@ republish the `.ducklake` file. The call doesn't check for duplicates.
 |---|---|
 | `uv` or `uvx` not found | Open a new terminal, or run `uv tool update-shell`. |
 | `spawn uvx ENOENT` in a desktop app | Use the full `uvx` path from `print_configs.py` as `command`. |
-| Server times out on first start | Run setup step 4. In Codex, add `startup_timeout_sec = 30` under `[mcp_servers.duckdb]` in `~/.codex/config.toml`. |
+| Server times out on first start | Run setup step 5. In Codex, add `startup_timeout_sec = 30` under `[mcp_servers.duckdb]` in `~/.codex/config.toml`. |
 | `Could not set lock on file ...workshop.duckdb` | Close the read-write `duckdb` session that has the file open. |
 | Copilot CLI: `Classic Personal Access Tokens (ghp_) are not supported` | `unset GH_TOKEN` (PowerShell: `Remove-Item Env:GH_TOKEN`) |
 | Claude Desktop doesn't show duckdb | Check `mcp-server-duckdb.log` in `~/Library/Logs/Claude/` (macOS) or `%APPDATA%\Claude\logs\` (Windows). |
