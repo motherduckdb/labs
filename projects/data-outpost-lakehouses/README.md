@@ -47,8 +47,8 @@ uv python install 3.13
 
 # 2. Install DuckDB 1.5.6 for Python, in a .venv in this folder
 uv venv --python 3.13
-uv pip install duckdb==1.5.6
-uv run python -c "import duckdb; print(duckdb.__version__)"   # 1.5.6
+uv pip install --python .venv duckdb==1.5.6
+uv run --python .venv python -c "import duckdb; print(duckdb.__version__)"   # 1.5.6
 
 # 3. Build the workshop database (~1 min; also downloads the iceberg and httpfs extensions)
 uvx --from duckdb-cli==1.5.6 duckdb data/workshop.duckdb -f mcp/build_workshop_db.sql
