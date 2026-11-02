@@ -1,0 +1,411 @@
+{
+  "v": 1,
+  "version": 1,
+  "page": {
+    "width": 1440,
+    "height": 1720,
+    "background": "#f8f8f8"
+  },
+  "elements": [
+    {
+      "id": "group-1",
+      "type": "group",
+      "name": "Title block",
+      "parent": null
+    },
+    {
+      "id": "title-1",
+      "type": "text",
+      "name": "Title",
+      "parent": "group-1",
+      "x": 96,
+      "y": 64,
+      "w": 1000,
+      "h": "auto",
+      "z": 10,
+      "opacity": 1,
+      "text": "Monthly sales, 2024",
+      "level": "h1",
+      "fontSize": 44,
+      "color": "#231f20",
+      "align": "left"
+    },
+    {
+      "id": "dek-1",
+      "type": "text",
+      "name": "Dek",
+      "parent": "group-1",
+      "x": 96,
+      "y": 126,
+      "w": 820,
+      "h": "auto",
+      "z": 20,
+      "opacity": 1,
+      "text": "Revenue and order volume across four regions, January through December 2024.",
+      "level": "p",
+      "fontSize": 16,
+      "color": "#6a6a6a",
+      "align": "left"
+    },
+    {
+      "id": "rule-1",
+      "type": "line",
+      "name": "Accent rule",
+      "parent": "group-1",
+      "x": 96,
+      "y": 174,
+      "w": 64,
+      "h": 8,
+      "z": 30,
+      "opacity": 1,
+      "orientation": "h",
+      "color": "#0777b3",
+      "thickness": 3
+    },
+    {
+      "id": "group-2",
+      "type": "group",
+      "name": "KPI row",
+      "parent": null
+    },
+    {
+      "id": "group-kpi1",
+      "type": "group",
+      "name": "KPI: total revenue",
+      "parent": "group-2"
+    },
+    {
+      "id": "kpi-1-value",
+      "type": "text",
+      "name": "KPI: total revenue",
+      "parent": "group-kpi1",
+      "x": 96,
+      "y": 232,
+      "w": 280,
+      "h": "auto",
+      "z": 40,
+      "opacity": 1,
+      "text": "$4.8M",
+      "level": "h1",
+      "fontSize": 40,
+      "color": "#231f20",
+      "align": "left"
+    },
+    {
+      "id": "kpi-1-label",
+      "type": "text",
+      "name": "KPI label 1",
+      "parent": "group-kpi1",
+      "x": 96,
+      "y": 288,
+      "w": 280,
+      "h": "auto",
+      "z": 41,
+      "opacity": 1,
+      "text": "Total revenue",
+      "level": "p",
+      "fontSize": 13,
+      "color": "#6a6a6a",
+      "align": "left"
+    },
+    {
+      "id": "group-kpi2",
+      "type": "group",
+      "name": "KPI: orders",
+      "parent": "group-2"
+    },
+    {
+      "id": "kpi-2-value",
+      "type": "text",
+      "name": "KPI: orders",
+      "parent": "group-kpi2",
+      "x": 420,
+      "y": 232,
+      "w": 280,
+      "h": "auto",
+      "z": 42,
+      "opacity": 1,
+      "text": "31,204",
+      "level": "h1",
+      "fontSize": 40,
+      "color": "#231f20",
+      "align": "left"
+    },
+    {
+      "id": "kpi-2-label",
+      "type": "text",
+      "name": "KPI label 2",
+      "parent": "group-kpi2",
+      "x": 420,
+      "y": 288,
+      "w": 280,
+      "h": "auto",
+      "z": 43,
+      "opacity": 1,
+      "text": "Orders",
+      "level": "p",
+      "fontSize": 13,
+      "color": "#6a6a6a",
+      "align": "left"
+    },
+    {
+      "id": "group-kpi3",
+      "type": "group",
+      "name": "KPI: top region",
+      "parent": "group-2"
+    },
+    {
+      "id": "kpi-3-value",
+      "type": "text",
+      "name": "KPI: top region",
+      "parent": "group-kpi3",
+      "x": 744,
+      "y": 232,
+      "w": 320,
+      "h": "auto",
+      "z": 44,
+      "opacity": 1,
+      "text": "West · $1.6M",
+      "level": "h1",
+      "fontSize": 40,
+      "color": "#231f20",
+      "align": "left"
+    },
+    {
+      "id": "kpi-3-label",
+      "type": "text",
+      "name": "KPI label 3",
+      "parent": "group-kpi3",
+      "x": 744,
+      "y": 288,
+      "w": 320,
+      "h": "auto",
+      "z": 45,
+      "opacity": 1,
+      "text": "Top region by revenue",
+      "level": "p",
+      "fontSize": 13,
+      "color": "#6a6a6a",
+      "align": "left"
+    },
+    {
+      "id": "group-3",
+      "type": "group",
+      "name": "Section: trend",
+      "parent": null
+    },
+    {
+      "id": "sec-1-head",
+      "type": "text",
+      "name": "Section head: trend",
+      "parent": "group-3",
+      "x": 96,
+      "y": 384,
+      "w": 700,
+      "h": "auto",
+      "z": 50,
+      "opacity": 1,
+      "text": "Revenue by month",
+      "level": "h2",
+      "fontSize": 28,
+      "color": "#231f20",
+      "align": "left"
+    },
+    {
+      "id": "chart-trend",
+      "type": "chart",
+      "name": "Chart: revenue trend",
+      "parent": "group-4",
+      "x": 96,
+      "y": 440,
+      "w": 1248,
+      "h": 360,
+      "z": 60,
+      "opacity": 1,
+      "sql": "SELECT strftime(d, '%Y-%m') AS month, COALESCE(SUM(CAST(s.revenue AS DOUBLE)), 0) AS revenue, COALESCE(SUM(CAST(s.orders AS DOUBLE)), 0) AS orders FROM generate_series(DATE '2024-01-01', DATE '2024-12-01', INTERVAL 1 MONTH) AS t(d) LEFT JOIN \"my_db\".\"main\".\"monthly_sales\" s ON date_trunc('month', s.order_date) = t.d GROUP BY 1 ORDER BY 1",
+      "chart": {
+        "kind": "line",
+        "stacked": false,
+        "x": {
+          "key": "month",
+          "type": "category",
+          "label": "",
+          "tickAngle": 0,
+          "tickFormat": "none"
+        },
+        "y": {
+          "label": "Revenue (USD)",
+          "domain": "zero",
+          "tickFormat": "compact"
+        },
+        "series": [
+          {
+            "key": "revenue",
+            "label": "Revenue",
+            "color": "#0777b3"
+          }
+        ],
+        "style": {
+          "lineType": "linear",
+          "strokeWidth": 2,
+          "dot": false
+        },
+        "grid": {
+          "show": true,
+          "dash": "3 3"
+        },
+        "legend": {
+          "show": false,
+          "position": "top"
+        },
+        "tooltip": {
+          "show": true
+        }
+      }
+    },
+    {
+      "id": "group-4",
+      "type": "group",
+      "name": "Chart: revenue trend",
+      "parent": "group-3"
+    },
+    {
+      "id": "note-peak",
+      "type": "text",
+      "name": "Note: November peak",
+      "parent": "group-4",
+      "x": 980,
+      "y": 470,
+      "w": 300,
+      "h": "auto",
+      "z": 70,
+      "opacity": 1,
+      "text": "November peaked at $612K — 41% above the monthly median",
+      "level": "p",
+      "fontSize": 13,
+      "color": "#bd4e35",
+      "align": "left",
+      "weight": 600
+    },
+    {
+      "id": "note-peak-line",
+      "type": "line",
+      "name": "Note pointer",
+      "parent": "group-4",
+      "x": 1090,
+      "y": 512,
+      "w": 8,
+      "h": 56,
+      "z": 71,
+      "opacity": 1,
+      "orientation": "v",
+      "color": "#bd4e35",
+      "thickness": 1
+    },
+    {
+      "id": "group-5",
+      "type": "group",
+      "name": "Section: regions",
+      "parent": null
+    },
+    {
+      "id": "sec-2-head",
+      "type": "text",
+      "name": "Section head: regions",
+      "parent": "group-5",
+      "x": 96,
+      "y": 872,
+      "w": 700,
+      "h": "auto",
+      "z": 80,
+      "opacity": 1,
+      "text": "Revenue by region and quarter",
+      "level": "h2",
+      "fontSize": 28,
+      "color": "#231f20",
+      "align": "left"
+    },
+    {
+      "id": "chart-regions",
+      "type": "chart",
+      "name": "Chart: regional mix",
+      "parent": "group-5",
+      "x": 96,
+      "y": 928,
+      "w": 1248,
+      "h": 380,
+      "z": 90,
+      "opacity": 1,
+      "sql": "SELECT 'Q' || CAST(quarter(order_date) AS VARCHAR) AS q, SUM(CASE WHEN region = 'West' THEN CAST(revenue AS DOUBLE) ELSE 0 END) AS west_revenue, SUM(CASE WHEN region = 'East' THEN CAST(revenue AS DOUBLE) ELSE 0 END) AS east_revenue, SUM(CASE WHEN region = 'South' THEN CAST(revenue AS DOUBLE) ELSE 0 END) AS south_revenue, SUM(CASE WHEN region = 'North' THEN CAST(revenue AS DOUBLE) ELSE 0 END) AS north_revenue FROM \"my_db\".\"main\".\"monthly_sales\" GROUP BY 1 ORDER BY 1",
+      "chart": {
+        "kind": "bar",
+        "stacked": true,
+        "stackOffset": "none",
+        "x": {
+          "key": "q",
+          "type": "category",
+          "label": "",
+          "tickAngle": 0,
+          "tickFormat": "none"
+        },
+        "y": {
+          "label": "Revenue (USD)",
+          "domain": "zero",
+          "tickFormat": "compact"
+        },
+        "series": [
+          {
+            "key": "west_revenue",
+            "label": "West",
+            "color": "#0777b3"
+          },
+          {
+            "key": "east_revenue",
+            "label": "East",
+            "color": "#bd4e35"
+          },
+          {
+            "key": "south_revenue",
+            "label": "South",
+            "color": "#2d7a00"
+          },
+          {
+            "key": "north_revenue",
+            "label": "North",
+            "color": "#e18727"
+          }
+        ],
+        "style": {
+          "radius": 0
+        },
+        "grid": {
+          "show": true,
+          "dash": "3 3"
+        },
+        "legend": {
+          "show": true,
+          "position": "top"
+        },
+        "tooltip": {
+          "show": true
+        }
+      }
+    },
+    {
+      "id": "footer-1",
+      "type": "text",
+      "name": "Footer",
+      "x": 96,
+      "y": 1620,
+      "w": 900,
+      "h": "auto",
+      "z": 100,
+      "opacity": 1,
+      "text": "Source: my_db.main.monthly_sales · Values in USD · Generated with the editable-dive skill",
+      "level": "p",
+      "fontSize": 12,
+      "color": "#9aa1aa",
+      "align": "left"
+    }
+  ]
+}
