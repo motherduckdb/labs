@@ -102,10 +102,17 @@ Notes:
 - Step 4 writes `data/workshop.duckdb` with two tables: `personas`, a local copy of all
   1,000,000 rows (9 of 22 columns) of the public Iceberg table `nvidia.personas_brazil` on
   Hugging Face, and `states`, a 27-row lookup of each state's abbreviation and region.
-  Sections 2, 3 and 9 use it. If step 4 hangs, the catalog Space is asleep: run
-  `curl -s https://kszucs-catalog.hf.space/v1/config` and retry. Rerunning step 4 replaces
-  both tables but keeps any other table in the file; to start clean (for example if you built
-  an older version with `lineitem` and `store`), delete `data/workshop.duckdb` first.
+  Sections 2, 3 and 9 use it. If step 4 hangs, the catalog Space is asleep. Wake it and
+  retry, with `curl -s https://kszucs-catalog.hf.space/v1/config` (macOS / Linux) or, on any
+  OS including Windows:
+
+  ```bash
+  uv run --python 3.13 python -c "import urllib.request; print(urllib.request.urlopen('https://kszucs-catalog.hf.space/v1/config', timeout=120).read().decode())"
+  ```
+
+- Rerunning step 4 replaces both tables but keeps any other table in the file. To start clean
+  (for example if you built an older version with `lineitem` and `store`), delete
+  `data/workshop.duckdb` first.
 
 Next: [2. Get the local DuckDB open source MCP set up](02-local-mcp/README.md).
 
@@ -238,7 +245,7 @@ Guide: [10-bonus-async-io/README.md](10-bonus-async-io/README.md)
 | `spawn uvx ENOENT` in a desktop app | Use the full `uvx` path from `print_configs.py` as `command`. |
 | Server times out on first start | Run step 5 of [section 1](#1-get-uv-python--duckdb-installed). In Codex, add `startup_timeout_sec = 30` under `[mcp_servers.duckdb]` in `~/.codex/config.toml`. |
 | `Could not set lock on file ...workshop.duckdb` | Close the read-write `duckdb` session that has the file open. When rebuilding it (step 4), also stop the MCP server, which holds it open read-only. |
-| Step 4 or an `hf` query hangs, or fails with `HTTP 429` | The catalog Space is asleep: `curl -s https://kszucs-catalog.hf.space/v1/config`, then retry. `429` means the room used up the Hugging Face rate limit; wait 5 minutes (see [section 3](03-iceberg/README.md#caveats)). |
+| Step 4 or an `hf` query hangs, or fails with `HTTP 429` | The catalog Space is asleep: wake it with `curl -s https://kszucs-catalog.hf.space/v1/config` (macOS / Linux) or the uv one-liner in [section 1](#1-get-uv-python--duckdb-installed) (any OS), then retry. `429` means the room used up the Hugging Face rate limit; wait 5 minutes (see [section 3](03-iceberg/README.md#caveats)). |
 | Copilot CLI: `Classic Personal Access Tokens (ghp_) are not supported` | `unset GH_TOKEN` (PowerShell: `Remove-Item Env:GH_TOKEN`) |
 | Claude Desktop doesn't show duckdb | Check `mcp-server-duckdb.log` in `~/Library/Logs/Claude/` (macOS) or `%APPDATA%\Claude\logs\` (Windows). |
 
