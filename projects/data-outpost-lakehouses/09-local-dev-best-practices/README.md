@@ -96,13 +96,14 @@ from the workshop folder:
 
 ```text
 Make a local cache of a remote table for fast agent queries. The source is the public
-Iceberg table nvidia.personas_brazil in the Iceberg REST catalog https://kszucs-
-catalog.hf.space (no authentication). Copy all rows of only the columns uuid, sex, age,
-state and occupation into a table named personas in data/agent_cache.duckdb. Read the source
-at one snapshot (its current one), and do the whole copy in one transaction so a failed copy
-leaves nothing half-built. In the same transaction, record the source, the snapshot id and
-the copy time in a small table named copy_info. Then run the same query (personas per state,
-top 5) on the remote table and on the local copy, and report both timings.
+Iceberg table nvidia.personas_brazil in the Iceberg REST catalog
+https://kszucs-catalog.hf.space (no authentication). Copy all rows of only the columns uuid,
+sex, age, state and occupation into a table named personas in data/agent_cache.duckdb. Read
+the source at one snapshot (its current one), and do the whole copy in one transaction so a
+failed copy leaves nothing half-built. In the same transaction, record the source, the
+snapshot id and the copy time in a small table named copy_info. Then run the same query
+(personas per state, top 5) on the remote table and on the local copy, and report both
+timings.
 ```
 
 Expected: `personas` with 1,000,000 rows, `copy_info` with snapshot `1`, and the top-5 query
@@ -350,9 +351,10 @@ Paste this into your coding agent (it needs a shell, uv and the DuckDB CLI 1.5.6
 from the workshop folder:
 
 ```text
-Mirror a DuckLake to this laptop with the script 09-local-dev-best-
-practices/mirror_ducklake.py (run it with uv; its header explains the arguments). The source
-is https://raw.githubusercontent.com/marhar/frozen/main/space.ducklake. Put the catalog in
+Mirror a DuckLake to this laptop with the script
+09-local-dev-best-practices/mirror_ducklake.py (run it with uv; its header explains the
+arguments). The source is
+https://raw.githubusercontent.com/marhar/frozen/main/space.ducklake. Put the catalog in
 data/space_mirror.ducklake and the files in data/space_mirror_files/. Then prove the mirror
 is fully local by querying it with DuckDB's HTTP file access turned off, and show it matches
 the source: for every table, compare the row count and a checksum of all rows in the mirror
@@ -467,8 +469,8 @@ from the workshop folder:
 Build a local cache that stays in sync with a DuckLake through its change feed
 (table_changes). Do these steps in order:
 1. Make a writable local lake: mirror
-   https://raw.githubusercontent.com/marhar/frozen/main/space.ducklake with 09-local-dev-
-   best-practices/mirror_ducklake.py into data/space_mirror.ducklake and
+   https://raw.githubusercontent.com/marhar/frozen/main/space.ducklake with
+   09-local-dev-best-practices/mirror_ducklake.py into data/space_mirror.ducklake and
    data/space_mirror_files/.
 2. Copy its astronauts table into data/cache.duckdb, keeping each row's DuckLake rowid, and
    record the lake's latest snapshot as the last one synced.
