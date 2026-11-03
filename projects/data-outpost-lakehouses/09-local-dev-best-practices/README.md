@@ -12,6 +12,18 @@ they run on macOS, Linux and Windows (PowerShell). Where a step downloads a file
 shows both a `curl` command and a Python one-liner run with `uv run --python 3.13 python -c
 "..."`. The `uv` form works on every OS, including Windows.
 
+## Pick a pattern
+
+Each pattern trades setup time against query speed, and they differ in how many moving parts
+you look after:
+
+| Pattern | Setup | Queries | Simplicity |
+| --- | --- | --- | --- |
+| 1. Local tables | Slowest: copy the tables once | Fastest | Simplest, but the copy goes stale |
+| 2. Local catalog, remote data | Seconds: copy only the catalog | Slowest: every query reads the cloud | Simple |
+| 3. Mirror the lake | Slower: copy the catalog and the active files | Fast, local, with history | More moving parts |
+| 4. Stay in sync with the change feed | Near the middle: mirror, then incremental syncs | Fast, local, and fresh | The most moving parts |
+
 > TODO: These patterns were drafted from the outline and the DuckDB/DuckLake docs. Check
 > them against what the presenters plan to show.
 
