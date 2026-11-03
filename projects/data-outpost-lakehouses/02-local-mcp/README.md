@@ -69,7 +69,7 @@ extensions. Don't leave a read-write `duckdb` session open on the file.
 > `personas` to `states` on `state`), then run this as a single `execute_query` call:
 > `ATTACH IF NOT EXISTS 'https://kszucs-catalog.hf.space' AS hf (TYPE iceberg, ENDPOINT 'https://kszucs-catalog.hf.space', AUTHORIZATION_TYPE 'none'); SELECT state, count(*) AS personas, round(avg(age), 1) AS avg_age FROM hf.nvidia.personas_brazil GROUP BY ALL ORDER BY personas DESC LIMIT 5`
 
-Expected: 2 tables (`personas`, `states`); Sudeste 429,821, Nordeste 262,430, Sul 150,955,
+Expected: 3 tables (`copy_info`, `personas`, `states`); Sudeste 429,821, Nordeste 262,430, Sul 150,955,
 Centro-Oeste 78,822, Norte 77,972; then São Paulo 224,991 (45.0), Minas Gerais 103,935
 (45.3), Rio de Janeiro 81,718 (45.9), Bahia 68,851 (44.2), Paraná 57,084 (44.8). The last
 query attaches a public Iceberg catalog on Hugging Face (see
@@ -154,7 +154,8 @@ Expected: 554 rows. The highest score is 576. The same file works over HTTPS at
 
 **Explore the workshop database.** `data/workshop.duckdb` holds `personas` (1,000,000
 synthetic Brazilian personas copied from the Iceberg table `nvidia.personas_brazil`; values
-are in Portuguese) and `states` (each state's abbreviation and region). See
+are in Portuguese), `states` (each state's abbreviation and region) and `copy_info` (the
+Iceberg snapshot copied and when). See
 [`mcp/build_workshop_db.sql`](../mcp/build_workshop_db.sql). Ask for the table comments, a
 `SUMMARIZE` of `personas`, the share of personas with a university degree
 (`education_level = 'Superior completo'`) by region, or three personas that match a profile.

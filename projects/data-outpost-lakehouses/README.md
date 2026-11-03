@@ -99,9 +99,10 @@ Notes:
   your `PATH`.
 - `uv pip install --python .venv` installs into this folder's `.venv` even if another
   environment is active.
-- Step 4 writes `data/workshop.duckdb` with two tables: `personas`, a local copy of all
+- Step 4 writes `data/workshop.duckdb` with three tables: `personas`, a local copy of all
   1,000,000 rows (9 of 22 columns) of the public Iceberg table `nvidia.personas_brazil` on
-  Hugging Face, and `states`, a 27-row lookup of each state's abbreviation and region.
+  Hugging Face, `states`, a 27-row lookup of each state's abbreviation and region, and
+  `copy_info`, which records the Iceberg snapshot copied and when.
   Sections 2, 3 and 9 use it. If step 4 hangs, the catalog Space is asleep. Wake it and
   retry, with `curl -s https://kszucs-catalog.hf.space/v1/config` (macOS / Linux) or, on any
   OS including Windows:
@@ -110,7 +111,7 @@ Notes:
   uv run --python 3.13 python -c "import urllib.request; print(urllib.request.urlopen('https://kszucs-catalog.hf.space/v1/config', timeout=120).read().decode())"
   ```
 
-- Rerunning step 4 replaces both tables but keeps any other table in the file. To start clean
+- Rerunning step 4 replaces these tables in one transaction but keeps any other table in the file. To start clean
   (for example if you built an older version with `lineitem` and `store`), delete
   `data/workshop.duckdb` first.
 
