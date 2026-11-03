@@ -30,6 +30,10 @@ From [DuckDB 2.0 I/O](https://duckdb.org/docs/2.0/data/io) and the
 > catalog such as `hf.nvidia.personas_brazil` from section 3) use async I/O. Verify before
 > claiming Iceberg gets the speedup.
 
+DuckDB's own benchmark in [PR #23662](https://github.com/duckdb/duckdb/pull/23662) (the
+read-ahead change) ran the 99 TPC-DS SF100 queries on Parquet in S3 from an r7i.16xlarge:
+597 s on 1.5.4 and 196 s with read-ahead, about 3x faster.
+
 MotherDuck's [Why DuckDB 2.0 is faster](https://motherduck.com/blog/why-duckdb-20-is-faster/)
 benchmarks a 2.2 GB Parquet file on S3: 18.8 s on 1.5.5 and 7.7 s on a 2.0 alpha, from a
 laptop on a home connection.
