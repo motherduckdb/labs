@@ -15,12 +15,20 @@ ATTACH IF NOT EXISTS 'https://kszucs-catalog.hf.space' AS hf (
     AUTHORIZATION_TYPE 'none'
 );
 
+-- Pin the copy to the table's current Iceberg snapshot, so it reads one consistent version and
+-- you can tell later which version you have (see copy_info below).
+SET VARIABLE snapshot = (SELECT max_by(snapshot_id, sequence_number)
+                         FROM iceberg_snapshots(hf.nvidia.personas_brazil));
+
+-- One transaction: if the download fails halfway, the file keeps its previous tables.
+BEGIN;
+
 -- All 1,000,000 personas: the demographic columns plus the one-sentence summary. The long
 -- persona texts (professional, sports, arts, travel, culinary, ...) stay in the remote table.
 CREATE OR REPLACE TABLE personas AS
 SELECT uuid, sex, age, marital_status, education_level, occupation, municipality, state,
        persona
-FROM hf.nvidia.personas_brazil;
+FROM hf.nvidia.personas_brazil AT (VERSION => getvariable('snapshot'));
 
 -- A small lookup table to join on: each state's abbreviation (UF) and region.
 CREATE OR REPLACE TABLE states AS
@@ -39,8 +47,19 @@ SELECT * FROM (VALUES
     ('Paraná', 'PR', 'Sul'), ('Rio Grande do Sul', 'RS', 'Sul'), ('Santa Catarina', 'SC', 'Sul')
 ) AS t(state, uf, region);
 
+-- What was copied, from which snapshot, and when. Compare snapshot_id with the source's
+-- current snapshot to tell whether the copy is stale.
+CREATE OR REPLACE TABLE copy_info AS
+SELECT 'personas' AS table_name,
+       'hf.nvidia.personas_brazil (Iceberg, https://kszucs-catalog.hf.space)' AS source,
+       getvariable('snapshot') AS snapshot_id,
+       now() AS copied_at;
+
 COMMENT ON TABLE personas IS 'Local copy of 9 columns of hf.nvidia.personas_brazil (Iceberg, https://kszucs-catalog.hf.space; Hugging Face dataset nvidia/Nemotron-Personas-Brazil). Values are in Portuguese.';
 COMMENT ON TABLE states IS 'Brazilian states: name (joins personas.state), abbreviation (uf) and region';
+COMMENT ON TABLE copy_info IS 'Source, Iceberg snapshot and time of each copied table';
+
+COMMIT;
 
 DETACH hf;
 SELECT table_name, estimated_size AS approx_rows FROM duckdb_tables() ORDER BY 1;
