@@ -141,6 +141,11 @@ Files in this skill:
    `src` = `data:image/...;base64,...` text), set `scene.images.sql` to select `name, src`
    from it, and reference them by `imageKey`. Skip images entirely when the data doesn't
    need them.
+   Both templates cache the images query's result in the viewer's browser (IndexedDB, keyed by
+   Dive id + a hash of the query; see `useCachedImageMap`), so a reload paints the last images
+   at once instead of grey "missing" boxes. The live query still runs on every load and its
+   result replaces the cache, so a changed image shows up on that same load. Nothing to set up;
+   with storage blocked the Dive simply loads images the old way.
 
 6. **Create the dive.** Either via MCP `save_dive` (pass the full file as `content`), or via
    the DuckDB CLI (get a token with the `get_short_lived_token` MCP tool). IMPORTANT: also

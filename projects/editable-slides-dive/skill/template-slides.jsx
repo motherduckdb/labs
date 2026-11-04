@@ -4657,6 +4657,117 @@ const roundCrop = (c) => ({
   zoom: Math.round(c.zoom * 100) / 100,
 });
 
+// ── Browser image cache (stale-while-revalidate) ──
+// Every image comes from the scene's one images query, and that query needs a network round trip
+// on every page load, so a reload used to paint grey "missing" boxes until it returned. This keeps
+// the last result in this browser's IndexedDB, keyed by Dive id + a hash of the query text, and
+// paints it the moment the Dive mounts. The live query still runs every time; when it returns, its
+// images replace the cached ones (so a changed or new image shows up) and become the new cache.
+// Storage is per browser and per viewer, never shared, and every call is wrapped: with no
+// IndexedDB (private window, blocked site data) the Dive behaves exactly as it did without a cache.
+const IMAGE_CACHE_DB = "md-dive-image-cache";
+const IMAGE_CACHE_STORE = "imageMaps";
+const IMAGE_CACHE_INDEX = "__index__"; // { [key]: savedAt } so eviction never loads every map
+const IMAGE_CACHE_MAX_ENTRIES = 24;    // the origin is shared by every Dive this browser opens
+const EMPTY_IMAGE_MAP = Object.freeze({});
+
+function imageCacheKey(sql) {
+  // FNV-1a over the query text: an edited images query never paints another query's images.
+  let h = 0x811c9dc5;
+  const s = String(sql || "");
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return `${SCENE.diveId || "dive"}:${h.toString(16)}`;
+}
+
+let imageCacheDbPromise = null;
+function imageCacheDb() {
+  if (!imageCacheDbPromise) {
+    imageCacheDbPromise = new Promise((resolve) => {
+      try {
+        if (typeof indexedDB === "undefined" || !indexedDB) { resolve(null); return; }
+        const req = indexedDB.open(IMAGE_CACHE_DB, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IMAGE_CACHE_STORE)) db.createObjectStore(IMAGE_CACHE_STORE);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+        req.onblocked = () => resolve(null);
+      } catch (e) { resolve(null); }
+    });
+  }
+  return imageCacheDbPromise;
+}
+
+function imageCacheGet(store, key) {
+  return new Promise((resolve) => {
+    try {
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(undefined);
+    } catch (e) { resolve(undefined); }
+  });
+}
+
+async function imageCacheRead(key) {
+  try {
+    const db = await imageCacheDb();
+    if (!db) return null;
+    const rec = await imageCacheGet(db.transaction(IMAGE_CACHE_STORE, "readonly").objectStore(IMAGE_CACHE_STORE), key);
+    return rec && rec.map && typeof rec.map === "object" ? rec.map : null;
+  } catch (e) { return null; }
+}
+
+async function imageCacheWrite(key, map) {
+  try {
+    const db = await imageCacheDb();
+    if (!db) return;
+    const tx = db.transaction(IMAGE_CACHE_STORE, "readwrite");
+    const store = tx.objectStore(IMAGE_CACHE_STORE);
+    const now = Date.now();
+    store.put({ map, savedAt: now }, key);
+    const index = (await imageCacheGet(store, IMAGE_CACHE_INDEX)) || {};
+    index[key] = now;
+    const keys = Object.keys(index).sort((a, b) => index[b] - index[a]);
+    for (const old of keys.slice(IMAGE_CACHE_MAX_ENTRIES)) { store.delete(old); delete index[old]; }
+    store.put(index, IMAGE_CACHE_INDEX);
+  } catch (e) { /* a full or blocked store just means no cache */ }
+}
+
+function sameImageMap(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) if (a[k] !== b[k]) return false;
+  return true;
+}
+
+// The scene's image map: the cached copy first, then the live query's result once it arrives.
+function useCachedImageMap(imagesQ) {
+  const key = SCENE.images ? imageCacheKey(SCENE.images.sql) : null;
+  const [cached, setCached] = useState(null);
+  const fresh = useMemo(() => {
+    if (imagesQ.error || !Array.isArray(imagesQ.data)) return null; // still loading, or failed: keep the cache
+    const m = {};
+    for (const r of imagesQ.data) if (r.name != null && r.src != null) m[String(r.name)] = String(r.src);
+    return m;
+  }, [imagesQ.data, imagesQ.error]);
+  const freshRef = useRef(null);
+  freshRef.current = fresh;
+  useEffect(() => {
+    if (!key) return undefined;
+    let live = true;
+    imageCacheRead(key).then((m) => { if (live && m && !freshRef.current) setCached(m); });
+    return () => { live = false; };
+  }, [key]);
+  useEffect(() => {
+    if (!key || !fresh) return;
+    imageCacheRead(key).then((old) => { if (!sameImageMap(old, fresh)) imageCacheWrite(key, fresh); });
+  }, [key, fresh]);
+  return fresh || cached || EMPTY_IMAGE_MAP;
+}
+
 function ImageContent({ el, imageMap, crop }) {
   const src = imageMap[el.imageKey];
   if (!src) {
@@ -9933,12 +10044,8 @@ export default function EditableDive() {
 
   // Images (all pulled by one scene-level query).
   const imagesQ = useSQLQuery(SCENE.images ? SCENE.images.sql : "SELECT 1 AS one", { enabled: !!SCENE.images });
-  const imageMap = useMemo(() => {
-    const m = {};
-    const rows = Array.isArray(imagesQ.data) ? imagesQ.data : [];
-    for (const r of rows) if (r.name != null && r.src != null) m[String(r.name)] = String(r.src);
-    return m;
-  }, [imagesQ.data]);
+  // Cached images paint at once on a reload; the live query refreshes them (see useCachedImageMap).
+  const imageMap = useCachedImageMap(imagesQ);
   const imageKeys = useMemo(() => Object.keys(imageMap), [imageMap]);
 
   const reportCols = useCallback((id, cols) => {
@@ -11508,6 +11615,9 @@ export default function EditableDive() {
           className="ed-scroll"
           style={{
             flex: 1, overflow: "auto", position: "relative", padding: "40px 28px", minWidth: 0, minHeight: 0,
+            // Reserve the scrollbar gutter: fitScale is read from clientWidth, so a vertical bar that
+            // comes and goes would rescale the page and toggle itself again (a resize loop / shake).
+            scrollbarGutter: "stable",
             // A slide has an EDGE, so the surround is a neutral of its own (slideSurround) rather
             // than the page colour, and the sheet is lifted off it by T.slideEdge. The Figma fork made
             // the surround `page.background` with no shadow on purpose — one boundary-free plane
