@@ -5849,6 +5849,9 @@ export default function EditableDive() {
           className="ed-scroll"
           style={{
             flex: 1, overflow: "auto", position: "relative", padding: "40px 28px", minWidth: 0,
+            // Reserve the scrollbar gutter: fitScale is read from clientWidth, so a vertical bar that
+            // comes and goes would rescale the page and toggle itself again (a resize loop / shake).
+            scrollbarGutter: "stable",
             // The surround IS the page colour and the page sheet has no shadow or radius:
             // one continuous, boundary-free surface that reads as infinite.
             background: page.background,

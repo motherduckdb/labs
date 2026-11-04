@@ -11615,6 +11615,9 @@ export default function EditableDive() {
           className="ed-scroll"
           style={{
             flex: 1, overflow: "auto", position: "relative", padding: "40px 28px", minWidth: 0, minHeight: 0,
+            // Reserve the scrollbar gutter: fitScale is read from clientWidth, so a vertical bar that
+            // comes and goes would rescale the page and toggle itself again (a resize loop / shake).
+            scrollbarGutter: "stable",
             // A slide has an EDGE, so the surround is a neutral of its own (slideSurround) rather
             // than the page colour, and the sheet is lifted off it by T.slideEdge. The Figma fork made
             // the surround `page.background` with no shadow on purpose — one boundary-free plane
