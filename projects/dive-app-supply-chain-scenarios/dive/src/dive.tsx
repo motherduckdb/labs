@@ -19,14 +19,14 @@ import * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDiveState, useSQLQuery } from "@motherduck/react-sql-query";
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, Check, ChevronDown, CircleAlert, Copy, Factory, GitCompare, LineChart as LineIcon, Loader2, Lock, PackageCheck, Pencil, RefreshCw, Send, Trash2, Truck, Undo2, Zap } from "lucide-react";
+import { Activity, Check, ChevronDown, CircleAlert, Copy, Factory, GitCompare, LineChart as LineIcon, Loader2, Lock, PackageCheck, Pencil, RefreshCw, Send, Trash2, Truck, Undo2, X, Zap } from "lucide-react";
 import {
   DROP_SHIP, HORIZON, SPEEDS, SPEED_ORDER, computeSupplyPlan, defaultDrivers, leversOff, normalizeDrivers, overrideKey,
   type SupplyBase, type SupplyCell, type SupplyDrivers, type SupplyPlan,
 } from "./engine";
 import { useFlightBackend } from "./flight-backend";
 import { DB, N } from "./sql";
-import SupplyGrid, { OVERRIDE_NOW, OVERRIDE_PREV, ROW_BG, SERIES, type CellEdit, type EditInfo } from "./SupplyGrid";
+import SupplyGrid, { SERIES, type CellEdit, type EditInfo } from "./SupplyGrid";
 import { C, MONO, SANS, STATUS_STYLE, border, shadow } from "./theme";
 import { Btn, Capsule, Chip, Kpi, SectionTitle, Select, Slider, fmtInt, fmtMoney, fmtPct, signed } from "./ui";
 
@@ -336,10 +336,11 @@ function SupplyPlanner() {
   };
   const spin = (action: string, icon: React.ReactNode) => (busyAction === action ? <Loader2 size={14} className="animate-spin" /> : icon);
 
-  const createScenario = async () => {
-    if (!backend || !selected) return;
-    const name = (selected.is_baseline ? "New supply scenario" : `${selected.name} (copy)`).slice(0, 60);
-    const r = await busy("create", () => enqueue(() => backend.call("create_scenario", { name, based_on: selected.scenario_id })));
+  /** Duplicate a scenario (the selected one by default) and select the copy. */
+  const createScenario = async (from: Scenario | undefined = selected) => {
+    if (!backend || !from) return;
+    const name = (from.is_baseline ? "New supply scenario" : `${from.name} (copy)`).slice(0, 60);
+    const r = await busy(`create:${from.scenario_id}`, () => enqueue(() => backend.call("create_scenario", { name, based_on: from.scenario_id })));
     if (!r.ok) return failed(r.error);
     const s = normalize(r.result);
     versions.current[s.scenario_id] = s.version;
@@ -378,26 +379,22 @@ function SupplyPlanner() {
       : "Nothing to push: this plan has no expedites, drop ships or subcontract orders");
   };
 
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  useEffect(() => setConfirmDelete(false), [selectedId]);
-  const deleteScenario = async () => {
-    if (!backend || !selected) return;
-    const id = selected.scenario_id;
-    const r = await busy("delete", () => enqueue(() => backend.call("delete_scenario", { scenario_id: id })));
+  const deleteScenario = async (id: string) => {
+    if (!backend) return;
+    const gone = scenariosRef.current.find((s) => s.scenario_id === id);
+    const r = await busy(`delete:${id}`, () => enqueue(() => backend.call("delete_scenario", { scenario_id: id })));
     if (!r.ok) return failed(r.error);
     setScenarios((list) => list.filter((s) => s.scenario_id !== id));
-    setSelectedId("");
+    if (selected?.scenario_id === id) setSelectedId("");
     refreshActivitySoon();
+    say("ok", `Deleted “${gone?.name ?? "scenario"}”`);
   };
 
-  const [editingName, setEditingName] = useState<string | null>(null);
-  const saveName = async () => {
-    if (!backend || !selected || editingName == null) return;
-    const name = editingName.trim().slice(0, 60);
-    setEditingName(null);
-    if (!name || name === selected.name) return;
-    const id = selected.scenario_id;
-    setScenarios((list) => list.map((s) => (s.scenario_id === id ? { ...s, name } : s)));
+  const renameScenario = async (id: string, raw: string) => {
+    const s = scenariosRef.current.find((x) => x.scenario_id === id);
+    const name = raw.trim().slice(0, 60);
+    if (!backend || !s || !name || name === s.name) return;
+    setScenarios((list) => list.map((x) => (x.scenario_id === id ? { ...x, name } : x)));
     const r = await enqueue(() => backend.call("update_scenario", { scenario_id: id, version: versions.current[id], name }));
     if (r.ok) {
       mergeMeta(r.result);
@@ -461,14 +458,6 @@ function SupplyPlanner() {
   const roi = k && off ? roiOf(k, off) : null;
   const loading = !base || !backend || !scenarios.length;
   const onBaseline = !!selected?.is_baseline;
-  const tabStyle = (on: boolean): React.CSSProperties => ({
-    height: 38, padding: "0 12px", border, borderRadius: 2, background: on ? C.white : C.sand, cursor: "pointer",
-    boxShadow: on ? shadow(4) : "none", transform: on ? "translate(2px, -2px)" : "none",
-    fontFamily: SANS, fontSize: 13, color: C.ink, transition: "transform 120ms ease-in-out",
-  });
-  const statusDot = (s: Scenario) => (
-    <span style={{ flex: "none", width: 8, height: 8, borderRadius: "50%", border: `1.5px solid ${C.ink}`, background: STATUS_STYLE[s.status]?.bg }} title={STATUS_STYLE[s.status]?.label} />
-  );
   const baselineScenario = scenarios.find((s) => s.is_baseline);
 
   return (
@@ -488,38 +477,21 @@ function SupplyPlanner() {
                     <span style={{ fontWeight: onBaseline ? 600 : 400 }}>{baselineScenario.name}</span>
                   </button>
                 )}
-                {editingName != null && selected && !onBaseline ? (
-                  <input autoFocus value={editingName} maxLength={60} onChange={(e) => setEditingName(e.target.value)} onBlur={saveName}
-                    onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditingName(null); }}
-                    style={{ ...tabStyle(true), minWidth: 260, cursor: "text" }} />
-                ) : current ? (
-                  <label className="inline-flex items-center gap-2" style={{ ...tabStyle(!onBaseline), position: "relative", paddingRight: 30 }}
-                    onClick={() => onBaseline && setSelectedId(current.scenario_id)}>
-                    {statusDot(current)}
-                    <select data-testid="scenario-select" aria-label="Scenario" value={current.scenario_id}
-                      onChange={(e) => setSelectedId(e.target.value)}
-                      style={{
-                        appearance: "none", WebkitAppearance: "none", border: 0, background: "transparent", outline: "none", cursor: "pointer",
-                        fontFamily: SANS, fontSize: 13, fontWeight: onBaseline ? 400 : 600, color: C.ink, maxWidth: 220, textOverflow: "ellipsis",
-                      }}>
-                      {others.map((s) => <option key={s.scenario_id} value={s.scenario_id}>{s.name} · {STATUS_STYLE[s.status]?.label ?? s.status}</option>)}
-                    </select>
-                    <ChevronDown size={14} style={{ position: "absolute", right: 10, pointerEvents: "none" }} />
-                  </label>
-                ) : null}
-                <Btn variant="ghost" onClick={createScenario} disabled={loading || !!busyAction} testId="duplicate">
-                  {spin("create", <Copy size={14} />)}{onBaseline || !selected ? "New scenario" : "Duplicate"}
+                {current && (
+                  <ScenarioPicker
+                    scenarios={others}
+                    current={current}
+                    active={!onBaseline}
+                    busyAction={busyAction}
+                    onSelect={setSelectedId}
+                    onDuplicate={(s) => createScenario(s)}
+                    onRename={renameScenario}
+                    onDelete={deleteScenario}
+                  />
+                )}
+                <Btn variant="ghost" onClick={() => createScenario()} disabled={loading || !!busyAction} testId="duplicate">
+                  {spin(`create:${selected?.scenario_id}`, <Copy size={14} />)}{onBaseline || !selected ? "New scenario" : "Duplicate"}
                 </Btn>
-                {editable && editingName == null && (
-                  <Btn variant="ghost" small onClick={() => selected && setEditingName(selected.name)} title="Rename scenario"><Pencil size={13} /></Btn>
-                )}
-                {selected && !selected.is_baseline && selected.status !== "approved" && (
-                  confirmDelete ? (
-                    <Btn variant="danger" small onClick={deleteScenario} disabled={!!busyAction}>{spin("delete", null)}Delete “{selected.name.slice(0, 18)}”?</Btn>
-                  ) : (
-                    <Btn variant="ghost" small onClick={() => setConfirmDelete(true)} title="Delete scenario"><Trash2 size={13} /></Btn>
-                  )
-                )}
               </>
             )}
           </div>
@@ -595,7 +567,7 @@ function SupplyPlanner() {
             {/* ── tabs ── */}
             <div className="flex flex-wrap gap-0" role="tablist" style={{ borderBottom: border }}>
               {([
-                ["overview", "Overview & supply and demand grid", LineIcon],
+                ["overview", "Overview & supply and demand edits", LineIcon],
                 ["compare", "Compare", GitCompare],
                 ["activity", "Activity", Activity],
               ] as const).map(([key, label, Icon]) => (
@@ -612,27 +584,24 @@ function SupplyPlanner() {
 
             <div style={{ minHeight: 420 }}>
               {tab === "overview" && (
-                <Overview summary={summary?.plan} base={base}>
-                  {pair && base ? (
-                    <div className="grid gap-2">
-                      {gridCells.length ? (
-                        <div style={{ height: 560 }}>
-                          <SupplyGrid
-                            key={`${selected!.scenario_id}|${filterKey}`}
-                            cells={gridCells}
-                            weeks={base.weeks}
-                            editable={editable}
-                            shortWeeks={shortWeeks}
-                            edits={editInfo}
-                            onEdit={onGridEdit}
-                            onBlocked={(message) => say("info", message || (selected!.is_baseline ? "The Baseline is locked — duplicate it to edit." : "Reopen this scenario to edit it."))}
-                          />
-                        </div>
-                      ) : <p className="text-sm" style={{ color: C.darkerGrey }}>No rows match the filters.</p>}
-                      <GridKey />
-                    </div>
-                  ) : <div className="animate-pulse" style={{ height: 560, background: C.darkSnow, borderRadius: 2 }} />}
-                </Overview>
+                <Overview summary={summary?.plan} base={base} grid={(gridH) => (!pair || !base ? (
+                  <div className="animate-pulse" style={{ height: gridH, background: C.darkSnow, borderRadius: 2 }} />
+                ) : !gridCells.length ? (
+                  <p className="text-sm" style={{ color: C.darkerGrey }}>No rows match the filters.</p>
+                ) : (
+                  <div style={{ height: gridH }}>
+                    <SupplyGrid
+                      key={`${selected!.scenario_id}|${filterKey}`}
+                      cells={gridCells}
+                      weeks={base.weeks}
+                      editable={editable}
+                      shortWeeks={shortWeeks}
+                      edits={editInfo}
+                      onEdit={onGridEdit}
+                      onBlocked={(message) => say("info", message || (selected!.is_baseline ? "The Baseline is locked — duplicate it to edit." : "Reopen this scenario to edit it."))}
+                    />
+                  </div>
+                ))} />
               )}
               {tab === "compare" && (
                 <Compare scenarios={scenarios} pairs={pairs} selectedId={selected?.scenario_id} onSelect={setSelectedId}
@@ -651,6 +620,173 @@ function SupplyPlanner() {
           border, borderRadius: 2, boxShadow: shadow(4), fontSize: 13,
         }}>
           {toast.kind === "err" ? <CircleAlert size={16} /> : <Check size={16} />}{toast.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────── scenario picker ───────────────────────────
+
+const tabStyle = (on: boolean): React.CSSProperties => ({
+  height: 38, padding: "0 12px", border, borderRadius: 2, background: on ? C.white : C.sand, cursor: "pointer",
+  boxShadow: on ? shadow(4) : "none", transform: on ? "translate(2px, -2px)" : "none",
+  fontFamily: SANS, fontSize: 13, color: C.ink, transition: "transform 120ms ease-in-out",
+});
+
+function StatusDot({ s }: { s: Scenario }) {
+  return <span style={{ flex: "none", width: 8, height: 8, borderRadius: "50%", border: `1.5px solid ${C.ink}`, background: STATUS_STYLE[s.status]?.bg }} title={STATUS_STYLE[s.status]?.label} />;
+}
+
+/** A small square icon button. "off" keeps it focusable and its tooltip visible but does nothing. */
+function IconBtn({ title, onClick, off, danger, testId, children }: {
+  title: string; onClick: () => void; off?: boolean; danger?: boolean; testId?: string; children: React.ReactNode;
+}) {
+  return (
+    <button type="button" className="sp-icon" title={title} aria-label={title} aria-disabled={off || undefined} data-testid={testId}
+      onClick={(e) => { e.stopPropagation(); if (!off) onClick(); }}
+      style={{
+        flex: "none", display: "inline-grid", placeItems: "center", width: 26, height: 26, padding: 0, border: 0, borderRadius: 2,
+        background: "transparent", color: danger && !off ? C.darkWatermelon : C.ink, opacity: off ? 0.3 : 1, cursor: off ? "not-allowed" : "pointer",
+      }}>
+      {children}
+    </button>
+  );
+}
+
+const PICKER_CSS = `
+.sp-icon:not([aria-disabled]):hover, .sp-icon:focus-visible { background: ${C.darkSnow} !important; }
+.sp-row:hover { background: ${C.snow}; }
+.sp-row[aria-selected="true"], .sp-row[aria-selected="true"]:hover { background: ${C.lightestSky}; }`;
+
+/**
+ * The scenario dropdown in the title row. The closed box shows the current
+ * scenario with its duplicate / rename / delete icons; the menu lists every
+ * scenario with the same icons. Rename is in place; delete asks to confirm.
+ */
+function ScenarioPicker({ scenarios, current, active, busyAction, onSelect, onDuplicate, onRename, onDelete }: {
+  scenarios: Scenario[]; current: Scenario; active: boolean; busyAction: string | null;
+  onSelect: (id: string) => void; onDuplicate: (s: Scenario) => void;
+  onRename: (id: string, name: string) => void; onDelete: (id: string) => Promise<unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [renaming, setRenaming] = useState<{ id: string; where: "box" | "menu"; value: string } | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open && !confirmId) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setConfirmId(null);
+      }
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      setConfirmId(null);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open, confirmId]);
+
+  const busy = !!busyAction;
+  const commitRename = () => {
+    if (renaming) onRename(renaming.id, renaming.value);
+    setRenaming(null);
+  };
+  const statusLabel = (s: Scenario) => STATUS_STYLE[s.status]?.label ?? s.status;
+
+  const isRenaming = (s: Scenario, where: "box" | "menu") => renaming?.id === s.scenario_id && renaming.where === where;
+  const name = (s: Scenario, where: "box" | "menu") => (isRenaming(s, where) ? (
+    <input autoFocus data-testid={`${where}-rename-input`} aria-label="Scenario name" value={renaming?.value ?? ""} maxLength={60}
+      onChange={(e) => setRenaming({ id: s.scenario_id, where, value: e.target.value })}
+      onBlur={commitRename}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") commitRename();
+        if (e.key === "Escape") setRenaming(null);
+      }}
+      onFocus={(e) => e.currentTarget.select()}
+      style={{ flex: "1 1 auto", minWidth: 0, width: where === "box" ? 200 : undefined, height: 26, padding: "0 6px", border, borderRadius: 2, background: C.white, fontFamily: SANS, fontSize: 13, color: C.ink, outline: "none" }} />
+  ) : (
+    <span style={{ flex: "1 1 auto", minWidth: 0, maxWidth: where === "box" ? 200 : undefined, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: where === "box" && active ? 600 : 400 }}>{s.name}</span>
+  ));
+
+  const actions = (s: Scenario, where: "box" | "menu") => {
+    const id = s.scenario_id;
+    if (confirmId === id) {
+      return (
+        <span className="inline-flex items-center gap-1" style={{ flex: "none" }} onClick={(e) => e.stopPropagation()}>
+          <Btn variant="danger" small testId={`${where}-confirm-delete`} disabled={busy}
+            onClick={async () => { await onDelete(id); setConfirmId(null); }}>
+            {busyAction === `delete:${id}` ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}Delete?
+          </Btn>
+          <IconBtn title="Keep it" onClick={() => setConfirmId(null)}><X size={14} /></IconBtn>
+        </span>
+      );
+    }
+    const draft = s.status === "draft";
+    return (
+      <span className="inline-flex items-center" style={{ flex: "none", gap: 1 }}>
+        <IconBtn title={`Duplicate “${s.name}”`} testId={`${where}-duplicate`} off={busy}
+          onClick={() => { setOpen(false); onDuplicate(s); }}>
+          {busyAction === `create:${id}` ? <Loader2 size={14} className="animate-spin" /> : <Copy size={14} />}
+        </IconBtn>
+        <IconBtn title={draft ? "Rename" : `${statusLabel(s)}: reopen or send it back to draft to rename`} testId={`${where}-rename`} off={busy || !draft}
+          onClick={() => { setConfirmId(null); setRenaming({ id, where, value: s.name }); }}>
+          <Pencil size={14} />
+        </IconBtn>
+        <IconBtn title={s.status === "approved" ? "Approved: reopen it to delete" : "Delete"} testId={`${where}-delete`} danger off={busy || s.status === "approved"}
+          onClick={() => { setRenaming(null); setConfirmId(id); }}>
+          <Trash2 size={14} />
+        </IconBtn>
+      </span>
+    );
+  };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <style>{PICKER_CSS}</style>
+      <div data-testid="scenario-select" className="inline-flex items-center" style={{ ...tabStyle(active), gap: 6, padding: "0 4px 0 12px", cursor: "default" }}>
+        <button type="button" data-testid="scenario-current" aria-haspopup="listbox" aria-expanded={open}
+          title={active ? "Choose a scenario" : `Show “${current.name}”`}
+          onClick={() => (active ? setOpen((o) => !o) : onSelect(current.scenario_id))}
+          className="inline-flex items-center gap-2"
+          style={{ minWidth: 0, height: 34, padding: 0, border: 0, background: "transparent", cursor: "pointer", fontFamily: SANS, fontSize: 13, color: C.ink }}>
+          <StatusDot s={current} />
+          {!isRenaming(current, "box") && name(current, "box")}
+        </button>
+        {isRenaming(current, "box") && name(current, "box")}
+        {actions(current, "box")}
+        <button type="button" data-testid="scenario-toggle" aria-label="Show all scenarios" aria-haspopup="listbox" aria-expanded={open}
+          className="sp-icon" onClick={() => setOpen((o) => !o)}
+          style={{ display: "inline-grid", placeItems: "center", width: 26, height: 30, padding: 0, border: 0, borderLeft: `1px solid ${C.darkSand}`, borderRadius: 0, background: "transparent", cursor: "pointer", color: C.ink }}>
+          <ChevronDown size={15} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 120ms ease-in-out" }} />
+        </button>
+      </div>
+      {open && (
+        <div role="listbox" aria-label="Scenarios" data-testid="scenario-menu"
+          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 60, width: 440, maxWidth: "90vw", maxHeight: 380, overflow: "auto", padding: 4, background: C.white, border, borderRadius: 2, boxShadow: shadow(4) }}>
+          {scenarios.map((s) => (
+            <div key={s.scenario_id} role="option" aria-selected={s.scenario_id === current.scenario_id} className="sp-row" data-testid="scenario-option"
+              onClick={() => {
+                if (isRenaming(s, "menu") || confirmId === s.scenario_id) return;
+                onSelect(s.scenario_id);
+                setOpen(false);
+              }}
+              style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 36, padding: "2px 4px 2px 10px", borderRadius: 2, cursor: "pointer", fontSize: 13 }}>
+              <StatusDot s={s} />
+              {name(s, "menu")}
+              <span style={{ flex: "none", fontFamily: MONO, fontSize: 10, textTransform: "uppercase", color: C.darkerGrey }}>{statusLabel(s)}</span>
+              {actions(s, "menu")}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -703,10 +839,9 @@ function MultiSelect({ label, plural, options, value, onChange, testId }: {
   };
   const row: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 13, cursor: "pointer" };
   return (
-    <div ref={ref} className="grid gap-1" style={{ position: "relative", minWidth: 0 }}>
-      <span style={{ fontFamily: MONO, fontSize: 11, textTransform: "uppercase" }}>{label}</span>
-      <button type="button" data-testid={testId} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((o) => !o)}
-        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, height: 34, padding: "0 8px", border, borderRadius: 2, background: all ? C.white : C.lightestSky, color: C.ink, fontFamily: SANS, fontSize: 13, cursor: "pointer", minWidth: 0 }}>
+    <div ref={ref} style={{ position: "relative", minWidth: 0 }}>
+      <button type="button" data-testid={testId} aria-label={label} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((o) => !o)}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, width: "100%", height: 34, padding: "0 8px", border, borderRadius: 2, background: all ? C.white : C.lightestSky, color: C.ink, fontFamily: SANS, fontSize: 13, cursor: "pointer", minWidth: 0 }}>
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
         <ChevronDown size={14} style={{ flex: "none" }} />
       </button>
@@ -823,7 +958,7 @@ const CHART_SERIES: Array<{ key: string; name: string; color: string; kind: "lin
 function SeriesSwatch({ kind, color }: { kind: "line" | "dash" | "bar"; color: string }) {
   return kind === "bar"
     ? <span style={{ display: "inline-block", width: 10, height: 10, background: color, border: `1px solid ${C.ink}` }} />
-    : <span style={{ display: "inline-block", width: 16, height: 0, borderTop: `${kind === "dash" ? 2 : 2.5}px ${kind === "dash" ? "dashed" : "solid"} ${color}` }} />;
+    : <span style={{ display: "inline-block", width: 16, height: 0, borderTop: `${kind === "dash" ? 3.5 : 4}px ${kind === "dash" ? "dashed" : "solid"} ${color}` }} />;
 }
 
 function ChartTooltip({ active, payload, label }: any) {
@@ -842,7 +977,41 @@ function ChartTooltip({ active, payload, label }: any) {
   );
 }
 
-function Overview({ summary, base, children }: { summary?: Summary; base: SupplyBase | null; children?: React.ReactNode }) {
+// Lines are drawn 2px heavier than recharts' default weight so they read over the bars.
+const LINE_W = { demand: 4, supply: 3.5, inventory: 4 };
+
+/** The viewport height, kept current on resize (the Dive's iframe is the viewport). */
+function useViewportHeight() {
+  const [h, setH] = useState(() => (typeof window === "undefined" ? 900 : window.innerHeight));
+  useEffect(() => {
+    const on = () => setH(window.innerHeight);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return h;
+}
+
+/**
+ * The weekly chart over the supply and demand grid. The grid is sized so that,
+ * scrolled to the bottom of the page, the whole chart and the whole grid fit
+ * on screen together (the grid scrolls inside itself).
+ */
+function Overview({ summary, base, grid }: { summary?: Summary; base: SupplyBase | null; grid: (height: number) => React.ReactNode }) {
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const titleRef = useRef<HTMLDivElement | null>(null);
+  const [above, setAbove] = useState(360);
+  const vh = useViewportHeight();
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el) return;
+    const measure = () => setAbove(el.offsetHeight + (titleRef.current?.offsetHeight ?? 24));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [!!summary && !!base]);
+  // chart + gap (20) + grid title + its margin (8) + the page's bottom padding (20) + a little air
+  const gridH = Math.max(260, Math.min(640, vh - above - 20 - 8 - 20 - 12));
   if (!summary || !base) return <div className="animate-pulse" style={{ height: 480, background: C.darkSnow, borderRadius: 2 }} />;
   const wk = summary.weekly;
   const data = base.weeks.map((w, i) => ({
@@ -858,15 +1027,10 @@ function Overview({ summary, base, children }: { summary?: Summary; base: Supply
   const bar = (key: string) => CHART_SERIES.find((s) => s.key === key)!;
   return (
     <div className="grid gap-5">
-      <div>
+      <div ref={chartRef} data-testid="chart-block">
         <div className="flex items-baseline justify-between">
           <SectionTitle>Weekly demand met, units</SectionTitle>
           <span className="text-xs" style={{ color: C.darkGrey }}>Lines: demand, supply and end-of-week inventory · bars: how demand was met</span>
-        </div>
-        <div data-testid="chart-legend" className="flex flex-wrap items-center gap-4 text-xs" style={{ marginTop: 8 }}>
-          {CHART_SERIES.map((s) => (
-            <span key={s.key} className="inline-flex items-center gap-2"><SeriesSwatch kind={s.kind} color={s.color} />{s.name}</span>
-          ))}
         </div>
         <div style={{ height: 240, marginTop: 6 }}>
           <ResponsiveContainer width="100%" height={240}>
@@ -878,32 +1042,22 @@ function Overview({ summary, base, children }: { summary?: Summary; base: Supply
               {["fromStock", "expedited", "dropShip", "lost"].map((key) => (
                 <Bar key={key} dataKey={key} name={bar(key).name} stackId="m" fill={bar(key).color} isAnimationActive={false} />
               ))}
-              <Line type="linear" dataKey="demand" name="Demand" stroke={SERIES.demand} strokeWidth={2} dot={false} isAnimationActive={false} />
-              <Line type="linear" dataKey="supply" name="Supply" stroke={SERIES.supply} strokeDasharray="6 4" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              <Line type="linear" dataKey="inventory" name="Inventory" stroke={SERIES.inventory} strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line type="linear" dataKey="demand" name="Demand" stroke={SERIES.demand} strokeWidth={LINE_W.demand} dot={false} isAnimationActive={false} />
+              <Line type="linear" dataKey="supply" name="Supply" stroke={SERIES.supply} strokeDasharray="6 4" strokeWidth={LINE_W.supply} dot={false} isAnimationActive={false} />
+              <Line type="linear" dataKey="inventory" name="Inventory" stroke={SERIES.inventory} strokeWidth={LINE_W.inventory} dot={false} isAnimationActive={false} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
+        <div data-testid="chart-legend" className="flex flex-wrap items-center justify-center gap-4 text-xs" style={{ marginTop: 6 }}>
+          {CHART_SERIES.map((s) => (
+            <span key={s.key} className="inline-flex items-center gap-2"><SeriesSwatch kind={s.kind} color={s.color} />{s.name}</span>
+          ))}
+        </div>
       </div>
       <div>
-        <SectionTitle>Supply and demand grid</SectionTitle>
-        <div style={{ marginTop: 8 }}>{children}</div>
+        <div ref={titleRef}><SectionTitle>Supply and Demand Edits</SectionTitle></div>
+        <div style={{ marginTop: 8 }}>{grid(gridH)}</div>
       </div>
-    </div>
-  );
-}
-
-/** Colour key for the grid. */
-function GridKey() {
-  const sw = (bg: string) => <span style={{ display: "inline-block", width: 12, height: 12, background: bg, border: `1px solid ${C.ink}`, marginRight: 6, verticalAlign: -2 }} />;
-  return (
-    <div className="flex flex-wrap items-center gap-4 text-xs" style={{ color: C.darkerGrey }}>
-      <span>{sw(ROW_BG[0])}Demand (from the demand source)</span>
-      <span>{sw(ROW_BG[1])}Supply: planned receipts, editable</span>
-      <span>{sw(ROW_BG[2])}Inventory = MAX(0, previous + supply [+ subcontract] − demand), calculated</span>
-      <span>{sw(OVERRIDE_NOW)}Edited this session</span>
-      <span>{sw(OVERRIDE_PREV)}Edited earlier (hover for who)</span>
-      <span>{sw("#FFDCD9")}Week runs short with no action</span>
     </div>
   );
 }

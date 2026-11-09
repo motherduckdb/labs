@@ -25,16 +25,18 @@ planner. A "demand vs forecast" slider adds a stress-test upside on top.
 
 ## What's in the Dive
 
-- **Title row:** a Baseline tab and a dropdown of the other scenarios, plus Duplicate, rename and
-  delete. The save state and the workflow actions sit on the right: Submit for approval, Send
-  back / Approve, then Push to ERP / Reopen.
+- **Title row:** a Baseline tab, the scenario picker and Duplicate. The picker shows the current
+  scenario with duplicate, rename and delete icons; its menu lists every scenario with the same
+  icons (rename in place, delete asks to confirm). The save state and the workflow actions sit on
+  the right: Submit for approval, Send back / Approve, then Push to ERP / Reopen.
 - **Filters** (region and category multi-selects) narrow the KPIs, the chart and the grid.
 - **Supply levers:** the drivers above. The plan recomputes instantly in the browser and saves
   about 600 ms after you stop moving a control.
 - **Weekly chart:** demand, supply and end-of-week inventory lines, over bars showing how demand
-  was met (from stock, expedited, drop shipped, lost).
-- **Supply and demand grid** (a [Univer](https://univer.ai) spreadsheet): Demand, Supply and
-  Inventory rows per region × category, each tinted to match its chart series.
+  was met (from stock, expedited, drop shipped, lost); the legend is below it.
+- **Supply and Demand Edits** (a [Univer](https://univer.ai) spreadsheet): Demand, Supply and
+  Inventory rows per region × category, each tinted to match its chart series. Its height follows
+  the window, so scrolled to the bottom the chart and the grid are both fully on screen.
   - **Supply** is editable. Type, paste or enter a formula to override a week, or delete to revert.
   - **Inventory** is a live formula on the rows above it:
     `=MAX(0, previous week + supply [+ subcontract units] − demand)`. It's locked: you can open a
@@ -74,8 +76,8 @@ Database `scenario_planner`:
 
 | Path | What it is |
 |---|---|
-| `dive/src/dive.tsx` | The Dive: scenarios, filters, levers, KPIs, chart, Compare and Activity |
-| `dive/src/SupplyGrid.tsx` | The supply and demand grid (Univer): formulas, locking, edit colours and tooltips |
+| `dive/src/dive.tsx` | The Dive: scenario picker, filters, levers, KPIs, chart, Compare and Activity |
+| `dive/src/SupplyGrid.tsx` | The Supply and Demand Edits grid (Univer): formulas, locking, edit colours and tooltips |
 | `dive/src/engine.ts` | The supply planning engine (browser) |
 | `dive/src/flight-backend.ts` | Writes through the Flight, and the one-statement bootstrap read |
 | `dive/src/univer-runtime.ts` | Loads Univer inside the Dive sandbox (inlined UMD bundles; no dynamic imports) |
