@@ -40,6 +40,8 @@ export const REQUIRED_DATABASES = [
 declare const __WRITE_FLIGHT_ID__: string;
 const FLIGHT_ID: string = typeof __WRITE_FLIGHT_ID__ === "undefined" ? "" : __WRITE_FLIGHT_ID__;
 const SCHEMA = "supply";
+// The page is one viewport tall (the grid takes what's left); shorter than this, the page scrolls instead.
+const PAGE_MIN_H = 680;
 
 type Scenario = {
   scenario_id: string; name: string; description: string;
@@ -461,8 +463,8 @@ function SupplyPlanner() {
   const baselineScenario = scenarios.find((s) => s.is_baseline);
 
   return (
-    <div style={{ minHeight: "100vh", background: C.sand, color: C.ink, fontFamily: SANS, letterSpacing: "0.01em" }}>
-      <div className="p-5 grid gap-4" style={{ maxWidth: 1600, margin: "0 auto" }}>
+    <div style={{ height: "100vh", minHeight: PAGE_MIN_H, display: "flex", flexDirection: "column", background: C.sand, color: C.ink, fontFamily: SANS, letterSpacing: "0.01em" }}>
+      <div className="p-5 flex flex-col gap-4" style={{ flex: 1, minHeight: 0, width: "100%", maxWidth: 1600, margin: "0 auto", boxSizing: "border-box" }}>
         {/* ── title, scenario switcher, save state and workflow ── */}
         <div className="flex flex-wrap items-center gap-3">
           <h1 style={{ margin: 0, minWidth: 0, fontFamily: MONO, fontWeight: 400, fontSize: 22, lineHeight: 1.2, textTransform: "uppercase" }}>Supply Chain Scenario Modeling</h1>
@@ -527,8 +529,9 @@ function SupplyPlanner() {
           <p role="alert" style={{ color: C.darkWatermelon }}>Could not load scenarios: {loadError}</p>
         ) : null}
 
-        <div className="grid gap-4" style={{ gridTemplateColumns: "300px minmax(0, 1fr)", alignItems: "start" }}>
-          <div className="grid gap-4" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+        {/* both columns fill the rest of the viewport and end at the same line */}
+        <div className="grid gap-4" style={{ flex: 1, minHeight: 0, gridTemplateColumns: "300px minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr)" }}>
+          <div className="flex flex-col gap-4" style={{ minHeight: 0 }}>
             <FiltersPanel
               regions={base?.regions ?? []}
               categories={base?.categories.map((c) => c.category) ?? []}
@@ -549,7 +552,7 @@ function SupplyPlanner() {
             />
           </div>
 
-          <div className="grid gap-4" style={{ minWidth: 0 }}>
+          <div className="flex flex-col gap-4" style={{ minWidth: 0, minHeight: 0 }}>
             {/* ── KPIs: with the levers vs the same demand with no action (net margin first: it decides) ── */}
             <div className="grid gap-6" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))", padding: "4px 2px" }}>
               <Kpi stackDelta testId="kpi-net" label="Net margin impact" loading={!k} value={k && off ? signed(fmtMoney(Math.abs(k.net_margin - off.net_margin)), k.net_margin - off.net_margin) : ""}
@@ -582,14 +585,14 @@ function SupplyPlanner() {
               ))}
             </div>
 
-            <div style={{ minHeight: 420 }}>
+            <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: tab === "overview" ? "hidden" : "auto" }}>
               {tab === "overview" && (
-                <Overview summary={summary?.plan} base={base} grid={(gridH) => (!pair || !base ? (
-                  <div className="animate-pulse" style={{ height: gridH, background: C.darkSnow, borderRadius: 2 }} />
-                ) : !gridCells.length ? (
-                  <p className="text-sm" style={{ color: C.darkerGrey }}>No rows match the filters.</p>
-                ) : (
-                  <div style={{ height: gridH }}>
+                <Overview summary={summary?.plan} base={base}>
+                  {!pair || !base ? (
+                    <div className="animate-pulse" style={{ height: "100%", background: C.darkSnow, borderRadius: 2 }} />
+                  ) : !gridCells.length ? (
+                    <p className="text-sm" style={{ color: C.darkerGrey }}>No rows match the filters.</p>
+                  ) : (
                     <SupplyGrid
                       key={`${selected!.scenario_id}|${filterKey}`}
                       cells={gridCells}
@@ -600,8 +603,8 @@ function SupplyPlanner() {
                       onEdit={onGridEdit}
                       onBlocked={(message) => say("info", message || (selected!.is_baseline ? "The Baseline is locked — duplicate it to edit." : "Reopen this scenario to edit it."))}
                     />
-                  </div>
-                ))} />
+                  )}
+                </Overview>
               )}
               {tab === "compare" && (
                 <Compare scenarios={scenarios} pairs={pairs} selectedId={selected?.scenario_id} onSelect={setSelectedId}
@@ -869,10 +872,10 @@ function LeversPanel(props: {
   onChange: (fn: (d: SupplyDrivers) => SupplyDrivers) => void; onReset: () => void; overrideCount: number; onClearOverrides: () => void;
 }) {
   const { drivers: d, editable, onChange } = props;
-  if (!d) return <div className="animate-pulse" style={{ height: 620, background: C.darkSnow, borderRadius: 2 }} />;
+  if (!d) return <div className="animate-pulse" style={{ flex: 1, minHeight: 0, background: C.darkSnow, borderRadius: 2 }} />;
   const section = { gridTemplateColumns: "minmax(0, 1fr)", paddingTop: 10, borderTop: `1px solid ${C.darkSand}` } as const;
   return (
-    <div className="grid gap-3" style={{ gridTemplateColumns: "minmax(0, 1fr)", padding: 16, background: C.white, border, borderRadius: 2, boxShadow: shadow(4) }}>
+    <div data-testid="levers" className="grid gap-3" style={{ flex: 1, minHeight: 0, overflowY: "auto", alignContent: "start", gridTemplateColumns: "minmax(0, 1fr)", padding: 16, background: C.white, border, borderRadius: 2, boxShadow: shadow(4) }}>
       <div className="flex items-center justify-between">
         <SectionTitle>Supply levers</SectionTitle>
         <Btn variant="ghost" small onClick={props.onReset} disabled={!editable}><RefreshCw size={12} />Reset</Btn>
@@ -980,39 +983,9 @@ function ChartTooltip({ active, payload, label }: any) {
 // Lines are drawn 2px heavier than recharts' default weight so they read over the bars.
 const LINE_W = { demand: 4, supply: 3.5, inventory: 4 };
 
-/** The viewport height, kept current on resize (the Dive's iframe is the viewport). */
-function useViewportHeight() {
-  const [h, setH] = useState(() => (typeof window === "undefined" ? 900 : window.innerHeight));
-  useEffect(() => {
-    const on = () => setH(window.innerHeight);
-    window.addEventListener("resize", on);
-    return () => window.removeEventListener("resize", on);
-  }, []);
-  return h;
-}
-
-/**
- * The weekly chart over the supply and demand grid. The grid is sized so that,
- * scrolled to the bottom of the page, the whole chart and the whole grid fit
- * on screen together (the grid scrolls inside itself).
- */
-function Overview({ summary, base, grid }: { summary?: Summary; base: SupplyBase | null; grid: (height: number) => React.ReactNode }) {
-  const chartRef = useRef<HTMLDivElement | null>(null);
-  const titleRef = useRef<HTMLDivElement | null>(null);
-  const [above, setAbove] = useState(360);
-  const vh = useViewportHeight();
-  useEffect(() => {
-    const el = chartRef.current;
-    if (!el) return;
-    const measure = () => setAbove(el.offsetHeight + (titleRef.current?.offsetHeight ?? 24));
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [!!summary && !!base]);
-  // chart + gap (20) + grid title + its margin (8) + the page's bottom padding (20) + a little air
-  const gridH = Math.max(260, Math.min(640, vh - above - 20 - 8 - 20 - 12));
-  if (!summary || !base) return <div className="animate-pulse" style={{ height: 480, background: C.darkSnow, borderRadius: 2 }} />;
+/** The weekly chart over the supply and demand grid; the grid takes the height left in the viewport. */
+function Overview({ summary, base, children }: { summary?: Summary; base: SupplyBase | null; children?: React.ReactNode }) {
+  if (!summary || !base) return <div className="animate-pulse" style={{ flex: 1, minHeight: 0, background: C.darkSnow, borderRadius: 2 }} />;
   const wk = summary.weekly;
   const data = base.weeks.map((w, i) => ({
     label: weekLabel(w),
@@ -1026,8 +999,8 @@ function Overview({ summary, base, grid }: { summary?: Summary; base: SupplyBase
   }));
   const bar = (key: string) => CHART_SERIES.find((s) => s.key === key)!;
   return (
-    <div className="grid gap-5">
-      <div ref={chartRef} data-testid="chart-block">
+    <div className="flex flex-col gap-4" style={{ flex: 1, minHeight: 0 }}>
+      <div data-testid="chart-block" style={{ flex: "none" }}>
         <div className="flex items-baseline justify-between">
           <SectionTitle>Weekly demand met, units</SectionTitle>
           <span className="text-xs" style={{ color: C.darkGrey }}>Lines: demand, supply and end-of-week inventory · bars: how demand was met</span>
@@ -1054,9 +1027,11 @@ function Overview({ summary, base, grid }: { summary?: Summary; base: SupplyBase
           ))}
         </div>
       </div>
-      <div>
-        <div ref={titleRef}><SectionTitle>Supply and Demand Edits</SectionTitle></div>
-        <div style={{ marginTop: 8 }}>{grid(gridH)}</div>
+      <div className="flex flex-col" style={{ flex: 1, minHeight: 0 }}>
+        <SectionTitle>Supply and Demand Edits</SectionTitle>
+        <div data-testid="grid-area" style={{ position: "relative", flex: 1, minHeight: 0, marginTop: 8 }}>
+          <div style={{ position: "absolute", inset: 0 }}>{children}</div>
+        </div>
       </div>
     </div>
   );

@@ -487,7 +487,7 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
   }, [cells, edits, shortWeeks, status]);
 
   return (
-    <div ref={wrapRef} style={{ position: "relative", height: "100%", minHeight: 240, border: `2px solid ${C.ink}`, borderRadius: 2, background: "#fff" }}
+    <div ref={wrapRef} style={{ position: "relative", height: "100%", minHeight: 0, border: `2px solid ${C.ink}`, borderRadius: 2, background: "#fff" }}
       onMouseMove={(e) => {
         const box = wrapRef.current?.getBoundingClientRect();
         if (!box) return;

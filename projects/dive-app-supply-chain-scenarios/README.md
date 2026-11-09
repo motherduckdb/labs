@@ -35,8 +35,10 @@ planner. A "demand vs forecast" slider adds a stress-test upside on top.
 - **Weekly chart:** demand, supply and end-of-week inventory lines, over bars showing how demand
   was met (from stock, expedited, drop shipped, lost); the legend is below it.
 - **Supply and Demand Edits** (a [Univer](https://univer.ai) spreadsheet): Demand, Supply and
-  Inventory rows per region × category, each tinted to match its chart series. Its height follows
-  the window, so scrolled to the bottom the chart and the grid are both fully on screen.
+  Inventory rows per region × category, each tinted to match its chart series. The page is one
+  window tall with no page scrolling: the grid takes the height left under the chart, and the
+  Supply levers pane stretches to end on the same line (it scrolls inside itself in short windows).
+  Presentation mode, maximized, gives the grid the most rows.
   - **Supply** is editable. Type, paste or enter a formula to override a week, or delete to revert.
   - **Inventory** is a live formula on the rows above it:
     `=MAX(0, previous week + supply [+ subcontract units] − demand)`. It's locked: you can open a
