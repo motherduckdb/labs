@@ -29,6 +29,8 @@ import {
 import { useFlightBackend } from "./flight-backend";
 import { DB, N } from "./sql";
 import SupplyGrid, { METRICS, SERIES, type CellEdit, type EditInfo } from "./SupplyGrid";
+import { cleanSort, type SortColumn } from "./GridSort";
+import { isSortKey } from "./gridLayout";
 import { C, MONO, SANS, STATUS_STYLE, border, shadow } from "./theme";
 import { Btn, Capsule, Chip, Kpi, SectionTitle, Select, Slider, fmtInt, fmtMoney, fmtPct, signed } from "./ui";
 
@@ -182,6 +184,8 @@ function SupplyPlanner() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [loadError, setLoadError] = useState("");
+  // Bumped by every full reload: the grid re-sorts on fresh data.
+  const [loadNonce, setLoadNonce] = useState(0);
   const scenariosRef = useRef<Scenario[]>([]);
   scenariosRef.current = scenarios;
   const versions = useRef<Record<string, number>>({});
@@ -217,6 +221,7 @@ function SupplyPlanner() {
       savedDrivers.current[s.scenario_id] = JSON.stringify(s.drivers);
     }
     setScenarios(list);
+    setLoadNonce((n) => n + 1);
     setLoadError("");
   }, [backend, normalize]);
   useEffect(() => {
@@ -434,6 +439,10 @@ function SupplyPlanner() {
   // Grid-only: which metric rows the grid shows (empty = all); doesn't touch the KPIs or chart.
   const [metricFilter, setMetricFilter] = useDiveState<string[]>("metrics", []);
   const metricSel = Array.isArray(metricFilter) ? metricFilter.filter((m) => METRICS.includes(m)) : [];
+  // Grid-only: the rows' multi-column sort (the pivot Dive's), kept here and in the Dive state so it
+  // outlives the grid's remount on a scenario or filter change, and a reload.
+  const [gridSortRaw, setGridSort] = useDiveState<SortColumn[]>("sort", []);
+  const gridSort = useMemo(() => cleanSort(gridSortRaw, isSortKey), [gridSortRaw]);
   const keep = useCallback((c: SupplyCell) => (!regionSel.length || regionSel.includes(c.region)) && (!categorySel.length || categorySel.includes(c.category)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [filterKey]);
@@ -614,6 +623,10 @@ function SupplyPlanner() {
                       edits={editInfo}
                       onEdit={onGridEdit}
                       metricSel={metricSel}
+                      sort={gridSort}
+                      onSort={setGridSort}
+                      // the rows re-sort when the levers or a reload change the plan, not on a grid edit
+                      resortKey={`${loadNonce}|${JSON.stringify(selected!.drivers)}`}
                       filters={[
                         { col: 0, label: "Metric", options: METRICS, value: metricSel, onChange: setMetricFilter },
                         { col: 1, label: "Region", options: base.regions, value: regionSel, onChange: setRegionFilter },

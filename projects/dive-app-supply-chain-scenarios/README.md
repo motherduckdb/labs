@@ -53,6 +53,24 @@ grid replaces that number outright.
   - **Overrides:** ones made in this session show a stronger yellow than ones saved earlier.
     Hovering an override shows who made it and when. The Supply levers pane counts them by
     metric, with a Clear button.
+  - **Sorting:** click any header (Metric, Region, Category, On hand, a week, 26-wk total) to
+    sort, as in the pivot Dive's drilldown table: each click cycles that column descending →
+    ascending → off, and a newly sorted column joins the end of the sort list (the green
+    triangle shows the direction and the column's priority). Sorting moves individual rows (the
+    grid is a flat table: sort by Metric first to keep Demand, Supply and Inventory apart); ties
+    keep the original order, blanks sort last, the total rows stay at the bottom. The sort is
+    kept in the Dive state, so it survives a scenario or filter change and a reload. It is a
+    view only: it never saves anything. The rows re-sort when you change the sort or the Metric
+    filter, move a lever, switch scenario or filter, or reload, but not when you edit a cell:
+    an edited row stays where it is (under your cursor) until one of those happens.
+  - **Filters and edits:** the rows a Metric filter hides move below the total rows, so the
+    rows you see are one block: a paste fills the visible rows in order, and a fill or a
+    Delete over a range only changes visible cells (anything reaching a hidden row is put back
+    and not saved). A pasted or filled cell keeps the grid's format, and a formula is kept as
+    the number it gives. Changing a filter or the scenario right after an edit (even with the
+    cell editor still open) saves the edit first. Undo and redo (Cmd/Ctrl+Z, Cmd/Ctrl+Y) cover
+    your grid edits, one step each; an undo back to a week's own number clears its override.
+    Re-sorting, the Metric filter and lever changes start a fresh undo history.
 - **Compare tab:** every scenario side by side, plus the approved plans and the ERP outbox read
   back from MotherDuck.
 - **Activity tab:** the activity log, one row per save.
@@ -96,6 +114,8 @@ takes `{metric, region, category, week_idx, units}` per change (`metric` default
 |---|---|
 | `dive/src/dive.tsx` | The Dive: scenario picker, filters, levers, KPIs, chart, Compare and Activity |
 | `dive/src/GridFilterDropdown.tsx` | The grid's header filter dropdown, adapted from the pivot Dive's drilldown table |
+| `dive/src/GridSort.tsx` | The grid's multi-column sort (cycle and indicator from the pivot Dive's drilldown table) |
+| `dive/src/gridLayout.ts` | The grid's row-order model: which sheet row holds which region × category and metric, sorting, and the inventory and total formulas |
 | `dive/src/SupplyGrid.tsx` | The Supply and Demand Edits grid (Univer): one edit path for Demand and Supply, formulas, locking, edit colours and tooltips |
 | `dive/src/engine.ts` | The supply planning engine (browser) |
 | `dive/src/flight-backend.ts` | Writes through the Flight, and the one-statement bootstrap read |
@@ -106,7 +126,7 @@ takes `{metric, region, category, week_idx, units}` per change (`metric` default
 | `flight/write_flight.py`, `flight/build_flight.py` | The Flight entrypoint, and the build that inlines the engine and backend into one file |
 | `flight/setup.py` | Sets up an organization: service account, database, share, Flight, grants |
 | `flight/static.sql` | The synthetic planning data |
-| `e2e/` | `engine-parity.test.mjs` (TS and Python engines agree on every cell), `flight_smoke_test.py` (every op on a local DuckDB file) |
+| `e2e/` | `engine-parity.test.mjs` (TS and Python engines agree on every cell), `flight_smoke_test.py` (every op on a local DuckDB file), `grid-layout.test.mjs` (the grid's row mapping and formulas in every sort and metric filter) |
 
 ## Run it in your organization
 
