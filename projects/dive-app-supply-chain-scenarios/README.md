@@ -26,9 +26,9 @@ grid replaces that number outright.
 
 ## What's in the Dive
 
-- **Title row:** a Baseline tab, the scenario picker and Duplicate. The picker shows the current
-  scenario with duplicate, rename and delete icons; its menu lists every scenario with the same
-  icons (rename in place, delete asks to confirm). The save state and the workflow actions sit on
+- **Title row:** a Baseline tab and the scenario picker. The picker shows the current scenario
+  with rename, duplicate and delete icons; its menu lists every scenario with the same icons
+  (rename in place, delete asks to confirm), then "New scenario from Baseline". The save state and the workflow actions sit on
   the right: Submit for approval, Send back / Approve, then Push to ERP / Reopen.
 - **Filters** (region and category multi-selects) narrow the KPIs, the chart and the grid.
 - **Supply levers:** the drivers above. The plan recomputes instantly in the browser and saves

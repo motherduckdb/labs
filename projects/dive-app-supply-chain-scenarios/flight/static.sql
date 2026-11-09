@@ -2,7 +2,7 @@
 --
 -- Synthetic apparel retailer: 4 regions x 6 categories. A demand model with
 -- seasonality (winter, holiday peak, back-to-school, January) gives a 26-week
--- baseline forecast (2026-09-28 .. 2027-03-22) that spans the holiday peak, and
+-- baseline forecast (2026-11-09 .. 2027-05-03) that spans the holiday peak, and
 -- a supply plan of flat weekly receipts at 97% of average demand plus one week
 -- of cover on hand: slow autumn weeks build stock, the December peak draws it
 -- down, and any demand upside runs into the supply constraint.
@@ -10,6 +10,10 @@
 -- setup.py runs this in the database's `main` schema. Every statement is
 -- CREATE OR REPLACE, so it is safe to re-run; it never touches the writeback
 -- tables in `supply`.
+--
+-- Calendar: the demand model below runs on its original calendar (plan start
+-- 2026-09-28); every date written to a table is then moved 42 days (6 weeks)
+-- later, so the plan starts on 2026-11-09 with the same numbers.
 
 SELECT setseed(0.42);
 
@@ -62,12 +66,12 @@ FROM _weeks w CROSS JOIN regions r CROSS JOIN categories c;
 
 CREATE OR REPLACE TABLE baseline_forecast AS
 SELECT
-  week,
-  (date_diff('day', DATE '2026-09-28', week) // 7)::INTEGER AS week_idx,
+  m.week + 42 AS week,
+  (date_diff('day', DATE '2026-09-28', m.week) // 7)::INTEGER AS week_idx,
   region, category,
   round(expected_units)::INTEGER AS units
-FROM _model
-WHERE week >= DATE '2026-09-28'
+FROM _model m
+WHERE m.week >= DATE '2026-09-28'
 ORDER BY week, region, category;
 
 -- Supply: flat weekly receipts at 97% of the 26-week average demand, plus one

@@ -21,7 +21,7 @@ import * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDiveState, useSQLQuery } from "@motherduck/react-sql-query";
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, Check, ChevronDown, CircleAlert, Copy, Factory, GitCompare, LineChart as LineIcon, Loader2, Lock, PackageCheck, Pencil, RefreshCw, Send, Trash2, Truck, Undo2, X, Zap } from "lucide-react";
+import { Activity, Check, ChevronDown, CircleAlert, Copy, Factory, GitCompare, LineChart as LineIcon, Loader2, Lock, PackageCheck, Pencil, Plus, RefreshCw, Send, Trash2, Truck, Undo2, X, Zap } from "lucide-react";
 import {
   DROP_SHIP, HORIZON, OVERRIDE_METRICS, SPEEDS, SPEED_ORDER, computeSupplyPlan, defaultDrivers, leversOff, normalizeDrivers, overrideKey,
   type OverrideMetric, type SupplyBase, type SupplyCell, type SupplyDrivers, type SupplyPlan,
@@ -500,10 +500,11 @@ function SupplyPlanner() {
                     <span style={{ fontWeight: onBaseline ? 600 : 400 }}>{baselineScenario.name}</span>
                   </button>
                 )}
-                {current && (
+                {current ? (
                   <ScenarioPicker
                     scenarios={others}
                     current={current}
+                    baseline={baselineScenario}
                     active={!onBaseline}
                     busyAction={busyAction}
                     onSelect={setSelectedId}
@@ -511,10 +512,12 @@ function SupplyPlanner() {
                     onRename={renameScenario}
                     onDelete={deleteScenario}
                   />
+                ) : baselineScenario && (
+                  // No scenarios yet: the only way in is a new one from the Baseline.
+                  <Btn variant="ghost" onClick={() => createScenario(baselineScenario)} disabled={!!busyAction} testId="new-scenario">
+                    {spin(`create:${baselineScenario.scenario_id}`, <Plus size={14} />)}New scenario
+                  </Btn>
                 )}
-                <Btn variant="ghost" onClick={() => createScenario()} disabled={loading || !!busyAction} testId="duplicate">
-                  {spin(`create:${selected?.scenario_id}`, <Copy size={14} />)}{onBaseline || !selected ? "New scenario" : "Duplicate"}
-                </Btn>
               </>
             )}
           </div>
@@ -565,7 +568,7 @@ function SupplyPlanner() {
               drivers={selected?.drivers}
               demandSources={demandSources}
               editable={editable}
-              locked={selected ? (selected.is_baseline ? "The Baseline is locked. Duplicate it to model a scenario." : selected.status !== "draft" ? `This scenario is ${selected.status}. Reopen or send it back to edit.` : "") : ""}
+              locked={selected ? (selected.is_baseline ? "The Baseline is locked. Start a new scenario from it in the scenario menu." : selected.status !== "draft" ? `This scenario is ${selected.status}. Reopen or send it back to edit.` : "") : ""}
               onChange={updateDrivers}
               onReset={() => selected && editable && setDrivers(selected.scenario_id, defaultDrivers())}
               overrides={selected?.overrides ?? []}
@@ -632,7 +635,7 @@ function SupplyPlanner() {
                         { col: 1, label: "Region", options: base.regions, value: regionSel, onChange: setRegionFilter },
                         { col: 2, label: "Category", options: base.categories.map((c) => c.category), value: categorySel, onChange: setCategoryFilter },
                       ]}
-                      onBlocked={(message) => say("info", message || (selected!.is_baseline ? "The Baseline is locked — duplicate it to edit." : "Reopen this scenario to edit it."))}
+                      onBlocked={(message) => say("info", message || (selected!.is_baseline ? "The Baseline is locked — start a new scenario from it in the scenario menu." : "Reopen this scenario to edit it."))}
                     />
                   )}
                 </Overview>
@@ -688,6 +691,8 @@ function IconBtn({ title, onClick, off, danger, testId, children }: {
   );
 }
 
+/** Width of the scenario name in the closed picker box (longer names end in "…"). */
+const BOX_NAME_W = 320;
 const PICKER_CSS = `
 .sp-icon:not([aria-disabled]):hover, .sp-icon:focus-visible { background: ${C.darkSnow} !important; }
 .sp-row:hover { background: ${C.snow}; }
@@ -696,10 +701,11 @@ const PICKER_CSS = `
 /**
  * The scenario dropdown in the title row. The closed box shows the current
  * scenario with its duplicate / rename / delete icons; the menu lists every
- * scenario with the same icons. Rename is in place; delete asks to confirm.
+ * scenario with the same icons, then "New scenario from Baseline". Rename is in
+ * place; delete asks to confirm.
  */
-function ScenarioPicker({ scenarios, current, active, busyAction, onSelect, onDuplicate, onRename, onDelete }: {
-  scenarios: Scenario[]; current: Scenario; active: boolean; busyAction: string | null;
+function ScenarioPicker({ scenarios, current, baseline, active, busyAction, onSelect, onDuplicate, onRename, onDelete }: {
+  scenarios: Scenario[]; current: Scenario; baseline?: Scenario; active: boolean; busyAction: string | null;
   onSelect: (id: string) => void; onDuplicate: (s: Scenario) => void;
   onRename: (id: string, name: string) => void; onDelete: (id: string) => Promise<unknown>;
 }) {
@@ -747,9 +753,9 @@ function ScenarioPicker({ scenarios, current, active, busyAction, onSelect, onDu
         if (e.key === "Escape") setRenaming(null);
       }}
       onFocus={(e) => e.currentTarget.select()}
-      style={{ flex: "1 1 auto", minWidth: 0, width: where === "box" ? 200 : undefined, height: 26, padding: "0 6px", border, borderRadius: 2, background: C.white, fontFamily: SANS, fontSize: 13, color: C.ink, outline: "none" }} />
+      style={{ flex: "1 1 auto", minWidth: 0, width: where === "box" ? BOX_NAME_W : undefined, height: 26, padding: "0 6px", border, borderRadius: 2, background: C.white, fontFamily: SANS, fontSize: 13, color: C.ink, outline: "none" }} />
   ) : (
-    <span style={{ flex: "1 1 auto", minWidth: 0, maxWidth: where === "box" ? 200 : undefined, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: where === "box" && active ? 600 : 400 }}>{s.name}</span>
+    <span style={{ flex: where === "box" ? "none" : "1 1 auto", minWidth: 0, width: where === "box" ? BOX_NAME_W : undefined, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: where === "box" && active ? 600 : 400 }}>{s.name}</span>
   ));
 
   const actions = (s: Scenario, where: "box" | "menu") => {
@@ -806,7 +812,7 @@ function ScenarioPicker({ scenarios, current, active, busyAction, onSelect, onDu
       </div>
       {open && (
         <div role="listbox" aria-label="Scenarios" data-testid="scenario-menu"
-          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 60, width: 440, maxWidth: "90vw", maxHeight: 380, overflow: "auto", padding: 4, background: C.white, border, borderRadius: 2, boxShadow: shadow(4) }}>
+          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 60, width: 460, minWidth: "100%", maxWidth: "90vw", maxHeight: 380, overflow: "auto", padding: 4, background: C.white, border, borderRadius: 2, boxShadow: shadow(4) }}>
           {scenarios.map((s) => (
             <div key={s.scenario_id} role="option" aria-selected={s.scenario_id === current.scenario_id} className="sp-row" data-testid="scenario-option"
               onClick={() => {
@@ -821,6 +827,14 @@ function ScenarioPicker({ scenarios, current, active, busyAction, onSelect, onDu
               {actions(s, "menu")}
             </div>
           ))}
+          {baseline && (
+            <div role="option" aria-selected={false} className="sp-row" data-testid="scenario-new"
+              onClick={() => { if (busy) return; setOpen(false); onDuplicate(baseline); }}
+              style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 36, marginTop: 4, padding: "2px 4px 2px 10px", borderTop: `1px solid ${C.darkSand}`, borderRadius: 2, cursor: busy ? "default" : "pointer", fontSize: 13, opacity: busy ? 0.5 : 1 }}>
+              {busyAction === `create:${baseline.scenario_id}` ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+              New scenario from {baseline.name}
+            </div>
+          )}
         </div>
       )}
     </div>
