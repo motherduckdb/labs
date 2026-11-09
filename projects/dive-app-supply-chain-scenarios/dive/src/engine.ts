@@ -1,10 +1,10 @@
 // Supply planning engine (browser). flight/supply_engine.py is the Python port
 // the write Flight uses on approval; keep the two in lock-step.
 //
-// Demand is fixed by the scenario's demand source (the baseline forecast or an
+// Demand comes from the scenario's demand source (the baseline forecast or an
 // approved demand plan, plus an optional stress-test upside). Supply levers
 // decide how much of it is met:
-//   planned supply     (the grid; standard cost)     -> on-hand stock
+//   planned supply     (standard cost)               -> on-hand stock
 //   subcontract        extra supply from the current week on, at a unit-cost premium
 //   expedited shipping a shortfall chased from the supplier at 5/3/1-day speed:
 //                      faster wins back more customers, costs more per unit,
@@ -12,8 +12,11 @@
 //                      than the unit margin of most categories: not worth it)
 //   drop ship          the rest of the shortfall shipped supplier -> customer,
 //                      skipping the warehouse: best recapture, highest cost
-// Every plan is also run with the levers off (same demand, same supply), so
-// "is expediting worth it" is the difference between the two.
+// Grid overrides replace a week's number outright: a demand override is that
+// week's demand in units (instead of source x (1 + upside)), a supply override
+// its planned receipts. Every plan is also run with the levers off (same
+// demand, same supply, same overrides), so "is expediting worth it" is the
+// difference between the two.
 export const HORIZON = 26;
 export const jsRound = Math.round;
 
@@ -83,12 +86,18 @@ export const leversOff = (d: SupplyDrivers): SupplyDrivers => ({
   subcontract: { ...d.subcontract, enabled: false },
 });
 
-export const overrideKey = (region: string, category: string, week: number) => `${region}|${category}|${week}`;
+/** The grid rows a planner can override. */
+export type OverrideMetric = "supply" | "demand";
+export const OVERRIDE_METRICS: OverrideMetric[] = ["demand", "supply"]; // grid row order
+/** Key of one overridden week in computeSupplyPlan's overrides map (supply_engine.override_key). */
+export const overrideKey = (metric: OverrideMetric, region: string, category: string, week: number) => `${metric}|${region}|${category}|${week}`;
 
 export type SupplyCell = {
   region: string; category: string;
   demand: number[]; receipts: number[]; subcontract: number[]; from_stock: number[]; expedited: number[];
-  drop_ship: number[]; lost: number[]; revenue: number[]; extra_cost: number[]; net_margin: number[]; overridden: boolean[];
+  drop_ship: number[]; lost: number[]; revenue: number[]; extra_cost: number[]; net_margin: number[];
+  /** Weeks whose demand / planned receipts come from a grid override. */
+  overridden: Record<OverrideMetric, boolean[]>;
   /** On-hand stock at the start of week 1, and at the end of each week: max(0, previous + receipts + subcontract - demand). */
   start_inventory: number; inventory: number[];
 };
@@ -104,6 +113,7 @@ export type SupplyPlan = {
   weekly: { demand: number[]; from_stock: number[]; expedited: number[]; drop_ship: number[]; lost: number[]; supply: number[]; inventory: number[] };
 };
 
+/** overrides: overrideKey(metric, region, category, week) -> units (demand, or planned receipts). */
 export function computeSupplyPlan(base: SupplyBase, drivers: SupplyDrivers, overrides: Record<string, number>): SupplyPlan {
   const source = base.demand[drivers.demand_source] ? drivers.demand_source : "baseline";
   const upside = 1 + drivers.demand_upside_pct / 100;
@@ -127,14 +137,14 @@ export function computeSupplyPlan(base: SupplyBase, drivers: SupplyDrivers, over
       let inv = sp.on_hand_start;
       const c: SupplyCell = {
         region, category: cat.category, demand: [], receipts: [], subcontract: [], from_stock: [], expedited: [],
-        drop_ship: [], lost: [], revenue: [], extra_cost: [], net_margin: [], overridden: [],
+        drop_ship: [], lost: [], revenue: [], extra_cost: [], net_margin: [], overridden: { supply: [], demand: [] },
         start_inventory: sp.on_hand_start, inventory: [],
       };
       for (let w = 0; w < HORIZON; w++) {
-        const demand = jsRound(fc[w] * upside);
-        const ok = overrideKey(region, cat.category, w);
-        const overridden = ok in overrides;
-        const receipts = overridden ? Math.max(0, jsRound(overrides[ok])) : sp.weekly_receipts;
+        const dKey = overrideKey("demand", region, cat.category, w);
+        const sKey = overrideKey("supply", region, cat.category, w);
+        const demand = dKey in overrides ? Math.max(0, jsRound(overrides[dKey])) : jsRound(fc[w] * upside);
+        const receipts = sKey in overrides ? Math.max(0, jsRound(overrides[sKey])) : sp.weekly_receipts;
         const subUnits = sub.enabled ? jsRound(sp.weekly_receipts * sub.capacity_pct / 100) : 0;
         const available = inv + receipts + subUnits;
         const fromStock = Math.min(demand, available);
@@ -155,7 +165,8 @@ export function computeSupplyPlan(base: SupplyBase, drivers: SupplyDrivers, over
         const net = revenue - met * cat.unit_cost - extra - holding;
         c.demand.push(demand); c.receipts.push(receipts); c.subcontract.push(subUnits); c.from_stock.push(fromStock);
         c.expedited.push(expedited); c.drop_ship.push(dropShip); c.lost.push(lost); c.revenue.push(revenue);
-        c.extra_cost.push(extra); c.net_margin.push(net); c.overridden.push(overridden); c.inventory.push(inv);
+        c.extra_cost.push(extra); c.net_margin.push(net); c.inventory.push(inv);
+        c.overridden.demand.push(dKey in overrides); c.overridden.supply.push(sKey in overrides);
         k.demand_units += demand; k.met_units += met; k.lost_units += lost; k.revenue += revenue; k.lost_revenue += lost * cat.unit_price;
         k.expedited_units += expedited; k.drop_ship_units += dropShip; k.subcontract_units += subUnits;
         k.expedite_cost += expCost; k.drop_ship_cost += dsCost; k.subcontract_premium += subPremium; k.extra_cost += extra;

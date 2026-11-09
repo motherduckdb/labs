@@ -1,14 +1,16 @@
 // The supply and demand plan as a real spreadsheet (Univer). Each region x
 // category gets three rows:
-//   Demand     from the scenario's demand source (locked: change it with the levers)
-//   Supply     planned weekly receipts: type, paste or use a formula to override
-//              a week (yellow), delete to revert; saved to MotherDuck
+//   Demand     weekly demand from the scenario's demand source (and the levers'
+//              upside)
+//   Supply     planned weekly receipts
 //   Inventory  end-of-week on-hand stock, a live formula on the two rows above:
 //              =MAX(0, previous week + supply [+ subcontract units] - demand),
 //              starting from the on-hand column. Locked: you can open a cell to see
 //              which cells feed it, but any change is put back.
-// Hovering an overridden supply cell shows who made the edit. Overrides made in
-// this session are a stronger yellow than ones saved earlier.
+// Demand and Supply edit the same way (one path, keyed by metric): type, paste or
+// use a formula to override a week (yellow), delete to revert; saved to MotherDuck.
+// Hovering an overridden cell shows who made the edit. Overrides made in this
+// session are a stronger yellow than ones saved earlier.
 // The header row's Metric / Region / Category cells carry filter dropdowns
 // (./GridFilterDropdown, an HTML overlay on the canvas). Region and category
 // narrow the cells the parent passes in; metric hides the other metrics' rows
@@ -16,12 +18,12 @@
 import * as React from "react";
 import { useEffect, useRef, useState } from "react";
 import { loadUniver } from "./univer-runtime";
-import { HORIZON, overrideKey, type SupplyCell } from "./engine";
+import { HORIZON, overrideKey, type OverrideMetric, type SupplyCell } from "./engine";
 import { C } from "./theme";
 import { ColumnFilterDropdown, FilterButton, useApplyOnOutsideClick } from "./GridFilterDropdown";
 
-/** A planner edit of one supply cell; units null clears the override. */
-export type CellEdit = { region: string; category: string; week_idx: number; units: number | null };
+/** A planner edit of one demand or supply cell; units null clears the override. */
+export type CellEdit = { metric: OverrideMetric; region: string; category: string; week_idx: number; units: number | null };
 
 export type EditInfo = { by?: string; at?: string; session: boolean };
 
@@ -34,7 +36,7 @@ type Props = {
   editable: boolean;
   /** Weeks that run short with no action (header tint). */
   shortWeeks: Set<number>;
-  /** overrideKey(region, category, week) -> who made the override, and whether it was this session. */
+  /** overrideKey(metric, region, category, week) -> who made the override, and whether it was this session. */
   edits: Record<string, EditInfo>;
   onEdit: (edits: CellEdit[]) => void;
   onBlocked: (message: string) => void;
@@ -52,17 +54,27 @@ const DEMAND = 0;
 const SUPPLY = 1;
 const INVENTORY = 2;
 export const METRICS = ["Demand", "Supply", "Inventory"];
+/** The editable rows: Demand and Supply, one edit path keyed by metric. */
+const ROW_OF_METRIC: Record<OverrideMetric, number> = { demand: DEMAND, supply: SUPPLY };
+const EDITABLE = Object.keys(ROW_OF_METRIC) as OverrideMetric[];
+/** The editable metric of a metric row (DEMAND / SUPPLY; undefined for INVENTORY). */
+const editableAt = (m: number) => EDITABLE.find((x) => ROW_OF_METRIC[x] === m);
+/** The editable metric of a 0-based sheet row. */
+const rowMetric = (r: number) => editableAt((r - 1) % 3);
+const byMetric = <T,>(f: (m: OverrideMetric) => T) => ({ demand: f("demand"), supply: f("supply") });
+/** The engine's numbers on an editable row. */
+const rowValues = (cell: SupplyCell, m: OverrideMetric) => (m === "demand" ? cell.demand : cell.receipts);
 
 // Light tints of the chart's series colours (demand ink, supply sky, inventory duck).
 export const ROW_BG = ["#EFEFEE", "#E4F3FF", "#FFEEDC"];
 export const SERIES = { demand: C.ink, supply: C.darkerSky, inventory: C.duck };
+// An overridden Demand or Supply week, in place of its row tint (bold):
 export const OVERRIDE_NOW = C.lighterSun; // edited in this session
 export const OVERRIDE_PREV = "#FCF8C4"; // edited in an earlier session
 const SHORT_BG = "#FFDCD9";
 const MSG = {
-  demand: "Demand comes from the demand source. Change it with the levers on the left.",
   inventory: "Inventory is calculated from demand and supply, so it can't be edited.",
-  locked: "Only the Supply rows can be edited.",
+  locked: "Only the Demand and Supply rows can be edited.",
 };
 
 const colName = (i: number) => {
@@ -94,15 +106,17 @@ function inventoryFormula(i: number, w: number, sub: number) {
 }
 
 type OvState = 0 | 1 | 2; // none, earlier session, this session
-const ovState = (cell: SupplyCell, w: number, edits: Record<string, EditInfo>): OvState =>
-  !cell.overridden[w] ? 0 : edits[overrideKey(cell.region, cell.category, w)]?.session ? 2 : 1;
-const supplyStyle = (s: OvState) => (s === 2 ? "supNow" : s === 1 ? "supPrev" : "sup");
-const supplyBg = (s: OvState) => (s === 2 ? OVERRIDE_NOW : s === 1 ? OVERRIDE_PREV : ROW_BG[SUPPLY]);
+const ovState = (cell: SupplyCell, m: OverrideMetric, w: number, edits: Record<string, EditInfo>): OvState =>
+  !cell.overridden[m][w] ? 0 : edits[overrideKey(m, cell.region, cell.category, w)]?.session ? 2 : 1;
+const ovStates = (cells: SupplyCell[], m: OverrideMetric, edits: Record<string, EditInfo>) =>
+  cells.map((c) => c.overridden[m].map((_, w) => ovState(c, m, w, edits)));
+const editStyle = (m: OverrideMetric, s: OvState) => (s === 2 ? "ovNow" : s === 1 ? "ovPrev" : m === "demand" ? "dNum" : "sNum");
+const editBg = (m: OverrideMetric, s: OvState) => (s === 2 ? OVERRIDE_NOW : s === 1 ? OVERRIDE_PREV : ROW_BG[ROW_OF_METRIC[m]]);
 
 type Expected = {
-  demand: number[][];
-  supply: number[][];
-  ov: OvState[][];
+  /** The engine's numbers and override states on the editable rows, [cell][week]. */
+  nums: Record<OverrideMetric, number[][]>;
+  ov: Record<OverrideMetric, OvState[][]>;
   sub: number[];
   short: Set<number>;
   /** "row|col" -> the formula a locked formula cell must hold. */
@@ -138,10 +152,10 @@ function buildSnapshot(cells: SupplyCell[], weeks: string[], short: Set<number>,
       put(r, 1, { v: cell.region, s: `${k}Label` });
       put(r, 2, { v: cell.category, s: `${k}Label` });
       put(r, START_COL, m === INVENTORY ? { v: cell.start_inventory, s: "iNum" } : { v: "", s: `${k}Num` });
+      const em = editableAt(m);
       for (let w = 0; w < HORIZON; w++) {
         const c = FIRST_WEEK_COL + w;
-        if (m === DEMAND) put(r, c, { v: cell.demand[w], s: "dNum" }, false);
-        else if (m === SUPPLY) put(r, c, { v: cell.receipts[w], s: supplyStyle(ovState(cell, w, edits)) }, false);
+        if (em) put(r, c, { v: rowValues(cell, em)[w], s: editStyle(em, ovState(cell, em, w, edits)) }, false);
         else put(r, c, { f: inventoryFormula(i, w, sub), s: "iNum" });
       }
       put(r, TOTAL_COL, m === INVENTORY ? { v: "", s: "iTot" } : { f: sum(r), s: `${k}Tot` });
@@ -186,9 +200,8 @@ function buildSnapshot(cells: SupplyCell[], weeks: string[], short: Set<number>,
       dNum: num(ROW_BG[DEMAND]),
       sNum: num(ROW_BG[SUPPLY]),
       iNum: num(ROW_BG[INVENTORY], { bd: groupEnd }),
-      sup: num(ROW_BG[SUPPLY]),
-      supPrev: num(OVERRIDE_PREV, { bl: 1 }),
-      supNow: num(OVERRIDE_NOW, { bl: 1 }),
+      ovPrev: num(OVERRIDE_PREV, { bl: 1 }),
+      ovNow: num(OVERRIDE_NOW, { bl: 1 }),
       dTot: num(ROW_BG[DEMAND], { bl: 1 }),
       sTot: num(ROW_BG[SUPPLY], { bl: 1 }),
       iTot: num(ROW_BG[INVENTORY], { bl: 1, bd: groupEnd }),
@@ -271,9 +284,8 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
         const { snapshot, formulas, values } = buildSnapshot(p.cells, weeks, short, p.edits, p.metricSel);
         univer.createUnit(UniverInstanceType.UNIVER_SHEET, snapshot);
         expectedRef.current = {
-          demand: p.cells.map((c) => c.demand.slice()),
-          supply: p.cells.map((c) => c.receipts.slice()),
-          ov: p.cells.map((c) => c.overridden.map((_, w) => ovState(c, w, p.edits))),
+          nums: byMetric((m) => p.cells.map((c) => rowValues(c, m).slice())),
+          ov: byMetric((m) => ovStates(p.cells, m, p.edits)),
           sub: p.cells.map((c) => c.subcontract[0] ?? 0),
           short,
           formulas,
@@ -299,9 +311,9 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
         offs.push(api.addEvent(api.Event.BeforeSheetEditStart, (ev: any) => {
           const kind = classify(ev?.row, ev?.column);
           if (kind === "inventory") return;
-          if (kind === "supply" && propsRef.current.editable) return;
+          if (isEditable(kind) && propsRef.current.editable) return;
           ev.cancel = true;
-          propsRef.current.onBlocked(kind === "supply" ? "" : kind === "demand" ? MSG.demand : MSG.locked);
+          propsRef.current.onBlocked(isEditable(kind) ? "" : MSG.locked);
         }));
         const hover = (ev: any) => {
           // CellPointerMove carries the pointer event: position the tooltip from it.
@@ -371,7 +383,7 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
   /** Hides the rows the metric filter leaves out (and, unless onlyHide, shows the rest). */
   function applyHidden(showOthers = true) {
     const api = apiRef.current;
-    const n = expectedRef.current?.demand.length ?? 0;
+    const n = expectedRef.current?.nums.demand.length ?? 0;
     if (!api || !n) return;
     const hide = hiddenRows(n, propsRef.current.metricSel);
     const range = (r: number) => ({ startRow: r, endRow: r, startColumn: 0, endColumn: TOTAL_COL, rangeType: 1 /* ROW */ });
@@ -386,24 +398,23 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
     }
   }
 
-  /** What a sheet cell is: an editable supply week, a demand / inventory week, or another locked cell. */
-  function classify(r: number, c: number): "supply" | "demand" | "inventory" | "locked" | "none" {
-    const n = expectedRef.current?.demand.length ?? 0;
+  /** What a sheet cell is: an editable demand / supply week, an inventory week, or another locked cell. */
+  function classify(r: number, c: number): OverrideMetric | "inventory" | "locked" | "none" {
+    const n = expectedRef.current?.nums.demand.length ?? 0;
     if (r == null || c == null || r < 0 || c < 0) return "none";
-    if (r >= 1 && r <= 3 * n && c >= FIRST_WEEK_COL && c < TOTAL_COL) {
-      const m = (r - 1) % 3;
-      return m === SUPPLY ? "supply" : m === DEMAND ? "demand" : "inventory";
-    }
+    if (r >= 1 && r <= 3 * n && c >= FIRST_WEEK_COL && c < TOTAL_COL) return rowMetric(r) ?? "inventory";
     return "locked";
   }
+  const isEditable = (kind: string): kind is OverrideMetric => (EDITABLE as string[]).includes(kind);
 
   function showTip(r: number, c: number) {
-    if (classify(r, c) !== "supply") return setTip(null);
+    const m = classify(r, c);
+    if (!isEditable(m)) return setTip(null);
     const { cells: cs, edits: ed } = propsRef.current;
     const cell = cs[Math.floor((r - 1) / 3)];
     const w = c - FIRST_WEEK_COL;
-    if (!cell?.overridden[w]) return setTip(null);
-    const e = ed[overrideKey(cell.region, cell.category, w)];
+    if (!cell?.overridden[m][w]) return setTip(null);
+    const e = ed[overrideKey(m, cell.region, cell.category, w)];
     const who = e?.by || "an unknown user";
     const when = e?.session ? "this session"
       : e?.at ? new Date(e.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
@@ -425,12 +436,11 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
         if (!cell || !("v" in cell || "f" in cell || "p" in cell || "si" in cell)) continue; // style-only
         const kind = classify(r, c);
         if (kind === "none") continue;
-        if (kind !== "supply") {
+        if (!isEditable(kind)) {
           locked.push([r, c]);
           continue;
         }
-        const i = Math.floor((r - 1) / 3);
-        if (!cell.f && !cell.si && Number(cell.v) === exp.supply[i][c - FIRST_WEEK_COL] && cell.v !== "" && cell.v != null) continue; // our own write
+        if (!cell.f && !cell.si && Number(cell.v) === expectedAt(r, c) && cell.v !== "" && cell.v != null) continue; // our own write
         if (cell.f || cell.si) hasFormula = true;
         touched.push([r, c]);
       }
@@ -443,51 +453,51 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
       const pending = hasFormula && attempt < 15 && touched.some(([r, c]) => {
         const v = ws?.getRange(r, c, 1, 1)?.getValue?.();
         const n = typeof v === "string" ? Number(v.replace(/[,\s]/g, "")) : Number(v);
-        return v == null || v === "" || (typeof v === "string" && v.startsWith("=")) || n === exp.supply[Math.floor((r - 1) / 3)][c - FIRST_WEEK_COL];
+        return v == null || v === "" || (typeof v === "string" && v.startsWith("=")) || n === expectedAt(r, c);
       });
       if (pending) setTimeout(() => settle(attempt + 1), 100);
       else apply();
     };
     const apply = () => {
       const { cells: cs, editable, onEdit, onBlocked } = propsRef.current;
-      const e = expectedRef.current!;
       if (!editable) {
         onBlocked("");
-        for (const [r, c] of touched) writeSupply(r, c);
+        for (const [r, c] of touched) writeExpected(r, c);
         return;
       }
       const ws = sheet();
       const edits: CellEdit[] = [];
       for (const [r, c] of touched) {
-        const i = Math.floor((r - 1) / 3);
-        const cell = cs[i];
+        const metric = rowMetric(r)!;
+        const cell = cs[Math.floor((r - 1) / 3)];
         const w = c - FIRST_WEEK_COL;
         let raw: any = ws?.getRange(r, c, 1, 1)?.getValue?.();
         if (typeof raw === "string") raw = raw.replace(/[,\s]/g, "");
         const blank = raw == null || raw === "";
         const num = Number(raw);
         if (!blank && (!Number.isFinite(num) || num < 0)) {
-          writeSupply(r, c);
+          writeExpected(r, c);
           continue;
         }
         const units = blank ? null : Math.round(num);
-        if (units != null && units === e.supply[i][w] && cell.overridden[w]) continue; // unchanged
-        if (units == null && !cell.overridden[w]) {
-          writeSupply(r, c);
+        const overridden = cell.overridden[metric][w];
+        if (units != null && units === expectedAt(r, c) && overridden) continue; // unchanged
+        if (units == null && !overridden) {
+          writeExpected(r, c);
           continue;
         }
         const k = `${r}|${c}`;
         const prev = sentRef.current[k];
         if (prev && prev.units === units && Date.now() - prev.at < 5000) continue;
         sentRef.current[k] = { units, at: Date.now() };
-        edits.push({ region: cell.region, category: cell.category, week_idx: w, units });
+        edits.push({ metric, region: cell.region, category: cell.category, week_idx: w, units });
       }
       if (edits.length) onEdit(edits);
     };
     setTimeout(() => settle(0), hasFormula ? 120 : 30);
   }
 
-  /** Put locked cells (demand, inventory formulas, labels, totals) back the way the plan has them. */
+  /** Put locked cells (inventory formulas, labels, totals) back the way the plan has them. */
   function restoreLocked(list: Array<[number, number]>) {
     const exp = expectedRef.current;
     const ws = sheet();
@@ -498,8 +508,7 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
       const kind = classify(r, c);
       const range = ws.getRange(r, c, 1, 1);
       let want: { f?: string; v?: string | number };
-      if (kind === "demand") want = { v: exp.demand[Math.floor((r - 1) / 3)][c - FIRST_WEEK_COL] };
-      else if (exp.formulas.has(key)) want = { f: exp.formulas.get(key)! };
+      if (exp.formulas.has(key)) want = { f: exp.formulas.get(key)! };
       else if (exp.values.has(key)) want = { v: exp.values.get(key)! };
       else continue;
       let ok: boolean;
@@ -515,16 +524,21 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
       revertedRef.current[key] = Date.now();
       if (want.f != null) range.setFormula(want.f);
       else range.setValue(want.v);
-      message ||= kind === "inventory" ? MSG.inventory : kind === "demand" ? MSG.demand : MSG.locked;
+      message ||= kind === "inventory" ? MSG.inventory : MSG.locked;
     }
     if (message) propsRef.current.onBlocked(message);
   }
 
-  function writeSupply(r: number, c: number) {
-    const exp = expectedRef.current;
+  /** The engine's number for an editable (demand / supply) week cell. */
+  function expectedAt(r: number, c: number) {
+    return expectedRef.current!.nums[rowMetric(r)!][Math.floor((r - 1) / 3)][c - FIRST_WEEK_COL];
+  }
+
+  /** Put an editable cell back to the engine's number (a rejected or blocked edit). */
+  function writeExpected(r: number, c: number) {
     const ws = sheet();
-    if (!exp || !ws) return;
-    ws.getRange(r, c, 1, 1).setValues([[exp.supply[Math.floor((r - 1) / 3)][c - FIRST_WEEK_COL]]]);
+    if (!expectedRef.current || !ws) return;
+    ws.getRange(r, c, 1, 1).setValues([[expectedAt(r, c)]]);
   }
 
   // Push engine output into the grid whenever the plan changes. Inventory
@@ -535,9 +549,8 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
     if (status !== "ready" || !exp || !ws) return;
     const next: Expected = {
       ...exp,
-      demand: cells.map((c) => c.demand.slice()),
-      supply: cells.map((c) => c.receipts.slice()),
-      ov: cells.map((c) => c.overridden.map((_, w) => ovState(c, w, edits))),
+      nums: byMetric((m) => cells.map((c) => rowValues(c, m).slice())),
+      ov: byMetric((m) => ovStates(cells, m, edits)),
       sub: cells.map((c) => c.subcontract[0] ?? 0),
       short: new Set(shortWeeks),
       formulas: new Map(exp.formulas),
@@ -547,25 +560,25 @@ export default function SupplyGrid({ cells, weeks, editable, shortWeeks, edits, 
       for (let w = 0; w < HORIZON; w++) next.formulas.set(`${rowOf(i, INVENTORY)}|${FIRST_WEEK_COL + w}`, inventoryFormula(i, w, next.sub[i]));
     });
     expectedRef.current = next;
-    const writeRuns = (metric: number, now: number[][], before: number[][]) => now.forEach((row, i) => {
+    const writeRuns = (m: OverrideMetric) => next.nums[m].forEach((row, i) => {
+      const before = exp.nums[m][i];
       let w = 0;
       while (w < HORIZON) {
-        if (row[w] === before[i][w]) { w++; continue; }
+        if (row[w] === before[w]) { w++; continue; }
         const start = w;
-        while (w < HORIZON && row[w] !== before[i][w]) w++;
-        ws.getRange(rowOf(i, metric), FIRST_WEEK_COL + start, 1, w - start).setValues([row.slice(start, w)]);
+        while (w < HORIZON && row[w] !== before[w]) w++;
+        ws.getRange(rowOf(i, ROW_OF_METRIC[m]), FIRST_WEEK_COL + start, 1, w - start).setValues([row.slice(start, w)]);
       }
     });
-    writeRuns(DEMAND, next.demand, exp.demand);
-    writeRuns(SUPPLY, next.supply, exp.supply);
+    EDITABLE.forEach(writeRuns);
     cells.forEach((_, i) => {
       if (next.sub[i] === exp.sub[i]) return;
       ws.getRange(rowOf(i, INVENTORY), FIRST_WEEK_COL, 1, HORIZON).setFormulas([Array.from({ length: HORIZON }, (_, w) => inventoryFormula(i, w, next.sub[i]))]);
     });
-    next.ov.forEach((row, i) => row.forEach((s, w) => {
-      if (s === exp.ov[i][w]) return;
-      const range = ws.getRange(rowOf(i, SUPPLY), FIRST_WEEK_COL + w, 1, 1);
-      range.setBackgroundColor(supplyBg(s));
+    for (const m of EDITABLE) next.ov[m].forEach((row, i) => row.forEach((s, w) => {
+      if (s === exp.ov[m][i][w]) return;
+      const range = ws.getRange(rowOf(i, ROW_OF_METRIC[m]), FIRST_WEEK_COL + w, 1, 1);
+      range.setBackgroundColor(editBg(m, s));
       range.setFontWeight?.(s ? "bold" : "normal");
     }));
     for (let w = 0; w < HORIZON; w++) {

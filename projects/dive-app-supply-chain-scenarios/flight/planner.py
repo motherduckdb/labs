@@ -11,8 +11,10 @@ Layout of the `scenario_planner` database:
   main     categories, regions, baseline_forecast, supply_plan  (static.sql)
            approved_plan  approved DEMAND plans from an upstream demand planner,
                           an optional demand source (empty unless one writes it)
-  supply   scenarios, scenario_overrides, activity_log, approved_plan (approved
-           supply plans), erp_orders (outbox for an ERP connector), rpc_results
+  supply   scenarios, scenario_overrides (grid edits: one row per scenario x
+           metric 'supply' | 'demand' x region x category x week), activity_log,
+           approved_plan (approved supply plans), erp_orders (outbox for an ERP
+           connector), rpc_results
 The connection works in `supply` with a search path that falls back to `main`,
 so unqualified names below resolve to supply's tables or main's static ones.
 """
@@ -127,6 +129,9 @@ class Store:
         self.q("""CREATE TABLE IF NOT EXISTS scenario_overrides (
             scenario_id VARCHAR, region VARCHAR, category VARCHAR, week_idx INTEGER,
             units DOUBLE, edited_by VARCHAR, edited_at TIMESTAMPTZ)""")
+        # Demand overrides (2026-11): which grid row an override is for. Rows from
+        # before it are supply overrides. Name the columns in every INSERT.
+        self.q("ALTER TABLE scenario_overrides ADD COLUMN IF NOT EXISTS metric VARCHAR DEFAULT 'supply'")
         self.q("""CREATE TABLE IF NOT EXISTS activity_log (
             ts TIMESTAMPTZ, scenario_id VARCHAR, scenario_name VARCHAR, actor VARCHAR,
             action VARCHAR, detail VARCHAR)""")
@@ -239,12 +244,12 @@ class Api:
     # ── reads ──
     def scenario_rows(self):
         rows = self.s.q("SELECT * FROM scenarios ORDER BY is_baseline DESC, created_at")
-        ov = self.s.q("SELECT scenario_id, region, category, week_idx, units, edited_by, edited_at FROM scenario_overrides")
+        ov = self.s.q("SELECT scenario_id, metric, region, category, week_idx, units, edited_by, edited_at FROM scenario_overrides")
         by: dict[str, list] = {}
         for o in ov:
             by.setdefault(o["scenario_id"], []).append(
-                {"region": o["region"], "category": o["category"], "week_idx": int(o["week_idx"]), "units": float(o["units"]),
-                 "edited_by": o["edited_by"], "edited_at": _iso(o["edited_at"])})
+                {"metric": o["metric"], "region": o["region"], "category": o["category"], "week_idx": int(o["week_idx"]),
+                 "units": float(o["units"]), "edited_by": o["edited_by"], "edited_at": _iso(o["edited_at"])})
         return [{
             **{k: _iso(v) for k, v in r.items() if k != "drivers"},
             "drivers": engine.normalize_drivers(json.loads(r["drivers"] or "{}")),
@@ -283,8 +288,8 @@ class Api:
         ts = now_utc()
         self.s.q("INSERT INTO scenarios VALUES (?, ?, ?, 'draft', false, ?, 1, ?, ?, ?, ?, NULL, NULL, NULL, NULL)",
                  [sid, name, desc, src["drivers"], actor, ts, actor, ts])
-        self.s.q("""INSERT INTO scenario_overrides
-                    SELECT ?, region, category, week_idx, units, edited_by, edited_at
+        self.s.q("""INSERT INTO scenario_overrides (scenario_id, metric, region, category, week_idx, units, edited_by, edited_at)
+                    SELECT ?, metric, region, category, week_idx, units, edited_by, edited_at
                     FROM scenario_overrides WHERE scenario_id = ?""", [sid, src["scenario_id"]])
         self.s.log_activity(sid, name, actor, "create", f"Created from “{src['name']}”")
         return self._one_scenario(sid)
@@ -309,35 +314,43 @@ class Api:
         return self._one_scenario(row["scenario_id"])
 
     def op_set_overrides(self, args, actor):
-        """Planned-supply overrides from the grid: units per region x category x week (null clears one)."""
+        """Grid overrides: units per metric x region x category x week, where metric is
+        'supply' (planned receipts) or 'demand' (that week's demand); null clears one."""
         row = self._get(args.get("scenario_id"))
         self._editable(row)
         changes = args.get("changes")
         if not isinstance(changes, list) or not (0 < len(changes) <= HORIZON * 30):
             raise ApiError(400, "changes must be a non-empty list")
-        ts = now_utc()
-        set_n = clear_n = 0
+        cells = []
         for c in changes:
-            region, cat, w = c.get("region"), c.get("category"), c.get("week_idx")
-            if region not in self.s.regions or cat not in self.s.categories or not isinstance(w, int) or not 0 <= w < HORIZON:
-                raise ApiError(400, f"bad cell {region!r}/{cat!r}/{w!r}")
-            units = c.get("units")
-            self.s.q("DELETE FROM scenario_overrides WHERE scenario_id = ? AND region = ? AND category = ? AND week_idx = ?",
-                     [row["scenario_id"], region, cat, w])
-            if units is None:
-                clear_n += 1
-                continue
-            if not isinstance(units, (int, float)) or isinstance(units, bool) or not 0 <= units <= 1_000_000:
+            if not isinstance(c, dict):
+                raise ApiError(400, "each change must be an object")
+            # Clients from before demand overrides send no metric.
+            metric, region, cat, w, units = c.get("metric", "supply"), c.get("region"), c.get("category"), c.get("week_idx"), c.get("units")
+            if (metric not in engine.OVERRIDE_METRICS or region not in self.s.regions or cat not in self.s.categories
+                    or not isinstance(w, int) or isinstance(w, bool) or not 0 <= w < HORIZON):
+                raise ApiError(400, f"bad cell {metric!r}/{region!r}/{cat!r}/{w!r}")
+            if units is not None and (not isinstance(units, (int, float)) or isinstance(units, bool) or not 0 <= units <= 1_000_000):
                 raise ApiError(400, "units must be a number between 0 and 1,000,000")
-            self.s.q("INSERT INTO scenario_overrides VALUES (?, ?, ?, ?, ?, ?, ?)", [row["scenario_id"], region, cat, w, float(units), actor, ts])
-            set_n += 1
-        self._bump(row["scenario_id"], actor)
-        first = changes[0]
-        where = f"{first['region']} · {first['category']} · wk of {self.s.weeks[first['week_idx']]}"
-        detail = (f"Overrode {set_n} cell{'s' if set_n != 1 else ''}" if set_n else "") + \
-                 (f"{', ' if set_n else ''}cleared {clear_n}" if clear_n else "") + (f" ({where})" if len(changes) == 1 else "")
-        self.s.log_activity(row["scenario_id"], row["name"], actor, "override", detail)
-        return self._one_scenario(row["scenario_id"])
+            cells.append((metric, region, cat, w, units))
+        ts = now_utc()
+        sid = row["scenario_id"]
+        set_n, clear_n = dict.fromkeys(engine.OVERRIDE_METRICS, 0), dict.fromkeys(engine.OVERRIDE_METRICS, 0)
+        for metric, region, cat, w, units in cells:
+            # (scenario, metric, region, category, week) is unique: replace, never append.
+            self.s.q("DELETE FROM scenario_overrides WHERE scenario_id = ? AND metric = ? AND region = ? AND category = ? AND week_idx = ?",
+                     [sid, metric, region, cat, w])
+            if units is None:
+                clear_n[metric] += 1
+                continue
+            self.s.q("""INSERT INTO scenario_overrides (scenario_id, metric, region, category, week_idx, units, edited_by, edited_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", [sid, metric, region, cat, w, float(units), actor, ts])
+            set_n[metric] += 1
+        self._bump(sid, actor)
+        _, region, cat, w, _ = cells[0]
+        where = f" ({region} · {cat} · wk of {self.s.weeks[w]})" if len(cells) == 1 else ""
+        self.s.log_activity(sid, row["name"], actor, "override", _describe_overrides(set_n, clear_n) + where)
+        return self._one_scenario(sid)
 
     def op_set_status(self, args, actor):
         row = self._get(args.get("scenario_id"))
@@ -364,12 +377,12 @@ class Api:
         return self._one_scenario(sid)
 
     def _approve(self, row, actor, ts) -> str:
-        """Recompute the supply plan from the stored drivers + supply overrides
+        """Recompute the supply plan from the stored drivers + supply and demand overrides
         (never from numbers sent by the browser) and write it to supply.approved_plan."""
         sid = row["scenario_id"]
         drivers = engine.normalize_drivers(json.loads(row["drivers"] or "{}"))
-        ov = self.s.q("SELECT region, category, week_idx, units FROM scenario_overrides WHERE scenario_id = ?", [sid])
-        overrides = {f"{o['region']}|{o['category']}|{int(o['week_idx'])}": float(o["units"]) for o in ov}
+        ov = self.s.q("SELECT metric, region, category, week_idx, units FROM scenario_overrides WHERE scenario_id = ?", [sid])
+        overrides = {engine.override_key(o["metric"], o["region"], o["category"], int(o["week_idx"])): float(o["units"]) for o in ov}
         plan = engine.compute_plan(self.s.base, drivers, overrides)
         rows = []
         for c in plan["cells"]:
@@ -434,6 +447,17 @@ def _clean_text(v, n):
     if not isinstance(v, str):
         raise ApiError(400, "text fields must be strings")
     return re.sub(r"[\x00-\x1f\x7f]", " ", v).strip()[:n]
+
+
+def _describe_overrides(set_n: dict, clear_n: dict) -> str:
+    """{"demand": 2, "supply": 1}, {"demand": 1, "supply": 0} ->
+    "Overrode 2 demand cells and 1 supply cell, cleared 1 demand cell"."""
+    def cells(n: dict) -> str:
+        return " and ".join(f"{k} {m} cell{'s' if k != 1 else ''}" for m, k in n.items() if k)
+
+    s = ", ".join(p for p in (f"overrode {cells(set_n)}" if any(set_n.values()) else "",
+                              f"cleared {cells(clear_n)}" if any(clear_n.values()) else "") if p)
+    return s[:1].upper() + s[1:]
 
 
 def _validate_drivers(raw) -> dict:

@@ -2,13 +2,13 @@
 
 A supply planning app built entirely on MotherDuck: a **Dive** is the UI, and a **Flight** saves
 every change. Planners model what happens when demand outruns planned supply, and whether
-it's worth paying to close the gap. They can edit planned receipts cell by cell in a real
-spreadsheet, compare scenarios, and push one through **draft → submitted → approved**.
+it's worth paying to close the gap. They can edit weekly demand and planned receipts cell by
+cell in a real spreadsheet, compare scenarios, and push one through **draft → submitted → approved**.
 Approval writes the plan to a table. "Push to ERP" queues the order lines it implies in an
 outbox for downstream systems.
 
 The question each scenario answers is **"is it worth it?"** Each scenario is also computed with
-every lever off (same demand, same supply). The headline KPI is the net margin impact between
+every lever off (same demand, same supply, same grid edits). The headline KPI is the net margin impact between
 the two. Then come demand met, recovered revenue and the extra cost per recovered unit.
 
 The levers:
@@ -21,7 +21,8 @@ The levers:
 | Subcontract manufacturer | Extra weekly capacity at a unit-cost premium; excess stock pays holding cost | premium % of unit cost |
 
 Demand comes from the baseline forecast, or from an approved plan of an upstream demand
-planner. A "demand vs forecast" slider adds a stress-test upside on top.
+planner. A "demand vs forecast" slider adds a stress-test upside on top. A week edited in the
+grid replaces that number outright.
 
 ## What's in the Dive
 
@@ -41,12 +42,17 @@ planner. A "demand vs forecast" slider adds a stress-test upside on top.
   window tall with no page scrolling: the grid takes the height left under the chart, and the
   Supply levers pane stretches to end on the same line (it scrolls inside itself in short windows).
   Presentation mode, maximized, gives the grid the most rows.
-  - **Supply** is editable. Type, paste or enter a formula to override a week, or delete to revert.
+  - **Demand** and **Supply** are editable, the same way (in a draft; the Baseline and submitted
+    or approved scenarios are locked). Type, paste or enter a formula to override a week, or
+    delete to revert. An override is that week's number in units: a Demand override replaces
+    source × (1 + upside), a Supply override the planned receipts. The no-action plan uses the
+    same overrides.
   - **Inventory** is a live formula on the rows above it:
     `=MAX(0, previous week + supply [+ subcontract units] − demand)`. It's locked: you can open a
     cell to see which cells feed it, but any change is put back.
   - **Overrides:** ones made in this session show a stronger yellow than ones saved earlier.
-    Hovering an override shows who made it and when.
+    Hovering an override shows who made it and when. The Supply levers pane counts them by
+    metric, with a Clear button.
 - **Compare tab:** every scenario side by side, plus the approved plans and the ERP outbox read
   back from MotherDuck.
 - **Activity tab:** the activity log, one row per save.
@@ -74,7 +80,15 @@ Database `scenario_planner`:
 | Schema | Tables |
 |---|---|
 | `main` | `categories`, `regions`, `baseline_forecast`, `supply_plan` (synthetic data from `flight/static.sql`); `approved_plan`: approved *demand* plans from an upstream demand planner (optional, empty by default; each becomes a demand source) |
-| `supply` | `scenarios`, `scenario_overrides`, `activity_log`, `approved_plan` (approved supply plans), `erp_orders` (the ERP outbox; no ERP is connected), `rpc_results` |
+| `supply` | `scenarios`, `scenario_overrides` (grid edits), `activity_log`, `approved_plan` (approved supply plans), `erp_orders` (the ERP outbox; no ERP is connected), `rpc_results` |
+
+`supply.scenario_overrides` has one row per scenario × `metric` × region × category × week
+(`scenario_id, region, category, week_idx, units, edited_by, edited_at, metric`). `metric` is
+`'supply'` (planned receipts) or `'demand'`; it was added after the table, so
+`Store.ensure_schema` adds it with `ALTER TABLE … ADD COLUMN IF NOT EXISTS … DEFAULT 'supply'`
+(older rows are supply overrides), and every INSERT names its columns. The `set_overrides` op
+takes `{metric, region, category, week_idx, units}` per change (`metric` defaults to `'supply'`;
+`units: null` clears one).
 
 ## Layout
 
@@ -82,7 +96,7 @@ Database `scenario_planner`:
 |---|---|
 | `dive/src/dive.tsx` | The Dive: scenario picker, filters, levers, KPIs, chart, Compare and Activity |
 | `dive/src/GridFilterDropdown.tsx` | The grid's header filter dropdown, adapted from the pivot Dive's drilldown table |
-| `dive/src/SupplyGrid.tsx` | The Supply and Demand Edits grid (Univer): formulas, locking, edit colours and tooltips |
+| `dive/src/SupplyGrid.tsx` | The Supply and Demand Edits grid (Univer): one edit path for Demand and Supply, formulas, locking, edit colours and tooltips |
 | `dive/src/engine.ts` | The supply planning engine (browser) |
 | `dive/src/flight-backend.ts` | Writes through the Flight, and the one-statement bootstrap read |
 | `dive/src/univer-runtime.ts` | Loads Univer inside the Dive sandbox (inlined UMD bundles; no dynamic imports) |

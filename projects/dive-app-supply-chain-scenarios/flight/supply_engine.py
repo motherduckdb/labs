@@ -19,6 +19,7 @@ SPEEDS = {
 SPEED_ORDER = ["none", "5d", "3d", "1d"]
 DROP_SHIP = {"cost": 14.0, "recapture": 0.92}
 HOLDING_PCT_WEEK = 0.004
+OVERRIDE_METRICS = ("demand", "supply")  # the grid rows a planner can override, in grid order
 
 
 def js_round(x: float) -> int:
@@ -65,9 +66,16 @@ def levers_off(d: dict) -> dict:
             "subcontract": {**d["subcontract"], "enabled": False}}
 
 
+def override_key(metric: str, region: str, category: str, week: int) -> str:
+    """Key of one overridden week in compute_plan's overrides map (engine.ts overrideKey)."""
+    return f"{metric}|{region}|{category}|{week}"
+
+
 def compute_plan(base: dict, drivers: dict, overrides: dict[str, float]) -> dict:
     """base: {regions, categories:[{category, unit_price, unit_cost}], demand:{source: {'region|category': [26]}},
-    supply:{'region|category': {weekly_receipts, on_hand_start}}}"""
+    supply:{'region|category': {weekly_receipts, on_hand_start}}}
+    overrides: override_key(metric, region, category, week) -> units. A demand override replaces
+    source x (1 + upside) for that week, a supply override its planned receipts."""
     source = drivers["demand_source"] if drivers["demand_source"] in base["demand"] else "baseline"
     upside = 1 + drivers["demand_upside_pct"] / 100
     speed = SPEEDS[drivers["expedite"]["speed"]]
@@ -84,14 +92,14 @@ def compute_plan(base: dict, drivers: dict, overrides: dict[str, float]) -> dict
             fc = base["demand"].get(source, {}).get(key, [0] * HORIZON)
             sp = base["supply"].get(key, {"weekly_receipts": 0, "on_hand_start": 0})
             inv = sp["on_hand_start"]
-            c = {"region": region, "category": name, "start_inventory": inv, **{f: [] for f in (
-                "demand", "receipts", "subcontract", "from_stock", "expedited", "drop_ship", "lost",
-                "revenue", "extra_cost", "net_margin", "overridden", "inventory")}}
+            c = {"region": region, "category": name, "start_inventory": inv, "overridden": {"supply": [], "demand": []},
+                 **{f: [] for f in ("demand", "receipts", "subcontract", "from_stock", "expedited", "drop_ship", "lost",
+                                    "revenue", "extra_cost", "net_margin", "inventory")}}
             for w in range(HORIZON):
-                demand = js_round(fc[w] * upside)
-                ok = f"{region}|{name}|{w}"
-                overridden = ok in overrides
-                receipts = max(0, js_round(overrides[ok])) if overridden else sp["weekly_receipts"]
+                d_key = override_key("demand", region, name, w)
+                s_key = override_key("supply", region, name, w)
+                demand = max(0, js_round(overrides[d_key])) if d_key in overrides else js_round(fc[w] * upside)
+                receipts = max(0, js_round(overrides[s_key])) if s_key in overrides else sp["weekly_receipts"]
                 sub_units = js_round(sp["weekly_receipts"] * sub["capacity_pct"] / 100) if sub["enabled"] else 0
                 available = inv + receipts + sub_units
                 from_stock = min(demand, available)
@@ -112,8 +120,10 @@ def compute_plan(base: dict, drivers: dict, overrides: dict[str, float]) -> dict
                 net = revenue - met * cat["unit_cost"] - extra - holding
                 for f, v in (("demand", demand), ("receipts", receipts), ("subcontract", sub_units), ("from_stock", from_stock),
                              ("expedited", expedited), ("drop_ship", drop_ship), ("lost", lost), ("revenue", revenue),
-                             ("extra_cost", extra), ("net_margin", net), ("overridden", overridden), ("inventory", inv)):
+                             ("extra_cost", extra), ("net_margin", net), ("inventory", inv)):
                     c[f].append(v)
+                c["overridden"]["demand"].append(d_key in overrides)
+                c["overridden"]["supply"].append(s_key in overrides)
                 k["demand_units"] += demand
                 k["met_units"] += met
                 k["lost_units"] += lost

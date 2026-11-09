@@ -26,7 +26,7 @@ const quote = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 // The `bootstrap` read, as one statement: scenarios with their overrides,
 // the last 60 activity rows and the 5 latest published plans.
-const bootstrapSql = (schema: string) => {
+const bootstrapSql = (schema: string, overrideMetric: boolean) => {
   const T = (table: string) => `"${DB}"."${schema}"."${table}"`;
   return `
 SELECT to_json({
@@ -37,7 +37,7 @@ SELECT to_json({
       created_by: s.created_by, updated_by: s.updated_by, updated_at: ${iso("s.updated_at")},
       submitted_by: s.submitted_by, approved_by: s.approved_by, approved_at: ${iso("s.approved_at")},
       overrides: coalesce((
-        SELECT list({region: o.region, category: o.category, week_idx: o.week_idx, units: o.units, edited_by: o.edited_by, edited_at: ${iso("o.edited_at")}})
+        SELECT list({${overrideMetric ? "metric: o.metric, " : ""}region: o.region, category: o.category, week_idx: o.week_idx, units: o.units, edited_by: o.edited_by, edited_at: ${iso("o.edited_at")}})
         FROM ${T("scenario_overrides")} o WHERE o.scenario_id = s.scenario_id), [])
     } ORDER BY s.is_baseline DESC, s.created_at)
     FROM ${T("scenarios")} s), []),
@@ -58,12 +58,15 @@ type Waiter = { resolve: (run: any) => void };
 export type FlightBackendOptions = {
   /** Schema holding scenarios, overrides, activity_log, approved_plan and rpc_results. */
   schema?: string;
+  /** scenario_overrides has a `metric` column ('supply' | 'demand': the supply planner's grid rows); read it too. */
+  overrideMetric?: boolean;
   /** The write Flight's id. */
   flightId: string;
 };
 
 export function useFlightBackend(enabled: boolean, opts: FlightBackendOptions): Backend | null {
   const schema = opts.schema ?? "main";
+  const overrideMetric = !!opts.overrideMetric;
   const flightId = opts.flightId;
   const sql = useImperativeSql();
   const nonce = useRef(0);
@@ -154,7 +157,7 @@ export function useFlightBackend(enabled: boolean, opts: FlightBackendOptions): 
               /* fall back to the share's current snapshot */
             }
           }
-          const rows = await read(bootstrapSql(schema));
+          const rows = await read(bootstrapSql(schema, overrideMetric));
           const j = JSON.parse(String(rows[0]?.j ?? "{}"));
           for (const s of j.scenarios ?? []) {
             s.drivers = typeof s.drivers === "string" ? JSON.parse(s.drivers || "{}") : s.drivers ?? {};
@@ -170,7 +173,7 @@ export function useFlightBackend(enabled: boolean, opts: FlightBackendOptions): 
     const p = queue.current.then(task, task);
     queue.current = p.catch(() => undefined);
     return p as Promise<RpcResult<T>>;
-  }, [read, write, schema]);
+  }, [read, write, schema, overrideMetric]);
 
   return useMemo<Backend | null>(() => (enabled && actor
     ? { mode: "host", actor, call }

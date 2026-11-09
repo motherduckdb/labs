@@ -4,10 +4,11 @@
 // MotherDuck Flight (./flight-backend.ts). The question: when demand outruns
 // planned supply, is it worth paying to expedite? Levers: expedited
 // freight (5/3/1-day), drop ship supplier → customer, and a subcontract
-// manufacturer, each at a higher cost. The grid shows demand, planned supply
-// (editable) and the resulting inventory (formulas) per region x category.
-// Every scenario is also computed with the levers off (same demand, same
-// supply), and the KPIs compare the two. Region / category filters narrow the
+// manufacturer, each at a higher cost. The grid shows demand and planned supply
+// (both editable: an override replaces that week's number) and the resulting
+// inventory (formulas) per region x category. Every scenario is also computed
+// with the levers off (same demand, same supply, same overrides), and the KPIs
+// compare the two. Region / category filters narrow the
 // KPIs, chart and grid (set from the side panel or the grid's header row); the
 // grid's metric filter only hides rows.
 //
@@ -22,8 +23,8 @@ import { useDiveState, useSQLQuery } from "@motherduck/react-sql-query";
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Activity, Check, ChevronDown, CircleAlert, Copy, Factory, GitCompare, LineChart as LineIcon, Loader2, Lock, PackageCheck, Pencil, RefreshCw, Send, Trash2, Truck, Undo2, X, Zap } from "lucide-react";
 import {
-  DROP_SHIP, HORIZON, SPEEDS, SPEED_ORDER, computeSupplyPlan, defaultDrivers, leversOff, normalizeDrivers, overrideKey,
-  type SupplyBase, type SupplyCell, type SupplyDrivers, type SupplyPlan,
+  DROP_SHIP, HORIZON, OVERRIDE_METRICS, SPEEDS, SPEED_ORDER, computeSupplyPlan, defaultDrivers, leversOff, normalizeDrivers, overrideKey,
+  type OverrideMetric, type SupplyBase, type SupplyCell, type SupplyDrivers, type SupplyPlan,
 } from "./engine";
 import { useFlightBackend } from "./flight-backend";
 import { DB, N } from "./sql";
@@ -48,7 +49,8 @@ type Scenario = {
   scenario_id: string; name: string; description: string;
   status: "baseline" | "draft" | "submitted" | "approved"; is_baseline: boolean; version: number;
   drivers: SupplyDrivers;
-  overrides: { region: string; category: string; week_idx: number; units: number; edited_by?: string; edited_at?: string }[];
+  /** Grid overrides: a week's demand or planned supply, in units. */
+  overrides: { metric: OverrideMetric; region: string; category: string; week_idx: number; units: number; edited_by?: string; edited_at?: string }[];
   updated_by?: string; updated_at?: string; submitted_by?: string; approved_by?: string; approved_at?: string;
 };
 type ActivityRow = { ts: string; scenario_id?: string; scenario_name?: string; actor: string; action: string; detail: string };
@@ -58,9 +60,11 @@ type Pair = { plan: SupplyPlan; off: SupplyPlan };
 const M = (table: string) => `"${DB}"."main"."${table}"`;
 const S = (table: string) => `"${DB}"."${SCHEMA}"."${table}"`;
 const weekLabel = (iso: string) => new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+/** overrideKey of a grid override or edit (one key space for demand and supply). */
+const keyOf = (o: { metric: OverrideMetric; region: string; category: string; week_idx: number }) => overrideKey(o.metric, o.region, o.category, o.week_idx);
 const overridesMap = (s: Scenario) => {
   const m: Record<string, number> = {};
-  for (const o of s.overrides) m[overrideKey(o.region, o.category, o.week_idx)] = o.units;
+  for (const o of s.overrides) m[keyOf(o)] = o.units;
   return m;
 };
 const editableOf = (s?: Scenario) => !!s && !s.is_baseline && s.status === "draft";
@@ -173,7 +177,7 @@ function SupplyPlanner() {
   const baseError = catsQ.error || regsQ.error || baseQ.error || supplyQ.error;
 
   // ── writes: a Flight run per save (../flight-backend.ts) ──
-  const backend = useFlightBackend(!!base, { schema: SCHEMA, flightId: FLIGHT_ID });
+  const backend = useFlightBackend(!!base, { schema: SCHEMA, flightId: FLIGHT_ID, overrideMetric: true });
   const actor = backend?.actor ?? "";
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [activity, setActivity] = useState<ActivityRow[]>([]);
@@ -192,7 +196,11 @@ function SupplyPlanner() {
     toastTimer.current = setTimeout(() => setToast(null), kind === "err" ? 6000 : 3500);
   }, []);
 
-  const normalize = useCallback((s: any): Scenario => ({ ...s, drivers: normalizeDrivers(s.drivers), overrides: s.overrides ?? [] }), []);
+  const normalize = useCallback((s: any): Scenario => ({
+    ...s, drivers: normalizeDrivers(s.drivers),
+    // Overrides saved before demand overrides existed are supply overrides.
+    overrides: (s.overrides ?? []).map((o: any) => ({ ...o, metric: o.metric === "demand" ? "demand" : "supply" })),
+  }), []);
 
   const reload = useCallback(async (onlyActivity = false) => {
     if (!backend) return;
@@ -278,10 +286,10 @@ function SupplyPlanner() {
     setDrivers(selected.scenario_id, fn(JSON.parse(JSON.stringify(selected.drivers))));
   };
 
-  // ── grid: planned supply; edits made during a save go out together ──
+  // ── grid: demand and supply overrides; edits made during a save go out together ──
   const pendingEdits = useRef<Record<string, Map<string, CellEdit>>>({});
   const flushQueued = useRef<Record<string, boolean>>({});
-  // Overrides made in this browser session ("scenario|region|category|week"):
+  // Overrides made in this browser session ("scenario|metric|region|category|week"):
   // the grid shows them in a stronger yellow than ones saved earlier.
   const [sessionEdits, setSessionEdits] = useState<Set<string>>(() => new Set());
   const onGridEdit = useCallback((edits: CellEdit[]) => {
@@ -290,7 +298,7 @@ function SupplyPlanner() {
     setSessionEdits((prev) => {
       const next = new Set(prev);
       for (const e of edits) {
-        const key = `${s.scenario_id}|${overrideKey(e.region, e.category, e.week_idx)}`;
+        const key = `${s.scenario_id}|${keyOf(e)}`;
         if (e.units == null) next.delete(key);
         else next.add(key);
       }
@@ -300,14 +308,14 @@ function SupplyPlanner() {
       if (x.scenario_id !== s.scenario_id) return x;
       let ov = x.overrides.slice();
       for (const e of edits) {
-        ov = ov.filter((o) => !(o.region === e.region && o.category === e.category && o.week_idx === e.week_idx));
-        if (e.units != null) ov.push({ region: e.region, category: e.category, week_idx: e.week_idx, units: e.units, edited_by: actor });
+        ov = ov.filter((o) => keyOf(o) !== keyOf(e));
+        if (e.units != null) ov.push({ metric: e.metric, region: e.region, category: e.category, week_idx: e.week_idx, units: e.units, edited_by: actor });
       }
       return { ...x, overrides: ov };
     }));
     const id = s.scenario_id;
     const pending = (pendingEdits.current[id] ??= new Map());
-    for (const e of edits) pending.set(overrideKey(e.region, e.category, e.week_idx), e);
+    for (const e of edits) pending.set(keyOf(e), e);
     if (flushQueued.current[id]) return;
     flushQueued.current[id] = true;
     enqueue(async () => {
@@ -324,7 +332,7 @@ function SupplyPlanner() {
   }, [selected, backend, actor, enqueue, mergeMeta, failed, refreshActivitySoon]);
   const clearOverrides = () => {
     if (!selected || !editable || !selected.overrides.length) return;
-    onGridEdit(selected.overrides.map((o) => ({ region: o.region, category: o.category, week_idx: o.week_idx, units: null })));
+    onGridEdit(selected.overrides.map((o) => ({ metric: o.metric, region: o.region, category: o.category, week_idx: o.week_idx, units: null })));
   };
 
   // ── workflow buttons (the clicked one shows a spinner while its Flight runs) ──
@@ -441,7 +449,7 @@ function SupplyPlanner() {
     const m: Record<string, EditInfo> = {};
     if (!selected) return m;
     for (const o of selected.overrides) {
-      const key = overrideKey(o.region, o.category, o.week_idx);
+      const key = keyOf(o);
       m[key] = { by: o.edited_by, at: o.edited_at, session: sessionEdits.has(`${selected.scenario_id}|${key}`) };
     }
     return m;
@@ -551,7 +559,7 @@ function SupplyPlanner() {
               locked={selected ? (selected.is_baseline ? "The Baseline is locked. Duplicate it to model a scenario." : selected.status !== "draft" ? `This scenario is ${selected.status}. Reopen or send it back to edit.` : "") : ""}
               onChange={updateDrivers}
               onReset={() => selected && editable && setDrivers(selected.scenario_id, defaultDrivers())}
-              overrideCount={selected?.overrides.length ?? 0}
+              overrides={selected?.overrides ?? []}
               onClearOverrides={clearOverrides}
             />
           </div>
@@ -879,7 +887,7 @@ function MultiSelect({ label, plural, options, value, onChange, testId }: {
 
 function LeversPanel(props: {
   drivers?: SupplyDrivers; demandSources: Array<[string, string]>; editable: boolean; locked: string;
-  onChange: (fn: (d: SupplyDrivers) => SupplyDrivers) => void; onReset: () => void; overrideCount: number; onClearOverrides: () => void;
+  onChange: (fn: (d: SupplyDrivers) => SupplyDrivers) => void; onReset: () => void; overrides: Scenario["overrides"]; onClearOverrides: () => void;
 }) {
   const { drivers: d, editable, onChange } = props;
   if (!d) return <div className="animate-pulse" style={{ flex: 1, minHeight: 0, background: C.darkSnow, borderRadius: 2 }} />;
@@ -945,14 +953,20 @@ function LeversPanel(props: {
           onChange={(v) => onChange((x) => ({ ...x, subcontract: { ...x.subcontract, premium_pct: v } }))} />
       </div>
 
-      {props.overrideCount > 0 && (
+      {props.overrides.length > 0 && (
         <div className="flex items-center justify-between text-xs" style={{ paddingTop: 12, borderTop: `1px solid ${C.darkSand}` }}>
-          <span><span style={{ display: "inline-block", width: 10, height: 10, background: C.lighterSun, border: `1.5px solid ${C.ink}`, marginRight: 6, verticalAlign: -1 }} />{props.overrideCount} supply override{props.overrideCount === 1 ? "" : "s"}</span>
+          <span><span style={{ display: "inline-block", width: 10, height: 10, background: C.lighterSun, border: `1.5px solid ${C.ink}`, marginRight: 6, verticalAlign: -1 }} />{overrideSummary(props.overrides)}</span>
           <Btn variant="ghost" small disabled={!editable} onClick={props.onClearOverrides}>Clear</Btn>
         </div>
       )}
     </div>
   );
+}
+
+/** "2 demand + 1 supply overrides" */
+function overrideSummary(overrides: Scenario["overrides"]) {
+  const parts = OVERRIDE_METRICS.map((m) => [m, overrides.filter((o) => o.metric === m).length] as const).filter(([, n]) => n > 0);
+  return `${parts.map(([m, n]) => `${n} ${m}`).join(" + ")} override${overrides.length === 1 ? "" : "s"}`;
 }
 
 // ─────────────────────────── overview ───────────────────────────

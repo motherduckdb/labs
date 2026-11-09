@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The browser engine (dive/src/engine.ts) and its Python port (flight/supply_engine.py,
 // which the Flight uses on approval) must compute identical plans. Runs both on
-// the planning tables for several lever / override combinations.
+// the planning tables for several lever / override combinations (supply and
+// demand overrides, keyed "metric|region|category|week").
 //
 //   node e2e/engine-parity.test.mjs                 # tables from a local static.sql run (DuckDB CLI)
 //   PARITY_DB=md:scenario_planner node e2e/...      # or from MotherDuck ($motherduck_token)
@@ -35,9 +36,13 @@ const cases = [
   [{ demand_upside_pct: 10 }, {}],
   [{ demand_upside_pct: 10, expedite: { speed: "3d", capacity_pct: 25 }, drop_ship: { enabled: true, share_pct: 50 } }, {}],
   [{ demand_upside_pct: 15, expedite: { speed: "1d", capacity_pct: 40 }, subcontract: { enabled: true, capacity_pct: 20, premium_pct: 25 } },
-    { "West|Outerwear|10": 2500, "Central|Denim|0": 0 }],
+    { "supply|West|Outerwear|10": 2500, "supply|Central|Denim|0": 0 }],
   [{ demand_upside_pct: 25, expedite: { speed: "5d", capacity_pct: 15 }, drop_ship: { enabled: true, share_pct: 100 }, subcontract: { enabled: true, capacity_pct: 40, premium_pct: 60 } },
-    { "Northeast|Accessories|7": 9000 }],
+    { "supply|Northeast|Accessories|7": 9000 }],
+  // Demand overrides replace source x (1 + upside); one week has both a demand and a supply override.
+  [{ demand_upside_pct: 10, expedite: { speed: "3d", capacity_pct: 25 }, drop_ship: { enabled: true, share_pct: 50 } },
+    { "demand|West|Outerwear|3": 12000.4, "demand|Central|Denim|0": 0, "demand|Southeast|Footwear|25": 7500.5,
+      "supply|West|Outerwear|3": 4000, "demand|Northeast|Accessories|7": -5 }],
 ];
 writeFileSync(join(dir, "input.json"), JSON.stringify({ base, cases }));
 
@@ -63,6 +68,16 @@ cases.forEach((_, i) => {
   js[i].cells.forEach((c, j) => FIELDS.forEach((f) => c[f].forEach((v, w) => {
     if (v !== py[i].cells[j][f][w]) { failures++; if (failures < 10) console.error(`case ${i} ${c.region}|${c.category} ${f}[${w}]: js=${v} py=${py[i].cells[j][f][w]}`); }
   })));
+  js[i].cells.forEach((c, j) => ["supply", "demand"].forEach((m) => {
+    if (JSON.stringify(c.overridden[m]) !== JSON.stringify(py[i].cells[j].overridden[m])) { failures++; console.error(`case ${i} ${c.region}|${c.category} overridden.${m} differs`); }
+  }));
+  // Every override in the case shows up in its cell, and a demand override is that week's demand.
+  for (const [key, units] of Object.entries(cases[i][1])) {
+    const [m, region, category, w] = key.split("|");
+    const c = js[i].cells.find((x) => x.region === region && x.category === category);
+    if (!c?.overridden[m][Number(w)]) { failures++; console.error(`case ${i} override ${key} not applied`); }
+    if (m === "demand" && c && c.demand[Number(w)] !== Math.max(0, Math.round(units))) { failures++; console.error(`case ${i} ${key}: demand ${c.demand[Number(w)]}`); }
+  }
   const k = js[i].kpis;
   console.log(`case ${i}: met=${(k.fill_rate * 100).toFixed(2)}% lost=${k.lost_units} expedited=${k.expedited_units} drop=${k.drop_ship_units} sub=${k.subcontract_units} extra=$${k.extra_cost.toFixed(0)} net=$${(k.net_margin / 1e6).toFixed(3)}M`);
 });
