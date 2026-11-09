@@ -35,7 +35,9 @@ planner. A "demand vs forecast" slider adds a stress-test upside on top.
 - **Weekly chart:** demand, supply and end-of-week inventory lines, over bars showing how demand
   was met (from stock, expedited, drop shipped, lost); the legend is below it.
 - **Supply and Demand Edits** (a [Univer](https://univer.ai) spreadsheet): Demand, Supply and
-  Inventory rows per region × category, each tinted to match its chart series. The page is one
+  Inventory rows per region × category, each tinted to match its chart series. The Metric,
+  Region and Category headers have filter dropdowns (the pivot Dive's drilldown-table dropdown:
+  search, All / None, checkboxes); Region and Category share their state with the Filters panel. The page is one
   window tall with no page scrolling: the grid takes the height left under the chart, and the
   Supply levers pane stretches to end on the same line (it scrolls inside itself in short windows).
   Presentation mode, maximized, gives the grid the most rows.
@@ -79,6 +81,7 @@ Database `scenario_planner`:
 | Path | What it is |
 |---|---|
 | `dive/src/dive.tsx` | The Dive: scenario picker, filters, levers, KPIs, chart, Compare and Activity |
+| `dive/src/GridFilterDropdown.tsx` | The grid's header filter dropdown, adapted from the pivot Dive's drilldown table |
 | `dive/src/SupplyGrid.tsx` | The Supply and Demand Edits grid (Univer): formulas, locking, edit colours and tooltips |
 | `dive/src/engine.ts` | The supply planning engine (browser) |
 | `dive/src/flight-backend.ts` | Writes through the Flight, and the one-statement bootstrap read |

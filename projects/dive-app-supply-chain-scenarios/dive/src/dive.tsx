@@ -8,7 +8,8 @@
 // (editable) and the resulting inventory (formulas) per region x category.
 // Every scenario is also computed with the levers off (same demand, same
 // supply), and the KPIs compare the two. Region / category filters narrow the
-// KPIs, chart and grid.
+// KPIs, chart and grid (set from the side panel or the grid's header row); the
+// grid's metric filter only hides rows.
 //
 // Data: planning tables in "scenario_planner".main (categories, regions,
 // baseline_forecast, supply_plan, and approved_plan: approved demand plans from
@@ -26,7 +27,7 @@ import {
 } from "./engine";
 import { useFlightBackend } from "./flight-backend";
 import { DB, N } from "./sql";
-import SupplyGrid, { SERIES, type CellEdit, type EditInfo } from "./SupplyGrid";
+import SupplyGrid, { METRICS, SERIES, type CellEdit, type EditInfo } from "./SupplyGrid";
 import { C, MONO, SANS, STATUS_STYLE, border, shadow } from "./theme";
 import { Btn, Capsule, Chip, Kpi, SectionTitle, Select, Slider, fmtInt, fmtMoney, fmtPct, signed } from "./ui";
 
@@ -422,6 +423,9 @@ function SupplyPlanner() {
   const regionSel = Array.isArray(regionFilter) ? regionFilter.filter((r) => !base || base.regions.includes(r)) : [];
   const categorySel = Array.isArray(categoryFilter) ? categoryFilter.filter((c) => !base || base.categories.some((x) => x.category === c)) : [];
   const filterKey = `${regionSel.join(",")}|${categorySel.join(",")}`;
+  // Grid-only: which metric rows the grid shows (empty = all); doesn't touch the KPIs or chart.
+  const [metricFilter, setMetricFilter] = useDiveState<string[]>("metrics", []);
+  const metricSel = Array.isArray(metricFilter) ? metricFilter.filter((m) => METRICS.includes(m)) : [];
   const keep = useCallback((c: SupplyCell) => (!regionSel.length || regionSel.includes(c.region)) && (!categorySel.length || categorySel.includes(c.category)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [filterKey]);
@@ -601,6 +605,12 @@ function SupplyPlanner() {
                       shortWeeks={shortWeeks}
                       edits={editInfo}
                       onEdit={onGridEdit}
+                      metricSel={metricSel}
+                      filters={[
+                        { col: 0, label: "Metric", options: METRICS, value: metricSel, onChange: setMetricFilter },
+                        { col: 1, label: "Region", options: base.regions, value: regionSel, onChange: setRegionFilter },
+                        { col: 2, label: "Category", options: base.categories.map((c) => c.category), value: categorySel, onChange: setCategoryFilter },
+                      ]}
                       onBlocked={(message) => say("info", message || (selected!.is_baseline ? "The Baseline is locked — duplicate it to edit." : "Reopen this scenario to edit it."))}
                     />
                   )}
