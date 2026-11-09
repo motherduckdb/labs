@@ -734,13 +734,13 @@ function ScenarioPicker({ scenarios, current, active, busyAction, onSelect, onDu
     const draft = s.status === "draft";
     return (
       <span className="inline-flex items-center" style={{ flex: "none", gap: 1 }}>
-        <IconBtn title={`Duplicate “${s.name}”`} testId={`${where}-duplicate`} off={busy}
-          onClick={() => { setOpen(false); onDuplicate(s); }}>
-          {busyAction === `create:${id}` ? <Loader2 size={14} className="animate-spin" /> : <Copy size={14} />}
-        </IconBtn>
         <IconBtn title={draft ? "Rename" : `${statusLabel(s)}: reopen or send it back to draft to rename`} testId={`${where}-rename`} off={busy || !draft}
           onClick={() => { setConfirmId(null); setRenaming({ id, where, value: s.name }); }}>
           <Pencil size={14} />
+        </IconBtn>
+        <IconBtn title={`Duplicate “${s.name}”`} testId={`${where}-duplicate`} off={busy}
+          onClick={() => { setOpen(false); onDuplicate(s); }}>
+          {busyAction === `create:${id}` ? <Loader2 size={14} className="animate-spin" /> : <Copy size={14} />}
         </IconBtn>
         <IconBtn title={s.status === "approved" ? "Approved: reopen it to delete" : "Delete"} testId={`${where}-delete`} danger off={busy || s.status === "approved"}
           onClick={() => { setRenaming(null); setConfirmId(id); }}>
