@@ -58,6 +58,8 @@ def normalize_drivers(raw, _categories=None) -> dict:
         "enabled": bool(s.get("enabled")), "capacity_pct": _num(s.get("capacity_pct"), 15),
         "premium_pct": _num(s.get("premium_pct"), 25),
     }
+    if raw.get("auto_optimize") is True:  # the Dive's optimizer keeps the levers at the best net margin
+        d["auto_optimize"] = True
     return d
 
 

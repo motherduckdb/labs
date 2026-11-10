@@ -21,12 +21,13 @@ import * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDiveState, useSQLQuery } from "@motherduck/react-sql-query";
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, Check, ChevronDown, CircleAlert, Copy, Factory, GitCompare, LineChart as LineIcon, Loader2, Lock, PackageCheck, Pencil, Plus, RefreshCw, Send, Trash2, Truck, Undo2, X, Zap } from "lucide-react";
+import { Activity, Check, ChevronDown, CircleAlert, Copy, Factory, GitCompare, LineChart as LineIcon, Loader2, Lock, PackageCheck, Pencil, Plus, RefreshCw, Send, Trash2, Truck, Undo2, WandSparkles, X, Zap } from "lucide-react";
 import {
   DROP_SHIP, HORIZON, OVERRIDE_METRICS, SPEEDS, SPEED_ORDER, computeSupplyPlan, defaultDrivers, leversOff, normalizeDrivers, overrideKey,
   type OverrideMetric, type SupplyBase, type SupplyCell, type SupplyDrivers, type SupplyPlan,
 } from "./engine";
 import { useFlightBackend } from "./flight-backend";
+import { optimizeLevers } from "./optimizer";
 import { DB, N } from "./sql";
 import SupplyGrid, { METRICS, SERIES, type CellEdit, type EditInfo } from "./SupplyGrid";
 import { cleanSort, type SortColumn } from "./GridSort";
@@ -430,6 +431,44 @@ function SupplyPlanner() {
   }, [base, scenarios]);
   const pair = selected ? pairs[selected.scenario_id] : undefined;
 
+  // ── optimizer: the expedite, drop ship and subcontract levers with the highest net margin ──
+  // Inputs are the scenario's demand, premium and grid overrides (saved or not); see optimizer.ts.
+  const optInputs = (s: Scenario) => JSON.stringify([s.drivers.demand_source, s.drivers.demand_upside_pct, s.drivers.subcontract.premium_pct,
+    Object.entries(overridesMap(s)).sort()]);
+  const [optimizing, setOptimizing] = useState(false);
+  const optRun = useRef(0);
+  const optimize = async (id: string, manual: boolean) => {
+    const s0 = scenariosRef.current.find((x) => x.scenario_id === id);
+    if (!s0 || !base || !editableOf(s0)) return;
+    const run = ++optRun.current;
+    setOptimizing(true);
+    try {
+      const r = await optimizeLevers(base, s0.drivers, overridesMap(s0));
+      const s1 = scenariosRef.current.find((x) => x.scenario_id === id);
+      // A newer run, or inputs that moved on while this one ran (the next run covers them), wins.
+      if (run !== optRun.current || !s1 || !editableOf(s1) || optInputs(s1) !== optInputs(s0) || (!manual && !s1.drivers.auto_optimize)) return;
+      if (r.changed) {
+        setDrivers(id, { ...s1.drivers, expedite: r.drivers.expedite, drop_ship: r.drivers.drop_ship,
+          subcontract: { ...r.drivers.subcontract, premium_pct: s1.drivers.subcontract.premium_pct } });
+      }
+      if (manual) say("ok", r.changed ? `Optimized: net margin ${fmtMoney(r.net - r.currentNet)} higher (130,011 settings in ${(r.ms / 1000).toFixed(1)} s)` : "These levers already give the highest net margin");
+    } finally {
+      if (run === optRun.current) setOptimizing(false);
+    }
+  };
+  const autoOptimize = !!selected?.drivers.auto_optimize && editable;
+  const autoKey = selected && autoOptimize ? `${selected.scenario_id}|${optInputs(selected)}` : "";
+  useEffect(() => {
+    if (!autoKey || !selected || !base) return;
+    const t = setTimeout(() => optimize(selected.scenario_id, false), 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoKey, base]);
+  const setAutoOptimize = (on: boolean) => updateDrivers((d) => {
+    const { auto_optimize: _a, ...rest } = d;
+    return on ? { ...rest, auto_optimize: true } : rest;
+  });
+
   // ── filters: narrow the KPIs, chart and grid to some regions / categories (empty = all) ──
   const [regionFilter, setRegionFilter] = useDiveState<string[]>("regions", []);
   const [categoryFilter, setCategoryFilter] = useDiveState<string[]>("categories", []);
@@ -571,6 +610,10 @@ function SupplyPlanner() {
               locked={selected ? (selected.is_baseline ? "The Baseline is locked. Start a new scenario from it in the scenario menu." : selected.status !== "draft" ? `This scenario is ${selected.status}. Reopen or send it back to edit.` : "") : ""}
               onChange={updateDrivers}
               onReset={() => selected && editable && setDrivers(selected.scenario_id, defaultDrivers())}
+              autoOptimize={!!selected?.drivers.auto_optimize}
+              onAutoOptimize={setAutoOptimize}
+              onOptimize={() => selected && optimize(selected.scenario_id, true)}
+              optimizing={optimizing}
               overrides={selected?.overrides ?? []}
               onClearOverrides={clearOverrides}
             />
@@ -915,15 +958,45 @@ function MultiSelect({ label, plural, options, value, onChange, testId }: {
 function LeversPanel(props: {
   drivers?: SupplyDrivers; demandSources: Array<[string, string]>; editable: boolean; locked: string;
   onChange: (fn: (d: SupplyDrivers) => SupplyDrivers) => void; onReset: () => void; overrides: Scenario["overrides"]; onClearOverrides: () => void;
+  autoOptimize: boolean; onAutoOptimize: (on: boolean) => void; onOptimize: () => void; optimizing: boolean;
 }) {
-  const { drivers: d, editable, onChange } = props;
+  const { drivers: d, editable, onChange, autoOptimize: auto } = props;
   if (!d) return <div className="animate-pulse" style={{ flex: 1, minHeight: 0, background: C.darkSnow, borderRadius: 2 }} />;
+  // In auto-optimize the optimizer owns the expedite, drop ship and subcontract levers.
+  const leverOff = !editable || auto;
+  const autoMark = auto ? <AutoMark /> : null;
   const section = { gridTemplateColumns: "minmax(0, 1fr)", paddingTop: 10, borderTop: `1px solid ${C.darkSand}` } as const;
   return (
     <div data-testid="levers" className="grid gap-3" style={{ flex: 1, minHeight: 0, overflowY: "auto", alignContent: "start", gridTemplateColumns: "minmax(0, 1fr)", padding: 16, background: C.white, border, borderRadius: 2, boxShadow: shadow(4) }}>
       <div className="flex items-center justify-between">
         <SectionTitle>Supply levers</SectionTitle>
         <Btn variant="ghost" small onClick={props.onReset} disabled={!editable}><RefreshCw size={12} />Reset</Btn>
+      </div>
+      <div className="grid gap-1" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
+        <div className="flex items-center justify-between gap-2" style={{ minHeight: 28 }}>
+          <label className="inline-flex items-center gap-2 text-xs" style={{ cursor: editable ? "pointer" : "default", opacity: editable ? 1 : 0.55 }}
+            title="Keep the expedite, drop ship and subcontract levers at the highest net margin as demand, the premium and the grid change">
+            <button type="button" role="switch" aria-checked={auto} aria-label="Auto-optimize" data-testid="auto-optimize" disabled={!editable}
+              onClick={() => props.onAutoOptimize(!auto)}
+              style={{ position: "relative", width: 34, height: 18, flex: "none", padding: 0, border: `1.5px solid ${C.ink}`, borderRadius: 9, background: auto ? C.darkSky : C.white, cursor: editable ? "pointer" : "default", transition: "background 120ms" }}>
+              <span style={{ position: "absolute", top: 1.5, left: auto ? 17 : 1.5, width: 12, height: 12, borderRadius: 6, background: auto ? C.white : C.ink, transition: "left 120ms" }} />
+            </button>
+            <span className="inline-flex items-center gap-1" style={{ fontWeight: 600, whiteSpace: "nowrap" }}><WandSparkles size={13} />Auto-optimize</span>
+          </label>
+          {auto ? (
+            props.optimizing && <span className="inline-flex items-center gap-1 text-xs"><Loader2 size={12} className="animate-spin" />Optimizing…</span>
+          ) : (
+            <Btn variant="primary" small testId="optimize" onClick={props.onOptimize} disabled={!editable || props.optimizing}
+              title="Set the expedite, drop ship and subcontract levers to the highest net margin for this demand, premium and grid">
+              {props.optimizing ? <Loader2 size={13} className="animate-spin" /> : <WandSparkles size={13} />}Optimize
+            </Btn>
+          )}
+        </div>
+        {auto && (
+          <p className="text-xs" style={{ margin: 0, color: C.darkGrey }}>
+            Levers marked <WandSparkles size={11} style={{ display: "inline", verticalAlign: -1 }} /> are set for the highest net margin and follow changes to demand, the premium and the grid.
+          </p>
+        )}
       </div>
       {props.locked && (
         <p className="text-xs flex items-start gap-2" style={{ margin: 0, padding: 8, background: C.darkSnow, borderRadius: 2 }}>
@@ -940,43 +1013,43 @@ function LeversPanel(props: {
       </div>
 
       <div className="grid gap-2" style={section}>
-        <SectionTitle size={12}><span className="inline-flex items-center gap-2"><Zap size={13} />Expedited shipping</span></SectionTitle>
+        <SectionTitle size={12}><span className="inline-flex items-center gap-2"><Zap size={13} />Expedited shipping{autoMark}</span></SectionTitle>
         <div className="flex gap-1">
           {SPEED_ORDER.map((sp) => (
-            <Chip key={sp} on={d.expedite.speed === sp} disabled={!editable} onClick={() => onChange((x) => ({ ...x, expedite: { ...x.expedite, speed: sp } }))}>
+            <Chip key={sp} on={d.expedite.speed === sp} disabled={leverOff} onClick={() => onChange((x) => ({ ...x, expedite: { ...x.expedite, speed: sp } }))}>
               <span title={sp === "none" ? "Shortfalls are lost" : `$${SPEEDS[sp].cost.toFixed(2)}/unit, wins back ${Math.round(SPEEDS[sp].recapture * 100)}% of a shortfall`}>
                 {sp === "none" ? "Off" : SPEEDS[sp].label}
               </span>
             </Chip>
           ))}
         </div>
-        <Slider label="Expedite capacity" value={d.expedite.capacity_pct} min={0} max={50} step={1}
-          disabled={!editable || d.expedite.speed === "none"} onChange={(v) => onChange((x) => ({ ...x, expedite: { ...x.expedite, capacity_pct: v } }))} />
+        <Slider label="Expedite capacity" value={d.expedite.capacity_pct} min={0} max={50} step={1} badge={autoMark}
+          disabled={leverOff || d.expedite.speed === "none"} onChange={(v) => onChange((x) => ({ ...x, expedite: { ...x.expedite, capacity_pct: v } }))} />
       </div>
 
       <div className="grid gap-2" style={section}>
         <div className="flex items-center justify-between">
-          <SectionTitle size={12}><span className="inline-flex items-center gap-2" title={`Supplier ships straight to the customer: $${DROP_SHIP.cost.toFixed(2)}/unit, keeps ${Math.round(DROP_SHIP.recapture * 100)}% of customers`}><Truck size={13} />Drop ship to customer</span></SectionTitle>
+          <SectionTitle size={12}><span className="inline-flex items-center gap-2" title={`Supplier ships straight to the customer: $${DROP_SHIP.cost.toFixed(2)}/unit, keeps ${Math.round(DROP_SHIP.recapture * 100)}% of customers`}><Truck size={13} />Drop ship to customer{autoMark}</span></SectionTitle>
           <label className="inline-flex items-center gap-2 text-xs" style={{ cursor: editable ? "pointer" : "default" }}>
-            <input type="checkbox" checked={d.drop_ship.enabled} disabled={!editable} style={{ accentColor: C.darkSky }}
+            <input type="checkbox" checked={d.drop_ship.enabled} disabled={leverOff} style={{ accentColor: C.darkSky }}
               onChange={(e) => onChange((x) => ({ ...x, drop_ship: { ...x.drop_ship, enabled: e.target.checked } }))} />On
           </label>
         </div>
-        <Slider label="Share of what's still short" value={d.drop_ship.share_pct} min={0} max={100} step={5} disabled={!editable || !d.drop_ship.enabled}
+        <Slider label="Share of what's still short" value={d.drop_ship.share_pct} min={0} max={100} step={5} badge={autoMark} disabled={leverOff || !d.drop_ship.enabled}
           onChange={(v) => onChange((x) => ({ ...x, drop_ship: { ...x.drop_ship, share_pct: v } }))} />
       </div>
 
       <div className="grid gap-2" style={section}>
         <div className="flex items-center justify-between">
-          <SectionTitle size={12}><span className="inline-flex items-center gap-2"><Factory size={13} />Subcontract manufacturer</span></SectionTitle>
+          <SectionTitle size={12}><span className="inline-flex items-center gap-2"><Factory size={13} />Subcontract manufacturer{autoMark}</span></SectionTitle>
           <label className="inline-flex items-center gap-2 text-xs" style={{ cursor: editable ? "pointer" : "default" }}>
-            <input type="checkbox" checked={d.subcontract.enabled} disabled={!editable} style={{ accentColor: C.darkSky }}
+            <input type="checkbox" checked={d.subcontract.enabled} disabled={leverOff} style={{ accentColor: C.darkSky }}
               onChange={(e) => onChange((x) => ({ ...x, subcontract: { ...x.subcontract, enabled: e.target.checked } }))} />On
           </label>
         </div>
-        <Slider label="Extra capacity" value={d.subcontract.capacity_pct} min={0} max={40} step={1} disabled={!editable || !d.subcontract.enabled}
+        <Slider label="Extra capacity" value={d.subcontract.capacity_pct} min={0} max={40} step={1} badge={autoMark} disabled={leverOff || !d.subcontract.enabled}
           onChange={(v) => onChange((x) => ({ ...x, subcontract: { ...x.subcontract, capacity_pct: v } }))} />
-        <Slider label="Cost premium" value={d.subcontract.premium_pct} min={10} max={60} step={1} disabled={!editable || !d.subcontract.enabled}
+        <Slider label="Cost premium" value={d.subcontract.premium_pct} min={10} max={60} step={1} disabled={!editable || (!d.subcontract.enabled && !auto)}
           onChange={(v) => onChange((x) => ({ ...x, subcontract: { ...x.subcontract, premium_pct: v } }))} />
       </div>
 
@@ -987,6 +1060,16 @@ function LeversPanel(props: {
         </div>
       )}
     </div>
+  );
+}
+
+/** Marks a lever that auto-optimize sets. */
+function AutoMark() {
+  return (
+    <span title="Set by auto-optimize" aria-label="Set by auto-optimize" data-testid="auto-mark"
+      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, marginLeft: 6, marginRight: 4, verticalAlign: -3, borderRadius: 2, background: C.darkSky, color: C.white }}>
+      <WandSparkles size={11} />
+    </span>
   );
 }
 

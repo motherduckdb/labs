@@ -100,16 +100,18 @@ export function Select({ value, onChange, options, testId, disabled }: { value: 
 
 /** Range slider with the value shown and editable as a number. */
 export function Slider({
-  label, value, min, max, step, onChange, disabled, unit = "%", hint, testId,
+  label, value, min, max, step, onChange, disabled, unit = "%", hint, testId, badge,
 }: {
   label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void;
   disabled?: boolean; unit?: string; hint?: string; testId?: string;
+  /** Shown before the label, e.g. the auto-optimize mark on a lever the optimizer sets. */
+  badge?: React.ReactNode;
 }) {
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
   return (
     <div className="grid gap-1" style={{ opacity: disabled ? 0.55 : 1, minWidth: 0 }}>
       <div className="flex items-center justify-between gap-2" style={{ fontSize: 12, minWidth: 0 }}>
-        <span title={hint ? `${label} · ${hint}` : label} style={{ color: C.ink, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}{hint && <span style={{ color: C.darkGrey }}> · {hint}</span>}</span>
+        <span title={hint ? `${label} · ${hint}` : label} style={{ color: C.ink, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{badge}{label}{hint && <span style={{ color: C.darkGrey }}> · {hint}</span>}</span>
         <span className="inline-flex items-center gap-1" style={{ flex: "none" }}>
           <input
             aria-label={`${label} value`}

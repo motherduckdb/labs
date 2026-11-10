@@ -47,9 +47,11 @@ def main():
 
         s = call("create_scenario", {"name": "Smoke test", "based_on": "baseline"})
         sid = s["scenario_id"]
-        drivers = {**s["drivers"], "demand_upside_pct": 10, "expedite": {"speed": "1d", "capacity_pct": 25}}
+        drivers = {**s["drivers"], "demand_upside_pct": 10, "expedite": {"speed": "1d", "capacity_pct": 25}, "auto_optimize": True}
         s = call("update_scenario", {"scenario_id": sid, "version": s["version"], "drivers": drivers})
-        check(s["drivers"]["expedite"]["speed"] == "1d", "update_scenario saved the drivers")
+        check(s["drivers"]["expedite"]["speed"] == "1d" and s["drivers"].get("auto_optimize") is True, "update_scenario saved the drivers (and auto-optimize)")
+        detail = store.one("SELECT detail FROM activity_log WHERE action = 'drivers' ORDER BY ts DESC LIMIT 1")["detail"]
+        check("auto-optimize on" in detail, f"activity notes auto-optimize: {detail!r}")
         s = call("set_overrides", {"scenario_id": sid, "changes": [
             {"region": "West", "category": "Outerwear", "week_idx": 3, "units": 2500},  # no metric: an old client's supply edit
             {"metric": "supply", "region": "West", "category": "Denim", "week_idx": 4, "units": 0}]})

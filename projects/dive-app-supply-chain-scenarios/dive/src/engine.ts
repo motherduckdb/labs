@@ -41,6 +41,9 @@ export type SupplyDrivers = {
   drop_ship: { enabled: boolean; share_pct: number };
   /** Extra capacity from the current week on. */
   subcontract: { enabled: boolean; capacity_pct: number; premium_pct: number };
+  /** The optimizer (optimizer.ts) sets the expedite, drop ship and subcontract levers and keeps
+   * them at the best net margin whenever demand, the premium or the grid changes. */
+  auto_optimize?: boolean;
 };
 
 export type SupplyBase = {
@@ -75,6 +78,7 @@ export function normalizeDrivers(raw: any): SupplyDrivers {
   d.drop_ship = { enabled: !!ds.enabled, share_pct: num(ds.share_pct, 50) };
   const s = raw.subcontract ?? {};
   d.subcontract = { enabled: !!s.enabled, capacity_pct: num(s.capacity_pct, 15), premium_pct: num(s.premium_pct, 25) };
+  if (raw.auto_optimize === true) d.auto_optimize = true;
   return d;
 }
 
@@ -113,6 +117,15 @@ export type SupplyPlan = {
   weekly: { demand: number[]; from_stock: number[]; expedited: number[]; drop_ship: number[]; lost: number[]; supply: number[]; inventory: number[] };
 };
 
+// One week's lever arithmetic, shared by computeSupplyPlan and the optimizer's search
+// (optimizer.ts), so the two can never compute a lever differently.
+/** Units a lever adds per week: a % of the cell's planned weekly receipts. */
+export const pctOfReceipts = (weeklyReceipts: number, pct: number) => jsRound(weeklyReceipts * pct / 100);
+/** Expedited units: the speed's share of the shortfall, capped. */
+export const expeditedUnits = (short: number, speed: Speed, cap: number) => Math.min(jsRound(short * SPEEDS[speed].recapture), cap);
+/** Drop shipped units: share_pct of what's still short, of which DROP_SHIP.recapture is kept. */
+export const dropShipUnits = (rest: number, sharePct: number) => jsRound(rest * (sharePct / 100) * DROP_SHIP.recapture);
+
 /** overrides: overrideKey(metric, region, category, week) -> units (demand, or planned receipts). */
 export function computeSupplyPlan(base: SupplyBase, drivers: SupplyDrivers, overrides: Record<string, number>): SupplyPlan {
   const source = base.demand[drivers.demand_source] ? drivers.demand_source : "baseline";
@@ -145,14 +158,14 @@ export function computeSupplyPlan(base: SupplyBase, drivers: SupplyDrivers, over
         const sKey = overrideKey("supply", region, cat.category, w);
         const demand = dKey in overrides ? Math.max(0, jsRound(overrides[dKey])) : jsRound(fc[w] * upside);
         const receipts = sKey in overrides ? Math.max(0, jsRound(overrides[sKey])) : sp.weekly_receipts;
-        const subUnits = sub.enabled ? jsRound(sp.weekly_receipts * sub.capacity_pct / 100) : 0;
+        const subUnits = sub.enabled ? pctOfReceipts(sp.weekly_receipts, sub.capacity_pct) : 0;
         const available = inv + receipts + subUnits;
         const fromStock = Math.min(demand, available);
         const short = demand - fromStock;
-        const expCap = speed.days == null ? 0 : jsRound(sp.weekly_receipts * drivers.expedite.capacity_pct / 100);
-        const expedited = Math.min(jsRound(short * speed.recapture), expCap);
+        const expCap = speed.days == null ? 0 : pctOfReceipts(sp.weekly_receipts, drivers.expedite.capacity_pct);
+        const expedited = expeditedUnits(short, drivers.expedite.speed, expCap);
         const rest = short - expedited;
-        const dropShip = ds.enabled ? jsRound(rest * (ds.share_pct / 100) * DROP_SHIP.recapture) : 0;
+        const dropShip = ds.enabled ? dropShipUnits(rest, ds.share_pct) : 0;
         const lost = rest - dropShip;
         inv = available - fromStock;
         const met = fromStock + expedited + dropShip;

@@ -494,4 +494,6 @@ def _describe_driver_change(old: dict, new: dict) -> str:
     if old["subcontract"] != new["subcontract"]:
         s = new["subcontract"]
         parts.append(f"subcontract +{s['capacity_pct']:g}% at +{s['premium_pct']:g}% cost" if s["enabled"] else "subcontract off")
+    if bool(old.get("auto_optimize")) != bool(new.get("auto_optimize")):
+        parts.append("auto-optimize on" if new.get("auto_optimize") else "auto-optimize off")
     return "; ".join(parts) or "Saved"

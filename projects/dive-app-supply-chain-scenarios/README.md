@@ -33,6 +33,18 @@ grid replaces that number outright.
 - **Filters** (region and category multi-selects) narrow the KPIs, the chart and the grid.
 - **Supply levers:** the drivers above. The plan recomputes instantly in the browser and saves
   about 600 ms after you stop moving a control.
+  - **Optimize** (the wand button under the title) sets the expedite speed and capacity, the drop
+    ship share and the subcontract capacity to the highest net margin for the scenario as it
+    stands: demand source, demand vs forecast, subcontract premium and every grid edit are the
+    inputs. It tries every setting the controls allow (4 speeds × 1–50% capacity, drop ship
+    0–100% in 5s, subcontract 0–40%: 130,011 settings), so the answer is exact. That takes about
+    0.2 s in the browser: the region × category cells are independent in the engine, so the search
+    evaluates each cell with nested loops that reuse work, using the engine's own lever functions
+    (`dive/src/optimizer.ts`). The winner is re-run through the engine, and those are the numbers
+    shown.
+  - **Auto-optimize** (the switch beside it) keeps those levers optimized. It reruns whenever
+    demand, the premium or the grid changes. The levers it sets are locked and marked with the
+    wand. The setting is saved with the scenario (`drivers.auto_optimize`), so everyone sees it.
 - **Weekly chart:** demand, supply and end-of-week inventory lines, over bars showing how demand
   was met (from stock, expedited, drop shipped, lost); the legend is below it.
 - **Supply and Demand Edits** (a [Univer](https://univer.ai) spreadsheet): Demand, Supply and
@@ -118,6 +130,7 @@ takes `{metric, region, category, week_idx, units}` per change (`metric` default
 | `dive/src/gridLayout.ts` | The grid's row-order model: which sheet row holds which region × category and metric, sorting, and the inventory and total formulas |
 | `dive/src/SupplyGrid.tsx` | The Supply and Demand Edits grid (Univer): one edit path for Demand and Supply, formulas, locking, edit colours and tooltips |
 | `dive/src/engine.ts` | The supply planning engine (browser) |
+| `dive/src/optimizer.ts` | Optimize / Auto-optimize: the levers with the highest net margin, by trying every setting |
 | `dive/src/flight-backend.ts` | Writes through the Flight, and the one-statement bootstrap read |
 | `dive/src/univer-runtime.ts` | Loads Univer inside the Dive sandbox (inlined UMD bundles; no dynamic imports) |
 | `dive/scripts/` | `fetch-vendor.sh` + `build-vendor.mjs` (pack Univer), `build-dive.mjs` (bundle), `deploy-dive.sh` (create/update the Dive) |
@@ -126,7 +139,7 @@ takes `{metric, region, category, week_idx, units}` per change (`metric` default
 | `flight/write_flight.py`, `flight/build_flight.py` | The Flight entrypoint, and the build that inlines the engine and backend into one file |
 | `flight/setup.py` | Sets up an organization: service account, database, share, Flight, grants |
 | `flight/static.sql` | The synthetic planning data |
-| `e2e/` | `engine-parity.test.mjs` (TS and Python engines agree on every cell), `flight_smoke_test.py` (every op on a local DuckDB file), `grid-layout.test.mjs` (the grid's row mapping and formulas in every sort and metric filter) |
+| `e2e/` | `engine-parity.test.mjs` (TS and Python engines agree on every cell), `flight_smoke_test.py` (every op on a local DuckDB file), `grid-layout.test.mjs` (the grid's row mapping and formulas in every sort and metric filter), `optimizer.test.mjs` (the optimizer's numbers are the engine's; it finds the brute-force optimum) |
 
 ## Run it in your organization
 
@@ -154,6 +167,7 @@ The service account's token is saved to `~/.config/scenario-planner/<target>-sa-
 
 ```bash
 node e2e/engine-parity.test.mjs                                          # TS vs Python engines
+node e2e/optimizer.test.mjs                                              # optimizer vs the engine and a brute force
 uv run --with duckdb==1.5.6 --with pytz python e2e/flight_smoke_test.py  # every Flight op, locally
 cd dive && npm run typecheck
 ```
