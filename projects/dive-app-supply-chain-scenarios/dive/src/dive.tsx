@@ -972,31 +972,17 @@ function LeversPanel(props: {
         <SectionTitle>Supply levers</SectionTitle>
         <Btn variant="ghost" small onClick={props.onReset} disabled={!editable}><RefreshCw size={12} />Reset</Btn>
       </div>
-      <div className="grid gap-1" style={{ gridTemplateColumns: "minmax(0, 1fr)" }}>
-        <div className="flex items-center justify-between gap-2" style={{ minHeight: 28 }}>
-          <label className="inline-flex items-center gap-2 text-xs" style={{ cursor: editable ? "pointer" : "default", opacity: editable ? 1 : 0.55 }}
-            title="Keep the expedite, drop ship and subcontract levers at the highest net margin as demand, the premium and the grid change">
-            <button type="button" role="switch" aria-checked={auto} aria-label="Auto-optimize" data-testid="auto-optimize" disabled={!editable}
-              onClick={() => props.onAutoOptimize(!auto)}
-              style={{ position: "relative", width: 34, height: 18, flex: "none", padding: 0, border: `1.5px solid ${C.ink}`, borderRadius: 9, background: auto ? C.darkSky : C.white, cursor: editable ? "pointer" : "default", transition: "background 120ms" }}>
-              <span style={{ position: "absolute", top: 1.5, left: auto ? 17 : 1.5, width: 12, height: 12, borderRadius: 6, background: auto ? C.white : C.ink, transition: "left 120ms" }} />
-            </button>
-            <span className="inline-flex items-center gap-1" style={{ fontWeight: 600, whiteSpace: "nowrap" }}><WandSparkles size={13} />Auto-optimize</span>
-          </label>
-          {auto ? (
-            props.optimizing && <span className="inline-flex items-center gap-1 text-xs"><Loader2 size={12} className="animate-spin" />Optimizing…</span>
-          ) : (
-            <Btn variant="primary" small testId="optimize" onClick={props.onOptimize} disabled={!editable || props.optimizing}
-              title="Set the expedite, drop ship and subcontract levers to the highest net margin for this demand, premium and grid">
-              {props.optimizing ? <Loader2 size={13} className="animate-spin" /> : <WandSparkles size={13} />}Optimize
-            </Btn>
-          )}
-        </div>
-        {auto && (
-          <p className="text-xs" style={{ margin: 0, color: C.darkGrey }}>
-            Levers marked <WandSparkles size={11} style={{ display: "inline", verticalAlign: -1 }} /> are set for the highest net margin and follow changes to demand, the premium and the grid.
-          </p>
-        )}
+      <div className="flex items-center gap-2" data-testid="optimize-row">
+        <button type="button" role="switch" aria-checked={auto} aria-label="Auto-optimize margins" data-testid="auto-optimize" disabled={!editable}
+          title={auto ? "Auto-optimize is on: click to set the levers yourself" : "Auto-optimize: keep the expedite, drop ship and subcontract levers at the highest net margin as demand, the premium and the grid change"}
+          onClick={() => props.onAutoOptimize(!auto)}
+          style={{ position: "relative", width: 34, height: 18, flex: "none", padding: 0, border: `1.5px solid ${C.ink}`, borderRadius: 9, background: auto ? C.garden : C.white, cursor: editable ? "pointer" : "default", opacity: editable ? 1 : 0.55, transition: "background 120ms" }}>
+          <span style={{ position: "absolute", top: 1.5, left: auto ? 17 : 1.5, width: 12, height: 12, borderRadius: 6, background: auto ? C.white : C.ink, transition: "left 120ms" }} />
+        </button>
+        <Btn variant={auto ? "secondary" : "primary"} small fill testId="optimize" onClick={props.onOptimize} disabled={!editable || auto || props.optimizing}
+          title={auto ? "The levers marked with the wand follow demand, the premium and the grid. Switch auto-optimize off to set them yourself." : "Set the expedite, drop ship and subcontract levers to the highest net margin for this demand, premium and grid"}>
+          {props.optimizing ? <Loader2 size={13} className="animate-spin" /> : <WandSparkles size={13} />}{auto ? "Auto-Optimizing Margins" : "Optimize Margins"}
+        </Btn>
       </div>
       {props.locked && (
         <p className="text-xs flex items-start gap-2" style={{ margin: 0, padding: 8, background: C.darkSnow, borderRadius: 2 }}>
@@ -1067,8 +1053,8 @@ function LeversPanel(props: {
 function AutoMark() {
   return (
     <span title="Set by auto-optimize" aria-label="Set by auto-optimize" data-testid="auto-mark"
-      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, marginLeft: 6, marginRight: 4, verticalAlign: -3, borderRadius: 2, background: C.darkSky, color: C.white }}>
-      <WandSparkles size={11} />
+      style={{ display: "inline-flex", alignItems: "center", marginLeft: 6, marginRight: 4, verticalAlign: -2, color: C.garden }}>
+      <WandSparkles size={13} strokeWidth={2.25} />
     </span>
   );
 }

@@ -22,9 +22,11 @@ export function SectionTitle({ children, size = 13 }: { children: React.ReactNod
 
 type BtnVariant = "primary" | "secondary" | "ghost" | "sun" | "danger" | "go";
 export function Btn({
-  children, onClick, variant = "secondary", disabled, testId, title, small,
+  children, onClick, variant = "secondary", disabled, testId, title, small, fill,
 }: {
   children: React.ReactNode; onClick?: () => void; variant?: BtnVariant; disabled?: boolean; testId?: string; title?: string; small?: boolean;
+  /** Take the rest of a flex row (a fixed width whatever the label). */
+  fill?: boolean;
 }) {
   const [hover, setHover] = useState(false);
   const bg = { primary: C.sky, secondary: C.white, ghost: "transparent", sun: C.sun, danger: C.watermelon, go: C.lighterGarden }[variant];
@@ -39,7 +41,8 @@ export function Btn({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        display: "inline-flex", alignItems: "center", gap: 6, height: small ? 28 : 34, padding: small ? "0 10px" : "0 14px",
+        display: "inline-flex", alignItems: "center", gap: 6, height: small ? 28 : 34,
+        ...(fill ? { flex: "1 1 0", minWidth: 0, justifyContent: "center" } : {}), padding: small ? "0 10px" : "0 14px",
         border: variant === "ghost" ? "2px solid transparent" : border, borderRadius: 2, background: bg, color: C.ink,
         fontFamily: SANS, fontWeight: 400, fontSize: small ? 12 : 13, lineHeight: 1, textTransform: "uppercase", letterSpacing: "0.02em",
         cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1, whiteSpace: "nowrap",

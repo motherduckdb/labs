@@ -33,7 +33,7 @@ grid replaces that number outright.
 - **Filters** (region and category multi-selects) narrow the KPIs, the chart and the grid.
 - **Supply levers:** the drivers above. The plan recomputes instantly in the browser and saves
   about 600 ms after you stop moving a control.
-  - **Optimize** (the wand button under the title) sets the expedite speed and capacity, the drop
+  - **Optimize Margins** (the wand button under the title) sets the expedite speed and capacity, the drop
     ship share and the subcontract capacity to the highest net margin for the scenario as it
     stands: demand source, demand vs forecast, subcontract premium and every grid edit are the
     inputs. It tries every setting the controls allow (4 speeds × 1–50% capacity, drop ship
@@ -42,9 +42,10 @@ grid replaces that number outright.
     evaluates each cell with nested loops that reuse work, using the engine's own lever functions
     (`dive/src/optimizer.ts`). The winner is re-run through the engine, and those are the numbers
     shown.
-  - **Auto-optimize** (the switch beside it) keeps those levers optimized. It reruns whenever
-    demand, the premium or the grid changes. The levers it sets are locked and marked with the
-    wand. The setting is saved with the scenario (`drivers.auto_optimize`), so everyone sees it.
+  - **Auto-optimize** (the switch beside it) keeps those levers optimized; the button then reads
+    "Auto-Optimizing Margins" and is greyed out. It reruns whenever demand, the premium or the grid
+    changes. The levers it sets are locked and marked with a green wand. The setting is saved with
+    the scenario (`drivers.auto_optimize`), so everyone sees it.
 - **Weekly chart:** demand, supply and end-of-week inventory lines, over bars showing how demand
   was met (from stock, expedited, drop shipped, lost); the legend is below it.
 - **Supply and Demand Edits** (a [Univer](https://univer.ai) spreadsheet): Demand, Supply and
